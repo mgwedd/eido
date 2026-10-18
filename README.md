@@ -1,12 +1,15 @@
 # Eido
 
+<img width="1035" height="727" alt="Screenshot 2026-10-18 at 5 06 48 PM" src="https://github.com/user-attachments/assets/b81ae418-718e-4daf-9dcd-e2e5d457fc2a" />
+
 A private, local-first executive assistant for your Mac. It reads your mail, calendar and files, proposes actions, and does nothing external until you approve it with a passkey.
 
 - **Local inference.** The model runs on your machine. Nothing is sent to a hosted model.
 - **One door for writes.** Only the gate (`packages/gate`) holds credentials and executes external writes, and every write needs a signed approval.
 - **Reachable from your devices.** The web app runs on the Mac behind Tailscale, with no public surface.
 
-> Status: early build. The web app is a bootstrap page; features are tracked as GitHub issues (start with the MVP epic, #5). Host hardening (vault, service supervision, sandboxing) is built Mac-first.
+> Status: early build. The web app is a bootstrap page; features are tracked as Git
+Hub issues (start with the MVP epic, #5). Host hardening (vault, service supervision, sandboxing) is built Mac-first.
 
 ## How approvals work
 
