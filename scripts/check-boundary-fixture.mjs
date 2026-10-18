@@ -1,4 +1,5 @@
-// Proves rule 1 is enforced: dependency-cruiser must FAIL on the fixture.
+// Proves the boundary rules are enforced: dependency-cruiser must FAIL on the fixture,
+// and each case must fail for the right reason (right rule, right file).
 import { spawnSync } from "node:child_process"
 
 const run = spawnSync(
@@ -13,17 +14,40 @@ const run = spawnSync(
   ],
   { encoding: "utf8" }
 )
+const output = `${run.stdout}${run.stderr}`
 
 if (run.status === 0) {
   console.error(
-    "FAIL: dependency-cruiser passed on the boundary-violation fixture; rule 1 is not enforced."
+    "FAIL: dependency-cruiser passed on the boundary-violation fixture; the boundary rules are not enforced."
   )
   process.exit(1)
 }
-if (!`${run.stdout}${run.stderr}`.includes("gate-internals-are-private")) {
+
+// Each case: a violation line that names both the rule and the offending file.
+const cases = [
+  {
+    label: "relative import of gate internals (bad.ts)",
+    pattern:
+      /error\s+gate-internals-are-private:\s+\S*packages\/core\/src\/bad\.ts\b/,
+  },
+  {
+    label: "workspace specifier into gate internals (bad-workspace.ts)",
+    pattern:
+      /error\s+(?:not-to-unresolvable|gate-internals-are-private):\s+\S*packages\/core\/src\/bad-workspace\.ts\b/,
+  },
+]
+
+const missing = cases.filter((c) => !c.pattern.test(output))
+if (missing.length) {
   console.error(
-    "FAIL: fixture failed for the wrong reason:\n" + run.stdout + run.stderr
+    "FAIL: fixture did not fail for the expected reasons:\n" +
+      missing.map((c) => `  - ${c.label}`).join("\n") +
+      "\n\n" +
+      output
   )
   process.exit(1)
 }
-console.log("ok: fixture violates gate-internals-are-private as expected")
+console.log(
+  "ok: fixture violates the boundary rules as expected:\n" +
+    cases.map((c) => `  - ${c.label}`).join("\n")
+)

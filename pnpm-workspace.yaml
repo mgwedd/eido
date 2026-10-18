@@ -3,9 +3,14 @@ packages:
   - "packages/*"
 
 # Install hardening: no dependency install scripts except this allowlist,
-# and no versions published in the last 24 hours (value is in minutes).
+# and no versions published in the last 7 days (value is in minutes).
 onlyBuiltDependencies:
   - esbuild
   - sharp
-  - unrs-resolver
-minimumReleaseAge: 1440
+minimumReleaseAge: 10080
+# Already pinned in the lockfile before the 7-day rule; remove once they age out (2026-10-23).
+minimumReleaseAgeExclude:
+  - turbo
+  - "@turbo/*"
+  - eslint-plugin-turbo
+strictDepBuilds: true

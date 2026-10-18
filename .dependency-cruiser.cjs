@@ -42,6 +42,25 @@ module.exports = {
       from: {},
       to: { circular: true },
     },
+    {
+      name: "not-to-unresolvable",
+      comment:
+        "Every import must resolve. An unresolvable specifier usually means a workspace package was imported without being declared, or a deep import into another package that its exports map does not allow.",
+      severity: "error",
+      from: {},
+      // Two known resolution gaps, both outside this rule's scope:
+      // "@/" is an apps/web tsconfig path alias; the root tsconfig does not load it.
+      // "next/image-types/*" is a Next.js type reference from next-env.d.ts.
+      to: { couldNotResolve: true, pathNot: ["^@/", "^next/image-types/"] },
+    },
+    {
+      name: "no-non-package-json",
+      comment:
+        "Imports must resolve to a package with a package.json. Blocks bare imports of files that no package owns.",
+      severity: "error",
+      from: {},
+      to: { dependencyTypes: ["npm-no-pkg", "npm-unknown"] },
+    },
   ],
   options: {
     doNotFollow: { path: "node_modules" },

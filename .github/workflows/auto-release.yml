@@ -55,25 +55,32 @@ jobs:
     runs-on: ubuntu-latest
     # A pull_request run of CI can also report here; only a green push run on
     # main, or a manual dispatch, may release.
+    # Only main may release: a manual dispatch from another branch must not be
+    # able to push the release commit or tag to main.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push'))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # full history + tags for version math
           # Release exactly the commit that passed (manual dispatch: its own ref).
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # No credentials left in .git/config; the token is passed explicitly
+          # to the one step that pushes.
+          persist-credentials: false
 
       - name: Check main has not moved past the tested commit
         id: tip
         if: github.event_name == 'workflow_run'
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TESTED: ${{ github.event.workflow_run.head_sha }}
         run: |
-          git fetch --no-tags origin main
-          if [ "$(git rev-parse FETCH_HEAD)" = "$TESTED" ]; then
+          MAIN_TIP="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          if [ "$MAIN_TIP" = "$TESTED" ]; then
             echo "stale=false" >> "$GITHUB_OUTPUT"
           else
             echo "stale=true" >> "$GITHUB_OUTPUT"
@@ -93,13 +100,18 @@ jobs:
 
       - name: Dry run summary
         if: steps.version.outputs.release == 'true' && github.event.inputs.dry_run == 'true'
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          BUMP: ${{ steps.version.outputs.bump }}
+          CURRENT: ${{ steps.version.outputs.current }}
         run: |
-          echo "Dry run: would release v${{ steps.version.outputs.next }} (${{ steps.version.outputs.bump }} bump from ${{ steps.version.outputs.current }})."
+          echo "Dry run: would release v${NEXT} (${BUMP} bump from ${CURRENT})."
 
       - name: Apply version, changelog, and tag
         if: steps.version.outputs.release == 'true' && github.event.inputs.dry_run != 'true'
         env:
           NEXT: ${{ steps.version.outputs.next }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # Release notes come from the commits since the last tag, so generate
@@ -113,8 +125,11 @@ jobs:
           # already can't re-trigger workflows (recursion is suppressed).
           git commit -m "chore(release): v${NEXT} [skip ci]"
           git tag -a "v${NEXT}" -m "Eido ${NEXT}"
-          git push origin HEAD:main
-          git push origin "v${NEXT}"
+          # One atomic push: the release commit and its tag land together or not
+          # at all. The token is passed per-command, never stored in git config.
+          git push --atomic \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:refs/heads/main "refs/tags/v${NEXT}"
 
       - name: Publish GitHub Release
         if: steps.version.outputs.release == 'true' && github.event.inputs.dry_run != 'true'

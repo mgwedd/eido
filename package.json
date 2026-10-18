@@ -7,6 +7,7 @@
     "dev": "turbo dev",
     "lint": "turbo lint",
     "format": "turbo format",
+    "format:check": "prettier --check .",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
     "boundaries": "turbo boundaries",
@@ -14,7 +15,9 @@
     "check:deps-fixture": "node scripts/check-boundary-fixture.mjs",
     "check:gate-deps": "node scripts/check-gate-deps.mjs",
     "check:secrets": "node scripts/secret-scan.mjs",
-    "check": "pnpm turbo run typecheck lint test && pnpm check:deps && pnpm check:deps-fixture && pnpm check:gate-deps && pnpm check:secrets"
+    "check:versions": "node scripts/check-exact-versions.mjs",
+    "check:lint-coverage": "node scripts/check-lint-coverage.mjs",
+    "check": "pnpm turbo run typecheck lint test && pnpm check:deps && pnpm check:deps-fixture && pnpm check:gate-deps && pnpm check:secrets && pnpm check:versions && pnpm check:lint-coverage && pnpm format:check"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
@@ -23,7 +26,7 @@
     "prettier": "3.9.10",
     "prettier-plugin-tailwindcss": "0.8.1",
     "turbo": "2.11.9",
-    "typescript": "5"
+    "typescript": "5.9.3"
   },
   "packageManager": "pnpm@10.34.7",
   "engines": {

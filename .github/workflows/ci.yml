@@ -38,8 +38,14 @@ jobs:
         run: pnpm check:deps-fixture
       - name: Gate dependency allowlist
         run: pnpm check:gate-deps
+      - name: Lint covers TypeScript files
+        run: pnpm check:lint-coverage
       - name: Secret scan
         run: pnpm check:secrets
       - name: Turborepo boundaries (advisory)
         run: pnpm boundaries
         continue-on-error: true
+      - name: Formatting
+        run: pnpm format:check
+      - name: Version consistency
+        run: pnpm check:versions

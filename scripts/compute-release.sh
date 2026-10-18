@@ -2,14 +2,17 @@
 # Computes the next release version from Conventional Commits — the versioning
 # brain of the automated release pipeline (.github/workflows/auto-release.yml).
 #
-# It looks at the commits since the last `v*` tag and decides the semver bump:
-#   - a breaking change  (`feat!:`, `fix(x)!:`, or a `BREAKING CHANGE` footer) → major
-#   - a `feat:`                                                               → minor
-#   - a `fix:` / `perf:` / `revert:`                                          → patch
-#   - only chore/docs/style/refactor/test/ci/build, or nothing releasable     → none
+# It looks at the non-merge commits since the last `v*` tag and decides the semver
+# bump (classification lives in scripts/lib-conventional.sh, shared with
+# changelog-section.sh):
+#   - a breaking change  (`type!:` for any known type, or a `BREAKING CHANGE:`
+#     footer)                                                               → major
+#   - a `feat:`                                                              → minor
+#   - a `fix:` / `perf:` / `revert:`                                         → patch
+#   - only chore/docs/style/refactor/test/ci/build, or nothing releasable    → none
 #
 # A manual override (FORCE_BUMP=patch|minor|major) wins when there are commits
-# to release. The very first run (no prior tag) releases the version already
+# to release. The very first run (no v* tag at all) releases the version already
 # declared in the root package.json as-is, so the inaugural tag matches it.
 #
 # No third-party tools — just git and coreutils — so it adds nothing to the
@@ -17,37 +20,12 @@
 # when running under Actions, appends them to $GITHUB_OUTPUT.
 #
 # Usage:
-#   scripts/compute-release.sh                 # classify from git history
-#   echo "feat: x" | scripts/compute-release.sh --classify   # print a bump for a
-#                                                             # commit list (testing)
+#   scripts/compute-release.sh                    # compute the release from git history
+#   scripts/compute-release.sh --classify RANGE   # print the bump for a git range (testing)
 
 set -euo pipefail
 
-# Classify a newline-separated list of commit subjects (optionally with bodies)
-# read from stdin into a single bump level. Pure text in, one word out.
-classify() {
-    local log major=0 minor=0 patch=0
-    log="$(cat)"
-
-    # Breaking: a `!` before the colon on the type/scope, or a BREAKING CHANGE note.
-    if printf '%s\n' "$log" | grep -Eiq '^[[:space:]]*(feat|fix|perf|refactor|build|chore|revert)(\([^)]*\))?!:' \
-        || printf '%s\n' "$log" | grep -Eiq 'BREAKING[ -]CHANGE'; then
-        major=1
-    fi
-    printf '%s\n' "$log" | grep -Eiq '^[[:space:]]*feat(\([^)]*\))?:' && minor=1
-    printf '%s\n' "$log" | grep -Eiq '^[[:space:]]*(fix|perf|revert)(\([^)]*\))?:' && patch=1
-
-    if [ "$major" = 1 ]; then echo "major"
-    elif [ "$minor" = 1 ]; then echo "minor"
-    elif [ "$patch" = 1 ]; then echo "patch"
-    else echo "none"
-    fi
-}
-
-if [ "${1:-}" = "--classify" ]; then
-    classify
-    exit 0
-fi
+source "$(dirname "$0")/lib-conventional.sh"
 
 # True when every changed path is documentation, markdown, or a test — i.e.
 # nothing that affects the product. Only source or config changes should cut a
@@ -71,13 +49,18 @@ EOF
     return 0
 }
 
+cd "$(dirname "$0")/.."
+
+if [ "${1:-}" = "--classify" ]; then
+    conventional_range_bump "${2:?usage: compute-release.sh --classify <git-range>}"
+    exit 0
+fi
+
 if [ "${1:-}" = "--only-ignorable" ]; then
     # Testing hook: read a path list on stdin, exit 0 if all ignorable.
     only_ignorable_paths "$(cat)"
     exit $?
 fi
-
-cd "$(dirname "$0")/.."
 
 PACKAGE_JSON="package.json"
 
@@ -111,7 +94,7 @@ EOF
 }
 
 FORCE_BUMP="${FORCE_BUMP:-auto}"
-LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+LAST_TAG="$(conventional_last_tag)"
 
 if [ -z "$LAST_TAG" ]; then
     # First release: ship the version package.json already declares.
@@ -121,16 +104,15 @@ if [ -z "$LAST_TAG" ]; then
     RELEASE="true"
 else
     CURRENT="${LAST_TAG#v}"
-    COMMITS="$(git log "${LAST_TAG}..HEAD" --pretty=format:'%s%n%b' 2>/dev/null || true)"
-    COMMIT_COUNT="$(git rev-list "${LAST_TAG}..HEAD" --count 2>/dev/null || echo 0)"
-    CHANGED="$(git diff --name-only "${LAST_TAG}..HEAD" 2>/dev/null || true)"
+    COMMIT_COUNT="$(git rev-list --no-merges --count "${LAST_TAG}..HEAD")"
+    CHANGED="$(git diff --name-only "${LAST_TAG}..HEAD")"
 
     if [ "$COMMIT_COUNT" -eq 0 ]; then
         BUMP="none"
     elif [ "$FORCE_BUMP" != "auto" ]; then
         BUMP="$FORCE_BUMP"
     else
-        BUMP="$(printf '%s\n' "$COMMITS" | classify)"
+        BUMP="$(conventional_range_bump "${LAST_TAG}..HEAD")"
     fi
 
     if [ "$BUMP" = "none" ]; then

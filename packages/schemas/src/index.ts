@@ -1,3 +1,4 @@
-// JSON Schema source of truth for intents and extractions, plus codegen.
-// Stub: schemas and generated types land in their own issue.
+// JSON Schema source of truth for intents and extractions; types are generated from it.
 export const SCHEMA_VERSION = 0
+
+export * from "./generated/types"

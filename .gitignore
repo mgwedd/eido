@@ -68,7 +68,6 @@ web_modules/
 # dotenv environment variable files
 .env
 .env.*
-!.env.example
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -165,6 +164,7 @@ build
 .pnpm-debug.log*
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 # vercel
 .vercel
 # typescript

@@ -1,5 +1,9 @@
 {
   "extends": "@eido/typescript-config/base.json",
-  "compilerOptions": { "noEmit": true },
+  "compilerOptions": {
+    "composite": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist/types"
+  },
   "include": ["src"]
 }

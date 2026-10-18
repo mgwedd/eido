@@ -1,1 +1,1 @@
-export { default } from "@eido/ui/postcss.config";
+export { default } from "@eido/ui/postcss.config"

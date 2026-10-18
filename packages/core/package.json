@@ -8,18 +8,17 @@
   },
   "scripts": {
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -b",
     "test": "vitest run"
   },
   "dependencies": {
-    "@eido/gate": "workspace:*",
-    "@eido/schemas": "workspace:*"
+    "@eido/gate": "workspace:*"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
     "@eido/typescript-config": "workspace:*",
-    "eslint": "10",
-    "typescript": "5",
+    "eslint": "10.12.0",
+    "typescript": "5.9.3",
     "vitest": "5.0.5"
   }
 }

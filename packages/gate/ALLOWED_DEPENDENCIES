@@ -1,3 +1,9 @@
 # One dependency per line: name, then a one-line reason after "#".
-# CI fails if packages/gate/package.json "dependencies" lists anything not here.
+# CI fails if packages/gate/package.json lists anything (dependencies, optionalDependencies,
+# peerDependencies or devDependencies) that is not here, or if a line has no reason.
 @eido/schemas  # intent types and validators shared with the rest of the system
+@eido/eslint-config  # shared ESLint flat config used by the lint script
+@eido/typescript-config  # shared tsconfig base used by the typecheck script
+eslint  # lint script
+typescript  # typecheck script
+vitest  # test script

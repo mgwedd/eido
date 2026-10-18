@@ -1,17 +1,39 @@
 # Eido: agent instructions
 
-Eido is a local-first executive assistant. Only the gate (`packages/gate`) holds credentials and executes external writes. This is a pnpm + Turborepo monorepo; see `README.md` for the layout and `docs/adr/0001-gate-package.md` for why.
+Eido is a local-first executive assistant. Only the gate (`packages/gate`) holds credentials and executes external writes. This is a pnpm + Turborepo monorepo. Decisions are recorded in `docs/adr/` (start with `0001-gate-package.md`).
+
+## Repo layout
+
+```
+apps/web               Next.js + shadcn/ui PWA, dark by default
+apps/helper            Eido Helper (Swift, EventKit): placeholder
+packages/schemas       JSON Schema source of truth for intents and extractions; codegen to src/generated
+packages/gate          tokens, policy, executor, audit (strict dependency allowlist)
+packages/core          connectors, sync, index, context assembly, inference queue
+packages/ui            shadcn/ui components (presentational)
+packages/eslint-config shared ESLint config
+packages/typescript-config shared tsconfig bases
+services/              Python services for later waves: placeholder
+infra/                 launchd, pf, Tailscale, llama-server: placeholder
+fixtures/              test fixtures, including the boundary-violation fixture
+docs/                  documentation, including docs/adr/
+scripts/               repo checks (gate allowlist, secret scan, boundary fixture, exact versions)
+```
 
 ## Commands
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm turbo run typecheck lint test   # the standard checks
+pnpm build                           # turbo build
+pnpm turbo run typecheck lint test   # typecheck, lint and tests
+pnpm boundaries                      # package boundary checks (turbo)
 pnpm check:deps                      # dependency-cruiser boundaries (blocking)
 pnpm check:deps-fixture              # must show the violation fixture failing
 pnpm check:gate-deps                 # gate dependency allowlist
 pnpm check:secrets                   # secret scan
-pnpm check                           # all of the above
+pnpm check:versions                  # exact-version pinning check
+pnpm format:check                    # prettier --check
+pnpm check                           # all of the above, including format:check
 ```
 
 ## Working rules

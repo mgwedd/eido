@@ -1,14 +1,14 @@
 #!/bin/bash
-# Generates the CHANGELOG.md section for a release from the Conventional Commit
-# subjects since the last v* tag. This is what lets CHANGELOG.md be produced in
-# CI instead of hand-edited in every PR — hand-editing a shared [Unreleased]
-# block was a constant source of merge conflicts.
+# Generates the CHANGELOG.md section for a release from the Conventional Commits
+# since the last v* tag. This is what lets CHANGELOG.md be produced in CI instead
+# of hand-edited in every PR — hand-editing a shared [Unreleased] block was a
+# constant source of merge conflicts.
 #
-# Grouping (Keep a Changelog):
+# Classification is shared with compute-release.sh (scripts/lib-conventional.sh):
 #   feat            → Added
 #   fix, perf       → Fixed
 #   revert          → Changed
-#   any `type!:` or BREAKING CHANGE → Changed, tagged (breaking)
+#   any breaking commit (`type!:` or BREAKING CHANGE footer) → Changed, tagged (breaking)
 #   chore/docs/test/ci/build/style/refactor → omitted (not user-facing)
 #
 # Pure git + bash. Prints the Markdown section to stdout.
@@ -19,40 +19,34 @@ set -euo pipefail
 
 VERSION="${1:?usage: changelog-section.sh <version>}"
 VERSION="${VERSION#v}"
+source "$(dirname "$0")/lib-conventional.sh"
 cd "$(dirname "$0")/.."
 
 TODAY="$(date -u +%Y-%m-%d)"
-LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+LAST_TAG="$(conventional_last_tag)"
 RANGE="HEAD"
-[ -n "$LAST_TAG" ] && RANGE="${LAST_TAG}..HEAD"
-
-# %s = subject, then %b = body, separated so a BREAKING CHANGE footer counts.
-LOG="$(git log $RANGE --no-merges --pretty=format:'%s')"
+if [ -n "$LAST_TAG" ]; then
+    RANGE="${LAST_TAG}..HEAD"
+fi
 
 added=""
 fixed=""
 changed=""
 
-while IFS= read -r subject; do
-    [ -z "$subject" ] && continue
-    if [[ "$subject" =~ ^([a-zA-Z]+)(\([^\)]*\))?(!)?:[[:space:]]+(.*)$ ]]; then
-        type="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
-        bang="${BASH_REMATCH[3]}"
-        desc="${BASH_REMATCH[4]}"
-        if [ -n "$bang" ]; then
-            changed+="- ${desc} (breaking)"$'\n'
-            continue
-        fi
-        case "$type" in
-            feat) added+="- ${desc}"$'\n' ;;
-            fix|perf) fixed+="- ${desc}"$'\n' ;;
-            revert) changed+="- ${desc}"$'\n' ;;
-            *) : ;;
-        esac
+LOG="$(conventional_log "$RANGE")"
+while IFS= read -r -d $'\x1e' message; do
+    conventional_parse_message "$message" || continue
+    if [ "$CC_BREAKING" = 1 ]; then
+        changed+="- ${CC_DESC} (breaking)"$'\n'
+        continue
     fi
-done <<EOF
-$LOG
-EOF
+    case "$CC_TYPE" in
+        feat) added+="- ${CC_DESC}"$'\n' ;;
+        fix|perf) fixed+="- ${CC_DESC}"$'\n' ;;
+        revert) changed+="- ${CC_DESC}"$'\n' ;;
+        *) : ;;
+    esac
+done <<<"$LOG"
 
 out="## [${VERSION}] - ${TODAY}"$'\n'
 [ -n "$added" ]   && out+=$'\n'"### Added"$'\n'"${added}"
