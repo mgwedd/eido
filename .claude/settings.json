@@ -2,7 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(pnpm install:*)",
-      "Bash(pnpm turbo:*)",
+      "Bash(pnpm turbo run:*)",
       "Bash(pnpm test:*)",
       "Bash(pnpm lint:*)",
       "Bash(pnpm typecheck:*)",
@@ -20,13 +20,21 @@
       "Bash(gh pr view:*)"
     ],
     "deny": [
-      "Read(./.env)",
-      "Read(./.env.*)",
-      "Read(./**/*.pem)",
-      "Read(./**/*.key)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/*id_rsa*)",
+      "Read(**/*id_ed25519*)",
+      "Read(**/*.p12)",
+      "Read(**/*.pfx)",
       "Read(./infra/secrets/**)",
       "Bash(git push --force:*)",
-      "Bash(git push -f:*)"
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push * +*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f)"
     ]
   },
   "hooks": {
