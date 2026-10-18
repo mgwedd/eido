@@ -1,0 +1,3 @@
+# One dependency per line: name, then a one-line reason after "#".
+# CI fails if packages/gate/package.json "dependencies" lists anything not here.
+@eido/schemas  # intent types and validators shared with the rest of the system

@@ -1,0 +1,5 @@
+{
+  "extends": "@eido/typescript-config/base.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src"]
+}
