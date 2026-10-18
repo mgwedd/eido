@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TURBO_TELEMETRY_DISABLED: "1"
+  DO_NOT_TRACK: "1"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Enable pnpm (version pinned by packageManager)
+        run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck, lint, test
+        run: pnpm turbo run typecheck lint test
+      - name: Dependency boundaries (blocking)
+        run: pnpm check:deps
+      - name: Boundary-violation fixture must fail
+        run: pnpm check:deps-fixture
+      - name: Gate dependency allowlist
+        run: pnpm check:gate-deps
+      - name: Lint covers TypeScript files
+        run: pnpm check:lint-coverage
+      - name: Secret scan
+        run: pnpm check:secrets
+      - name: Turborepo boundaries (advisory)
+        run: pnpm boundaries
+        continue-on-error: true
+      - name: Formatting
+        run: pnpm format:check
+      - name: Version consistency
+        run: pnpm check:versions

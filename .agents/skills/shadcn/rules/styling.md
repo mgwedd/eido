@@ -86,7 +86,7 @@ Use `className` for layout (e.g. `max-w-md`, `mx-auto`, `mt-4`), **not** for ove
 **Incorrect:**
 
 ```tsx
-<Card className="bg-blue-100 text-blue-900 font-bold">
+<Card className="bg-blue-100 font-bold text-blue-900">
   <CardContent>Dashboard</CardContent>
 </Card>
 ```
@@ -94,12 +94,13 @@ Use `className` for layout (e.g. `max-w-md`, `mx-auto`, `mt-4`), **not** for ove
 **Correct:**
 
 ```tsx
-<Card className="max-w-md mx-auto">
+<Card className="mx-auto max-w-md">
   <CardContent>Dashboard</CardContent>
 </Card>
 ```
 
 To customize a component's appearance, prefer these approaches in order:
+
 1. **Built-in variants** — `variant="outline"`, `variant="destructive"`, etc.
 2. **Semantic color tokens** — `bg-primary`, `text-muted-foreground`.
 3. **CSS variables** — define custom colors in the global CSS file (see [customization.md](../customization.md)).
@@ -173,7 +174,7 @@ For scroll-aware edge fading on a scroll container, use `scroll-fade` (and the a
 **Incorrect:**
 
 ```tsx
-<span className="animate-pulse bg-gradient-to-r from-muted-foreground/40 via-foreground/70 to-muted-foreground/40 bg-clip-text text-transparent [animation:shimmer_1.6s_infinite]">
+<span className="[animation:shimmer_1.6s_infinite] animate-pulse bg-gradient-to-r from-muted-foreground/40 via-foreground/70 to-muted-foreground/40 bg-clip-text text-transparent">
   Thinking…
 </span>
 ```

@@ -1,0 +1,143 @@
+name: Auto Release
+
+# Semantic, first-party release automation: semantic-release's behavior without
+# its dependency tree. Once CI passes on a push to main it reads the
+# Conventional Commits since the last `v*` tag, decides the semver bump, stamps
+# CHANGELOG.md and the root package.json version, tags main HEAD, and publishes
+# a GitHub Release with the generated notes.
+#
+# Bump rules (see scripts/compute-release.sh):
+#   feat!/BREAKING CHANGE -> major, feat -> minor, fix/perf/revert -> patch,
+#   only chore/docs/style/refactor/test/ci/build -> no release (a quiet no-op).
+#
+# Releases wait for CI: this runs on a *successful* CI run for a push to main,
+# never on the push itself, so a red or cancelled build is never tagged. CI
+# cancels superseded runs, so the newest passing run releases the whole range
+# since the last tag. If main has moved past the tested commit the run steps
+# aside and the newer commit's run releases instead.
+#
+# Use the manual "Run workflow" button to force a bump level, or to dry-run the
+# version math without tagging.
+#
+# Supply chain: only git + gh (pre-installed) and one first-party action pinned
+# to a commit SHA. No third-party actions, no npm.
+#
+# Needs: main must allow the Actions bot to push the release commit and tag
+# (branch protection bypass for github-actions, or no push restriction).
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Force a bump level (default: derive from commits)"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      dry_run:
+        description: "Compute the version only; do not commit, tag, or publish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # push the release commit and tag, create the release
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and publish
+    runs-on: ubuntu-latest
+    # A pull_request run of CI can also report here; only a green push run on
+    # main, or a manual dispatch, may release.
+    # Only main may release: a manual dispatch from another branch must not be
+    # able to push the release commit or tag to main.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push'))
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history + tags for version math
+          # Release exactly the commit that passed (manual dispatch: its own ref).
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # No credentials left in .git/config; the token is passed explicitly
+          # to the one step that pushes.
+          persist-credentials: false
+
+      - name: Check main has not moved past the tested commit
+        id: tip
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TESTED: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          MAIN_TIP="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          if [ "$MAIN_TIP" = "$TESTED" ]; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "main has moved past $TESTED; the run for the newer commit will release."
+          fi
+
+      - name: Compute next version
+        id: version
+        if: steps.tip.outputs.stale != 'true'
+        env:
+          FORCE_BUMP: ${{ github.event.inputs.bump || 'auto' }}
+        run: ./scripts/compute-release.sh
+
+      - name: Nothing to release
+        if: steps.tip.outputs.stale != 'true' && steps.version.outputs.release != 'true'
+        run: echo "No releasable commits since the last tag. Nothing to do."
+
+      - name: Dry run summary
+        if: steps.version.outputs.release == 'true' && github.event.inputs.dry_run == 'true'
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          BUMP: ${{ steps.version.outputs.bump }}
+          CURRENT: ${{ steps.version.outputs.current }}
+        run: |
+          echo "Dry run: would release v${NEXT} (${BUMP} bump from ${CURRENT})."
+
+      - name: Apply version, changelog, and tag
+        if: steps.version.outputs.release == 'true' && github.event.inputs.dry_run != 'true'
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Release notes come from the commits since the last tag, so generate
+          # them before the tag moves.
+          ./scripts/changelog-section.sh "$NEXT" > "$RUNNER_TEMP/notes.md"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ./scripts/apply-release.sh "$NEXT"
+          git add package.json CHANGELOG.md
+          # [skip ci] is belt-and-suspenders: a commit pushed with GITHUB_TOKEN
+          # already can't re-trigger workflows (recursion is suppressed).
+          git commit -m "chore(release): v${NEXT} [skip ci]"
+          git tag -a "v${NEXT}" -m "Eido ${NEXT}"
+          # One atomic push: the release commit and its tag land together or not
+          # at all. The token is passed per-command, never stored in git config.
+          git push --atomic \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:refs/heads/main "refs/tags/v${NEXT}"
+
+      - name: Publish GitHub Release
+        if: steps.version.outputs.release == 'true' && github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          gh release create "v${NEXT}" \
+            --title "Eido ${NEXT}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --verify-tag

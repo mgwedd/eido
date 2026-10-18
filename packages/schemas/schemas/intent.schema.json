@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Intent",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+    "kind": { "type": "string" }
+  },
+  "required": ["id", "kind"]
+}

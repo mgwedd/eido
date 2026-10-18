@@ -1,0 +1,19 @@
+name: PR title lint
+
+# Squash-merging makes the PR title the commit on main, so only the title must be a Conventional Commit.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          re='^(feat|fix|perf|revert|docs|style|refactor|test|build|ci|chore)(\([^)]+\))?!?: .+'
+          [[ $TITLE =~ $re ]] || { echo "::error::PR title is not a Conventional Commit (type(scope)!: subject): $TITLE"; exit 1; }

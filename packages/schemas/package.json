@@ -1,0 +1,23 @@
+{
+  "name": "@eido/schemas",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "codegen": "node scripts/codegen.mjs",
+    "lint": "eslint",
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@eido/eslint-config": "workspace:*",
+    "@eido/typescript-config": "workspace:*",
+    "eslint": "10.12.0",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  }
+}

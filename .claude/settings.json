@@ -1,0 +1,58 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install:*)",
+      "Bash(pnpm turbo run:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm lint:*)",
+      "Bash(pnpm typecheck:*)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm check:*)",
+      "Bash(pnpm boundaries:*)",
+      "Bash(pnpm exec depcruise:*)",
+      "Bash(git worktree add:*)",
+      "Bash(git fetch:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh issue edit:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr view:*)",
+      "Bash(pnpm turbo:*)"
+    ],
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.*.local)",
+      "Read(**/.env.production)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(./infra/secrets/**)",
+      "Bash(git push --force:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git push -f:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/sync-main.sh\" session"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/sync-main.sh\" prompt"
+          }
+        ]
+      }
+    ]
+  }
+}

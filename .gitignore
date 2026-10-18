@@ -68,7 +68,6 @@ web_modules/
 # dotenv environment variable files
 .env
 .env.*
-!.env.example
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -147,3 +146,26 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# dependencies
+node_modules
+.pnp
+# testing
+# next.js
+.next/
+out/
+# production
+build
+# turbo
+# misc
+.DS_Store
+*.pem
+# debug
+.pnpm-debug.log*
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+# vercel
+.vercel
+# typescript
+next-env.d.ts
