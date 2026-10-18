@@ -10,6 +10,7 @@
       "Bash(pnpm check:*)",
       "Bash(pnpm boundaries:*)",
       "Bash(pnpm exec depcruise:*)",
+      "Bash(pnpm turbo:*)",
       "Bash(git worktree add:*)",
       "Bash(git fetch:*)",
       "Bash(gh issue view:*)",
@@ -18,7 +19,19 @@
       "Bash(gh issue edit:*)",
       "Bash(gh pr create:*)",
       "Bash(gh pr view:*)",
-      "Bash(pnpm turbo:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git merge --no-edit origin/main)",
+      "Bash(git push -u origin HEAD)",
+      "Bash(git push origin HEAD)",
+      "Bash(git worktree remove:*)",
+      "Bash(git branch -d:*)",
+      "Bash(gh auth status)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr edit:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)"
     ],
     "deny": [
       "Read(**/.env)",
