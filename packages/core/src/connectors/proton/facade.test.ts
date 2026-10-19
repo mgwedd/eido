@@ -46,11 +46,14 @@ describe("write verbs", () => {
       await facade.send({ to: ["a@example.com"], subject: "s", body: "b" }),
       await facade.reply({
         messageId: "<a@example.com>",
+        messageSha256: "a".repeat(64),
         replyAll: false,
+        to: ["a@example.com"],
         body: "b",
       }),
       await facade.forward({
         messageId: "<a@example.com>",
+        messageSha256: "a".repeat(64),
         to: ["a@example.com"],
       }),
       await facade.trash({ messageIds: ["<a@example.com>"] }),
