@@ -2,8 +2,8 @@ import type { NextConfig } from "next"
 
 const nextConfig: NextConfig = {
   transpilePackages: ["@eido/ui"],
-  async headers() {
-    return [
+  headers() {
+    return Promise.resolve([
       {
         source: "/:file(sw\\.js|sw-routing\\.js)",
         headers: [
@@ -14,7 +14,7 @@ const nextConfig: NextConfig = {
           { key: "Service-Worker-Allowed", value: "/" },
         ],
       },
-    ]
+    ])
   },
 }
 
