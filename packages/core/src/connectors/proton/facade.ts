@@ -8,8 +8,8 @@ import type {
   EmailTrashIntent,
   GateIntentOrigin,
 } from "@eido/schemas"
-import { search } from "../../index"
-import type { SearchHit } from "../../index"
+import { search } from "../../index/index"
+import type { SearchHit } from "../../index/index"
 import type { ProtonConfig } from "./config"
 import type { ConnectionFactory } from "./connection"
 import { ProtonError } from "./errors"

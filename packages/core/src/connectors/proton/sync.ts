@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
-import { getCursor, ingestBatch } from "../../index"
-import type { IndexedDocument } from "../../index"
+import { getCursor, ingestBatch } from "../../index/index"
+import type { IndexedDocument } from "../../index/index"
 import type { FetchedMessage, ImapClient } from "./imap-client"
 import { parseMessage } from "./mime"
 

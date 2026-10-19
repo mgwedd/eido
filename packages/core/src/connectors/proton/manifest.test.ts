@@ -9,7 +9,7 @@ import {
   policyFor,
   protonManifest,
 } from "./manifest"
-import { openIndex } from "../../index"
+import { openIndex } from "../../index/index"
 import { bridgeFactory } from "./fake-bridge.test-support"
 
 const config = resolveConfig({
