@@ -96,9 +96,18 @@ importers:
       '@eido/schemas':
         specifier: workspace:*
         version: link:../schemas
+      dom-serializer:
+        specifier: 2.0.0
+        version: 2.0.0
+      domhandler:
+        specifier: 5.0.3
+        version: 5.0.3
       html-to-text:
         specifier: 9.0.5
         version: 9.0.5
+      htmlparser2:
+        specifier: 8.0.2
+        version: 8.0.2
       postal-mime:
         specifier: 4.0.5
         version: 4.0.5

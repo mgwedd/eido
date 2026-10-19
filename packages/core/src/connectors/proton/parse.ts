@@ -1,6 +1,6 @@
 import PostalMime from "postal-mime"
 import type { Address } from "postal-mime"
-import { htmlToText } from "./html-text"
+import { htmlToText, stripInvisible } from "./html-text"
 
 // Raw bytes from the gate are untrusted mail. postal-mime does the MIME work (multipart, transfer
 // encodings, charsets, headers); this file only shapes its result for the index.
@@ -50,12 +50,12 @@ export async function parseMessage(raw: Uint8Array): Promise<ParsedMessage> {
     ...(email.messageId === undefined ? {} : { messageId: email.messageId }),
     ...(email.inReplyTo === undefined ? {} : { inReplyTo: email.inReplyTo }),
     references: (email.references ?? "").split(/\s+/).filter((r) => r !== ""),
-    subject: email.subject ?? "",
+    subject: stripInvisible(email.subject ?? ""),
     ...(email.date === undefined ? {} : { date: email.date }),
     from: mailboxes(email.from),
     to: mailboxes(email.to),
     cc: mailboxes(email.cc),
-    text: text.trim(),
+    text: stripInvisible(text).trim(),
     attachments: email.attachments.map((a, index) => ({
       filename: a.filename ?? `attachment-${index + 1}`,
       mime: a.mimeType,
@@ -80,5 +80,7 @@ export function isTextMime(mime: string): boolean {
 export function attachmentText(attachment: ParsedAttachment): string | null {
   if (!isTextMime(attachment.mime)) return null
   const text = new TextDecoder("utf-8").decode(attachment.content)
-  return attachment.mime === "text/html" ? htmlToText(text) : text
+  return attachment.mime === "text/html"
+    ? htmlToText(text)
+    : stripInvisible(text)
 }
