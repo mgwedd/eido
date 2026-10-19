@@ -145,6 +145,31 @@ export function pinnedOperation(
 }
 
 /**
+ * The connector and operation names that declare `intentKind`, across every pinned connector,
+ * enabled or not. Names only: policy reads the operation itself through `pinnedOperation`, which
+ * returns nothing for a disabled connector.
+ */
+export function intentBindings(
+  db: DatabaseSync,
+  intentKind: string
+): Array<{ connector: string; operation: string }> {
+  return db
+    .prepare(
+      "SELECT manifest_json, manifest_hash FROM connectors ORDER BY name ASC"
+    )
+    .all()
+    .flatMap((row) => {
+      const manifest = parseStored(
+        String(row["manifest_json"]),
+        String(row["manifest_hash"])
+      )
+      return manifest.operations
+        .filter((op) => op.intentKind === intentKind)
+        .map((op) => ({ connector: manifest.name, operation: op.name }))
+    })
+}
+
+/**
  * Compares the tool names a server reports with the pinned operation names. Any difference
  * disables the connector until it is pinned again, and the first disable appends
  * `connector.disabled_drift`. Tool annotations are not an input: they are never trusted.
