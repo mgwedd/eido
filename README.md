@@ -53,4 +53,4 @@ Add shadcn components with `pnpm dlx shadcn@latest add <component> -c apps/web`.
 
 ## License
 
-Apache-2.0. See `LICENSE` and `NOTICE`.
+Source-available, not open source. You can download and run official releases and read the code; forking and redistribution are not permitted. See `LICENSE` and `NOTICE`.

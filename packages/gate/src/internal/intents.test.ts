@@ -115,7 +115,7 @@ describe("proposing", () => {
       intentId: anyString,
       errors: ["root_not_allowed"],
     })
-    const id = result.ok ? "" : String(result.intentId)
+    const id = "intentId" in result ? result.intentId : ""
     expect(intentStatus(s.db, id)).toEqual({
       state: "rejected",
       tier: "forbidden",
@@ -144,7 +144,7 @@ describe("proposing", () => {
       intentId: anyString,
       errors: ["connector_disabled"],
     })
-    const id = result.ok ? "" : String(result.intentId)
+    const id = "intentId" in result ? result.intentId : ""
     expect(intentStatus(s.db, id)).toEqual({
       state: "rejected",
       tier: "forbidden",

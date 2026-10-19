@@ -19,4 +19,4 @@ Every dependency in the gate runs with access to tokens. A compromised or carele
 
 ## Later
 
-Split the gate into its own process, running as a separate OS user, so the boundary is enforced by the operating system as well as by the import graph. The package boundary is the first step toward that.
+Split the gate into its own process, running as a separate OS user, so the boundary is enforced by the operating system as well as by the import graph. The package boundary is the first step toward that. The process split is [ADR 0003](0003-plane-split.md); the separate OS users are #70.

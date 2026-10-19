@@ -41,6 +41,11 @@ const cases = [
       /error\s+gate-internals-are-private:\s+\S*packages\/core\/src\/bad-vault\.ts\b/,
   },
   {
+    label: "the gate importing the data plane (bad-core-import.ts)",
+    pattern:
+      /error\s+gate-imports-schemas-only:\s+\S*packages\/gate\/src\/bad-core-import\.ts\b/,
+  },
+  {
     label: "app code importing a web test fixture (bad-fixture-import.ts)",
     pattern:
       /error\s+web-test-fixtures-are-test-only:\s+\S*apps\/web\/app\/bad-fixture-import\.ts\b/,

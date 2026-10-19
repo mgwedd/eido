@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateIntentProposal",
+  "description": "Body of POST /intents on the gate's data-plane listener (#42): one proposed write. The gate checks intent against the intent schemas, then canonicalizes, hashes and tiers it itself. The body carries no hash or tier.",
+  "type": "object",
+  "properties": {
+    "intent": {
+      "type": "object",
+      "description": "A whole intent ({ kind, args }). The gate validates it against the intent schemas and refuses it with GateProposeRefusal when it does not match."
+    },
+    "origin": {
+      "$ref": "gate-intent-origin.schema.json"
+    },
+    "taskId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "sources": {
+      "title": "GateProposalSources",
+      "description": "The context pack and documents the intent was built from.",
+      "type": "object",
+      "properties": {
+        "contextPackId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "documentIds": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "required": ["contextPackId", "documentIds"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["intent", "origin"],
+  "additionalProperties": false
+}
