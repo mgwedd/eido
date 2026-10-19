@@ -27,7 +27,7 @@ Read it from a package with `@eido/schemas/vectors/jcs-vectors.json` (exported i
 
 ## Approval challenge
 
-`approval-challenge-vectors.json` holds the challenge the device signs to approve one intent (#15 verifier, #32 `buildChallenge`). The layout is the one proposed in #145; it is final once the owner confirms it there.
+`approval-challenge-vectors.json` holds the challenge the device signs to approve one intent (#15 verifier, #32 `buildChallenge`). The layout is the one decided in #85 (was #145): prepare returns the payload hash, intent id and nonce but not the challenge, so the device builds it itself.
 
 - `message` is the RFC 8785 canonical JSON array `[payloadHash, intentId, nonce]`: `payloadHash` as 64 lowercase hex characters, `intentId` as the gate issued it, `nonce` as the 43-character unpadded base64url string from prepare.
 - `challengeHex` is SHA-256 over the UTF-8 bytes of `message`; `challenge` is the same 32 bytes as unpadded base64url, which is what `clientDataJSON.challenge` must carry.

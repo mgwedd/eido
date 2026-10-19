@@ -26,6 +26,8 @@ export type ProposeInput = {
   taskId?: string
   contextPackId?: string
   documentIds?: readonly string[]
+  /** The agent's display-only note; stored next to the intent, never hashed with it. */
+  rationale?: string
 }
 
 export type ProposeResult =
@@ -82,6 +84,17 @@ export type PendingIntentSummary = {
   origin: IntentOrigin
   createdAt: string
   editedFrom?: string
+  rationale?: string
+}
+
+/** What the approval card shows besides the payload: no payload, nonce or hash. */
+export type ApprovalCard = {
+  kind: string
+  origin: IntentOrigin
+  contextPackId: string | null
+  documentIds: string[]
+  editedFrom: string | null
+  rationale: string | null
 }
 
 // Allowed edges and who may take each. rejected, executed and failed are terminal.
@@ -150,12 +163,14 @@ type StoredIntent = {
   origin: IntentOrigin
   taskId: string | null
   contextPackId: string | null
+  documentIdsJson: string | null
+  rationale: string | null
 }
 
 function stored(db: DatabaseSync, id: string): StoredIntent | undefined {
   const row = db
     .prepare(
-      "SELECT id, kind, payload_hash, tier, state, origin, task_id, context_pack_id FROM intents WHERE id = ?"
+      "SELECT id, kind, payload_hash, tier, state, origin, task_id, context_pack_id, document_ids_json, rationale FROM intents WHERE id = ?"
     )
     .get(id)
   if (row === undefined) return undefined
@@ -168,6 +183,8 @@ function stored(db: DatabaseSync, id: string): StoredIntent | undefined {
     origin: toOrigin(row["origin"]),
     taskId: optionalText(row["task_id"]),
     contextPackId: optionalText(row["context_pack_id"]),
+    documentIdsJson: optionalText(row["document_ids_json"]),
+    rationale: optionalText(row["rationale"]),
   }
 }
 
@@ -323,14 +340,16 @@ type NewIntent = {
   origin: IntentOrigin
   taskId: string | null
   contextPackId: string | null
+  documentIdsJson: string | null
+  rationale: string | null
   editedFrom: string | null
 }
 
 function insert(db: DatabaseSync, intent: NewIntent): string {
   const id = randomUUID()
   db.prepare(
-    `INSERT INTO intents (id, kind, payload_json, payload_hash, tier, state, origin, edited_from, task_id, context_pack_id, reason, created_at)
-     VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, NULL, ?)`
+    `INSERT INTO intents (id, kind, payload_json, payload_hash, tier, state, origin, edited_from, task_id, context_pack_id, document_ids_json, rationale, reason, created_at)
+     VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, NULL, ?)`
   ).run(
     id,
     intent.checked.intent.kind,
@@ -341,6 +360,8 @@ function insert(db: DatabaseSync, intent: NewIntent): string {
     intent.editedFrom,
     intent.taskId,
     intent.contextPackId,
+    intent.documentIdsJson,
+    intent.rationale,
     new Date().toISOString()
   )
   return id
@@ -391,6 +412,11 @@ export function propose(
       origin: input.origin,
       taskId: input.taskId ?? null,
       contextPackId,
+      documentIdsJson:
+        input.documentIds === undefined
+          ? null
+          : JSON.stringify(input.documentIds),
+      rationale: input.rationale ?? null,
       editedFrom: null,
     })
     record(db, {
@@ -486,6 +512,8 @@ export function editIntent(
       origin: original.origin,
       taskId: original.taskId,
       contextPackId: original.contextPackId,
+      documentIdsJson: original.documentIdsJson,
+      rationale: original.rationale,
       editedFrom: originalId,
     })
     record(db, {
@@ -605,11 +633,12 @@ export function intentHistory(
 export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
   return db
     .prepare(
-      "SELECT id, kind, tier, origin, created_at, edited_from FROM intents WHERE state = 'pending' ORDER BY created_at ASC, rowid ASC"
+      "SELECT id, kind, tier, origin, created_at, edited_from, rationale FROM intents WHERE state = 'pending' ORDER BY created_at ASC, rowid ASC"
     )
     .all()
     .map((row) => {
       const editedFrom = optionalText(row["edited_from"])
+      const rationale = optionalText(row["rationale"])
       const summary: PendingIntentSummary = {
         id: String(row["id"]),
         kind: String(row["kind"]),
@@ -618,6 +647,43 @@ export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
         origin: toOrigin(row["origin"]),
         createdAt: String(row["created_at"]),
       }
-      return editedFrom === null ? summary : { ...summary, editedFrom }
+      return {
+        ...summary,
+        ...(editedFrom === null ? {} : { editedFrom }),
+        ...(rationale === null ? {} : { rationale }),
+      }
     })
+}
+
+function documentIds(json: string | null): string[] {
+  if (json === null) return []
+  const value: unknown = JSON.parse(json)
+  if (
+    !Array.isArray(value) ||
+    !value.every((entry): entry is string => typeof entry === "string")
+  ) {
+    throw new Error("stored document ids are not a list of strings")
+  }
+  return value
+}
+
+/** The approval card's fields for one intent besides payload and nonce; undefined when unknown. */
+export function approvalCard(
+  db: DatabaseSync,
+  intentId: string
+): ApprovalCard | undefined {
+  const row = db
+    .prepare(
+      "SELECT kind, origin, context_pack_id, document_ids_json, edited_from, rationale FROM intents WHERE id = ?"
+    )
+    .get(intentId)
+  if (row === undefined) return undefined
+  return {
+    kind: String(row["kind"]),
+    origin: toOrigin(row["origin"]),
+    contextPackId: optionalText(row["context_pack_id"]),
+    documentIds: documentIds(optionalText(row["document_ids_json"])),
+    editedFrom: optionalText(row["edited_from"]),
+    rationale: optionalText(row["rationale"]),
+  }
 }

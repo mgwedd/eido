@@ -23,7 +23,7 @@ const version = (db: DatabaseSync) =>
 describe("openControlDb", () => {
   it("creates the schema, enables foreign keys and WAL", () => {
     const db = openControlDb(tempPath())
-    expect(version(db)).toBe(6)
+    expect(version(db)).toBe(7)
     expect(db.prepare("PRAGMA foreign_keys").get()?.["foreign_keys"]).toBe(1)
     expect(db.prepare("PRAGMA journal_mode").get()?.["journal_mode"]).toBe(
       "wal"
@@ -43,7 +43,7 @@ describe("openControlDb", () => {
     )
     first.close()
     const second = openControlDb(path) // re-running migration 1 would throw "table already exists"
-    expect(version(second)).toBe(6)
+    expect(version(second)).toBe(7)
     expect(
       second.prepare("SELECT COUNT(*) AS n FROM audit_log").get()?.["n"]
     ).toBe(1)
@@ -52,7 +52,7 @@ describe("openControlDb", () => {
 
   it("works with :memory:", () => {
     const db = openControlDb(":memory:")
-    expect(version(db)).toBe(6)
+    expect(version(db)).toBe(7)
     db.close()
   })
 
@@ -73,6 +73,7 @@ describe("openControlDb", () => {
       CREATE TRIGGER audit_log_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
       CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
       CREATE TABLE connectors (name TEXT PRIMARY KEY, manifest_json TEXT NOT NULL, manifest_hash TEXT NOT NULL, pinned_at TEXT NOT NULL, enabled INTEGER NOT NULL, health TEXT NOT NULL, consecutive_failures INTEGER NOT NULL, drift_json TEXT) STRICT;
+      CREATE TABLE intents (id TEXT PRIMARY KEY) STRICT;
       PRAGMA user_version = 5;`)
     const mail = manifest("mail", MAIL_OPS)
     legacy
@@ -88,7 +89,7 @@ describe("openControlDb", () => {
     legacy.close()
 
     const upgraded = openControlDb(path)
-    expect(version(upgraded)).toBe(6)
+    expect(version(upgraded)).toBe(7)
     expect(
       upgraded
         .prepare(

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateWebAuthnAssertion",
+  "description": "navigator.credentials.get response, each binary field as unpadded base64url.",
+  "type": "object",
+  "properties": {
+    "credentialId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "PublicKeyCredential rawId."
+    },
+    "authenticatorData": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "AuthenticatorAssertionResponse authenticatorData."
+    },
+    "clientDataJSON": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "AuthenticatorAssertionResponse clientDataJSON."
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "AuthenticatorAssertionResponse signature."
+    }
+  },
+  "required": [
+    "credentialId",
+    "authenticatorData",
+    "clientDataJSON",
+    "signature"
+  ],
+  "additionalProperties": false
+}

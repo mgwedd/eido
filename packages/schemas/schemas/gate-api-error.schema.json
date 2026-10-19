@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateApiError",
-  "description": "Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. The server (#85) maps codes to HTTP statuses.",
+  "description": "Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. Statuses: not_found 404, already_decided 409, verification_failed 403, invalid_request 400 (413 over 1 MiB, 422 for an edited intent the schemas or the original's kind refuse), unauthenticated 401 (no valid session cookie on a gated phone route), misdirected_request 421 (a Host header the listener does not serve), tier_changed 409 and forbidden 403 (an edit refused by policy), unavailable 500.",
   "type": "object",
   "properties": {
     "code": {
@@ -11,6 +11,10 @@
         "already_decided",
         "verification_failed",
         "invalid_request",
+        "unauthenticated",
+        "misdirected_request",
+        "tier_changed",
+        "forbidden",
         "unavailable"
       ],
       "maxLength": 32

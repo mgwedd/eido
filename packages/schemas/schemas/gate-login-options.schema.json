@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateLoginOptions",
+  "description": "Response of POST /auth/login/options on the phone listener: a single-use login challenge for navigator.credentials.get with a discoverable passkey (no allowCredentials). It expires after five minutes.",
+  "type": "object",
+  "properties": {
+    "challenge": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "description": "32 random bytes as unpadded base64url; clientDataJSON.challenge must carry it unchanged."
+    },
+    "rpId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
+    }
+  },
+  "required": ["challenge", "rpId", "expiresAt"],
+  "additionalProperties": false
+}

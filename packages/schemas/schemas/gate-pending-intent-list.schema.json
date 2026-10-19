@@ -41,6 +41,12 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 64
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "The agent's note on why it proposed the intent; display-only, not part of the payload hash. Absent when the proposal had none."
           }
         },
         "required": ["id", "kind", "tier", "state", "origin", "createdAt"],

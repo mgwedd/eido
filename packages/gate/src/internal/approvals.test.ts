@@ -672,7 +672,7 @@ describe("concurrent verification", () => {
 
 describe("reject", () => {
   it.each([
-    ["with a reason code", "wrong_recipient"],
+    ["with a reason code", "wrong_recipient" as const],
     ["without a reason code", undefined],
   ])(
     "moves pending to rejected %s, stores the code and audits it",
@@ -758,7 +758,7 @@ describe("the audit log", () => {
     )
 
     const rejectedId = pendingSend(w, "Rejected")
-    reject(w.db, rejectedId, "not_now")
+    reject(w.db, rejectedId, "wrong_time")
 
     revokeCredential(w.db, "admin", w.auth.credentialId)
     verifyApproval(

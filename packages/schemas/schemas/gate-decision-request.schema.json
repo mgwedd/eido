@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateDecisionRequest",
-  "description": "Body of the decision endpoint for one intent: a signed approval, or a reject. Edit-and-sign is not covered (#146).",
+  "description": "Body of POST /approvals/:id/decision on the phone listener: a signed approval, or a reject. intentId must equal the id in the path. An edit is POST /approvals/:id/edit (GateEditRequest), whose new intent is then approved here.",
   "oneOf": [
     {
       "title": "GateApproveRequest",
-      "description": "Approve with a WebAuthn assertion over the challenge for the nonce from the latest prepare.",
+      "description": "Approve with a WebAuthn assertion over the challenge built from payloadHash, intentId and the nonce from the latest prepare (see vectors/approval-challenge-vectors.json).",
       "type": "object",
       "properties": {
         "intentId": {
@@ -23,42 +23,7 @@
           "description": "The nonce the assertion was signed over, as returned by prepare."
         },
         "assertion": {
-          "title": "GateWebAuthnAssertion",
-          "description": "navigator.credentials.get response, each binary field as unpadded base64url.",
-          "type": "object",
-          "properties": {
-            "credentialId": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "description": "PublicKeyCredential rawId."
-            },
-            "authenticatorData": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "description": "AuthenticatorAssertionResponse authenticatorData."
-            },
-            "clientDataJSON": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "description": "AuthenticatorAssertionResponse clientDataJSON."
-            },
-            "signature": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "description": "AuthenticatorAssertionResponse signature."
-            }
-          },
-          "required": [
-            "credentialId",
-            "authenticatorData",
-            "clientDataJSON",
-            "signature"
-          ],
-          "additionalProperties": false
+          "$ref": "gate-webauthn-assertion.schema.json"
         }
       },
       "required": ["intentId", "decision", "nonce", "assertion"],
@@ -78,10 +43,7 @@
           "const": "rejected"
         },
         "reasonCode": {
-          "type": "string",
-          "description": "Free text until the code list exists (#147).",
-          "minLength": 1,
-          "maxLength": 64
+          "$ref": "gate-reject-reason.schema.json"
         }
       },
       "required": ["intentId", "decision"],

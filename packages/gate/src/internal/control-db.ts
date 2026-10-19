@@ -152,6 +152,24 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
     }
     db.exec("UPDATE connectors SET enabled = 0 WHERE enabled = 1")
   },
+  // The phone listener (#85). rationale is the agent's display-only note on an intent, never
+  // part of its payload or hash; document_ids_json the JSON array of document ids it was built
+  // from. login_challenges are single-use passkey login challenges; sessions holds the SHA-256
+  // of each session cookie value, never the value itself.
+  `ALTER TABLE intents ADD COLUMN rationale TEXT;
+   ALTER TABLE intents ADD COLUMN document_ids_json TEXT;
+   CREATE TABLE login_challenges (
+     challenge  TEXT PRIMARY KEY,
+     issued_at  TEXT NOT NULL,
+     expires_at TEXT NOT NULL,
+     used_at    TEXT
+   ) STRICT;
+   CREATE TABLE sessions (
+     token_hash    TEXT PRIMARY KEY,
+     credential_id TEXT NOT NULL REFERENCES credentials (credential_id),
+     created_at    TEXT NOT NULL,
+     expires_at    TEXT NOT NULL
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

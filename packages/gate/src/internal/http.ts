@@ -1,11 +1,13 @@
 import { chmodSync, lstatSync, unlinkSync } from "node:fs"
 import { createServer } from "node:http"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
+import type { AddressInfo } from "node:net"
 import type { GateApiError } from "@eido/schemas"
 
-// HTTP over a local socket (a Unix domain socket, or a named pipe on Windows). This uses
-// node:http, the one exception to "no network libraries beyond fetch": fetch cannot target a
-// socket path without a new dependency (ADR 0003). The gate listens on no TCP port.
+// HTTP over a local socket (a Unix domain socket, or a named pipe on Windows), and over one
+// loopback TCP port for the phone listener (#85), which `tailscale serve` forwards to. This
+// uses node:http, the one exception to "no network libraries beyond fetch": fetch cannot
+// target a socket path without a new dependency (ADR 0003).
 
 /** Largest request body the gate reads: 1 MiB. */
 export const MAX_BODY_BYTES = 1024 * 1024
@@ -18,11 +20,18 @@ export type GateRequest = {
   method: string
   path: string
   query: URLSearchParams
+  /** The Host and Cookie request headers; absent when the request had none. */
+  headers: { host?: string; cookie?: string }
   /** Reads the body; `ok: false` when it is over MAX_BODY_BYTES. */
   body: () => Promise<Body>
 }
 
-export type Reply = { status: number; body: unknown }
+export type Reply = {
+  status: number
+  body: unknown
+  /** Extra response headers, such as Set-Cookie. */
+  headers?: Readonly<Record<string, string>>
+}
 
 export type Handler = (request: GateRequest) => Promise<Reply> | Reply
 
@@ -76,6 +85,7 @@ export function readBody(
 function send(response: ServerResponse, reply: Reply): void {
   const text = JSON.stringify(reply.body)
   response.writeHead(reply.status, {
+    ...reply.headers,
     "content-type": "application/json",
     "content-length": Buffer.byteLength(text),
   })
@@ -95,6 +105,14 @@ export function createGateServer(
       method,
       path: url.pathname,
       query: url.searchParams,
+      headers: {
+        ...(request.headers.host === undefined
+          ? {}
+          : { host: request.headers.host }),
+        ...(request.headers.cookie === undefined
+          ? {}
+          : { cookie: request.headers.cookie }),
+      },
       body: () => readBody(request),
     }
     const answer = async (): Promise<Reply> => {
@@ -156,6 +174,57 @@ export async function listen(
       resolve()
     })
   })
+}
+
+/** The only addresses the phone listener binds to. */
+export const LOOPBACK_HOSTS = ["127.0.0.1", "::1"] as const
+export type LoopbackHost = (typeof LOOPBACK_HOSTS)[number]
+
+/** `value` as a loopback address; anything else (a LAN address, `0.0.0.0`, a name) throws. */
+export function loopbackHost(value: string): LoopbackHost {
+  const host = LOOPBACK_HOSTS.find((candidate) => candidate === value)
+  if (host === undefined) {
+    throw new Error(
+      `the phone listener binds to 127.0.0.1 or ::1 only, not ${JSON.stringify(value)}`
+    )
+  }
+  return host
+}
+
+// Each segment is unreserved characters, and never `.` or `..`.
+const BASE_PATH = /^(\/(?!\.\.?(?:\/|$))[A-Za-z0-9._~-]+)+$/
+
+/** `value` as a base path: empty, or segments like `/api/gate` with no trailing slash, `.` or `..`. */
+export function basePath(value: string): string {
+  if (value !== "" && !BASE_PATH.test(value)) {
+    throw new Error(
+      `the base path must look like /api/gate, not ${JSON.stringify(value)}`
+    )
+  }
+  return value
+}
+
+/** The Host header a client sends for a loopback listen address. */
+export function hostHeader(host: LoopbackHost, port: number): string {
+  return host === "::1" ? `[::1]:${String(port)}` : `${host}:${String(port)}`
+}
+
+/** Listens on a loopback TCP address (port 0 picks a free one) and resolves to the port. */
+export async function listenTcp(
+  server: Server,
+  host: LoopbackHost,
+  port: number
+): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(port, host, () => {
+      server.off("error", reject)
+      resolve()
+    })
+  })
+  // listen on a host and port always yields an AddressInfo, never a pipe name.
+  const address = server.address() as AddressInfo
+  return address.port
 }
 
 export function close(server: Server): Promise<void> {

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite"
-import type { GateDecisionRequest } from "@eido/schemas"
+import type { GateDecisionRequest, GateRejectReason } from "@eido/schemas"
 import { append } from "./audit"
 import { hashCanonicalString, payloadHash } from "./canonical"
 import { decidePending } from "./intents"
@@ -119,14 +119,17 @@ export function issueNonce(
   })
 }
 
-type Decoded = {
+export type DecodedAssertion = {
   credentialId: string
   authenticatorData: Buffer
   clientDataJSON: Buffer
   signature: Buffer
 }
 
-function decode(assertion: ApprovalAssertion): Decoded | undefined {
+/** Decodes the four base64url fields of an assertion; undefined when any is not base64url. */
+export function decodeAssertion(
+  assertion: ApprovalAssertion
+): DecodedAssertion | undefined {
   const authenticatorData = fromBase64url(assertion.authenticatorData)
   const clientDataJSON = fromBase64url(assertion.clientDataJSON)
   const signature = fromBase64url(assertion.signature)
@@ -192,7 +195,7 @@ export function checkApproval(
   if (intent.state !== "pending") return refuse("not_pending")
   if (intent.currentNonce !== request.nonce) return refuse("stale_nonce")
 
-  const decoded = decode(request.assertion)
+  const decoded = decodeAssertion(request.assertion)
   const clientData =
     decoded === undefined ? undefined : parseClientData(decoded.clientDataJSON)
   const authData =
@@ -385,7 +388,7 @@ export function verifyApproval(
 export function reject(
   db: DatabaseSync,
   intentId: string,
-  reasonCode?: string
+  reasonCode?: GateRejectReason
 ): RejectResult {
   return atomically(db, () => {
     const decided = decidePending(
