@@ -33,7 +33,7 @@ describe("command builders", () => {
       "UID FETCH 7 (UID BODY.PEEK[])",
       'UID SEARCH HEADER Message-ID "<a@example.com>"',
       'UID MOVE 3,4 "Trash"',
-      'APPEND "Drafts" (\\Draft) {18}',
+      'APPEND "Drafts" (\\Draft) {17}',
     ])
   })
 
