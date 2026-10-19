@@ -55,6 +55,56 @@ export interface ConnectorOperation {
 /** Approval tier for one connector operation: auto runs without asking, approval needs a signed approval, forbidden never runs. */
 export type ConnectorTier = "auto" | "approval" | "forbidden"
 
+/** Response of GET /entity-assignments: which entity each connector account is assigned to. */
+export interface CoreApiAssignmentList {
+  assignments: Array<ProfileAccountAssignment>
+}
+
+/** Response of GET /entities, ordered by name. */
+export interface CoreApiEntityList {
+  entities: Array<CoreApiEntity>
+}
+
+/** An entity as core serves it: a personal context, a property or a company. */
+export interface CoreApiEntity {
+  id: string
+  kind: "personal" | "property" | "company"
+  name: string
+  tag: string
+  createdAt: string
+}
+
+/** Body of a non-2xx response from core's HTTP API. `fields` carries one entry per invalid field for code invalid; `referencedBy` names the tables that reference an entity for code entity_in_use. */
+export interface CoreApiError {
+  error: {
+    code: "invalid" | "duplicate_name" | "duplicate_tag" | "not_found" | "entity_in_use" | "bad_request" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "misdirected_request" | "internal"
+    message: string
+    fields?: Array<{
+      field: string
+      message: string
+    }>
+    referencedBy?: Array<string>
+  }
+}
+
+/** Response of GET /profile. The profile is absent until the first write sets displayName and timezone. */
+export interface CoreApiProfileResponse {
+  profile?: CoreApiProfile
+}
+
+/** The owner profile as core serves it. Response of GET and PATCH /profile. */
+export interface CoreApiProfile {
+  displayName: string
+  timezone: string
+  workingHours: ProfileWorkingHours
+  signature: string
+  addresses: Array<{
+    address: string
+    label: string
+  }>
+  updatedAt: string
+}
+
 /** Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. The server (#85) maps codes to HTTP statuses. */
 export interface GateApiError {
   code: "not_found" | "already_decided" | "verification_failed" | "invalid_request" | "unavailable"

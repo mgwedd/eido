@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiEntityList",
+  "description": "Response of GET /entities, ordered by name.",
+  "type": "object",
+  "properties": {
+    "entities": {
+      "type": "array",
+      "items": { "$ref": "core-api-entity.schema.json" }
+    }
+  },
+  "required": ["entities"],
+  "additionalProperties": false
+}
