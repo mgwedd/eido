@@ -270,10 +270,15 @@ const promptOutput = [
   tsConst("INTENT_RESULT_JSON_SCHEMA", resolvedResult, "JsonSchema"),
 ].join("\n")
 
-// Non-intent schemas whose writes core validates: every profile-* and gate-* schema gets a
-// validator. Structural checks only; semantic ones (IANA timezone, email, HH:MM) live in core.
+// Non-intent schemas that get a validator: every profile-*.schema.json (core validates its
+// writes), every gate-*.schema.json (the web app and the gate check API bodies), and the
+// connector manifest (the gate validates it before pinning). Structural checks only; semantic
+// ones live next to their callers (core, and src/manifest.ts for manifests).
 const profileFiles = [...schemas.keys()].filter(
-  (file) => file.startsWith("profile-") || file.startsWith("gate-")
+  (file) =>
+    file.startsWith("profile-") ||
+    file.startsWith("gate-") ||
+    file === "connector-manifest.schema.json"
 )
 const constName = (name) =>
   `${name.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()}_JSON_SCHEMA`
