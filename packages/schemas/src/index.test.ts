@@ -389,11 +389,7 @@ describe("codegen", () => {
   })
 
   test.each([
-    [
-      "pattern",
-      { type: "string", maxLength: 5, pattern: "^a" },
-      "not supported",
-    ],
+    ["keyword", { type: "integer", multipleOf: 2 }, "not supported"],
     ["format", { type: "string", maxLength: 5, format: "email" }, "format"],
     [
       "open object",
@@ -426,6 +422,20 @@ describe("codegen", () => {
 })
 
 describe("validate keywords no verb uses today", () => {
+  test("pattern rejects a non-matching string and names the path", () => {
+    const schema: JsonSchema = {
+      type: "object",
+      properties: { id: { type: "string", pattern: "^[0-9a-f]{4}$" } },
+    }
+    expect(validate(schema, { id: "beef" })).toEqual([])
+    expect(validate(schema, { id: "beeg" })).toEqual([
+      "$.id: does not match pattern ^[0-9a-f]{4}$",
+    ])
+    expect(validate(schema, { id: "beef0" })).toEqual([
+      "$.id: does not match pattern ^[0-9a-f]{4}$",
+    ])
+  })
+
   test("numbers, integers and bounds", () => {
     const bounded: JsonSchema = { type: "integer", minimum: 1, maximum: 3 }
     expect(validate(bounded, 2)).toEqual([])

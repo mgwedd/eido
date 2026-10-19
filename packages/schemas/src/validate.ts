@@ -19,6 +19,7 @@ export interface JsonSchema {
   readonly oneOf?: readonly JsonSchema[]
   readonly minLength?: number
   readonly maxLength?: number
+  readonly pattern?: string
   readonly minimum?: number
   readonly maximum?: number
   readonly format?: "date-time"
@@ -146,6 +147,12 @@ function validateString(
   }
   if (schema.maxLength !== undefined && value.length > schema.maxLength) {
     errors.push(`${path}: allows at most ${schema.maxLength} characters`)
+  }
+  if (
+    schema.pattern !== undefined &&
+    !new RegExp(schema.pattern, "u").test(value)
+  ) {
+    errors.push(`${path}: does not match pattern ${schema.pattern}`)
   }
   if (schema.format === "date-time" && !RFC_3339.test(value)) {
     errors.push(`${path}: not an RFC 3339 date-time`)

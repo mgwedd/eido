@@ -1446,7 +1446,8 @@ export const GATE_AUDIT_PAGE_JSON_SCHEMA: JsonSchema = {
             "type": "string",
             "minLength": 64,
             "maxLength": 64,
-            "description": "Lowercase hex SHA-256 of the entry detail. Only the length is checked here."
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Lowercase hex SHA-256 of the entry detail."
           }
         },
         "required": [
@@ -2465,13 +2466,15 @@ export const GATE_PREPARE_APPROVAL_JSON_SCHEMA: JsonSchema = {
       "type": "string",
       "minLength": 64,
       "maxLength": 64,
-      "description": "Lowercase hex SHA-256 the gate computed over the stored canonical payload. Only the length is checked here."
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256 the gate computed over the stored canonical payload."
     },
     "nonce": {
       "type": "string",
       "minLength": 43,
       "maxLength": 43,
-      "description": "Single-use nonce: 32 random bytes as unpadded base64url. Only the length is checked here."
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "description": "Single-use nonce: 32 random bytes as unpadded base64url."
     },
     "contextPackId": {
       "type": "string",

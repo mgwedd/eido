@@ -34,6 +34,7 @@ const GRAMMAR_KEYWORDS = new Set([
   "oneOf",
   "minLength",
   "maxLength",
+  "pattern",
   "minimum",
   "maximum",
   "format",

@@ -206,12 +206,29 @@ describe("prepare approval", () => {
   test("rejects a nonce that is not 43 characters long", () => {
     expect(
       errorsOf(validateGatePrepareApproval({ ...prepared, nonce: "short" }))
-    ).toEqual(["$.nonce: needs at least 43 characters"])
+    ).toEqual([
+      "$.nonce: needs at least 43 characters",
+      "$.nonce: does not match pattern ^[A-Za-z0-9_-]{43}$",
+    ])
     expect(
       errorsOf(
         validateGatePrepareApproval({ ...prepared, nonce: "A".repeat(44) })
       )
-    ).toEqual(["$.nonce: allows at most 43 characters"])
+    ).toEqual([
+      "$.nonce: allows at most 43 characters",
+      "$.nonce: does not match pattern ^[A-Za-z0-9_-]{43}$",
+    ])
+  })
+
+  test("rejects a 43-character nonce that is not base64url", () => {
+    expect(
+      errorsOf(
+        validateGatePrepareApproval({
+          ...prepared,
+          nonce: `${"A".repeat(42)}+`,
+        })
+      )
+    ).toEqual(["$.nonce: does not match pattern ^[A-Za-z0-9_-]{43}$"])
   })
 
   test("rejects a payload hash that is not 64 characters", () => {
@@ -219,7 +236,29 @@ describe("prepare approval", () => {
       errorsOf(
         validateGatePrepareApproval({ ...prepared, payloadHash: "ab12" })
       )
-    ).toEqual(["$.payloadHash: needs at least 64 characters"])
+    ).toEqual([
+      "$.payloadHash: needs at least 64 characters",
+      "$.payloadHash: does not match pattern ^[0-9a-f]{64}$",
+    ])
+  })
+
+  test("rejects a 64-character payload hash that is not lowercase hex", () => {
+    expect(
+      errorsOf(
+        validateGatePrepareApproval({
+          ...prepared,
+          payloadHash: "g".repeat(64),
+        })
+      )
+    ).toEqual(["$.payloadHash: does not match pattern ^[0-9a-f]{64}$"])
+    expect(
+      errorsOf(
+        validateGatePrepareApproval({
+          ...prepared,
+          payloadHash: "AB".repeat(32),
+        })
+      )
+    ).toEqual(["$.payloadHash: does not match pattern ^[0-9a-f]{64}$"])
   })
 
   test("rejects a response without the payload or for a non-pending intent", () => {
@@ -426,7 +465,22 @@ describe("audit page", () => {
       errorsOf(
         validateGateAuditPage({ entries: [{ ...entry, detailHash: "ab" }] })
       )
-    ).toEqual(["$.entries[0].detailHash: needs at least 64 characters"])
+    ).toEqual([
+      "$.entries[0].detailHash: needs at least 64 characters",
+      "$.entries[0].detailHash: does not match pattern ^[0-9a-f]{64}$",
+    ])
+  })
+
+  test("rejects a 64-character detail hash that is not lowercase hex", () => {
+    expect(
+      errorsOf(
+        validateGateAuditPage({
+          entries: [{ ...entry, detailHash: "z".repeat(64) }],
+        })
+      )
+    ).toEqual([
+      "$.entries[0].detailHash: does not match pattern ^[0-9a-f]{64}$",
+    ])
   })
 
   test("rejects more than 50 rows in a page", () => {
