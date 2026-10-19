@@ -4,6 +4,8 @@ import {
   validateGateAuditChainStatus,
   validateGateAuditPage,
   validateGateAuditPageRequest,
+  validateGateAuditRecordRequest,
+  validateGateAuditRecordResult,
   validateGateConnectorHealth,
   validateGateDecisionRequest,
   validateGateDecisionResult,
@@ -596,5 +598,62 @@ describe("propose result and refusal", () => {
     expect(
       errorsOf(validateGateProposeRefusal({ code: "forbidden", errors: ["x"] }))
     ).toEqual(['$.code: must be "invalid_payload"'])
+  })
+})
+
+describe("audit record request and result", () => {
+  const entry = {
+    action: "entity.update",
+    subjectHash: HASH,
+    beforeHash: HASH,
+    afterHash: "cd".repeat(32),
+  }
+
+  test("accepts a hash-only entry, with null for a missing side", () => {
+    expect(validateGateAuditRecordRequest(entry).ok).toBe(true)
+    expect(
+      validateGateAuditRecordRequest({
+        ...entry,
+        action: "entity.create",
+        beforeHash: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test("rejects a clear-text field next to the hashes", () => {
+    expect(
+      errorsOf(validateGateAuditRecordRequest({ ...entry, name: "Acme" }))
+    ).toEqual(["$.name: unknown key"])
+  })
+
+  test("rejects an action outside the profile actions", () => {
+    expect(
+      errorsOf(
+        validateGateAuditRecordRequest({ ...entry, action: "email.send" })
+      )
+    ).toEqual([
+      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign"',
+    ])
+  })
+
+  test("rejects a hash that is not 64 characters and a missing side", () => {
+    expect(
+      errorsOf(validateGateAuditRecordRequest({ ...entry, subjectHash: "ab" }))
+    ).toEqual(["$.subjectHash: needs at least 64 characters"])
+    expect(
+      errorsOf(
+        validateGateAuditRecordRequest({ ...entry, afterHash: `${HASH}0` })
+      )
+    ).toEqual(["$.afterHash: allows at most 64 characters"])
+    expect(
+      errorsOf(validateGateAuditRecordRequest(without(entry, "beforeHash")))
+    ).toEqual(["$.beforeHash: required"])
+  })
+
+  test("a result is a positive seq", () => {
+    expect(validateGateAuditRecordResult({ seq: 1 }).ok).toBe(true)
+    expect(errorsOf(validateGateAuditRecordResult({ seq: 0 }))).toEqual([
+      "$.seq: must be at least 1",
+    ])
   })
 })

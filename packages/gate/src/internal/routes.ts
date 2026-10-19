@@ -1,6 +1,11 @@
 import type { DatabaseSync } from "node:sqlite"
-import { validateGateIntentProposal } from "@eido/schemas"
+import {
+  validateGateAuditRecordRequest,
+  validateGateIntentProposal,
+} from "@eido/schemas"
 import type {
+  GateAuditRecordRequest,
+  GateAuditRecordResult,
   GateIntentHistory,
   GatePendingIntentList,
   GateProposeRefusal,
@@ -18,8 +23,9 @@ import {
 } from "./intents"
 import type { Policy } from "./policy"
 
-// The gate's routes. The data-plane listener serves only the intent API: propose, and three
-// read-only views without payload bodies. The control listener is a separate socket that the
+// The gate's routes. The data-plane listener serves the intent API (propose, and three
+// read-only views without payload bodies) and POST /audit, which appends one hash-only
+// audit.profile.* row for a profile change in core (#181). The control listener is a separate socket that the
 // data plane is never given; it serves the same reads plus the audit chain check. The phone
 // listener (#85) and the Mac-local admin listener (#78) are further handlers over the same
 // server wrapper, each on its own listener.
@@ -106,6 +112,101 @@ async function proposeRoute(
   return { status: 403, body: refused }
 }
 
+const HEX64 = /^[0-9a-f]{64}$/
+
+// Which sides of a change each action has: create and assign add a record (assign may replace
+// one), delete and unassign remove one, update replaces one.
+const SIDES = {
+  "entity.create": { before: "absent", after: "present" },
+  "entity.update": { before: "present", after: "present" },
+  "entity.delete": { before: "present", after: "absent" },
+  "account.assign": { before: "either", after: "present" },
+  "account.unassign": { before: "present", after: "absent" },
+} as const satisfies Record<
+  GateAuditRecordRequest["action"],
+  { before: Side; after: Side }
+>
+
+type Side = "present" | "absent" | "either"
+
+function sideError(
+  name: string,
+  side: Side,
+  value: string | null
+): string | undefined {
+  if (value !== null && !HEX64.test(value)) {
+    return `$.${name}: not lowercase hex`
+  }
+  if (side === "present" && value === null) return `$.${name}: must be a hash`
+  if (side === "absent" && value !== null) return `$.${name}: must be null`
+  return undefined
+}
+
+/** The checks the schema cannot express: lowercase hex, and null where the action has no side. */
+function entryError(entry: GateAuditRecordRequest): string | undefined {
+  if (!HEX64.test(entry.subjectHash)) return "$.subjectHash: not lowercase hex"
+  const sides = SIDES[entry.action]
+  return (
+    sideError("beforeHash", sides.before, entry.beforeHash) ??
+    sideError("afterHash", sides.after, entry.afterHash)
+  )
+}
+
+function auditRequestRefusal(db: DatabaseSync, reason: string): void {
+  append(db, {
+    actor: "data-plane",
+    action: `audit.request_refused.${reason}`,
+    target: "audit",
+    detailHash: payloadHash({ reason }),
+  })
+}
+
+// Appends the change as one row: the action names it, the target is the subject's hash and the
+// detail hash covers the whole entry. Nothing in clear text reaches the log.
+async function auditRoute(
+  request: GateRequest,
+  gate: GateState
+): Promise<Reply> {
+  const body = await request.body()
+  if (!body.ok) {
+    auditRequestRefusal(gate.db, "too_large")
+    return apiError(413, "invalid_request", "the body is over 1 MiB")
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body.text)
+  } catch {
+    auditRequestRefusal(gate.db, "malformed_json")
+    return apiError(400, "invalid_request", "the body is not valid JSON")
+  }
+  const checked = validateGateAuditRecordRequest(parsed)
+  const error = checked.ok
+    ? entryError(checked.value)
+    : (trimmed(checked.errors)[0] ?? "")
+  if (!checked.ok || error !== undefined) {
+    auditRequestRefusal(gate.db, "invalid_request")
+    return apiError(
+      400,
+      "invalid_request",
+      `the body is not an audit entry: ${error ?? ""}`
+    )
+  }
+  const entry = checked.value
+  const { seq } = append(gate.db, {
+    actor: "data-plane",
+    action: `audit.profile.${entry.action}`,
+    target: entry.subjectHash,
+    detailHash: payloadHash({
+      action: entry.action,
+      subjectHash: entry.subjectHash,
+      beforeHash: entry.beforeHash,
+      afterHash: entry.afterHash,
+    }),
+  })
+  const result: GateAuditRecordResult = { seq }
+  return { status: 201, body: result }
+}
+
 const INTENT_PATH = /^\/intents\/([^/]+)(\/history)?$/
 
 /** The read-only intent views, or undefined when the request is not one of them. */
@@ -136,12 +237,15 @@ function readRoute(request: GateRequest, gate: GateState): Reply | undefined {
   return { status: 200, body: history }
 }
 
-/** The data-plane listener: the intent API and nothing else. */
+/** The data-plane listener: the intent API and POST /audit, nothing else. */
 export function dataPlaneHandler(gate: () => GateState): Handler {
   return (request) => {
     const state = gate()
     if (request.method === "POST" && request.path === "/intents") {
       return proposeRoute(request, state)
+    }
+    if (request.method === "POST" && request.path === "/audit") {
+      return auditRoute(request, state)
     }
     return readRoute(request, state) ?? NOT_FOUND
   }

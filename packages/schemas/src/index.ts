@@ -14,6 +14,8 @@ export {
   validateGateAuditChainStatus,
   validateGateAuditPage,
   validateGateAuditPageRequest,
+  validateGateAuditRecordRequest,
+  validateGateAuditRecordResult,
   validateGateConnectorHealth,
   validateGateDecisionRequest,
   validateGateDecisionResult,
