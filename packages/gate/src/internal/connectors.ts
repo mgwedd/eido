@@ -18,10 +18,21 @@ import type {
 
 // Pinned connector manifests. The pinned manifest is the only description of a connector that
 // policy reads: what a server says about its own tools (names, annotations) is never trusted.
-// These functions are control-plane changes. They stay internal until the signed-approval
-// verifier (#15) gates them (#160).
+// Control-plane changes require a signed local approval.
 
-export type Drift = { drifted: boolean; added: string[]; removed: string[] }
+export type Drift = {
+  drifted: boolean
+  enabled: boolean
+  added: string[]
+  removed: string[]
+}
+type DriftDetails = Pick<Drift, "added" | "removed">
+
+export type ConnectorState = {
+  manifest: ConnectorManifest
+  enabled: boolean
+  drift: DriftDetails | null
+}
 
 export type EgressEntry = {
   connector: string
@@ -46,6 +57,26 @@ function parseStored(json: string, hash: string): ConnectorManifest {
   return result.value
 }
 
+function parseDrift(value: unknown): DriftDetails | null {
+  if (value === null) return null
+  if (typeof value !== "string")
+    throw new Error("stored connector drift is invalid")
+  const parsed: unknown = JSON.parse(value)
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("added" in parsed) ||
+    !("removed" in parsed) ||
+    !Array.isArray(parsed.added) ||
+    !parsed.added.every((name: unknown) => typeof name === "string") ||
+    !Array.isArray(parsed.removed) ||
+    !parsed.removed.every((name: unknown) => typeof name === "string")
+  ) {
+    throw new Error("stored connector drift is invalid")
+  }
+  return { added: parsed.added, removed: parsed.removed }
+}
+
 function storedRow(
   db: DatabaseSync,
   name: string
@@ -55,7 +86,7 @@ function storedRow(
       hash: string
       enabled: boolean
       approvalRefHash: string | null
-      drifted: boolean
+      drift: DriftDetails | null
     }
   | undefined {
   const row = db
@@ -65,15 +96,45 @@ function storedRow(
     .get(name)
   if (row === undefined) return undefined
   const hash = String(row["manifest_hash"])
+  const approvalRefHash =
+    typeof row["pin_approval_ref_hash"] === "string"
+      ? row["pin_approval_ref_hash"]
+      : null
+  const pin = db
+    .prepare(
+      "SELECT detail_hash FROM audit_log WHERE action = 'connector.pinned' AND target = ? ORDER BY seq DESC LIMIT 1"
+    )
+    .get(name)
+  // Migration disabled pre-approval pins and recorded the old hash before a signed pin could
+  // exist. Keep that disabled row available for an owner's signed re-review.
+  const unsignedMigration =
+    pin === undefined &&
+    approvalRefHash === null &&
+    Number(row["enabled"]) === 0
+      ? db
+          .prepare(
+            "SELECT detail_hash FROM audit_log WHERE action = 'connector.disabled_unsigned' AND target = ? ORDER BY seq DESC LIMIT 1"
+          )
+          .get(name)
+      : undefined
+  const expectedDetail =
+    approvalRefHash === null
+      ? hash
+      : payloadHash({ manifestHash: hash, approvalRefHash })
+  const migrated =
+    unsignedMigration?.["detail_hash"] === payloadHash({ manifestHash: hash })
+  if (
+    (pin === undefined || pin["detail_hash"] !== expectedDetail) &&
+    !migrated
+  ) {
+    throw new Error("stored connector manifest does not match its pin audit")
+  }
   return {
     manifest: parseStored(String(row["manifest_json"]), hash),
     hash,
     enabled: Number(row["enabled"]) === 1,
-    approvalRefHash:
-      typeof row["pin_approval_ref_hash"] === "string"
-        ? row["pin_approval_ref_hash"]
-        : null,
-    drifted: row["drift_json"] !== null,
+    approvalRefHash,
+    drift: parseDrift(row["drift_json"]),
   }
 }
 
@@ -93,7 +154,7 @@ function inTransaction<T>(db: DatabaseSync, work: () => T): T {
  * Validates and stores a manifest, enabling the connector and clearing any drift. Re-pinning a
  * changed manifest is the re-review path and needs a higher version than the one pinned; a
  * drift-disabled connector needs that too, so re-pinning the same manifest cannot re-enable it.
- * Appends `connector.pinned` to the audit log with the manifest hash as the detail.
+ * Appends `connector.pinned` with a detail binding the manifest and approval reference.
  */
 export function pinManifest(
   db: DatabaseSync,
@@ -125,7 +186,7 @@ export function pinManifest(
         }
         if (
           !current.enabled &&
-          (current.approvalRefHash !== null || current.drifted)
+          (current.approvalRefHash !== null || current.drift !== null)
         ) {
           throw new Error(
             `connector ${valid.name} is disabled after drift: pin a re-reviewed manifest with a version above ${current.manifest.version}`
@@ -178,12 +239,23 @@ export function prepareManifestPin(
   )
 }
 
-/** The stored pinned manifest, or undefined when the connector was never pinned. */
+/** The active pinned manifest, or undefined when unpinned or disabled. */
 export function getPinnedManifest(
   db: DatabaseSync,
   name: string
 ): ConnectorManifest | undefined {
-  return storedRow(db, name)?.manifest
+  const row = storedRow(db, name)
+  return row?.enabled ? row.manifest : undefined
+}
+
+/** Administrative state for re-review, including a disabled manifest and its last drift. */
+export function getConnectorState(
+  db: DatabaseSync,
+  name: string
+): ConnectorState | undefined {
+  const row = storedRow(db, name)
+  if (row === undefined) return undefined
+  return { manifest: row.manifest, enabled: row.enabled, drift: row.drift }
 }
 
 /**
@@ -201,34 +273,46 @@ export function pinnedOperation(
 }
 
 /**
- * The connector and operation names that declare `intentKind`, across every pinned connector,
- * enabled or not. Names only: policy reads the operation itself through `pinnedOperation`, which
- * returns nothing for a disabled connector.
+ * The connector and operation names that declare `intentKind` on enabled connectors only.
  */
 export function intentBindings(
   db: DatabaseSync,
   intentKind: string
 ): Array<{ connector: string; operation: string }> {
   return db
-    .prepare(
-      "SELECT manifest_json, manifest_hash FROM connectors ORDER BY name ASC"
-    )
+    .prepare("SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC")
     .all()
     .flatMap((row) => {
-      const manifest = parseStored(
-        String(row["manifest_json"]),
-        String(row["manifest_hash"])
-      )
-      return manifest.operations
+      const state = storedRow(db, String(row["name"]))
+      if (state === undefined || !state.enabled) return []
+      return state.manifest.operations
         .filter((op) => op.intentKind === intentKind)
-        .map((op) => ({ connector: manifest.name, operation: op.name }))
+        .map((op) => ({ connector: state.manifest.name, operation: op.name }))
     })
+}
+
+/** Whether a disabled connector declared this kind, without exposing its operation. */
+export function hasDisabledIntentBinding(
+  db: DatabaseSync,
+  intentKind: string
+): boolean {
+  const rows = db
+    .prepare("SELECT name FROM connectors WHERE enabled = 0 ORDER BY name ASC")
+    .all()
+  return rows.some((row) => {
+    const state = storedRow(db, String(row["name"]))
+    return (
+      state !== undefined &&
+      !state.enabled &&
+      state.manifest.operations.some((op) => op.intentKind === intentKind)
+    )
+  })
 }
 
 /**
  * Compares the tool names a server reports with the pinned operation names. Any difference
- * disables the connector until it is pinned again, and the first disable appends
- * `connector.disabled_drift`. Tool annotations are not an input: they are never trusted.
+ * disables the connector until it is pinned again. Each distinct observed drift is audited;
+ * identical repeat observations do not append rows. Tool annotations are never trusted.
  */
 export function checkDrift(
   db: DatabaseSync,
@@ -247,19 +331,21 @@ export function checkDrift(
     const drifted = added.length > 0 || removed.length > 0
     if (drifted) {
       const drift = { added, removed }
-      db.prepare(
-        "UPDATE connectors SET enabled = 0, drift_json = ? WHERE name = ?"
-      ).run(canonicalize(drift), name)
-      if (row.enabled) {
+      if (row.enabled || canonicalize(row.drift) !== canonicalize(drift)) {
+        db.prepare(
+          "UPDATE connectors SET enabled = 0, drift_json = ? WHERE name = ?"
+        ).run(canonicalize(drift), name)
         append(db, {
           actor: "system",
-          action: "connector.disabled_drift",
+          action: row.enabled
+            ? "connector.disabled_drift"
+            : "connector.drift_changed",
           target: name,
           detailHash: payloadHash({ manifestHash: row.hash, ...drift }),
         })
       }
     }
-    return { drifted, added, removed }
+    return { drifted, enabled: row.enabled && !drifted, added, removed }
   })
 }
 
@@ -278,17 +364,13 @@ export function resolveTier(
 /** Egress entries of enabled connectors, the source of the proxy allowlist (#14). */
 export function egressAllowlist(db: DatabaseSync): EgressEntry[] {
   const rows = db
-    .prepare(
-      "SELECT name, manifest_json, manifest_hash FROM connectors WHERE enabled = 1 ORDER BY name ASC"
-    )
+    .prepare("SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC")
     .all()
   return rows.flatMap((row) => {
-    const manifest = parseStored(
-      String(row["manifest_json"]),
-      String(row["manifest_hash"])
-    )
-    return manifest.egress.hosts.map((entry) => ({
-      connector: manifest.name,
+    const state = storedRow(db, String(row["name"]))
+    if (state === undefined || !state.enabled) return []
+    return state.manifest.egress.hosts.map((entry) => ({
+      connector: state.manifest.name,
       host: entry.host,
       methods: [...entry.methods],
       pathPrefixes: [...entry.pathPrefixes],
