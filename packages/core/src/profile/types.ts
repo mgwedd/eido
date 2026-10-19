@@ -1,4 +1,4 @@
-import type { ProfileWorkingHours } from "@eido/schemas"
+import type { GateAuditRecordRequest, ProfileWorkingHours } from "@eido/schemas"
 
 export type EntityKind = "personal" | "property" | "company"
 
@@ -26,27 +26,21 @@ export interface AccountAssignment {
   entityId: string
 }
 
-export type ProfileAuditAction =
-  | "entity.create"
-  | "entity.update"
-  | "entity.delete"
-  | "account.assign"
-  | "account.unassign"
+/** The audited entity and assignment changes; the gate's POST /audit takes the same actions. */
+export type ProfileAuditAction = GateAuditRecordRequest["action"]
 
 /**
- * One audit entry for an entity or assignment change. Hashes only (hex SHA-256 of the
- * canonical JSON of the record): no name, tag, connector or account reference in clear.
+ * One audit entry for an entity or assignment change, the body of the gate's POST /audit.
+ * Hashes only (hex SHA-256 of `JSON.stringify` of the record, whose keys the store
+ * always builds in the same order): no name, tag, connector or account reference in clear.
  */
-export interface ProfileAuditEntry {
-  action: ProfileAuditAction
-  subjectHash: string
-  beforeHash: string | null
-  afterHash: string | null
-}
+export type ProfileAuditEntry = GateAuditRecordRequest
 
 /**
- * Where audit entries go. The data plane cannot write the gate's audit log; the gate-backed
- * sink proposes a low-risk automatic intent. It is called inside the write's transaction, so
- * a sink that throws rolls the change back and an unaudited change never commits.
+ * Where audit entries go. The data plane cannot write the gate's audit log; the process entry
+ * wires this to `createAuditClient(...).record`, which asks the gate to append the entry (POST
+ * /audit, #181). It is awaited inside the write's transaction, so a sink that rejects (the gate
+ * refused the entry, could not be reached, or did not answer in time) rolls the change back and
+ * an unaudited change never commits.
  */
-export type ProfileAuditSink = (entry: ProfileAuditEntry) => void
+export type ProfileAuditSink = (entry: ProfileAuditEntry) => Promise<unknown>

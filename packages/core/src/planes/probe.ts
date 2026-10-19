@@ -6,8 +6,8 @@ import { dataPlaneConfig, runDataPlane } from "../main"
 // Test support for the two-process tests: a short-lived data-plane process. It starts the same
 // runtime as main.ts (eido-data.db and the intent client, from the same allowlisted
 // environment), runs one command against the gate through the client, prints the result as one
-// JSON line and exits. spawnPlanes runs it by path; the data plane gets an API of its own in
-// #153, and then the tests can drive that instead.
+// JSON line and exits. spawnPlanes runs it by path. Profile writes go through the long-lived
+// data plane's own API instead (Planes.coreUrl).
 
 export type Settled =
   | { ok: true; value: unknown; ms: number }
@@ -102,6 +102,6 @@ if (import.meta.main) {
     )
     process.stdout.write(`${JSON.stringify(result)}\n`)
   } finally {
-    plane.close()
+    await plane.close()
   }
 }

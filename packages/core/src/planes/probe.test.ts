@@ -37,6 +37,12 @@ describe("runProbe", () => {
         dbPath: "/d/eido-data.db",
         logPath: "/d/data-plane.log",
         gateSocket: "/s/gate.sock",
+        api: {
+          host: "127.0.0.1",
+          port: 8787,
+          basePath: "",
+          allowedHosts: [],
+        },
       },
     })
   })

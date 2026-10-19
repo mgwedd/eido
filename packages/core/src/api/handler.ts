@@ -19,6 +19,12 @@ export interface ApiDeps {
    * listen address (DNS rebinding) from driving core through the owner's browser.
    */
   allowedHosts: readonly string[]
+  /**
+   * The path prefix core is served under, such as `/api/core` when `tailscale serve` forwards
+   * the prefix (#178). Routes are answered only under it; every other path is 404. Empty or
+   * absent: routes are at the root.
+   */
+  basePath?: string
 }
 
 export type ApiHandler = (request: Request) => Promise<Response>
@@ -131,8 +137,18 @@ async function readJson(request: Request): Promise<unknown> {
 
 const ENTITY_PATH = /^\/entities\/([^/]+)$/
 
+/** The path below `basePath`, or null when the request is outside it. */
+export function routePath(pathname: string, basePath: string): string | null {
+  if (basePath === "") return pathname
+  if (pathname === basePath) return "/"
+  return pathname.startsWith(`${basePath}/`)
+    ? pathname.slice(basePath.length)
+    : null
+}
+
 export function createApiHandler(deps: ApiDeps): ApiHandler {
   const { profile } = deps
+  const basePath = deps.basePath ?? ""
   const allowedHosts = new Set(deps.allowedHosts.map((h) => h.toLowerCase()))
 
   async function route(request: Request): Promise<Response> {
@@ -142,7 +158,9 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return failure("misdirected_request", "host not served")
     }
     const method = request.method
-    const path = url.pathname.replace(/(.)\/$/, "$1")
+    const local = routePath(url.pathname, basePath)
+    if (local === null) return failure("not_found", "no such route")
+    const path = local.replace(/(.)\/$/, "$1")
     const notAllowed = (...methods: string[]): Response => {
       const response = failure("method_not_allowed", "method not allowed")
       response.headers.set("allow", methods.join(", "))
@@ -151,12 +169,12 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
 
     if (path === "/profile") {
       if (method === "GET") {
-        const current = profile.getProfile()
+        const current = await profile.getProfile()
         const body: CoreApiProfileResponse = current ? { profile: current } : {}
         return json(body)
       }
       if (method === "PATCH") {
-        const body: CoreApiProfile = profile.updateProfile(
+        const body: CoreApiProfile = await profile.updateProfile(
           await readJson(request)
         )
         return json(body)
@@ -167,12 +185,12 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
     if (path === "/entities") {
       if (method === "GET") {
         const body: CoreApiEntityList = {
-          entities: profile.listEntities(),
+          entities: await profile.listEntities(),
         }
         return json(body)
       }
       if (method === "POST") {
-        const body: CoreApiEntity = profile.createEntity(
+        const body: CoreApiEntity = await profile.createEntity(
           await readJson(request)
         )
         return json(body, 201)
@@ -189,14 +207,14 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         throw new HttpError("bad_request", "malformed entity id")
       }
       if (method === "PATCH") {
-        const body: CoreApiEntity = profile.updateEntity(
+        const body: CoreApiEntity = await profile.updateEntity(
           id,
           await readJson(request)
         )
         return json(body)
       }
       if (method === "DELETE") {
-        profile.deleteEntity(id)
+        await profile.deleteEntity(id)
         return new Response(null, { status: 204 })
       }
       return notAllowed("PATCH", "DELETE")
@@ -205,12 +223,12 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
     if (path === "/entity-assignments") {
       if (method === "GET") {
         const body: CoreApiAssignmentList = {
-          assignments: profile.listAssignments(),
+          assignments: await profile.listAssignments(),
         }
         return json(body)
       }
       if (method === "PUT") {
-        const body: ProfileAccountAssignment = profile.assignAccount(
+        const body: ProfileAccountAssignment = await profile.assignAccount(
           await readJson(request)
         )
         return json(body)
@@ -230,7 +248,7 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
             ],
           })
         }
-        if (!profile.unassignAccount(connector, accountRef)) {
+        if (!(await profile.unassignAccount(connector, accountRef))) {
           return failure("not_found", "no such assignment")
         }
         return new Response(null, { status: 204 })
