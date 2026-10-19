@@ -3,7 +3,11 @@
 import { GateUnavailableError } from "@eido/gate"
 
 export type ProtonErrorCode =
-  "handshake_failed" | "auth_failed" | "gate_unavailable" | "not_found"
+  | "handshake_failed"
+  | "auth_failed"
+  | "gate_unavailable"
+  | "not_found"
+  | "no_recipients"
 
 export class ProtonError extends Error {
   override readonly name: string = "ProtonError"

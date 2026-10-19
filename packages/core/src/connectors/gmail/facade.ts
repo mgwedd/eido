@@ -14,6 +14,7 @@ import type {
 import { search } from "../../index/index"
 import { isTextMime } from "../mail/parse"
 import type { SearchHit } from "../../index/index"
+import { replyRecipients, storedAddresses } from "../reply-target"
 import { GmailError } from "./errors"
 import { GMAIL_SOURCE } from "./routes"
 
@@ -45,9 +46,25 @@ export type GmailAttachmentText = Untrusted<{
   text: string | null
 }>
 
+/** What the model gives for a reply: the hash and the recipients are core's to fill. */
+export type GmailReplyRequest = {
+  messageId: string
+  replyAll: boolean
+  body: string
+}
+
+/** What the model gives for a forward: the hash is core's to fill. */
+export type GmailForwardRequest = {
+  messageId: string
+  to: EmailForwardIntent["args"]["to"]
+  note?: string
+}
+
 export type GmailFacadeDeps = {
   db: DatabaseSync
   intents: IntentClient
+  /** The assistant's Gmail address: never a recipient of its own reply. */
+  identity: string
   origin?: GateIntentOrigin
 }
 
@@ -90,8 +107,18 @@ function messages(
  * its executor performs it.
  */
 export function createGmailFacade(deps: GmailFacadeDeps) {
-  const { db, intents } = deps
+  const { db, intents, identity } = deps
   const origin = deps.origin ?? "reactive"
+  /** The indexed message the Gmail id names: its raw-byte hash and its stored addresses. */
+  const target = (messageId: string) => {
+    const row = db
+      .prepare(`SELECT d.sha256 ${FROM} AND d.source_ref = ? LIMIT 1`)
+      .get(messageId)
+    if (row === undefined)
+      throw new GmailError("not_found", "no such message in the index")
+    const sha256 = String(row["sha256"])
+    return { sha256, addresses: storedAddresses(db, sha256) }
+  }
   const propose = async (intent: {
     kind: string
     args: object
@@ -152,10 +179,37 @@ export function createGmailFacade(deps: GmailFacadeDeps) {
       propose({ kind: "email.markRead", args }),
     send: (args: EmailSendIntent["args"]) =>
       propose({ kind: "email.send", args }),
-    reply: (args: EmailReplyIntent["args"]) =>
-      propose({ kind: "email.reply", args }),
-    forward: (args: EmailForwardIntent["args"]) =>
-      propose({ kind: "email.forward", args }),
+    reply: (args: GmailReplyRequest) => {
+      // Only the named fields pass: a hash or recipients in model output are dropped, not trusted.
+      const { sha256, addresses } = target(args.messageId)
+      const { to, cc } = replyRecipients(addresses, args.replyAll, identity)
+      if (to.length === 0)
+        throw new GmailError(
+          "no_recipients",
+          "the message yields no recipient to reply to"
+        )
+      return propose({
+        kind: "email.reply",
+        args: {
+          messageId: args.messageId,
+          messageSha256: sha256,
+          replyAll: args.replyAll,
+          to,
+          ...(cc.length === 0 ? {} : { cc }),
+          body: args.body,
+        } satisfies EmailReplyIntent["args"],
+      })
+    },
+    forward: (args: GmailForwardRequest) =>
+      propose({
+        kind: "email.forward",
+        args: {
+          messageId: args.messageId,
+          messageSha256: target(args.messageId).sha256,
+          to: args.to,
+          ...(args.note === undefined ? {} : { note: args.note }),
+        } satisfies EmailForwardIntent["args"],
+      }),
     trash: (args: EmailTrashIntent["args"]) =>
       propose({ kind: "email.trash", args }),
   }

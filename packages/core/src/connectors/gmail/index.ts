@@ -20,6 +20,8 @@ export type {
   GmailAttachmentText,
   GmailFacade,
   GmailFacadeDeps,
+  GmailForwardRequest,
+  GmailReplyRequest,
   GmailIntentReceipt,
   GmailMessage,
   Untrusted as GmailUntrusted,

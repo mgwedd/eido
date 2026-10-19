@@ -112,6 +112,31 @@ describe("initial sync", () => {
     ).toEqual(["gm-a"])
   })
 
+  test("stores the From and To addresses of the message", async () => {
+    gmail.add({
+      id: "gm-a",
+      threadId: "th-a",
+      labelIds: ["INBOX"],
+      raw: rfc822({
+        messageId: "a@mail.example.com",
+        subject: "Lorem",
+        body: "Dolor.",
+        from: "Ada Sender <ada@example.com>",
+        to: "owner@example.com",
+      }),
+    })
+    await syncGmailLabel(db, client, "INBOX", config)
+    expect(
+      db
+        .prepare("SELECT role, address FROM mail_addresses ORDER BY role")
+        .all()
+        .map((row) => [row["role"], row["address"]])
+    ).toEqual([
+      ["from", "ada@example.com"],
+      ["to", "owner@example.com"],
+    ])
+  })
+
   test("stores a text attachment's text as its own document", async () => {
     gmail.add({
       id: "gm-b",

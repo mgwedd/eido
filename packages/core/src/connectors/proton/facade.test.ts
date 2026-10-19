@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto"
 import type { IntentClient } from "@eido/gate"
+import { validateIntent } from "@eido/schemas"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import { openIndex } from "../../index/index"
 import { createProtonFacade } from "./facade"
@@ -28,7 +30,14 @@ function setup() {
       })
     }),
   } as unknown as IntentClient
-  return { proposals, facade: createProtonFacade({ db, intents }) }
+  return {
+    proposals,
+    facade: createProtonFacade({
+      db,
+      intents,
+      identity: "assistant@example.com",
+    }),
+  }
 }
 
 const manifest = protonManifest(
@@ -46,14 +55,11 @@ describe("write verbs", () => {
       await facade.send({ to: ["a@example.com"], subject: "s", body: "b" }),
       await facade.reply({
         messageId: "<a@example.com>",
-        messageSha256: "a".repeat(64),
         replyAll: false,
-        to: ["a@example.com"],
         body: "b",
       }),
       await facade.forward({
         messageId: "<a@example.com>",
-        messageSha256: "a".repeat(64),
         to: ["a@example.com"],
       }),
       await facade.trash({ messageIds: ["<a@example.com>"] }),
@@ -78,6 +84,8 @@ describe("write verbs", () => {
   })
 
   test("draft creation yields an auto intent; send, reply, forward and trash yield approval intents", async () => {
+    source.addFolder("INBOX", "1", [{ uid: 1, raw: plainMessage("a") }])
+    await syncFolder(db, source, "INBOX", 10)
     const { facade, proposals } = setup()
     await callAll(facade)
     const tiers = proposals.map((p) => [
@@ -111,6 +119,7 @@ describe("write verbs", () => {
     const proposals: unknown[] = []
     const facade = createProtonFacade({
       db,
+      identity: "assistant@example.com",
       origin: "proactive",
       intents: {
         propose: (p: unknown) => {
@@ -121,6 +130,135 @@ describe("write verbs", () => {
     })
     await facade.trash({ messageIds: ["<a@example.com>"] })
     expect(proposals[0]).toMatchObject({ origin: "proactive" })
+  })
+})
+
+describe("reply and forward fill what the model cannot", () => {
+  const sha = (bytes: Uint8Array) =>
+    createHash("sha256").update(bytes).digest("hex")
+  const full = raw([
+    "From: Ada Example <ada@example.com>",
+    "Reply-To: Desk <Desk@example.com>",
+    "To: Assistant <assistant@example.com>, Bob <bob@example.com>",
+    "Cc: Carol <carol@example.com>, DESK@example.com",
+    "Subject: Plan",
+    "Message-ID: <full@example.com>",
+    "Date: Mon, 05 Oct 2026 10:00:00 +0000",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "body",
+  ])
+  const lastIntent = (proposals: { intent: unknown }[]) =>
+    proposals[proposals.length - 1]?.intent
+
+  async function indexed() {
+    source.addFolder("INBOX", "1", [
+      { uid: 1, raw: full },
+      { uid: 2, raw: plainMessage("a") },
+      {
+        uid: 3,
+        raw: raw([
+          "Message-ID: <nobody@example.com>",
+          "Subject: x",
+          "",
+          "no addresses",
+        ]),
+      },
+    ])
+    await syncFolder(db, source, "INBOX", 10)
+    return setup()
+  }
+
+  test("the hash is that of the raw bytes core indexed, never the model's", async () => {
+    const { facade, proposals } = await indexed()
+    await facade.reply({
+      messageId: "<full@example.com>",
+      replyAll: false,
+      body: "b",
+      // Model output can carry extra fields whatever the type says.
+      ...{ messageSha256: "f".repeat(64), to: ["mallory@example.invalid"] },
+    })
+    expect(lastIntent(proposals)).toEqual({
+      kind: "email.reply",
+      args: {
+        messageId: "<full@example.com>",
+        messageSha256: sha(full),
+        replyAll: false,
+        to: ["Desk@example.com"],
+        body: "b",
+      },
+    })
+    await facade.forward({
+      messageId: "<full@example.com>",
+      to: ["dan@example.com"],
+      note: "FYI",
+      ...{ messageSha256: "f".repeat(64) },
+    })
+    expect(lastIntent(proposals)).toEqual({
+      kind: "email.forward",
+      args: {
+        messageId: "<full@example.com>",
+        messageSha256: sha(full),
+        to: ["dan@example.com"],
+        note: "FYI",
+      },
+    })
+  })
+
+  test("a plain reply goes to From when there is no Reply-To", async () => {
+    const { facade, proposals } = await indexed()
+    await facade.reply({
+      messageId: "<a@example.com>",
+      replyAll: false,
+      body: "b",
+    })
+    expect(lastIntent(proposals)).toMatchObject({
+      args: { to: ["ada@example.com"] },
+    })
+  })
+
+  test("reply-all adds To and Cc minus the assistant and duplicates, with Cc apart, and the intent validates", async () => {
+    const { facade, proposals } = await indexed()
+    await facade.reply({
+      messageId: "<full@example.com>",
+      replyAll: true,
+      body: "b",
+    })
+    const intent = lastIntent(proposals)
+    expect(intent).toMatchObject({
+      args: {
+        to: ["Desk@example.com"],
+        cc: ["bob@example.com", "carol@example.com"],
+      },
+    })
+    expect(validateIntent(intent).ok).toBe(true)
+  })
+
+  test("an unknown message throws not_found and proposes nothing", async () => {
+    const { facade, proposals } = await indexed()
+    expect(() =>
+      facade.reply({
+        messageId: "<none@example.com>",
+        replyAll: false,
+        body: "b",
+      })
+    ).toThrow(expect.objectContaining({ code: "not_found" }))
+    expect(() =>
+      facade.forward({ messageId: "<none@example.com>", to: ["a@example.com"] })
+    ).toThrow(expect.objectContaining({ code: "not_found" }))
+    expect(proposals).toEqual([])
+  })
+
+  test("a message with no sender throws no_recipients and proposes nothing", async () => {
+    const { facade, proposals } = await indexed()
+    expect(() =>
+      facade.reply({
+        messageId: "<nobody@example.com>",
+        replyAll: true,
+        body: "b",
+      })
+    ).toThrow(expect.objectContaining({ code: "no_recipients" }))
+    expect(proposals).toEqual([])
   })
 })
 

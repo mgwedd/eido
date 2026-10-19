@@ -4,6 +4,7 @@ import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
 import type { ProtonConfig } from "./config"
 import { isTextMime, parseMessage, attachmentText } from "../mail/parse"
+import { extractAddresses } from "../reply-target"
 import { callSource } from "./source"
 import type { ProtonMailSource } from "./source"
 
@@ -63,6 +64,7 @@ async function toDocuments(
         name: a.name ?? a.address,
       })),
     ],
+    addresses: await extractAddresses(raw),
     content: raw,
   }
   // One document per attachment, keyed off the message's hash so the same file attached to two

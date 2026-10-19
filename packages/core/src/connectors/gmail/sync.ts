@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
 import { attachmentText, parseMessage } from "../mail/parse"
+import { extractAddresses } from "../reply-target"
 import type { GmailClient, RawMessage } from "./client"
 import type { GmailConfig } from "./config"
 import { GmailError } from "./errors"
@@ -89,6 +90,7 @@ async function toDocuments(message: RawMessage): Promise<IndexedDocument[]> {
         name: a.name ?? a.address,
       })),
     ],
+    addresses: await extractAddresses(message.raw),
     content: message.raw,
   }
   const attachments = parsed.attachments.map(

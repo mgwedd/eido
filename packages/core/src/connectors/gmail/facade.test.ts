@@ -50,7 +50,11 @@ let facade: GmailFacade
 beforeEach(() => {
   db = openIndex(":memory:")
   intents = fakeIntents()
-  facade = createGmailFacade({ db, intents: intents.client })
+  facade = createGmailFacade({
+    db,
+    intents: intents.client,
+    identity: "assistant@example.com",
+  })
   ingestBatch(db, {
     connector: "gmail",
     stream: "INBOX",
@@ -62,6 +66,14 @@ beforeEach(() => {
         body: "Lorem ipsum dolor quarterly.",
         occurredAt: "2026-10-19T09:00:00.000Z",
         headers: { messageId: "m1@mail.example.com", threadId: "th-1" },
+        addresses: [
+          { role: "from", address: "ada@example.com" },
+          { role: "reply_to", address: "desk@example.com" },
+          { role: "to", address: "assistant@example.com" },
+          { role: "to", address: "bob@example.com" },
+          { role: "cc", address: "Carol@Example.com" },
+          { role: "cc", address: "ADA@example.com" },
+        ],
       }),
       gmailDoc({
         sourceRef: "gm-2",
@@ -109,26 +121,23 @@ const draft = { to: ["ada@example.com"], subject: "Lorem", body: "Ipsum" }
 const label = { messageIds: ["gm-1"], add: ["Label_1"] }
 const ids = { messageIds: ["gm-1"] }
 const markRead = { messageIds: ["gm-1"], read: true }
+const replyRequest = { messageId: "gm-1", replyAll: false, body: "Ipsum" }
+const forwardRequest = { messageId: "gm-1", to: ["bob@example.com"] }
+// What core fills in: the hash of the indexed message, and the recipients the message yields.
 const reply = {
-  messageId: "gm-1",
+  ...replyRequest,
   messageSha256: sha("gm-1"),
-  replyAll: false,
-  to: ["ada@example.com"],
-  body: "Ipsum",
+  to: ["desk@example.com"],
 }
-const forward = {
-  messageId: "gm-1",
-  messageSha256: sha("gm-1"),
-  to: ["bob@example.com"],
-}
+const forward = { ...forwardRequest, messageSha256: sha("gm-1") }
 const WRITES: Case[] = [
   ["draft_create", "email.draft", draft, (f) => f.draft_create(draft)],
   ["label", "email.label", label, (f) => f.label(label)],
   ["archive", "email.archive", ids, (f) => f.archive(ids)],
   ["mark_read", "email.markRead", markRead, (f) => f.mark_read(markRead)],
   ["send", "email.send", draft, (f) => f.send(draft)],
-  ["reply", "email.reply", reply, (f) => f.reply(reply)],
-  ["forward", "email.forward", forward, (f) => f.forward(forward)],
+  ["reply", "email.reply", reply, (f) => f.reply(replyRequest)],
+  ["forward", "email.forward", forward, (f) => f.forward(forwardRequest)],
   ["trash", "email.trash", ids, (f) => f.trash(ids)],
 ]
 
@@ -165,10 +174,79 @@ describe("write verbs", () => {
     const tasks = createGmailFacade({
       db,
       intents: intents.client,
+      identity: "assistant@example.com",
       origin: "task",
     })
     await tasks.archive({ messageIds: ["gm-1"] })
     expect(intents.proposals[0]?.origin).toBe("task")
+  })
+})
+
+describe("reply and forward fill what the model cannot", () => {
+  const lastIntent = () =>
+    intents.proposals[intents.proposals.length - 1]?.intent
+
+  test("the hash is the indexed message's and a model-supplied hash or recipients are dropped", async () => {
+    // Model output can carry extra fields whatever the type says.
+    const fromModel = {
+      ...replyRequest,
+      messageSha256: "f".repeat(64),
+      to: ["mallory@example.invalid"],
+      cc: ["mallory@example.invalid"],
+    }
+    await facade.reply(fromModel)
+    expect(lastIntent()).toEqual({
+      kind: "email.reply",
+      args: {
+        ...replyRequest,
+        messageSha256: sha("gm-1"),
+        to: ["desk@example.com"],
+      },
+    })
+    await facade.forward({
+      ...forwardRequest,
+      messageSha256: "f".repeat(64),
+    } as typeof forwardRequest)
+    expect(lastIntent()).toEqual({
+      kind: "email.forward",
+      args: { ...forwardRequest, messageSha256: sha("gm-1") },
+    })
+  })
+
+  test("reply-all adds To and Cc, minus the assistant and anyone already listed, with Cc kept apart", async () => {
+    await facade.reply({ ...replyRequest, replyAll: true })
+    expect(lastIntent()).toEqual({
+      kind: "email.reply",
+      args: {
+        ...replyRequest,
+        replyAll: true,
+        messageSha256: sha("gm-1"),
+        to: ["desk@example.com"],
+        cc: ["bob@example.com", "Carol@Example.com", "ADA@example.com"],
+      },
+    })
+  })
+
+  test("a note on a forward is kept", async () => {
+    await facade.forward({ ...forwardRequest, note: "FYI" })
+    expect(lastIntent()).toMatchObject({ args: { note: "FYI" } })
+  })
+
+  test("a reply to a message that is not indexed, or that is an attachment, throws not_found and proposes nothing", () => {
+    expect(() =>
+      facade.reply({ ...replyRequest, messageId: "gm-none" })
+    ).toThrow(expect.objectContaining({ code: "not_found" }))
+    expect(() =>
+      facade.forward({ ...forwardRequest, messageId: "gm-1#0" })
+    ).toThrow(expect.objectContaining({ code: "not_found" }))
+    expect(intents.proposals).toEqual([])
+  })
+
+  test("a message that yields no recipient throws no_recipients", () => {
+    expect(() => facade.reply({ ...replyRequest, messageId: "gm-2" })).toThrow(
+      expect.objectContaining({ code: "no_recipients" })
+    )
+    expect(intents.proposals).toEqual([])
   })
 })
 

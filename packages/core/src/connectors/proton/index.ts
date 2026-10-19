@@ -15,6 +15,8 @@ export type {
   MailDocument,
   ProtonFacade,
   ProtonFacadeDeps,
+  ForwardRequest,
+  ReplyRequest,
 } from "./facade"
 export {
   CONNECTOR_NAME,
