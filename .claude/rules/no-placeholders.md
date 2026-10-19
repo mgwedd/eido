@@ -10,3 +10,5 @@
 - Link the issues in the PR body and in your report, so the gap is visible rather than hidden in the code.
 - No explanatory how-it-works text in the UI. Definitions go on the page's side board; use a tooltip only where something needs clarifying.
 - UI copy never claims something no issue implements, for example that a payload was hashed on the device before #94 ships.
+- The design pages are clickable prototypes. Their state switchers, "illustrative" tags, sample data and spec-board annotations are for review and do not ship. Every other control in a design is a requirement: build it fully, or leave it out and open an issue. A shipped control never does nothing, never fakes a result, and never shows a state it cannot reach.
+- Before opening a PR, click every control you added and confirm it has an effect, and list in the PR body any designed control you left out with its issue.
