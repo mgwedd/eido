@@ -11,13 +11,13 @@ import { ThemeProvider } from "../components/theme-provider"
 let container: HTMLElement
 let root: Root
 
-beforeEach(async () => {
+beforeEach(() => {
   window.localStorage.clear()
   document.documentElement.className = ""
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
-  await act(async () => {
+  act(() => {
     root.render(
       <ThemeProvider>
         <input data-testid="field" />
@@ -27,13 +27,15 @@ beforeEach(async () => {
   })
 })
 
-afterEach(async () => {
-  await act(async () => root.unmount())
+afterEach(() => {
+  act(() => {
+    root.unmount()
+  })
   container.remove()
 })
 
 function press(init: KeyboardEventInit, target: EventTarget = document.body) {
-  return act(async () => {
+  return act(() => {
     target.dispatchEvent(
       new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init })
     )
@@ -42,45 +44,45 @@ function press(init: KeyboardEventInit, target: EventTarget = document.body) {
 
 const isDark = () => document.documentElement.classList.contains("dark")
 
-test("starts dark and toggles with the d key", async () => {
+test("starts dark and toggles with the d key", () => {
   expect(isDark()).toBe(true)
-  await press({ key: "d" })
+  press({ key: "d" })
   expect(isDark()).toBe(false)
-  await press({ key: "D" })
+  press({ key: "D" })
   expect(isDark()).toBe(true)
 })
 
-test("ignores other keys, modifiers and repeats", async () => {
-  await press({ key: "x" })
-  await press({ key: "d", metaKey: true })
-  await press({ key: "d", ctrlKey: true })
-  await press({ key: "d", altKey: true })
-  await press({ key: "d", repeat: true })
+test("ignores other keys, modifiers and repeats", () => {
+  press({ key: "x" })
+  press({ key: "d", metaKey: true })
+  press({ key: "d", ctrlKey: true })
+  press({ key: "d", altKey: true })
+  press({ key: "d", repeat: true })
   expect(isDark()).toBe(true)
 })
 
-test("ignores events that were already handled", async () => {
+test("ignores events that were already handled", () => {
   const handled = (event: Event) => event.preventDefault()
   document.body.addEventListener("keydown", handled)
-  await press({ key: "d" })
+  press({ key: "d" })
   document.body.removeEventListener("keydown", handled)
   expect(isDark()).toBe(true)
 })
 
-test("does not toggle while typing in a form field", async () => {
+test("does not toggle while typing in a form field", () => {
   const field = container.querySelector("input")!
-  await press({ key: "d" }, field)
+  press({ key: "d" }, field)
   expect(isDark()).toBe(true)
 })
 
-test("does not toggle while typing in an editable element", async () => {
+test("does not toggle while typing in an editable element", () => {
   const editable = container.querySelector("[data-testid=editable]")!
   Object.defineProperty(editable, "isContentEditable", { value: true })
-  await press({ key: "d" }, editable)
+  press({ key: "d" }, editable)
   expect(isDark()).toBe(true)
 })
 
-test("toggles when the event target is not an element", async () => {
-  await press({ key: "d" }, window)
+test("toggles when the event target is not an element", () => {
+  press({ key: "d" }, window)
   expect(isDark()).toBe(false)
 })
