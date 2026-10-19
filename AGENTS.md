@@ -47,6 +47,7 @@ Work is issue-driven and worktree-driven. Read the rule file before you do the t
 - Issues: every feature, bug and open question is an issue with acceptance criteria; claim it (assign yourself) before starting. `.claude/rules/github-issues.md`
 - No placeholders, fake features or dead ends: leave unfinished work out and open an issue for it. `.claude/rules/no-placeholders.md`
 - Design and plan: every UI issue links its design page and plan section; the live artifact wins over exported images. `.claude/rules/design-and-plan-traceability.md`
+- Subagents: do small issues directly, use a subagent per independent piece for medium and large ones. `.claude/rules/subagent-development.md`, agent `.claude/agents/issue-implementer.md`
 - Commits and PR titles: Conventional Commits. `.claude/rules/conventional-commits.md`
 - TypeScript: types from `@eido/schemas`, no `any`, no casts on external input, TypeScript only. `.claude/rules/typescript.md`
 - Tests: run only the affected tests while iterating, everything before the PR. `.claude/rules/testing.md`, `.claude/rules/affected-tests.md`
