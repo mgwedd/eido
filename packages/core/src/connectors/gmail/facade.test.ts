@@ -2,12 +2,13 @@ import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import type { IntentClient, IntentProposal } from "@eido/gate"
 import { validateIntent } from "@eido/schemas"
-import { beforeEach, describe, expect, test } from "vitest"
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { ingestBatch, openIndex } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
 import { createGmailFacade } from "./facade"
 import type { GmailFacade } from "./facade"
-import { createFakeGmail } from "./fake-gmail.test-support"
+import { resolveGmailConfig } from "./config"
+import { gmailManifest } from "./manifest"
 
 const sha = (s: string): string => createHash("sha256").update(s).digest("hex")
 
@@ -115,32 +116,33 @@ const WRITES: Case[] = [
   ["trash", "email.trash", ids, (f) => f.trash(ids)],
 ]
 
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
 describe("write verbs", () => {
   test.each(WRITES)(
     "%s proposes a valid %s intent, returns its id and makes no Gmail request",
     async (_verb, kind, args, call) => {
-      const gmail = createFakeGmail()
+      // Any network use would go through fetch; the facade must make none.
+      const fetch = vi.fn(() =>
+        Promise.reject(new Error("no network in the facade"))
+      )
+      vi.stubGlobal("fetch", fetch)
       expect(await call(facade)).toEqual({ intentId: "int-1" })
       expect(intents.proposals).toEqual([
         { intent: { kind, args }, origin: "reactive" },
       ])
       expect(validateIntent(intents.proposals[0]?.intent).ok).toBe(true)
-      // The facade is never handed a Gmail transport; the fake confirms nothing reached one.
-      expect(gmail.requests).toEqual([])
+      expect(fetch).not.toHaveBeenCalled()
     }
   )
 
   test("covers every write verb in the manifest", () => {
-    expect(WRITES.map(([verb]) => verb).sort()).toEqual([
-      "archive",
-      "draft_create",
-      "forward",
-      "label",
-      "mark_read",
-      "reply",
-      "send",
-      "trash",
-    ])
+    const writes = gmailManifest(resolveGmailConfig())
+      .operations.filter((op) => op.effect === "write")
+      .map((op) => op.name)
+    expect(WRITES.map(([verb]) => verb).sort()).toEqual(writes.sort())
   })
 
   test("proposes with the configured origin", async () => {
@@ -151,16 +153,6 @@ describe("write verbs", () => {
     })
     await tasks.archive({ messageIds: ["gm-1"] })
     expect(intents.proposals[0]?.origin).toBe("task")
-  })
-
-  test("a message marked read stays in the index and in search", async () => {
-    await facade.mark_read({ messageIds: ["gm-1"], read: true })
-    expect(facade.mail_get({ messageId: "gm-1" })?.subject).toBe(
-      "Quarterly lorem"
-    )
-    expect(
-      facade.mail_search({ text: "quarterly" }).map((h) => h.sourceRef)
-    ).toContain("gm-1")
   })
 })
 

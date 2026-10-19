@@ -160,6 +160,20 @@ describe("manifest", () => {
     ).toEqual([])
   })
 
+  // The gate's mark read writer (packages/gate/src/internal/gmail-writers.ts) posts to this same
+  // literal; the executor refuses a request whose route the manifest does not pin.
+  test("pins mark read to Gmail's batchModify, the route the gate's writer uses", () => {
+    expect(
+      manifest.operations.find((op) => op.name === "mark_read")?.routes
+    ).toEqual([
+      {
+        host: "gmail.googleapis.com",
+        method: "POST",
+        pathPattern: "/gmail/v1/users/me/messages/batchModify",
+      },
+    ])
+  })
+
   test("egress names the Gmail API and the OAuth token host only", () => {
     expect(manifest.egress.hosts.map((h) => h.host)).toEqual([
       "gmail.googleapis.com",

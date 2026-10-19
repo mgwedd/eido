@@ -212,6 +212,6 @@ describe("gmailMarkReadWriter", () => {
       new URL("./gmail-writers.ts", import.meta.url),
       "utf8"
     )
-    expect(source).not.toMatch(/batchDelete|emptyTrash|"DELETE"/i)
+    expect(source).not.toMatch(/batchDelete|emptyTrash|["'`]DELETE["'`]/i)
   })
 })

@@ -295,7 +295,7 @@ describe("no permanent delete", () => {
     expect(sources).toContain("client.ts")
     for (const file of sources) {
       const text = readFileSync(new URL(file, dir), "utf8")
-      expect(text, file).not.toMatch(/batchDelete|emptyTrash|"DELETE"/)
+      expect(text, file).not.toMatch(/batchDelete|emptyTrash|["'`]DELETE["'`]/)
     }
   })
 })

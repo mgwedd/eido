@@ -14,7 +14,7 @@ export type FakeMessage = {
 type HistoryRecord = {
   id: number
   messageId: string
-  kind: "messageAdded" | "labelAdded"
+  kind: "messageAdded" | "labelAdded" | "labelRemoved"
   labelIds: string[]
 }
 
@@ -112,6 +112,15 @@ export function createFakeGmail() {
     })
   }
 
+  /** Removes a label, as marking read (UNREAD) or archiving (INBOX) does. */
+  function removeLabel(id: string, label: string) {
+    const message = messages.find((m) => m.id === id)
+    if (message === undefined) throw new Error(`no message ${id}`)
+    historyId += 1
+    message.labelIds = message.labelIds.filter((l) => l !== label)
+    history.push({ id: historyId, messageId: id, kind: "labelRemoved", labelIds: [label] })
+  }
+
   function page<T>(items: T[], url: URL): { slice: T[]; next?: string } {
     const size = Number(url.searchParams.get("maxResults") ?? "100")
     const start = Number(url.searchParams.get("pageToken") ?? "0")
@@ -185,7 +194,7 @@ export function createFakeGmail() {
                 ],
               }
             : {
-                labelsAdded: [
+                [h.kind === "labelAdded" ? "labelsAdded" : "labelsRemoved"]: [
                   { message: { id: h.messageId }, labelIds: h.labelIds },
                 ],
               }),
@@ -213,6 +222,7 @@ export function createFakeGmail() {
     requests,
     add,
     addLabel,
+    removeLabel,
     /** Makes every history id up to now too old to replay. */
     expireHistory: () => {
       oldestHistoryId = historyId
