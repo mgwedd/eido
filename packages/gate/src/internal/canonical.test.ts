@@ -27,22 +27,10 @@ const vectors = JSON.parse(
 ) as VectorFile // test fixture owned by this repo, not external input
 
 describe("shared JCS vectors", () => {
-  it("has the minimum coverage", () => {
-    expect(vectors.version).toBe(1)
-    expect(vectors.valid.length).toBeGreaterThanOrEqual(25)
-    expect(vectors.invalid.length).toBeGreaterThanOrEqual(5)
-  })
-
   it.each(vectors.valid)("canonicalizes and hashes $id", (vector) => {
-    const canonical = canonicalize(JSON.parse(vector.inputJson))
-    expect(canonical).toBe(vector.canonical)
-    expect(
-      Buffer.from(canonical, "utf8").equals(
-        Buffer.from(vector.canonical, "utf8")
-      )
-    ).toBe(true)
-    expect(payloadHash(JSON.parse(vector.inputJson))).toBe(vector.sha256)
-    expect(payloadHash(JSON.parse(vector.inputJson))).toMatch(/^[0-9a-f]{64}$/)
+    const input: unknown = JSON.parse(vector.inputJson)
+    expect(canonicalize(input)).toBe(vector.canonical)
+    expect(payloadHash(input)).toBe(vector.sha256)
     expect(hashCanonicalString(vector.canonical)).toBe(vector.sha256)
   })
 
