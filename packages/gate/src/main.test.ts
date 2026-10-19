@@ -353,7 +353,7 @@ describe("gateConfig with Bridge", () => {
 
 describe("runGate with Bridge", () => {
   const USER = "assistant@example.invalid"
-  const PASSWORD = "synthetic-bridge-password-5d20"
+  const BRIDGE_SECRET = "synthetic-bridge-secret-5d20"
   const message = rawMessage({
     messageId: "<one@example.invalid>",
     subject: "One",
@@ -366,12 +366,12 @@ describe("runGate with Bridge", () => {
   })
 
   async function bridged(
-    vaultPassword: string,
+    vaultEntry: string,
     devVault = true
   ): Promise<GateConfig> {
     fake = await startFakeBridge({
       username: USER,
-      password: PASSWORD,
+      password: BRIDGE_SECRET,
       mailboxes: {
         INBOX: {
           uidValidity: 1700000001,
@@ -385,7 +385,7 @@ describe("runGate with Bridge", () => {
     const vaultPath = join(dir, "vault", "dev.json")
     await new FileVault({ path: vaultPath, devFlag: true }).set(
       BRIDGE_PASSWORD_KEY,
-      vaultPassword
+      vaultEntry
     )
     return {
       ...config(),
@@ -406,7 +406,7 @@ describe("runGate with Bridge", () => {
   }
 
   it("serves the mail reads to core over the data-plane socket", async () => {
-    const c = await bridged(PASSWORD)
+    const c = await bridged(BRIDGE_SECRET)
     const gate = await runGate(c)
     try {
       const mail = createProtonMailClient({ socketPath: c.socketPath })
@@ -432,7 +432,7 @@ describe("runGate with Bridge", () => {
   })
 
   it("raises auth_failed to core and keeps the password out of the log and audit", async () => {
-    const wrong = "synthetic-wrong-password-77b1"
+    const wrong = "synthetic-wrong-secret-77b1"
     const c = await bridged(wrong)
     const gate = await runGate(c)
     let caught: unknown
@@ -459,7 +459,7 @@ describe("runGate with Bridge", () => {
   })
 
   it("does not start when the development vault flag is off", async () => {
-    const c = await bridged(PASSWORD, false)
+    const c = await bridged(BRIDGE_SECRET, false)
     await expect(runGate(c)).rejects.toThrow(
       "FileVault is for development only"
     )
