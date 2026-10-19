@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePendingIntentList",
+  "description": "Response of the pending-approvals list: intents in state pending, without payload bodies (#11 listPendingIntents, plus origin, which #33 needs).",
+  "type": "object",
+  "properties": {
+    "intents": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "title": "GatePendingIntentSummary",
+        "description": "One pending intent.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "tier": {
+            "const": "approval"
+          },
+          "state": {
+            "const": "pending"
+          },
+          "origin": {
+            "$ref": "gate-intent-origin.schema.json"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 20,
+            "maxLength": 40
+          },
+          "editedFrom": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": ["id", "kind", "tier", "state", "origin", "createdAt"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["intents"],
+  "additionalProperties": false
+}

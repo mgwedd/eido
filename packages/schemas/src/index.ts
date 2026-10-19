@@ -10,6 +10,16 @@ export {
 } from "./generated/prompt"
 export {
   INTENT_JSON_SCHEMA,
+  validateGateApiError,
+  validateGateAuditChainStatus,
+  validateGateAuditPage,
+  validateGateAuditPageRequest,
+  validateGateConnectorHealth,
+  validateGateDecisionRequest,
+  validateGateDecisionResult,
+  validateGateIntentHistory,
+  validateGatePendingIntentList,
+  validateGatePrepareApproval,
   validateIntent,
   validateIntentResult,
   validateProfileAccountAssignment,
