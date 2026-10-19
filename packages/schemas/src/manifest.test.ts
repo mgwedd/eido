@@ -267,3 +267,65 @@ describe("validateConnectorManifest", () => {
     ).toEqual(["$.version: expected integer, got number"])
   })
 })
+
+describe("operation HTTP routes", () => {
+  test("accepts an exact path and whole-segment parameter under the host prefix", () => {
+    const m = fixture()
+    opAt(m, 0).routes = [
+      {
+        host: "api.example.com",
+        method: "GET",
+        pathPattern: "/v1/messages/{id}",
+      },
+    ]
+    expect(validateConnectorManifest(m).ok).toBe(true)
+  })
+  test.each([
+    {
+      host: "other.example.com",
+      method: "GET",
+      pathPattern: "/v1/messages/{id}",
+    },
+    {
+      host: "api.example.com",
+      method: "DELETE",
+      pathPattern: "/v1/messages/{id}",
+    },
+    {
+      host: "api.example.com",
+      method: "GET",
+      pathPattern: "/v1/messages-other/{id}",
+    },
+    {
+      host: "api.example.com",
+      method: "GET",
+      pathPattern: "/v1/{collection}/{id}",
+    },
+    {
+      host: "api.example.com",
+      method: "GET",
+      pathPattern: "/v1/messages/x{id}",
+    },
+    {
+      host: "api.example.com",
+      method: "GET",
+      pathPattern: "/v1/messages/../drafts",
+    },
+    {
+      host: "api.example.com",
+      method: "GET",
+      pathPattern: "/v1/messages/{id}/",
+    },
+    { host: "api.example.com", method: "GET", pathPattern: "/v1/messages/*" },
+  ])(
+    "rejects routes that exceed or ambiguously encode the pinned egress: %j",
+    (route) => {
+      expect(
+        validateConnectorManifest({
+          ...fixture(),
+          operations: [{ ...opAt(fixture(), 0), routes: [route] }],
+        }).ok
+      ).toBe(false)
+    }
+  )
+})

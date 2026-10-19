@@ -50,6 +50,11 @@ export interface ConnectorOperation {
   authScopes: Array<string>
   intentKind?: string
   defaultTier: ConnectorTier
+  routes?: Array<{
+    host: string
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+    pathPattern: string
+  }>
 }
 
 /** Approval tier for one connector operation: auto runs without asking, approval needs a signed approval, forbidden never runs. */

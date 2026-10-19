@@ -92,6 +92,43 @@ function semanticErrors(manifest: ConnectorManifest): string[] {
         `${path}.defaultTier: an irreversible operation cannot default to auto`
       )
     }
+    for (const route of op.routes ?? []) {
+      const host = manifest.egress.hosts.find(
+        (entry) => entry.host === route.host
+      )
+      const literal = route.pathPattern.replace(
+        /\{[A-Za-z][A-Za-z0-9_]*\}/g,
+        "segment"
+      )
+      if (!isLiteralPathPrefix(literal) || route.pathPattern.endsWith("/")) {
+        errors.push(`${path}.routes: invalid path pattern`)
+      }
+      if (
+        host !== undefined &&
+        !host.pathPrefixes.some(
+          (prefix) =>
+            route.pathPattern === prefix ||
+            route.pathPattern.startsWith(
+              prefix.endsWith("/") ? prefix : `${prefix}/`
+            )
+        )
+      ) {
+        errors.push(`${path}.routes: path must be under an egress path prefix`)
+      }
+      if (host === undefined || !host.methods.includes(route.method)) {
+        errors.push(`${path}.routes: host and method must be in egress.hosts`)
+      }
+      if (
+        route.pathPattern
+          .split("/")
+          .some(
+            (part) =>
+              part.includes("{") && !/^\{[A-Za-z][A-Za-z0-9_]*\}$/.test(part)
+          )
+      ) {
+        errors.push(`${path}.routes: parameters must occupy a whole segment`)
+      }
+    }
     for (const scope of op.authScopes) {
       if (!scopes.has(scope)) {
         errors.push(
