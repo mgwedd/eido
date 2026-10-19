@@ -7,15 +7,21 @@ import {
   validateGateAuditRecordRequest,
   validateGateAuditRecordResult,
   validateGateConnectorHealth,
+  validateGateCredentialStatus,
   validateGateDecisionRequest,
   validateGateDecisionResult,
+  validateGateEditRequest,
   validateGateIntentHistory,
   validateGateIntentProposal,
   validateGateIntentStatus,
+  validateGateLoginOptions,
+  validateGateLoginRequest,
   validateGatePendingIntentList,
   validateGatePrepareApproval,
   validateGateProposeRefusal,
   validateGateProposeResult,
+  validateGateRejectReason,
+  validateGateSession,
 } from "./index"
 import type { ValidationResult } from "./index"
 
@@ -48,6 +54,14 @@ describe("pending intent list", () => {
   const list = {
     intents: [PENDING_ITEM, { ...PENDING_ITEM, editedFrom: "i-0" }],
   }
+
+  test("accepts an item with a rationale", () => {
+    expect(
+      validateGatePendingIntentList({
+        intents: [{ ...PENDING_ITEM, rationale: "Lorem ipsum." }],
+      }).ok
+    ).toBe(true)
+  })
 
   test("accepts a valid list, including an empty one", () => {
     expect(validateGatePendingIntentList(list).ok).toBe(true)
@@ -179,7 +193,7 @@ describe("prepare approval", () => {
     payloadHash: HASH,
     nonce: NONCE,
     contextPackId: "cp-1",
-    sources: [{ documentId: "d-1", name: "Quote.pdf" }],
+    documentIds: ["d-1"],
   }
 
   test("accepts a valid response", () => {
@@ -214,15 +228,36 @@ describe("prepare approval", () => {
     ).toEqual(['$.state: must be "pending"'])
   })
 
-  test("rejects a source without a name", () => {
+  test("requires the document ids, an empty list included, and holds no names", () => {
+    expect(
+      validateGatePrepareApproval({ ...prepared, documentIds: [] }).ok
+    ).toBe(true)
+    expect(
+      errorsOf(validateGatePrepareApproval(without(prepared, "documentIds")))
+    ).toEqual(["$.documentIds: required"])
     expect(
       errorsOf(
         validateGatePrepareApproval({
           ...prepared,
-          sources: [{ documentId: "d-1" }],
+          documentIds: [{ documentId: "d-1", name: "Quote.pdf" }],
         })
       )
-    ).toEqual(["$.sources[0].name: required"])
+    ).toEqual(["$.documentIds[0]: expected string, got object"])
+  })
+
+  test("accepts a rationale and rejects an empty one", () => {
+    expect(
+      validateGatePrepareApproval({ ...prepared, rationale: "Lorem ipsum." }).ok
+    ).toBe(true)
+    expect(
+      errorsOf(validateGatePrepareApproval({ ...prepared, rationale: "" }))
+    ).toEqual(["$.rationale: needs at least 1 characters"])
+  })
+
+  test("never carries the challenge", () => {
+    expect(
+      errorsOf(validateGatePrepareApproval({ ...prepared, challenge: NONCE }))
+    ).toEqual(["$.challenge: unknown key"])
   })
 })
 
@@ -285,6 +320,20 @@ describe("decision request", () => {
     ).toEqual(["$.assertion: unknown key"])
   })
 
+  test("rejects a reason code outside the decided list", () => {
+    expect(
+      errorsOf(
+        validateGateDecisionRequest({
+          intentId: "i-1",
+          decision: "rejected",
+          reasonCode: "not_now",
+        })
+      )
+    ).toEqual([
+      '$.reasonCode: must be one of "wrong_recipient", "wrong_content", "wrong_tone", "wrong_time", "not_needed", "other"',
+    ])
+  })
+
   test("rejects an unknown decision and an oversized clientDataJSON", () => {
     expect(
       errorsOf(
@@ -330,7 +379,7 @@ describe("decision result and error", () => {
     expect(
       errorsOf(validateGateApiError({ code: "teapot", message: "x" }))
     ).toEqual([
-      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unavailable"',
+      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable"',
     ])
     expect(
       errorsOf(validateGateApiError({ code: "not_found", message: "" }))
@@ -482,6 +531,17 @@ describe("intent proposal", () => {
     intent: { kind: "email.send", args: { anything: "the gate checks it" } },
     origin: "reactive",
   }
+
+  test("accepts a rationale and rejects one over 2000 characters", () => {
+    expect(
+      validateGateIntentProposal({ ...proposal, rationale: "Lorem ipsum." }).ok
+    ).toBe(true)
+    expect(
+      errorsOf(
+        validateGateIntentProposal({ ...proposal, rationale: "a".repeat(2001) })
+      )
+    ).toEqual(["$.rationale: allows at most 2000 characters"])
+  })
 
   test("accepts a bare proposal and one with a task and sources", () => {
     expect(validateGateIntentProposal(proposal).ok).toBe(true)
@@ -655,5 +715,98 @@ describe("audit record request and result", () => {
     expect(errorsOf(validateGateAuditRecordResult({ seq: 0 }))).toEqual([
       "$.seq: must be at least 1",
     ])
+  })
+})
+
+describe("reject reason", () => {
+  test("is one of the six decided codes", () => {
+    for (const code of [
+      "wrong_recipient",
+      "wrong_content",
+      "wrong_tone",
+      "wrong_time",
+      "not_needed",
+      "other",
+    ]) {
+      expect(validateGateRejectReason(code).ok).toBe(true)
+    }
+    expect(errorsOf(validateGateRejectReason("spam"))).toHaveLength(1)
+  })
+})
+
+describe("phone sign-in", () => {
+  const assertion = {
+    credentialId: "Y3JlZA",
+    authenticatorData: "YXV0aA",
+    clientDataJSON: "Y2xpZW50",
+    signature: "c2ln",
+  }
+
+  test("login options carry a 43-character challenge, the rp id and the expiry", () => {
+    const options = {
+      challenge: NONCE,
+      rpId: "eido.example.invalid",
+      expiresAt: AT,
+    }
+    expect(validateGateLoginOptions(options).ok).toBe(true)
+    expect(
+      errorsOf(validateGateLoginOptions({ ...options, challenge: "short" }))
+    ).toEqual(["$.challenge: needs at least 43 characters"])
+    expect(
+      errorsOf(
+        validateGateLoginOptions({ ...options, allowCredentials: ["Y3JlZA"] })
+      )
+    ).toEqual(["$.allowCredentials: unknown key"])
+  })
+
+  test("a login request is an assertion and nothing else", () => {
+    expect(validateGateLoginRequest({ assertion }).ok).toBe(true)
+    expect(
+      errorsOf(
+        validateGateLoginRequest({ assertion: without(assertion, "signature") })
+      )
+    ).toEqual(["$.assertion.signature: required"])
+    expect(
+      errorsOf(validateGateLoginRequest({ assertion, intentId: "i-1" }))
+    ).toEqual(["$.intentId: unknown key"])
+  })
+
+  test("a session says when it ends and carries no token", () => {
+    expect(validateGateSession({ expiresAt: AT }).ok).toBe(true)
+    expect(
+      errorsOf(validateGateSession({ expiresAt: AT, token: NONCE }))
+    ).toEqual(["$.token: unknown key"])
+  })
+
+  test("credential status needs an explicit null when there is no session", () => {
+    expect(
+      validateGateCredentialStatus({ enrolled: false, sessionExpiresAt: null })
+        .ok
+    ).toBe(true)
+    expect(
+      validateGateCredentialStatus({ enrolled: true, sessionExpiresAt: AT }).ok
+    ).toBe(true)
+    expect(errorsOf(validateGateCredentialStatus({ enrolled: true }))).toEqual([
+      "$.sessionExpiresAt: required",
+    ])
+  })
+})
+
+describe("edit request", () => {
+  test("is the whole edited intent as an object", () => {
+    expect(
+      validateGateEditRequest({ intent: { kind: "email.send", args: {} } }).ok
+    ).toBe(true)
+    expect(errorsOf(validateGateEditRequest({ intent: "x" }))).toEqual([
+      "$.intent: expected object, got string",
+    ])
+    expect(
+      errorsOf(
+        validateGateEditRequest({
+          intent: { kind: "email.send", args: {} },
+          nonce: NONCE,
+        })
+      )
+    ).toEqual(["$.nonce: unknown key"])
   })
 })
