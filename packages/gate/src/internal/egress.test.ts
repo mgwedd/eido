@@ -483,6 +483,19 @@ describe("read egress proxy", () => {
     expect(response.status).toBe(204)
     expect(await response.text()).toBe("")
   })
+  test("reconstructs the pinned destination while escaping path and query components", async () => {
+    const { request, upstream } = await setup()
+    expect(
+      (
+        await request(
+          "https://api.example.com/v1/messages/a%3Ab?value=https%3A%2F%2Fother.example.com&value=a%26b"
+        )
+      ).status
+    ).toBe(200)
+    expect(upstream.mock.calls[0]?.[0]).toBe(
+      "https://api.example.com/v1/messages/a%3Ab?value=https%3A%2F%2Fother.example.com&value=a%26b"
+    )
+  })
   test("invalid limits cannot start a listener", async () => {
     const db = openControlDb(":memory:")
     try {

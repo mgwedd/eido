@@ -174,6 +174,26 @@ function selectedRoute(
   return match.route
 }
 
+/** Build the destination from the pinned host/template, with escaped request components. */
+function upstreamURL(route: Route, target: URL): string {
+  const segments = target.pathname.split("/")
+  const path = route.pathPattern
+    .split("/")
+    .map((part, index) =>
+      /^\{[A-Za-z][A-Za-z0-9_]*\}$/.test(part)
+        ? encodeURIComponent(decodeURIComponent(segments[index] ?? ""))
+        : part
+    )
+    .join("/")
+  const query = [...target.searchParams]
+    .map(
+      ([key, value]) =>
+        `${encodeURIComponent(key)}=${encodeURIComponent(value)}`
+    )
+    .join("&")
+  return `https://${route.host}${path}${query ? `?${query}` : ""}`
+}
+
 /** Internal listener lifecycle. Only the address/request contract is consumed outside the gate. */
 export async function startEgressProxy(
   options: Options
@@ -255,7 +275,7 @@ export async function startEgressProxy(
         if (controller.signal.aborted) fail(502, "upstream_timeout")
         headers.set("authorization", `Bearer ${token}`)
         const upstream = await bounded(
-          (options.fetch ?? fetch)(target, {
+          (options.fetch ?? fetch)(upstreamURL(route, target), {
             method,
             headers,
             ...(body.length ? { body: new Uint8Array(body) } : {}),
