@@ -93,6 +93,9 @@ importers:
       '@eido/gate':
         specifier: workspace:*
         version: link:../gate
+      '@eido/schemas':
+        specifier: workspace:*
+        version: link:../schemas
     devDependencies:
       '@eido/eslint-config':
         specifier: workspace:*

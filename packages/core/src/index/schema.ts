@@ -1,9 +1,12 @@
 import { DatabaseSync } from "node:sqlite"
+import { PROFILE_MIGRATION_SQL } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
-const SCHEMA_V1 = `
+export const MIGRATIONS: readonly string[] = [
+  // v1: documents, FTS5 index, name keys, sync cursors
+  `
 CREATE TABLE documents (
   sha256 TEXT PRIMARY KEY,
   source TEXT NOT NULL,
@@ -56,7 +59,10 @@ CREATE TABLE cursors (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (connector, stream)
 );
-`
+`,
+  // v2: owner profile and entities
+  PROFILE_MIGRATION_SQL,
+]
 
 /** Open (or create) the index database and bring its schema to the current version. Idempotent. */
 export function openIndex(path: string = DEFAULT_DB_PATH): DatabaseSync {
@@ -70,11 +76,12 @@ export function openIndex(path: string = DEFAULT_DB_PATH): DatabaseSync {
       `index schema version ${version} is newer than supported ${SCHEMA_VERSION}`
     )
   }
-  if (version < 1) {
+  // Each migration and its version bump commit together, so a failure leaves the previous version.
+  for (let next = version + 1; next <= SCHEMA_VERSION; next++) {
     db.exec("BEGIN")
     try {
-      db.exec(SCHEMA_V1)
-      db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+      db.exec(MIGRATIONS[next - 1] ?? "")
+      db.exec(`PRAGMA user_version = ${next}`)
       db.exec("COMMIT")
     } catch (error) {
       db.exec("ROLLBACK")
