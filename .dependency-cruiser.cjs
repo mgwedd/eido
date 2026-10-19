@@ -21,6 +21,17 @@ module.exports = {
       to: { path: "(^|/)packages/(?!schemas/|ui/)" },
     },
     {
+      name: "web-test-fixtures-are-test-only",
+      comment:
+        "apps/web/test/fixtures holds synthetic UI-state data. Only test files and other files under apps/web/test may import it; app code never does (.claude/rules/no-placeholders.md).",
+      severity: "error",
+      from: {
+        path: "(^|/)apps/web/",
+        pathNot: "(^|/)apps/web/(test/|.*\\.test\\.tsx?$)",
+      },
+      to: { path: "(^|/)apps/web/test/fixtures/" },
+    },
+    {
       name: "schemas-import-nothing",
       comment: "packages/schemas imports no other workspace package.",
       severity: "error",

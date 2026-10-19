@@ -40,6 +40,11 @@ const cases = [
     pattern:
       /error\s+gate-internals-are-private:\s+\S*packages\/core\/src\/bad-vault\.ts\b/,
   },
+  {
+    label: "app code importing a web test fixture (bad-fixture-import.ts)",
+    pattern:
+      /error\s+web-test-fixtures-are-test-only:\s+\S*apps\/web\/app\/bad-fixture-import\.ts\b/,
+  },
 ]
 
 const missing = cases.filter((c) => !c.pattern.test(output))
