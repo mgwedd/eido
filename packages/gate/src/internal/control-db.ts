@@ -13,6 +13,18 @@ const MIGRATIONS: readonly string[] = [
    );
    CREATE TRIGGER audit_log_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
    CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;`,
+  // Pinned connector manifests (#10). drift_json holds the added and removed tool names from the
+  // checkDrift call that disabled the connector; pinManifest clears it.
+  `CREATE TABLE connectors (
+     name                 TEXT PRIMARY KEY,
+     manifest_json        TEXT NOT NULL,
+     manifest_hash        TEXT NOT NULL,
+     pinned_at            TEXT NOT NULL,
+     enabled              INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+     health               TEXT NOT NULL CHECK (health IN ('healthy', 'degraded', 'open')),
+     consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+     drift_json           TEXT
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

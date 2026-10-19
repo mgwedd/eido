@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ConnectorManifest",
+  "description": "A connector's pinned manifest: auth scopes, egress hosts, operations, sync triggers, ledger mapping and health settings. Changing it is a control-plane change.",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "version": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["oauth2", "password", "api_key", "none"] },
+        "scopes": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      },
+      "required": ["type", "scopes"],
+      "additionalProperties": false
+    },
+    "egress": {
+      "type": "object",
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "properties": {
+              "host": { "type": "string", "minLength": 1, "maxLength": 253 },
+              "methods": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 5,
+                "items": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] }
+              },
+              "pathPrefixes": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+              }
+            },
+            "required": ["host", "methods", "pathPrefixes"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["hosts"],
+      "additionalProperties": false
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "connector-operation.schema.json" }
+    },
+    "triggers": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "enum": ["poll", "push"] },
+          "stream": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "intervalSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 86400
+          }
+        },
+        "required": ["kind", "stream"],
+        "additionalProperties": false
+      }
+    },
+    "ledgerMapping": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "refField": { "type": "string", "minLength": 1, "maxLength": 64 }
+      },
+      "required": ["source", "refField"],
+      "additionalProperties": false
+    },
+    "health": {
+      "type": "object",
+      "properties": {
+        "backoff": {
+          "type": "object",
+          "properties": {
+            "baseMs": { "type": "integer", "minimum": 1, "maximum": 3600000 },
+            "maxMs": { "type": "integer", "minimum": 1, "maximum": 86400000 },
+            "jitter": { "type": "boolean" }
+          },
+          "required": ["baseMs", "maxMs", "jitter"],
+          "additionalProperties": false
+        },
+        "breaker": {
+          "type": "object",
+          "properties": {
+            "failureThreshold": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "halfOpenProbeAfterMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400000
+            }
+          },
+          "required": ["failureThreshold", "halfOpenProbeAfterMs"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["backoff", "breaker"],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "description",
+    "auth",
+    "egress",
+    "operations",
+    "triggers",
+    "ledgerMapping",
+    "health"
+  ],
+  "additionalProperties": false
+}

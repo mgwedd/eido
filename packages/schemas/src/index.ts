@@ -17,4 +17,5 @@ export {
   validateProfileEntityPatch,
   validateProfileUpdate,
 } from "./generated/validators"
+export { validateConnectorManifest } from "./manifest"
 export type { JsonSchema, ValidationResult } from "./validate"
