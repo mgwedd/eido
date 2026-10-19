@@ -20,6 +20,7 @@
           "type": "string",
           "minLength": 43,
           "maxLength": 43,
+          "pattern": "^[A-Za-z0-9_-]{43}$",
           "description": "The nonce the assertion was signed over, as returned by prepare."
         },
         "assertion": {

@@ -75,7 +75,14 @@ function validateOneOf(
       ? [variants[index] ?? []]
       : []
   )
-  const candidates = claimed.length > 0 ? claimed : variants
+  // Else the variants of the value's own type: "expected null" is no help for a bad string.
+  const sameType = (schema.oneOf ?? []).flatMap((variant, index) =>
+    variant.type !== undefined && matchesType(variant.type, value)
+      ? [variants[index] ?? []]
+      : []
+  )
+  const candidates =
+    claimed.length > 0 ? claimed : sameType.length > 0 ? sameType : variants
   return candidates.reduce((best, errors) =>
     errors.length < best.length ? errors : best
   )

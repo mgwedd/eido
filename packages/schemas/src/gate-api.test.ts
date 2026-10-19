@@ -316,6 +316,14 @@ describe("decision request", () => {
     },
   }
 
+  test("rejects a 43-character approval nonce that is not base64url", () => {
+    expect(
+      errorsOf(
+        validateGateDecisionRequest({ ...approve, nonce: `${"A".repeat(42)}=` })
+      )
+    ).toEqual(["$.nonce: does not match pattern ^[A-Za-z0-9_-]{43}$"])
+  })
+
   test("accepts an approval and a reject, with and without a reason code", () => {
     expect(validateGateDecisionRequest(approve).ok).toBe(true)
     expect(
@@ -756,15 +764,34 @@ describe("audit record request and result", () => {
   test("rejects a hash that is not 64 characters and a missing side", () => {
     expect(
       errorsOf(validateGateAuditRecordRequest({ ...entry, subjectHash: "ab" }))
-    ).toEqual(["$.subjectHash: needs at least 64 characters"])
+    ).toEqual([
+      "$.subjectHash: needs at least 64 characters",
+      "$.subjectHash: does not match pattern ^[0-9a-f]{64}$",
+    ])
     expect(
       errorsOf(
         validateGateAuditRecordRequest({ ...entry, afterHash: `${HASH}0` })
       )
-    ).toEqual(["$.afterHash: allows at most 64 characters"])
+    ).toEqual([
+      "$.afterHash: allows at most 64 characters",
+      "$.afterHash: does not match pattern ^[0-9a-f]{64}$",
+    ])
     expect(
       errorsOf(validateGateAuditRecordRequest(without(entry, "beforeHash")))
     ).toEqual(["$.beforeHash: required"])
+  })
+
+  test("rejects a 64-character hash that is not lowercase hex, on each of the three", () => {
+    const bad = "G".repeat(64)
+    expect(
+      errorsOf(validateGateAuditRecordRequest({ ...entry, subjectHash: bad }))
+    ).toEqual(["$.subjectHash: does not match pattern ^[0-9a-f]{64}$"])
+    expect(
+      errorsOf(validateGateAuditRecordRequest({ ...entry, beforeHash: bad }))
+    ).toEqual(["$.beforeHash: does not match pattern ^[0-9a-f]{64}$"])
+    expect(
+      errorsOf(validateGateAuditRecordRequest({ ...entry, afterHash: bad }))
+    ).toEqual(["$.afterHash: does not match pattern ^[0-9a-f]{64}$"])
   })
 
   test("a result is a positive seq", () => {
@@ -808,7 +835,18 @@ describe("phone sign-in", () => {
     expect(validateGateLoginOptions(options).ok).toBe(true)
     expect(
       errorsOf(validateGateLoginOptions({ ...options, challenge: "short" }))
-    ).toEqual(["$.challenge: needs at least 43 characters"])
+    ).toEqual([
+      "$.challenge: needs at least 43 characters",
+      "$.challenge: does not match pattern ^[A-Za-z0-9_-]{43}$",
+    ])
+    expect(
+      errorsOf(
+        validateGateLoginOptions({
+          ...options,
+          challenge: `${"A".repeat(42)}.`,
+        })
+      )
+    ).toEqual(["$.challenge: does not match pattern ^[A-Za-z0-9_-]{43}$"])
     expect(
       errorsOf(
         validateGateLoginOptions({ ...options, allowCredentials: ["Y3JlZA"] })

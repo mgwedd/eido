@@ -332,6 +332,7 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
                         "type": "string",
                         "minLength": 64,
                         "maxLength": 64,
+                        "pattern": "^[0-9a-f]{64}$",
                         "description": "SHA-256 (lowercase hex) of the raw message, so only that exact message is the target"
                       },
                       "replyAll": {
@@ -404,6 +405,7 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
                         "type": "string",
                         "minLength": 64,
                         "maxLength": 64,
+                        "pattern": "^[0-9a-f]{64}$",
                         "description": "SHA-256 (lowercase hex) of the raw message, so only that exact message is the target"
                       },
                       "to": {

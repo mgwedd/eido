@@ -158,6 +158,30 @@ describe("rejections", () => {
     ).toContain("$.args.replyAll: required")
   })
 
+  test("a reply and a forward refuse a messageSha256 that is not lowercase hex", () => {
+    const message = "does not match pattern ^[0-9a-f]{64}$"
+    expect(
+      errorsOf(
+        intent("email.reply", {
+          messageId: "m1",
+          messageSha256: "Z".repeat(64),
+          replyAll: false,
+          to: ["a@example.com"],
+          body: "x",
+        })
+      )
+    ).toEqual([`$.args.messageSha256: ${message}`])
+    expect(
+      errorsOf(
+        intent("email.forward", {
+          messageId: "m1",
+          messageSha256: "Z".repeat(64),
+          to: ["a@example.com"],
+        })
+      )
+    ).toEqual([`$.args.messageSha256: ${message}`])
+  })
+
   test("a reply and a forward name their target by its bytes, and a reply its recipients", () => {
     const reply = errorsOf(
       intent("email.reply", { messageId: "m1", replyAll: false, body: "x" })
