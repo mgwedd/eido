@@ -10,7 +10,6 @@ import {
   protonManifest,
 } from "./manifest"
 import { openIndex } from "../../index/index"
-import { bridgeFactory } from "./fake-bridge.test-support"
 
 const config = resolveConfig({
   username: "assistant@example.com",
@@ -97,8 +96,6 @@ describe("manifest", () => {
   test("facade verbs and manifest operations are the same set", () => {
     const facade = createProtonFacade({
       db: openIndex(":memory:"),
-      config,
-      connect: bridgeFactory(),
       intents: {} as IntentClient,
     })
     expect(Object.keys(facade).sort()).toEqual(
@@ -158,43 +155,28 @@ describe("policy reads the pinned manifest, never tool annotations", () => {
 })
 
 describe("config", () => {
-  test("defaults point at Bridge on loopback", () => {
-    const resolved = resolveConfig({ username: "assistant@example.com" })
-    expect(resolved).toMatchObject({
-      host: "127.0.0.1",
-      imapPort: 1143,
-      smtpPort: 1025,
-      imapTls: "starttls",
+  test("defaults mirror INBOX in batches of 50", () => {
+    expect(resolveConfig({ username: "assistant@example.com" })).toEqual({
+      username: "assistant@example.com",
+      folders: ["INBOX"],
+      batchSize: 50,
     })
   })
 
-  test("has no password field", () => {
+  test("has no host, port, TLS or secret field: those live on the gate side", () => {
     expect(
-      Object.keys(resolveConfig({ username: "assistant@example.com" })).join(
-        " "
-      )
-    ).not.toMatch(/pass|secret|token/i)
+      Object.keys(resolveConfig({ username: "assistant@example.com" }))
+    ).toEqual(["folders", "batchSize", "username"])
   })
 
   test.each([
-    [{ imapPort: 0 }, /imapPort/],
-    [{ smtpPort: 70000 }, /smtpPort/],
     [{ batchSize: 0 }, /batchSize/],
+    [{ batchSize: 1.5 }, /batchSize/],
     [{ username: "no-at-sign" }, /address/],
-    [{ host: "bridge.example.com" }, /loopback/],
+    [{ folders: [] }, /folders/],
   ])("refuses %j", (input, message) => {
     expect(() =>
       resolveConfig({ username: "assistant@example.com", ...input })
     ).toThrow(message)
-  })
-
-  test("a non-loopback host is fine once self-signed certificates are not accepted", () => {
-    expect(
-      resolveConfig({
-        username: "assistant@example.com",
-        host: "bridge.example.com",
-        allowSelfSigned: false,
-      }).host
-    ).toBe("bridge.example.com")
   })
 })

@@ -10,11 +10,8 @@ import type {
 } from "@eido/schemas"
 import { search } from "../../index/index"
 import type { SearchHit } from "../../index/index"
-import type { ProtonConfig } from "./config"
-import type { ConnectionFactory } from "./connection"
 import { ProtonError } from "./errors"
-import { connectImap } from "./imap-client"
-import { attachmentText, parseMessage } from "./mime"
+import { isTextMime } from "./parse"
 import { CONNECTOR } from "./sync"
 
 export type IntentReceipt = { intentId: string }
@@ -37,9 +34,6 @@ export type AttachmentTextResult = {
 
 export type ProtonFacadeDeps = {
   db: DatabaseSync
-  config: ProtonConfig
-  /** Used by attachment_text only. The facade's write verbs never open a connection. */
-  connect: ConnectionFactory
   intents: IntentClient
   origin?: GateIntentOrigin
 }
@@ -74,11 +68,10 @@ const FROM = `FROM document_text t JOIN documents d ON d.sha256 = t.sha256
   WHERE d.source = '${CONNECTOR}' AND t.message_id IS NOT NULL`
 
 /**
- * The verbs the model sees. Reads answer from the local index (and, for attachments, a live IMAP
- * read). Write verbs only propose an intent to the gate and return its id: no SMTP, no IMAP write.
+ * The verbs the model sees. Reads answer from the local index only. Write verbs only propose an intent to the gate and return its id: no source call.
  */
 export function createProtonFacade(deps: ProtonFacadeDeps) {
-  const { db, config, connect, intents } = deps
+  const { db, intents } = deps
   const origin = deps.origin ?? "reactive"
   const propose = async (intent: {
     kind: string
@@ -115,39 +108,24 @@ export function createProtonFacade(deps: ProtonFacadeDeps) {
       )
     },
 
-    attachment_text: async (args: {
+    attachment_text: (args: {
       messageId: string
       attachmentIndex: number
-      folder?: string
-    }): Promise<AttachmentTextResult> => {
-      const client = await connectImap(connect, config)
-      try {
-        for (const folder of args.folder === undefined
-          ? config.folders
-          : [args.folder]) {
-          await client.select(folder)
-          const uid = (await client.searchMessageId(args.messageId))[0]
-          if (uid === undefined) continue
-          const raw = await client.fetchOne(uid)
-          if (raw === undefined) continue
-          const attachment = parseMessage(raw).attachments[args.attachmentIndex]
-          if (attachment === undefined)
-            throw new ProtonError(
-              "not_found",
-              "the message has no such attachment"
-            )
-          return {
-            filename: attachment.filename,
-            mime: attachment.mime,
-            text: attachmentText(attachment),
-          }
-        }
-        throw new ProtonError(
-          "not_found",
-          "no such message in the configured folders"
+    }): AttachmentTextResult => {
+      const row = db
+        .prepare(
+          `SELECT d.mime, t.title, t.body
+           FROM document_text t JOIN documents d ON d.sha256 = t.sha256
+           WHERE d.source = '${CONNECTOR}' AND t.attachment_of = ? AND d.source_ref = ?`
         )
-      } finally {
-        await client.close()
+        .get(args.messageId, `${args.messageId}#${args.attachmentIndex}`)
+      if (row === undefined)
+        throw new ProtonError("not_found", "the message has no such attachment")
+      const mime = String(row["mime"])
+      return {
+        filename: String(row["title"]),
+        mime,
+        text: isTextMime(mime) ? String(row["body"]) : null,
       }
     },
 

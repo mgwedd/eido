@@ -43,11 +43,11 @@ export function protonManifest(config: ProtonConfig): ConnectorManifest {
     name: CONNECTOR_NAME,
     version: 1,
     description:
-      "Proton Mail through Proton Bridge: read mail over IMAP, draft and send over SMTP as the assistant identity.",
+      "Proton Mail through Proton Bridge: mail is read and written by the gate; core indexes it and proposes intents as the assistant identity.",
     auth: { type: "password", scopes: [BRIDGE_SCOPE] },
-    // Bridge is a local TCP service (IMAP and SMTP), not HTTP egress through the gate proxy, and
-    // the manifest schema cannot name a loopback address, a port or a non-HTTP protocol. So no
-    // HTTP host is declared; the Bridge address is the connector config, reviewed with the manifest.
+    // Core makes no network call for this connector: Bridge (IMAP and SMTP, a local TCP service) is
+    // reached only by the gate (#195), and the manifest schema cannot name a loopback address, a
+    // port or a non-HTTP protocol. So no HTTP host is declared here.
     egress: { hosts: [] },
     operations: OPERATIONS.map((op) => ({
       ...op,

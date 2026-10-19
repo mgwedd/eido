@@ -9,7 +9,7 @@ export default defineConfig({
       include: ["src/**/*.ts"],
       exclude: [
         "**/*.test.{ts,tsx}", // test files are not product code
-        "**/*.test-support.ts", // in-process fake Bridge used only by tests
+        "**/*.test-support.ts", // in-memory ProtonMailSource and synthetic messages, used only by tests
       ],
       reporter: ["text", "json-summary"],
       thresholds: {
