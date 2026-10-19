@@ -1,8 +1,7 @@
 import { DatabaseSync } from "node:sqlite"
 import { reject } from "./approvals"
-import { pinManifest } from "./connectors"
 import { openControlDb } from "./control-db"
-import { MAIL_OPS, auditRows, manifest } from "./test-fixtures"
+import { MAIL_OPS, auditRows, manifest, signedPin } from "./test-fixtures"
 import type { AuditRow } from "./test-fixtures"
 
 // Test support for the two-process tests (packages/core/src/planes): the harness runs this file
@@ -13,7 +12,7 @@ import type { AuditRow } from "./test-fixtures"
 export function seedControlDb(path: string): void {
   const db = openControlDb(path)
   try {
-    pinManifest(db, manifest("mail", MAIL_OPS), "owner")
+    signedPin(db, manifest("mail", MAIL_OPS), "owner")
   } finally {
     db.close()
   }

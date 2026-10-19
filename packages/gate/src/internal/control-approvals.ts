@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
+import type { GateDecisionRequest } from "@eido/schemas"
 import { verifyChain } from "./audit"
-import type { ApprovalAssertion } from "./approvals"
 import { canonicalize, payloadHash } from "./canonical"
 import { atomically } from "./transaction"
 import {
@@ -15,6 +15,10 @@ import {
 import type { WebAuthnConfig } from "./webauthn"
 
 export type ControlPurpose = "manifest.pin" | "policy.set"
+type ApprovalAssertion = Extract<
+  GateDecisionRequest,
+  { decision: "approved" }
+>["assertion"]
 export type PreparedControlApproval = {
   id: string
   purpose: ControlPurpose
