@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto"
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto"
 import { ImapFlow } from "imapflow"
 import type { FetchMessageObject, ImapFlowOptions } from "imapflow"
 import { createTransport } from "nodemailer"
@@ -96,7 +96,10 @@ export interface ProtonBridge {
   send(mail: OutgoingMail): Promise<{ messageId: string }>
 }
 
-const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
+// A password hash with real work (scrypt) and a per-process salt, so the remembered value is no
+// shortcut to the password. It is only computed after Bridge refused a login.
+const SALT = randomBytes(16)
+const passwordHash = (secret: string) => scryptSync(secret, SALT, 32)
 
 export function imapOptions(
   config: BridgeConfig,
@@ -176,14 +179,17 @@ export function createProtonBridge({
 }: BridgeOptions): ProtonBridge {
   // A password Bridge refused is remembered by its hash, so the next call fails at once
   // instead of logging in again with it: no retry loop. A new password in the vault clears it.
-  let refused: string | undefined
+  let refused: Buffer | undefined
 
   async function password(): Promise<string> {
     const secret = await vault.get(BRIDGE_PASSWORD_KEY)
     if (secret === undefined || secret === "") {
       throw new BridgeError("auth_failed", "no Bridge password in the vault")
     }
-    if (refused !== undefined && sha256(secret) === refused) {
+    if (
+      refused !== undefined &&
+      timingSafeEqual(passwordHash(secret), refused)
+    ) {
       throw new BridgeError(
         "auth_failed",
         "Bridge refused this password; set a new one in the vault"
@@ -193,7 +199,7 @@ export function createProtonBridge({
   }
 
   function remember<T extends BridgeError>(error: T, secret: string): T {
-    if (error.code === "auth_failed") refused = sha256(secret)
+    if (error.code === "auth_failed") refused = passwordHash(secret)
     return error
   }
 
