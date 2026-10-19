@@ -20,7 +20,7 @@ const version = (db: DatabaseSync) =>
 describe("openControlDb", () => {
   it("creates the schema, enables foreign keys and WAL", () => {
     const db = openControlDb(tempPath())
-    expect(version(db)).toBe(4)
+    expect(version(db)).toBe(5)
     expect(db.prepare("PRAGMA foreign_keys").get()?.["foreign_keys"]).toBe(1)
     expect(db.prepare("PRAGMA journal_mode").get()?.["journal_mode"]).toBe(
       "wal"
@@ -40,7 +40,7 @@ describe("openControlDb", () => {
     )
     first.close()
     const second = openControlDb(path) // re-running migration 1 would throw "table already exists"
-    expect(version(second)).toBe(4)
+    expect(version(second)).toBe(5)
     expect(
       second.prepare("SELECT COUNT(*) AS n FROM audit_log").get()?.["n"]
     ).toBe(1)
@@ -49,7 +49,7 @@ describe("openControlDb", () => {
 
   it("works with :memory:", () => {
     const db = openControlDb(":memory:")
-    expect(version(db)).toBe(4)
+    expect(version(db)).toBe(5)
     db.close()
   })
 
