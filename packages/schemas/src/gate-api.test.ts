@@ -16,6 +16,9 @@ import {
   validateGateIntentStatus,
   validateGateLoginOptions,
   validateGateLoginRequest,
+  validateGateMailFolderList,
+  validateGateMailFolderState,
+  validateGateMailMessagePage,
   validateGatePendingIntentList,
   validateGatePrepareApproval,
   validateGateProposeRefusal,
@@ -379,7 +382,7 @@ describe("decision result and error", () => {
     expect(
       errorsOf(validateGateApiError({ code: "teapot", message: "x" }))
     ).toEqual([
-      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable"',
+      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable", "handshake_failed", "auth_failed"',
     ])
     expect(
       errorsOf(validateGateApiError({ code: "not_found", message: "" }))
@@ -808,5 +811,54 @@ describe("edit request", () => {
         })
       )
     ).toEqual(["$.nonce: unknown key"])
+  })
+})
+
+describe("Proton mail read routes", () => {
+  test("a folder list holds non-empty names", () => {
+    expect(
+      validateGateMailFolderList({ folders: ["INBOX", "Folders/a"] }).ok
+    ).toBe(true)
+    expect(errorsOf(validateGateMailFolderList({ folders: [""] }))).toEqual([
+      "$.folders[0]: needs at least 1 characters",
+    ])
+  })
+
+  test("a folder state has a string UIDVALIDITY and a positive UIDNEXT", () => {
+    expect(
+      validateGateMailFolderState({ uidValidity: "1700000000", uidNext: 1 }).ok
+    ).toBe(true)
+    expect(
+      errorsOf(validateGateMailFolderState({ uidValidity: 17, uidNext: 1 }))
+    ).toEqual(["$.uidValidity: expected string, got number"])
+    expect(
+      errorsOf(validateGateMailFolderState({ uidValidity: "1", uidNext: 0 }))
+    ).toEqual(["$.uidNext: must be at least 1"])
+  })
+
+  test("a message page carries raw base64 and the skipped UIDs", () => {
+    expect(
+      validateGateMailMessagePage({
+        messages: [{ uid: 4, raw: "U3ViamVjdDogeA0KDQo=" }],
+        skipped: [5],
+      }).ok
+    ).toBe(true)
+    expect(
+      errorsOf(validateGateMailMessagePage({ messages: [{ uid: 0, raw: "" }] }))
+    ).toEqual(["$.skipped: required", "$.messages[0].uid: must be at least 1"])
+    expect(
+      errorsOf(
+        validateGateMailMessagePage({
+          messages: [{ uid: 1, raw: "", subject: "x" }],
+          skipped: [],
+        })
+      )
+    ).toEqual(["$.messages[0].subject: unknown key"])
+  })
+
+  test("the error codes include the Bridge failures", () => {
+    for (const code of ["handshake_failed", "auth_failed"]) {
+      expect(validateGateApiError({ code, message: "Bridge" }).ok).toBe(true)
+    }
   })
 })

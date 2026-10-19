@@ -23,13 +23,14 @@ Two processes, two SQLite files, one narrow API between them.
     - `GET /intents/:id` returns `{ id, kind, tier, state, edited_from }`.
     - `GET /intents/:id/history` returns the state transitions.
     - `POST /audit` appends one hash-only `audit.profile.*` row for a profile change in core (#181). See "How the data plane uses the client".
+    - When Proton Bridge is configured (#195): `GET /mail/proton/folders`, `GET /mail/proton/folders/:folder/state` and `GET /mail/proton/folders/:folder/messages?fromUid=&limit=`. See "Proton mail reads".
     - Every other method or path returns 404.
     - Request bodies are capped at 1 MiB (413 above it). Malformed JSON gets 400 with no echo of the body. A schema-invalid intent gets 422 with field paths only. A forbidden intent is stored as rejected and answered with 403.
     - No response carries a payload body, a signature or a nonce.
     - The gate writes an audit row for every proposal it accepts or refuses, including the refusals before parsing (`intent.request_refused.*`).
   - Control listener, at `EIDO_GATE_CONTROL_SOCKET` (mode 0600). It serves the same reads plus `GET /audit/chain`. Its path is never in the data plane's configuration.
 - **Room for more listeners.** Each listener is a handler mounted on the same server wrapper (`createGateServer` in `packages/gate/src/internal/http.ts`), with its own socket or port. The phone listener (#85: loopback TCP behind `tailscale serve`, session-checked, with approve and reject) and the Mac-local admin listener (#78) are added as further handlers, without changing the data-plane listener or this split. The web transport is ADR 0004 (#178).
-- **Client.** `createIntentClient({ socketPath })` from `@eido/gate` (`packages/gate/src/index.ts`, the only public entry) is the data plane's way into the gate for intents. It offers `propose`, `status`, `history` and `listPending`. Its sibling `createAuditClient({ socketPath })` offers `record`, for `POST /audit`; the two are the data plane's only ways into the gate.
+- **Client.** `createIntentClient({ socketPath })` from `@eido/gate` (`packages/gate/src/index.ts`, the only public entry) is the data plane's way into the gate for intents. It offers `propose`, `status`, `history` and `listPending`. Its sibling `createAuditClient({ socketPath })` offers `record`, for `POST /audit`. The third, `createProtonMailClient({ socketPath })` (#195), offers `listFolders`, `folderState` and `fetchRaw` over the mail read routes. The three are the data plane's only ways into the gate.
   - Every response is parsed with its schema from `@eido/schemas`.
   - If the gate cannot be reached, a call rejects within 2 s with `GateUnavailableError`. Nothing is queued and nothing silently succeeds.
   - A refusal rejects with `GateRequestError`: status, code, and the field errors for a 422.
@@ -52,6 +53,15 @@ Two processes, two SQLite files, one narrow API between them.
   - The audit call runs before `COMMIT`, so the gate's row can outlive the change it records: a timeout that fires after the gate appended the row, or a `COMMIT` that fails after the call resolved, rolls the change back but leaves its audit row. The log can hold an entry for a change that never committed; it never misses one for a change that did.
   - `node:sqlite` has one connection and the call is awaited inside the transaction, so the profile store runs its calls one at a time: no read sees, and no other write joins, a transaction whose audit call is in flight. The 2 s timeout bounds how long one call holds the queue. The store admits at most 32 calls, including the active one; excess calls fail immediately with `busy` (HTTP 503), and the caller may retry after capacity frees.
   - Profile audit hashes remain unkeyed SHA-256 of JSON-serialized values. Core must compute them before calling the gate because `POST /audit` accepts hashes only, while the gate alone may hold credentials and cryptographic secrets. A key in core would break that boundary; sending clear profile values to the gate would broaden its data access. This is an explicit privacy limitation: a reader of the gate audit log can test guesses for low-entropy subjects such as an email address and recover them by dictionary attack. The hashes hide clear values from casual inspection, not from such an attacker. They support correlation and digest comparison; audit-chain integrity is a separate property. Neither provides confidentiality for guessable values. #193 tracks a cross-plane design for protecting guessable subjects.
+
+## Proton mail reads (#195)
+
+- The gate reads Proton Bridge over IMAP for core and returns raw RFC 5322 messages, base64-encoded; core parses them. The gate never parses bodies.
+- `fromUid` is required (1 to 2^32-1). `limit` defaults to 50 and is capped at 100. A page holds at most 32 MiB; a message over 25 MiB is not returned and its UID is listed in `skipped`. Folder listings return at most 1000 folders.
+- An unknown folder is 404. A bad query or folder encoding is 400. Bridge unreachable is 502 `handshake_failed`; a refused password is 502 `auth_failed`, and the gate does not log in again with that password until the vault holds a new one. Any other Bridge failure is 500 with no Bridge text.
+- Each call writes one audit row (actor `data-plane`, target `proton-mail`) whose detail hash covers counts only: folders, messages, skipped and bytes. Folder names, subjects and bodies are never in the audit log.
+- The client's fetch call allows 60 s; the other calls keep the 2 s timeout.
+- Writes do not use these routes. Approved mail intents run through the executor's Bridge writers (`packages/gate/src/internal/bridge/writers.ts`), which accept only the pinned `proton-mail` connector with password auth and no HTTP egress.
 
 ## What is not decided here
 

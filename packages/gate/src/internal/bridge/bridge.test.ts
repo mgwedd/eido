@@ -1,0 +1,491 @@
+import { afterEach, describe, expect, it } from "vitest"
+import { InMemoryVault } from "../vault/vault"
+import {
+  BRIDGE_PASSWORD_KEY,
+  MAX_MESSAGE_BYTES,
+  createProtonBridge,
+  imapOptions,
+  parseFallbackId,
+  smtpOptions,
+} from "./bridge"
+import type { ProtonBridge } from "./bridge"
+import type { BridgeConfig } from "./config"
+import { closedPort, rawMessage, startFakeBridge } from "./fake-bridge"
+import type { FakeBridge, FakeBridgeOptions, FakeMailbox } from "./fake-bridge"
+
+const USER = "assistant@example.invalid"
+const PASSWORD = "synthetic-bridge-password-3c9e"
+
+const opened: FakeBridge[] = []
+afterEach(async () => {
+  await Promise.all(opened.splice(0).map((fake) => fake.close()))
+})
+
+function config(fake: Pick<FakeBridge, "imapPort" | "smtpPort">): BridgeConfig {
+  return {
+    host: "127.0.0.1",
+    imapPort: fake.imapPort,
+    smtpPort: fake.smtpPort,
+    tls: "none",
+    allowSelfSigned: false,
+    username: USER,
+    searchFolders: ["INBOX", "Archive"],
+  }
+}
+
+async function start(
+  options: Partial<FakeBridgeOptions> = {},
+  /** The vault's password; null leaves the vault empty. */
+  password: string | null = PASSWORD
+): Promise<{ fake: FakeBridge; bridge: ProtonBridge; vault: InMemoryVault }> {
+  const fake = await startFakeBridge({
+    username: USER,
+    password: PASSWORD,
+    ...options,
+  })
+  opened.push(fake)
+  const vault = new InMemoryVault()
+  if (password !== null) await vault.set(BRIDGE_PASSWORD_KEY, password)
+  return {
+    fake,
+    vault,
+    bridge: createProtonBridge({ config: config(fake), vault }),
+  }
+}
+
+function box(
+  uidValidity: number,
+  messages: { uid: number; raw: Buffer }[]
+): FakeMailbox {
+  const last = messages.at(-1)?.uid ?? 0
+  return {
+    uidValidity,
+    uidNext: last + 1,
+    messages: messages.map((message) => ({ ...message, flags: [] })),
+  }
+}
+
+const first = rawMessage({
+  messageId: "<first@example.invalid>",
+  subject: "One",
+  body: "lorem",
+})
+const second = rawMessage({
+  messageId: "<second@example.invalid>",
+  subject: "Two",
+  body: "ipsum",
+  references: "<first@example.invalid>",
+  replyTo: "Desk <desk@example.invalid>",
+  cc: "Carol <carol@example.invalid>, dave@example.invalid",
+})
+
+function mailboxes(): Record<string, FakeMailbox> {
+  return {
+    INBOX: box(1700000001, [
+      { uid: 3, raw: first },
+      { uid: 7, raw: second },
+    ]),
+    Drafts: box(1700000002, []),
+    Trash: box(1700000003, []),
+    Archive: { ...box(1700000004, []), listFlags: [] },
+    Folders: { ...box(1700000005, []), listFlags: ["\\Noselect"] },
+  }
+}
+
+/** Every client command that could flag, expunge or remove mail. */
+function destructive(commands: readonly string[]): string[] {
+  return commands.filter((command) =>
+    /^(UID )?(EXPUNGE|STORE|CLOSE|DELETE)\b|\\Deleted/i.test(command)
+  )
+}
+
+describe("connection options", () => {
+  const base: BridgeConfig = {
+    host: "127.0.0.1",
+    imapPort: 1143,
+    smtpPort: 1025,
+    tls: "starttls",
+    allowSelfSigned: true,
+    username: USER,
+    searchFolders: ["INBOX"],
+  }
+
+  it("requires STARTTLS on both protocols and accepts the self-signed certificate when allowed", () => {
+    expect(imapOptions(base, PASSWORD)).toMatchObject({
+      host: "127.0.0.1",
+      port: 1143,
+      secure: false,
+      doSTARTTLS: true,
+      tls: { rejectUnauthorized: false },
+      logger: false,
+    })
+    expect(smtpOptions(base, PASSWORD)).toMatchObject({
+      host: "127.0.0.1",
+      port: 1025,
+      secure: false,
+      requireTLS: true,
+      ignoreTLS: false,
+      tls: { rejectUnauthorized: false },
+      name: "localhost",
+      logger: false,
+      disableFileAccess: true,
+      disableUrlAccess: true,
+    })
+  })
+
+  it("uses implicit TLS and verifies the certificate in tls mode", () => {
+    const tls = { ...base, tls: "tls" as const, allowSelfSigned: false }
+    expect(imapOptions(tls, PASSWORD)).toMatchObject({
+      secure: true,
+      doSTARTTLS: false,
+      tls: { rejectUnauthorized: true },
+    })
+    expect(smtpOptions(tls, PASSWORD)).toMatchObject({
+      secure: true,
+      requireTLS: false,
+      ignoreTLS: false,
+    })
+  })
+
+  it("never upgrades in none mode", () => {
+    const none = { ...base, tls: "none" as const }
+    expect(imapOptions(none, PASSWORD)).toMatchObject({
+      secure: false,
+      doSTARTTLS: false,
+    })
+    expect(smtpOptions(none, PASSWORD)).toMatchObject({
+      secure: false,
+      requireTLS: false,
+      ignoreTLS: true,
+    })
+  })
+})
+
+describe("parseFallbackId", () => {
+  it("splits core's fallback id, keeping colons in the folder", () => {
+    expect(parseFallbackId("proton:Folders/a:b:1700000001:42")).toEqual({
+      folder: "Folders/a:b",
+      uidValidity: "1700000001",
+      uid: 42,
+    })
+  })
+
+  it.each([
+    "<a@example.invalid>",
+    "proton:INBOX:1:0",
+    "proton:INBOX:x:1",
+    "proton::1:2",
+  ])("rejects %j", (id) => {
+    expect(parseFallbackId(id)).toBeUndefined()
+  })
+})
+
+describe("reads against the fake Bridge", () => {
+  it("lists selectable folders only", async () => {
+    const { bridge } = await start({ mailboxes: mailboxes() })
+    expect((await bridge.listFolders()).sort()).toEqual([
+      "Archive",
+      "Drafts",
+      "INBOX",
+      "Trash",
+    ])
+  })
+
+  it("returns a folder's UIDVALIDITY and UIDNEXT, and undefined for an unknown folder", async () => {
+    const { bridge } = await start({ mailboxes: mailboxes() })
+    expect(await bridge.folderState("INBOX")).toEqual({
+      uidValidity: "1700000001",
+      uidNext: 8,
+    })
+    expect(await bridge.folderState("Nowhere")).toBeUndefined()
+  })
+
+  it("fetches raw bytes from fromUid, ascending, within the limit, read-only", async () => {
+    const { bridge, fake } = await start({ mailboxes: mailboxes() })
+    const page = await bridge.fetchRaw("INBOX", 1, 1)
+    expect(page).toEqual({ messages: [{ uid: 3, raw: first }], skipped: [] })
+    const rest = await bridge.fetchRaw("INBOX", 4, 10)
+    expect(rest).toEqual({ messages: [{ uid: 7, raw: second }], skipped: [] })
+    expect(await bridge.fetchRaw("INBOX", 8, 10)).toEqual({
+      messages: [],
+      skipped: [],
+    })
+    expect(fake.imapCommands.filter((c) => c.startsWith("SELECT"))).toEqual([])
+    expect(
+      fake.imapCommands.filter((c) => c.startsWith("EXAMINE"))
+    ).toHaveLength(3)
+  })
+
+  it("returns undefined for an unknown folder without opening it", async () => {
+    const { bridge, fake } = await start({ mailboxes: mailboxes() })
+    expect(await bridge.fetchRaw("Nowhere", 1, 10)).toBeUndefined()
+    expect(fake.imapCommands.some((c) => c.startsWith("EXAMINE"))).toBe(false)
+  })
+
+  it("skips a message over the per-message cap and stops at the page budget", async () => {
+    const big = Buffer.concat([
+      first,
+      Buffer.alloc(MAX_MESSAGE_BYTES + 1 - first.length, 0x61),
+    ])
+    const half = Buffer.concat([first, Buffer.alloc(17 * 1024 * 1024, 0x62)])
+    const { bridge } = await start({
+      mailboxes: {
+        INBOX: box(1700000001, [
+          { uid: 1, raw: big },
+          { uid: 2, raw: first },
+          { uid: 3, raw: half },
+          { uid: 4, raw: half },
+        ]),
+        Drafts: box(1700000002, []),
+        Trash: box(1700000003, []),
+      },
+    })
+    const page = await bridge.fetchRaw("INBOX", 1, 10)
+    // UID 1 is over 25 MiB; UID 4 would take the page past 32 MiB, so the page ends at UID 3.
+    expect(page?.skipped).toEqual([1])
+    expect(page?.messages.map((message) => message.uid)).toEqual([2, 3])
+    expect(page?.messages[1]?.raw.length).toBe(half.length)
+  })
+
+  it("finds a message by Message-ID in the search folders, with its envelope", async () => {
+    const { bridge } = await start({ mailboxes: mailboxes() })
+    const found = await bridge.find("<second@example.invalid>")
+    expect(found).toMatchObject({
+      folder: "INBOX",
+      uid: 7,
+      raw: second,
+      messageId: "<second@example.invalid>",
+      references: "<first@example.invalid>",
+      subject: "Two",
+      from: [{ name: "Sender", address: "sender@example.invalid" }],
+      replyTo: [{ name: "Desk", address: "desk@example.invalid" }],
+      to: [{ name: "Owner", address: "owner@example.invalid" }],
+      cc: [
+        { name: "Carol", address: "carol@example.invalid" },
+        { address: "dave@example.invalid" },
+      ],
+    })
+  })
+
+  it("matches the exact Message-ID, not a substring of another one", async () => {
+    const { bridge } = await start({ mailboxes: mailboxes() })
+    expect(await bridge.locate("second@example")).toBeUndefined()
+    expect(await bridge.locate("<nobody@example.invalid>")).toBeUndefined()
+  })
+
+  it("locates core's fallback id only while the folder's UIDVALIDITY matches", async () => {
+    const { bridge } = await start({ mailboxes: mailboxes() })
+    expect(await bridge.locate("proton:INBOX:1700000001:3")).toEqual({
+      folder: "INBOX",
+      uid: 3,
+    })
+    expect(await bridge.locate("proton:INBOX:1600000000:3")).toBeUndefined()
+    expect(await bridge.locate("proton:Nowhere:1700000001:3")).toBeUndefined()
+    expect(await bridge.find("proton:INBOX:1700000001:5")).toBeUndefined()
+  })
+})
+
+describe("writes against the fake Bridge", () => {
+  it("appends a draft to Drafts with the Draft flag", async () => {
+    const { bridge, fake } = await start({ mailboxes: mailboxes() })
+    expect(await bridge.appendDraft(first)).toEqual({
+      folder: "Drafts",
+      uid: 1,
+    })
+    expect(fake.mailboxes.get("Drafts")?.messages).toEqual([
+      { uid: 1, raw: first, flags: ["\\Draft", "\\Seen"] },
+    ])
+  })
+
+  it("moves to Trash with UID MOVE, leaving messages already in Trash alone", async () => {
+    const { bridge, fake } = await start({ mailboxes: mailboxes() })
+    expect(
+      await bridge.moveToTrash([
+        { folder: "INBOX", uid: 3 },
+        { folder: "INBOX", uid: 7 },
+        { folder: "Trash", uid: 1 },
+      ])
+    ).toEqual({ moved: 2 })
+    expect(fake.mailboxes.get("INBOX")?.messages).toEqual([])
+    expect(fake.mailboxes.get("Trash")?.messages.map((m) => m.raw)).toEqual([
+      first,
+      second,
+    ])
+    expect(fake.imapCommands.filter((c) => c.startsWith("UID MOVE"))).toEqual([
+      "UID MOVE 3,7 Trash",
+    ])
+  })
+
+  it("refuses to move when Bridge lacks MOVE, so imapflow cannot fall back to flag and expunge", async () => {
+    const { bridge, fake } = await start({
+      mailboxes: mailboxes(),
+      capabilities: ["IMAP4rev1", "UIDPLUS"],
+    })
+    await expect(
+      bridge.moveToTrash([{ folder: "INBOX", uid: 3 }])
+    ).rejects.toMatchObject({
+      code: "unsupported",
+    })
+    expect(fake.mailboxes.get("INBOX")?.messages).toHaveLength(2)
+    expect(fake.imapCommands.some((c) => c.startsWith("SELECT"))).toBe(false)
+  })
+
+  it("fails a write when Bridge has no Drafts or Trash folder", async () => {
+    const { bridge } = await start({
+      mailboxes: { INBOX: box(1700000001, []) },
+    })
+    await expect(bridge.appendDraft(first)).rejects.toMatchObject({
+      code: "not_found",
+    })
+    await expect(bridge.moveToTrash([])).rejects.toMatchObject({
+      code: "not_found",
+    })
+  })
+
+  it("never sends EXPUNGE, CLOSE, STORE or a \\Deleted flag, and logs out of every session", async () => {
+    const { bridge, fake } = await start({ mailboxes: mailboxes() })
+    await bridge.listFolders()
+    await bridge.folderState("INBOX")
+    await bridge.fetchRaw("INBOX", 1, 10)
+    await bridge.find("<first@example.invalid>")
+    await bridge.appendDraft(first)
+    await bridge.moveToTrash([{ folder: "INBOX", uid: 3 }])
+    expect(destructive(fake.imapCommands)).toEqual([])
+    const logins = fake.imapCommands.filter(
+      (c) => c === "LOGIN <redacted>"
+    ).length
+    const logouts = fake.imapCommands.filter((c) => c === "LOGOUT").length
+    expect(logins).toBe(6)
+    expect(logouts).toBe(6)
+  })
+
+  it("sends a text/calendar part from the assistant identity", async () => {
+    const { bridge, fake } = await start()
+    const invite = [
+      "BEGIN:VCALENDAR",
+      "METHOD:REQUEST",
+      "BEGIN:VEVENT",
+      "UID:evt-1@example.invalid",
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ].join("\r\n")
+    const { messageId } = await bridge.send({
+      to: ["guest@example.invalid"],
+      subject: "Invitation",
+      text: "lorem",
+      icalEvent: { method: "REQUEST", content: invite },
+    })
+    expect(fake.sent).toHaveLength(1)
+    const [mail] = fake.sent
+    expect(mail?.from).toBe(USER)
+    expect(mail?.to).toEqual(["guest@example.invalid"])
+    expect(mail?.data).toMatch(/^From: assistant@example\.invalid$/m)
+    expect(mail?.data).toMatch(
+      /^Content-Type: text\/calendar; charset=utf-8; method=REQUEST$/m
+    )
+    expect(mail?.data).toContain(`Message-ID: ${messageId}`)
+    expect(fake.smtpCommands[0]).toBe("EHLO localhost")
+  })
+})
+
+describe("connection failures", () => {
+  it("raises handshake_failed when Bridge refuses the connection, on IMAP and SMTP", async () => {
+    const port = await closedPort()
+    const vault = new InMemoryVault()
+    await vault.set(BRIDGE_PASSWORD_KEY, PASSWORD)
+    const bridge = createProtonBridge({
+      config: config({ imapPort: port, smtpPort: port }),
+      vault,
+    })
+    await expect(bridge.listFolders()).rejects.toMatchObject({
+      code: "handshake_failed",
+    })
+    await expect(
+      bridge.send({ to: ["a@example.invalid"], text: "x" })
+    ).rejects.toMatchObject({
+      code: "handshake_failed",
+    })
+  })
+
+  it("raises auth_failed for a wrong password and does not log in with it again", async () => {
+    const { bridge, fake } = await start(
+      { mailboxes: mailboxes() },
+      "wrong-password"
+    )
+    await expect(bridge.listFolders()).rejects.toMatchObject({
+      code: "auth_failed",
+    })
+    await expect(bridge.folderState("INBOX")).rejects.toMatchObject({
+      code: "auth_failed",
+    })
+    await expect(
+      bridge.send({ to: ["a@example.invalid"], text: "x" })
+    ).rejects.toMatchObject({
+      code: "auth_failed",
+    })
+    expect(
+      fake.imapCommands.filter((c) => c === "LOGIN <redacted>")
+    ).toHaveLength(1)
+    expect(fake.smtpCommands).toEqual([])
+  })
+
+  it("tries again once the vault holds a new password", async () => {
+    const { bridge, vault } = await start(
+      { mailboxes: mailboxes() },
+      "wrong-password"
+    )
+    await expect(bridge.listFolders()).rejects.toMatchObject({
+      code: "auth_failed",
+    })
+    await vault.set(BRIDGE_PASSWORD_KEY, PASSWORD)
+    expect(await bridge.listFolders()).toContain("INBOX")
+  })
+
+  it("raises auth_failed when SMTP refuses the password, and remembers it", async () => {
+    // The fake expects another password than the one in the vault; only send is called.
+    const fake = await startFakeBridge({ username: USER, password: "other" })
+    opened.push(fake)
+    const vault = new InMemoryVault()
+    await vault.set(BRIDGE_PASSWORD_KEY, PASSWORD)
+    const bridge = createProtonBridge({ config: config(fake), vault })
+    await expect(
+      bridge.send({ to: ["a@example.invalid"], text: "x" })
+    ).rejects.toMatchObject({
+      code: "auth_failed",
+    })
+    await expect(
+      bridge.send({ to: ["a@example.invalid"], text: "x" })
+    ).rejects.toMatchObject({
+      code: "auth_failed",
+    })
+    expect(fake.smtpCommands.filter((c) => c.startsWith("AUTH"))).toHaveLength(
+      1
+    )
+  })
+
+  it("raises auth_failed without connecting when the vault has no password", async () => {
+    const { bridge, fake } = await start({}, null)
+    await expect(bridge.listFolders()).rejects.toMatchObject({
+      code: "auth_failed",
+    })
+    expect(fake.imapCommands).toEqual([])
+  })
+
+  it("never puts the password in a recorded command or an error", async () => {
+    const { bridge, fake } = await start({ mailboxes: mailboxes() })
+    await bridge.listFolders()
+    await bridge.send({ to: ["a@example.invalid"], text: "x" })
+    const wrong = await start({}, "wrong-password-0b1d")
+    const error: unknown = await wrong.bridge
+      .listFolders()
+      .catch((e: unknown) => e)
+    const text = JSON.stringify([
+      fake.imapCommands,
+      fake.smtpCommands,
+      wrong.fake.imapCommands,
+    ])
+    expect(text).not.toContain(PASSWORD)
+    expect(String(error)).not.toContain("wrong-password-0b1d")
+    expect(JSON.stringify(error)).not.toContain("wrong-password-0b1d")
+  })
+})

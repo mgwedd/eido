@@ -9,13 +9,22 @@ import { request } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { createIntentClient } from "./internal/client"
+import { BRIDGE_PASSWORD_KEY } from "./internal/bridge/bridge"
+import { rawMessage, startFakeBridge } from "./internal/bridge/fake-bridge"
+import type { FakeBridge } from "./internal/bridge/fake-bridge"
+import {
+  GateRequestError,
+  createIntentClient,
+  createProtonMailClient,
+} from "./internal/client"
 import { runningGate } from "./internal/runtime"
 import {
   assertion,
+  loggedText,
   testAuthenticator,
   WEBAUTHN,
 } from "./internal/test-fixtures"
+import { FileVault } from "./internal/vault/file-vault"
 import { CONTROL_DB_FILE, GATE_LOG_FILE, gateConfig, runGate } from "./main"
 import type { GateConfig } from "./main"
 
@@ -287,5 +296,173 @@ describe("runGate", () => {
     const gate = await runGate(config())
     expect(gate.phone).toBeUndefined()
     await gate.close()
+  })
+})
+
+describe("gateConfig with Bridge", () => {
+  const BASE = {
+    EIDO_GATE_DATA_DIR: "/d",
+    EIDO_GATE_SOCKET: "/d/gate.sock",
+    EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+    EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+    EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+    EIDO_BRIDGE_HOST: "127.0.0.1",
+    EIDO_BRIDGE_IMAP_PORT: "1143",
+    EIDO_BRIDGE_SMTP_PORT: "1025",
+    EIDO_BRIDGE_USERNAME: "assistant@example.invalid",
+  }
+
+  it("reads Bridge and its development vault, with no password in the config", () => {
+    const config = gateConfig({
+      ...BASE,
+      EIDO_GATE_VAULT_FILE: "/vault/dev.json",
+      EIDO_DEV_VAULT: "1",
+    })
+    expect(config.bridge).toEqual({
+      config: {
+        host: "127.0.0.1",
+        imapPort: 1143,
+        smtpPort: 1025,
+        tls: "starttls",
+        allowSelfSigned: false,
+        username: "assistant@example.invalid",
+        searchFolders: ["INBOX"],
+      },
+      vaultPath: "/vault/dev.json",
+      devVault: true,
+    })
+  })
+
+  it("leaves the development flag off unless it is exactly 1", () => {
+    const config = gateConfig({
+      ...BASE,
+      EIDO_GATE_VAULT_FILE: "/v.json",
+      EIDO_DEV_VAULT: "true",
+    })
+    expect(config.bridge?.devVault).toBe(false)
+  })
+
+  it("refuses Bridge without a vault file", () => {
+    expect(() => gateConfig(BASE)).toThrow("Bridge needs EIDO_GATE_VAULT_FILE")
+  })
+
+  it("has no Bridge when its host is not set", () => {
+    expect(gateConfig({ ...BASE, EIDO_BRIDGE_HOST: "" }).bridge).toBeUndefined()
+  })
+})
+
+describe("runGate with Bridge", () => {
+  const USER = "assistant@example.invalid"
+  const PASSWORD = "synthetic-bridge-password-5d20"
+  const message = rawMessage({
+    messageId: "<one@example.invalid>",
+    subject: "One",
+    body: "lorem ipsum",
+  })
+  let fake: FakeBridge | undefined
+  afterEach(async () => {
+    await fake?.close()
+    fake = undefined
+  })
+
+  async function bridged(
+    vaultPassword: string,
+    devVault = true
+  ): Promise<GateConfig> {
+    fake = await startFakeBridge({
+      username: USER,
+      password: PASSWORD,
+      mailboxes: {
+        INBOX: {
+          uidValidity: 1700000001,
+          uidNext: 5,
+          messages: [{ uid: 4, raw: message, flags: [] }],
+        },
+        Drafts: { uidValidity: 1700000002, uidNext: 1, messages: [] },
+        Trash: { uidValidity: 1700000003, uidNext: 1, messages: [] },
+      },
+    })
+    const vaultPath = join(dir, "vault", "dev.json")
+    await new FileVault({ path: vaultPath, devFlag: true }).set(
+      BRIDGE_PASSWORD_KEY,
+      vaultPassword
+    )
+    return {
+      ...config(),
+      bridge: {
+        config: {
+          host: "127.0.0.1",
+          imapPort: fake.imapPort,
+          smtpPort: fake.smtpPort,
+          tls: "none",
+          allowSelfSigned: false,
+          username: USER,
+          searchFolders: ["INBOX"],
+        },
+        vaultPath,
+        devVault,
+      },
+    }
+  }
+
+  it("serves the mail reads to core over the data-plane socket", async () => {
+    const c = await bridged(PASSWORD)
+    const gate = await runGate(c)
+    try {
+      const mail = createProtonMailClient({ socketPath: c.socketPath })
+      expect((await mail.listFolders()).sort()).toEqual([
+        "Drafts",
+        "INBOX",
+        "Trash",
+      ])
+      expect(await mail.folderState("INBOX")).toEqual({
+        uidValidity: "1700000001",
+        uidNext: 5,
+      })
+      const page = await mail.fetchRaw("INBOX", 1, 10)
+      expect(page.map((entry) => entry.uid)).toEqual([4])
+      expect(Buffer.from(page[0]?.raw ?? []).equals(message)).toBe(true)
+      await expect(mail.folderState("Nope")).rejects.toMatchObject({
+        status: 404,
+        code: "not_found",
+      })
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("raises auth_failed to core and keeps the password out of the log and audit", async () => {
+    const wrong = "synthetic-wrong-password-77b1"
+    const c = await bridged(wrong)
+    const gate = await runGate(c)
+    let caught: unknown
+    try {
+      const mail = createProtonMailClient({ socketPath: c.socketPath })
+      caught = await mail.listFolders().catch((error: unknown) => error)
+      expect(caught).toBeInstanceOf(GateRequestError)
+      expect(caught).toMatchObject({ status: 502, code: "auth_failed" })
+      await expect(mail.listFolders()).rejects.toMatchObject({
+        code: "auth_failed",
+      })
+      expect(
+        fake?.imapCommands.filter((command) => command.startsWith("LOGIN"))
+      ).toHaveLength(1)
+      expect(loggedText(runningGate().db)).not.toContain(wrong)
+    } finally {
+      await gate.close()
+    }
+    const logged = readFileSync(join(c.dataDir, GATE_LOG_FILE), "utf8")
+    expect(logged).toContain('"mail":"bridge"')
+    expect(logged).not.toContain(wrong)
+    expect(JSON.stringify(caught)).not.toContain(wrong)
+    expect(caught instanceof Error ? caught.message : "").not.toContain(wrong)
+  })
+
+  it("does not start when the development vault flag is off", async () => {
+    const c = await bridged(PASSWORD, false)
+    await expect(runGate(c)).rejects.toThrow(
+      "FileVault is for development only"
+    )
+    expect(() => runningGate()).toThrow("the gate is not started")
   })
 })
