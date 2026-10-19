@@ -4,12 +4,14 @@ import { validateIntent } from "@eido/schemas"
 import type { Intent } from "@eido/schemas"
 import { append } from "./audit"
 import { canonicalize, hashCanonicalString, payloadHash } from "./canonical"
+import { issueCurrentNonce } from "./nonces"
 import { intentTier } from "./policy"
 import type { Policy, Tier, TierDecision } from "./policy"
+import { atomically } from "./transaction"
 
 // Intents: the only door through which the data plane can cause an external write. The gate
-// validates, canonicalizes, hashes and tiers each proposal itself; nothing here executes or
-// verifies approvals. Every state change goes through `transition`, which appends its audit
+// validates, canonicalizes, hashes and tiers each proposal itself; nothing here executes, and
+// approvals are verified in approvals.ts. Every state change goes through `transition`, which appends its audit
 // row in the same transaction. Audit rows and intent_events carry hashes, ids, states and
 // reasons, never the payload body.
 
@@ -130,24 +132,6 @@ function optionalText(value: unknown): string | null {
   return typeof value === "string" ? value : null
 }
 
-let savepoints = 0
-
-/** Runs `work` in one transaction, or in a savepoint when the caller already holds one. */
-function atomically<T>(db: DatabaseSync, work: () => T): T {
-  const name = db.isTransaction ? `intent_${++savepoints}` : undefined
-  db.exec(name === undefined ? "BEGIN IMMEDIATE" : `SAVEPOINT ${name}`)
-  try {
-    const result = work()
-    db.exec(name === undefined ? "COMMIT" : `RELEASE ${name}`)
-    return result
-  } catch (error) {
-    db.exec(
-      name === undefined ? "ROLLBACK" : `ROLLBACK TO ${name}; RELEASE ${name}`
-    )
-    throw error
-  }
-}
-
 type StoredIntent = {
   id: string
   kind: string
@@ -252,6 +236,56 @@ export function transition(
   })
 }
 
+/** Policy's move of an approval-tier intent to pending, with its first single-use nonce. */
+export function issuePending(db: DatabaseSync, intentId: string): void {
+  atomically(db, () => {
+    transition(db, intentId, "pending", "policy")
+    issueCurrentNonce(db, intentId)
+  })
+}
+
+/**
+ * Decides a pending intent with a conditional UPDATE, so of two concurrent deciders exactly one
+ * changes the row. With `nonce`, the intent must also still hold that nonce as its current one.
+ * Returns the intent's payload hash when it decided it, or undefined, having written nothing,
+ * when the intent is no longer pending (or the nonce moved).
+ */
+export function decidePending(
+  db: DatabaseSync,
+  intentId: string,
+  to: "approved" | "rejected",
+  actor: Actor,
+  options: { reason?: string; nonce?: string } = {}
+): string | undefined {
+  const actors = EDGES.pending[to] ?? []
+  if (!actors.includes(actor)) {
+    throw new Error(`${actor} may not move an intent from pending to ${to}`)
+  }
+  const reason = options.reason ?? null
+  const nonce = options.nonce ?? null
+  return atomically(db, () => {
+    const changed = db
+      .prepare(
+        `UPDATE intents SET state = ?, current_nonce = NULL, reason = CASE WHEN ? = 'rejected' THEN ? ELSE reason END
+         WHERE id = ? AND state = 'pending' AND (? IS NULL OR current_nonce = ?)
+         RETURNING payload_hash`
+      )
+      .get(to, to, reason, intentId, nonce, nonce)
+    if (changed === undefined) return undefined
+    const hash = String(changed["payload_hash"])
+    record(db, {
+      intentId,
+      from: "pending",
+      to,
+      actor,
+      reason,
+      action: "intent.transition",
+      detailHash: transitionDetail("pending", to, reason, hash),
+    })
+    return hash
+  })
+}
+
 type Checked =
   | { ok: true; intent: Intent; canonical: string; hash: string }
   | { ok: false; errors: string[] }
@@ -310,7 +344,7 @@ function applyTier(db: DatabaseSync, id: string, decision: TierDecision): void {
       transition(db, id, "approved", "policy")
       return
     case "approval":
-      transition(db, id, "pending", "policy")
+      issuePending(db, id)
       return
     case "forbidden":
       transition(db, id, "rejected", "policy", decision.reason)

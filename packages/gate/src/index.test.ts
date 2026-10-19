@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import * as gate from "./index"
 import {
+  approveIntent,
   getIntentHistory,
   getIntentStatus,
   listPendingIntents,
+  prepareApproval,
   proposeIntent,
   proposeIntentFromModel,
+  rejectIntent,
 } from "./index"
 import { payloadHash } from "./internal/canonical"
+import { beginRegistration, registerCredential } from "./internal/credentials"
 import { intentHistory, intentStatus, pendingIntents } from "./internal/intents"
 import { kindTier } from "./internal/policy"
 import {
@@ -18,10 +22,15 @@ import {
 } from "./internal/runtime"
 import {
   BODY_MARKER,
+  WEBAUTHN,
+  assertion,
   auditRows,
+  deviceChallenge,
   loggedText,
+  registration,
   sample,
   setup,
+  testAuthenticator,
 } from "./internal/test-fixtures"
 import type { Setup } from "./internal/test-fixtures"
 
@@ -32,7 +41,7 @@ let current: Setup | undefined
 
 function started(): Setup {
   current = setup()
-  expect(startGate(current.db, current.options)).toEqual([])
+  expect(startGate(current.db, current.options, WEBAUTHN)).toEqual([])
   return current
 }
 
@@ -44,13 +53,16 @@ afterEach(() => {
 })
 
 describe("the public surface", () => {
-  it("exports only the intent API", () => {
+  it("exports only the intent and approval API", () => {
     expect(Object.keys(gate).sort()).toEqual([
+      "approveIntent",
       "getIntentHistory",
       "getIntentStatus",
       "listPendingIntents",
+      "prepareApproval",
       "proposeIntent",
       "proposeIntentFromModel",
+      "rejectIntent",
     ])
   })
 
@@ -61,9 +73,21 @@ describe("the public surface", () => {
     ).rejects.toThrow("the gate is not started")
   })
 
+  it("refuses to start with an origin that is not https://<rpId>", () => {
+    const s = setup()
+    current = s
+    expect(() =>
+      startGate(s.db, s.options, {
+        rpId: WEBAUTHN.rpId,
+        origin: "http://eido.example.invalid",
+      })
+    ).toThrow("the WebAuthn origin must be https://<rpId>")
+    expect(() => listPendingIntents()).toThrow("the gate is not started")
+  })
+
   it("starts once", () => {
     const s = started()
-    expect(() => startGate(s.db, s.options)).toThrow(
+    expect(() => startGate(s.db, s.options, WEBAUTHN)).toThrow(
       "the gate is already started"
     )
   })
@@ -213,5 +237,66 @@ describe("reloading the policy", () => {
     expect(kindTier(s.db, runningGate().policy, "email.archive")).toEqual({
       tier: "approval",
     })
+  })
+})
+
+describe("the approval API", () => {
+  async function pendingSend(): Promise<string> {
+    const result = await proposeIntent({
+      kind: "email.send",
+      payload: sample("email.send").args,
+      origin: "reactive",
+    })
+    if (!result.ok) throw new Error("fixture send refused")
+    return result.intentId
+  }
+
+  it("prepares, approves and refuses a replay through the running gate", async () => {
+    const s = started()
+    const auth = testAuthenticator()
+    const begun = beginRegistration(s.db, "admin")
+    if (!begun.ok) throw new Error("enrolment challenge refused")
+    expect(
+      registerCredential(
+        s.db,
+        WEBAUTHN,
+        "admin",
+        registration(auth, begun.challenge)
+      )
+    ).toEqual({ ok: true, credentialId: auth.credentialId })
+
+    const id = await pendingSend()
+    const prepared = prepareApproval(id)
+    if (!prepared.ok) throw new Error("prepare refused")
+    const request = {
+      intentId: id,
+      nonce: prepared.nonce,
+      assertion: assertion(
+        auth,
+        deviceChallenge(prepared.payloadHash, id, prepared.nonce)
+      ),
+    }
+    expect(approveIntent(request)).toEqual({
+      ok: true,
+      intentId: id,
+      state: "approved",
+    })
+    expect(getIntentStatus(id)?.state).toBe("approved")
+    expect(approveIntent(request)).toEqual({
+      ok: false,
+      error: "approval_refused",
+    })
+  })
+
+  it("rejects a pending intent with a reason code", async () => {
+    started()
+    const id = await pendingSend()
+    expect(rejectIntent(id, "wrong_recipient")).toEqual({
+      ok: true,
+      intentId: id,
+      state: "rejected",
+    })
+    expect(getIntentHistory(id).at(-1)?.reason).toBe("wrong_recipient")
+    expect(prepareApproval(id)).toEqual({ ok: false, code: "not_pending" })
   })
 })

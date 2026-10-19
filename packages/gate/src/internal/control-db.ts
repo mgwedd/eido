@@ -53,6 +53,42 @@ const MIGRATIONS: readonly string[] = [
    CREATE INDEX intent_events_intent ON intent_events (intent_id, audit_seq);
    CREATE TRIGGER intent_events_no_update BEFORE UPDATE ON intent_events BEGIN SELECT RAISE(ABORT, 'intent_events is append-only'); END;
    CREATE TRIGGER intent_events_no_delete BEFORE DELETE ON intent_events BEGIN SELECT RAISE(ABORT, 'intent_events is append-only'); END;`,
+  // Approvals (#15). current_nonce is the one nonce an approval of the intent may be signed over;
+  // approval_nonces keeps every nonce issued, so none is valid twice. credentials holds the
+  // enrolled passkeys: public_key is the SubjectPublicKeyInfo DER as base64url, sign_count the
+  // highest counter seen. approvals holds one row per decision; nonce and intent_id are unique.
+  // registration_challenges are the single-use challenges for passkey enrolment on the Mac.
+  `ALTER TABLE intents ADD COLUMN current_nonce TEXT;
+   CREATE TABLE approval_nonces (
+     nonce     TEXT PRIMARY KEY,
+     intent_id TEXT NOT NULL REFERENCES intents (id),
+     issued_at TEXT NOT NULL,
+     used_at   TEXT
+   ) STRICT;
+   CREATE TABLE credentials (
+     credential_id TEXT PRIMARY KEY,
+     public_key    TEXT NOT NULL,
+     sign_count    INTEGER NOT NULL CHECK (sign_count >= 0),
+     created_at    TEXT NOT NULL,
+     revoked_at    TEXT
+   ) STRICT;
+   CREATE TABLE approvals (
+     intent_id     TEXT PRIMARY KEY REFERENCES intents (id),
+     bundle_hash   TEXT NOT NULL,
+     decision      TEXT NOT NULL CHECK (decision IN ('approved', 'rejected')),
+     signature     TEXT,
+     credential_id TEXT REFERENCES credentials (credential_id),
+     sign_count    INTEGER,
+     nonce         TEXT UNIQUE REFERENCES approval_nonces (nonce),
+     decided_at    TEXT NOT NULL,
+     reason_code   TEXT,
+     CHECK (decision = 'rejected' OR (signature IS NOT NULL AND credential_id IS NOT NULL AND sign_count IS NOT NULL AND nonce IS NOT NULL))
+   ) STRICT;
+   CREATE TABLE registration_challenges (
+     challenge TEXT PRIMARY KEY,
+     issued_at TEXT NOT NULL,
+     used_at   TEXT
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {
