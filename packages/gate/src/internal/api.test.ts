@@ -597,11 +597,11 @@ describe("the server wrapper", () => {
   })
 
   it("passes through an error other than a missing file", async () => {
-    writeFileSync(join(dir, "plain"), "")
+    // A NUL byte fails lstat on every platform with an error that is not ENOENT.
     const server = createGateServer("test", () => NOT_A_REPLY, silent)
     await expect(
-      listen(server, join(dir, "plain", "x.sock"), 0o600)
-    ).rejects.toThrow("ENOTDIR")
+      listen(server, join(dir, "bad\0.sock"), 0o600, "linux")
+    ).rejects.toThrow("null bytes")
   })
 })
 
