@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/main.ts",
     "lint": "eslint",
     "typecheck": "tsc -b",
     "test": "vitest run --coverage",

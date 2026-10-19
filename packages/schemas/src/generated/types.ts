@@ -148,6 +148,19 @@ export interface GateAuditPage {
   nextBefore?: number
 }
 
+/** Body of POST /audit on the data-plane listener (#181): one profile change for the gate to append to its audit log as an audit.profile.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector or account reference is sent in clear. The gate also checks that the hashes are lowercase hex and that beforeHash and afterHash are null or set as the action requires. */
+export interface GateAuditRecordRequest {
+  action: "entity.create" | "entity.update" | "entity.delete" | "account.assign" | "account.unassign"
+  subjectHash: string
+  beforeHash: string | null
+  afterHash: string | null
+}
+
+/** Response 201 of POST /audit (#181): the gate appended the entry to its audit log at this seq. */
+export interface GateAuditRecordResult {
+  seq: number
+}
+
 /** Response of connector health (#24 getConnectorHealth), used by the Today page. It has no fields for credentials or payload bodies. */
 export interface GateConnectorHealth {
   connectors: Array<{
@@ -197,8 +210,28 @@ export interface GateIntentHistory {
 /** What produced the intent (#11 intents.origin). */
 export type GateIntentOrigin = "reactive" | "proactive" | "task"
 
+/** Body of POST /intents on the gate's data-plane listener (#42): one proposed write. The gate checks intent against the intent schemas, then canonicalizes, hashes and tiers it itself. The body carries no hash or tier. */
+export interface GateIntentProposal {
+  intent: Record<string, unknown>
+  origin: GateIntentOrigin
+  taskId?: string
+  sources?: {
+    contextPackId: string
+    documentIds: Array<string>
+  }
+}
+
 /** Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are final. */
 export type GateIntentState = "proposed" | "pending" | "approved" | "rejected" | "executed" | "failed"
+
+/** Response of GET /intents/:id (#42): one intent's kind, tier and state. No payload body, signature or nonce. edited_from is the id of the intent this one replaced, or null. */
+export interface GateIntentStatus {
+  id: string
+  kind: string
+  tier: GateTier
+  state: GateIntentState
+  edited_from: string | null
+}
 
 /** Response of the pending-approvals list: intents in state pending, without payload bodies (#11 listPendingIntents, plus origin, which #33 needs). */
 export interface GatePendingIntentList {
@@ -228,6 +261,20 @@ export interface GatePrepareApproval {
     name: string
   }>
   editedFrom?: string
+}
+
+/** Response 422 of POST /intents (#42): the intent does not match the intent schemas and nothing was stored. Each error names a field path and a reason, for example "$.args.body: required", and never a payload value. */
+export interface GateProposeRefusal {
+  code: "invalid_payload"
+  errors: Array<string>
+}
+
+/** Response of POST /intents (#42) when the gate stored the intent. 201: tier auto lands in approved, tier approval in pending. 403: policy refused it, so tier is forbidden, state is rejected and reason says why (for example connector_disabled). */
+export interface GateProposeResult {
+  id: string
+  tier: GateTier
+  state: GateIntentState
+  reason?: string
 }
 
 /** Effective policy tier of an intent (#11). */

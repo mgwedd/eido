@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateAuditRecordResult",
+  "description": "Response 201 of POST /audit (#181): the gate appended the entry to its audit log at this seq.",
+  "type": "object",
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": ["seq"],
+  "additionalProperties": false
+}
