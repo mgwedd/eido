@@ -8,8 +8,7 @@ A private, local-first executive assistant for your Mac. It reads your mail, cal
 - **One door for writes.** Only the gate (`packages/gate`) holds credentials and executes external writes, and every write needs a signed approval.
 - **Reachable from your devices.** The web app runs on the Mac behind Tailscale, with no public surface.
 
-> Status: early build. The web app is a bootstrap page; features are tracked as Git
-Hub issues (start with the MVP epic, #5). Host hardening (vault, service supervision, sandboxing) is built Mac-first.
+> Status: early build. The web app is a bootstrap page; features are tracked as GitHub issues (start with the MVP epic, #5). Host hardening (vault, service supervision, sandboxing) is built Mac-first.
 
 ## How approvals work
 
