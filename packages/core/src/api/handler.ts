@@ -43,6 +43,7 @@ const STATUS: Record<ErrorCode, number> = {
   payload_too_large: 413,
   method_not_allowed: 405,
   misdirected_request: 421,
+  busy: 503,
   gate_unavailable: 503,
   internal: 500,
 }

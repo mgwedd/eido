@@ -2,7 +2,13 @@ import { request as httpRequest } from "node:http"
 import { afterEach, describe, expect, test } from "vitest"
 import { openIndex } from "../index/schema"
 import { createProfileStore } from "../profile/index"
-import { basePath, hostHeader, listenCoreApi, loopbackHost } from "./listen"
+import {
+  basePath,
+  hostHeader,
+  listenCoreApi,
+  loopbackHost,
+  withListenHost,
+} from "./listen"
 import type { CoreApi } from "./listen"
 
 const open: CoreApi[] = []
@@ -112,18 +118,6 @@ describe("listenCoreApi", () => {
     expect(await get(api, "/profile", "localhost")).toBe(421)
   })
 
-  test("does not list the listen address twice", async () => {
-    const free = await listen()
-    await free.close()
-    open.splice(open.indexOf(free), 1)
-    const self = `127.0.0.1:${String(free.port)}`
-    const api = await listen({
-      port: free.port,
-      allowedHosts: [self, "eido.example.invalid"],
-    })
-    expect(api.allowedHosts).toEqual([self, "eido.example.invalid"])
-  })
-
   test("listens on the IPv6 loopback", async () => {
     const api = await listen({ host: "::1" })
     expect(await get(api, "/profile", `[::1]:${String(api.port)}`)).toBe(200)
@@ -151,4 +145,10 @@ describe("listenCoreApi", () => {
       get(api, "/profile", `127.0.0.1:${String(api.port)}`)
     ).rejects.toMatchObject({ code: "ECONNREFUSED" })
   })
+})
+
+test("withListenHost does not list the listen address twice", () => {
+  expect(
+    withListenHost("127.0.0.1:8787", ["127.0.0.1:8787", "eido.example.invalid"])
+  ).toEqual(["127.0.0.1:8787", "eido.example.invalid"])
 })

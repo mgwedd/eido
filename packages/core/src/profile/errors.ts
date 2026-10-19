@@ -1,7 +1,12 @@
 export type ProfileErrorCode =
-  "invalid" | "duplicate_name" | "duplicate_tag" | "not_found" | "entity_in_use"
+  | "invalid"
+  | "duplicate_name"
+  | "duplicate_tag"
+  | "not_found"
+  | "entity_in_use"
+  | "busy"
 
-/** Typed failure of a profile store write. Messages never contain stored values. */
+/** Typed failure of a profile store call. Messages never contain stored values. */
 export class ProfileError extends Error {
   readonly code: ProfileErrorCode
   /** What blocked the write: validation issues, or the referencing tables for `entity_in_use`. */
