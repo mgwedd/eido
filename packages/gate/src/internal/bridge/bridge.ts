@@ -102,6 +102,8 @@ export interface ProtonBridge {
   find(messageId: string, sha256?: string): Promise<FoundMessage | undefined>
   /** Appends a raw message to the Drafts folder with the \Draft flag. */
   appendDraft(raw: Buffer): Promise<{ folder: string; uid: number | null }>
+  /** Finds one draft by Message-ID or core fallback id, confined to the Drafts folder. */
+  locateDraft(draftId: string): Promise<MessageRef | undefined>
   /** Moves messages to the Trash folder with UID MOVE. */
   moveToTrash(refs: readonly MessageRef[]): Promise<{ moved: number }>
   /** Sends from the assistant identity (the Bridge username). */
@@ -346,10 +348,16 @@ export function createProtonBridge({
   /** Every message with this id: the fallback id's one message, or each exact Message-ID match. */
   async function candidates(
     client: ImapFlow,
-    messageId: string
+    messageId: string,
+    searchFolders?: readonly string[]
   ): Promise<MessageRef[]> {
     const fallback = parseFallbackId(messageId)
     if (fallback !== undefined) {
+      if (
+        searchFolders !== undefined &&
+        !searchFolders.includes(fallback.folder)
+      )
+        return []
       if (!(await exists(client, fallback.folder))) return []
       const status = await client.status(fallback.folder, { uidValidity: true })
       if (
@@ -370,7 +378,7 @@ export function createProtonBridge({
     }
     const wanted = bare(messageId)
     const refs: MessageRef[] = []
-    for (const folder of config.searchFolders) {
+    for (const folder of searchFolders ?? config.searchFolders) {
       if (!(await exists(client, folder))) continue
       const lock = await client.getMailboxLock(folder, { readOnly: true })
       try {
@@ -545,6 +553,20 @@ export function createProtonBridge({
           throw new BridgeError("bridge_error", "Bridge refused the draft")
         }
         return { folder, uid: appended.uid ?? null }
+      }),
+
+    locateDraft: (draftId) =>
+      withImap(async (client) => {
+        if (client.capabilities.get("MOVE") !== true) {
+          throw new BridgeError("unsupported", "Bridge does not support MOVE")
+        }
+        await special(client, "\\Trash")
+        const drafts = await special(client, "\\Drafts")
+        const refs = await candidates(client, draftId, [drafts])
+        if (refs.length > 1) {
+          throw new BridgeError("bridge_error", "draft id is ambiguous")
+        }
+        return refs[0]
       }),
 
     moveToTrash: (refs) =>
