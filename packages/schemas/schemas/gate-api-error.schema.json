@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateApiError",
+  "description": "Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. The server (#85) maps codes to HTTP statuses.",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "not_found",
+        "already_decided",
+        "verification_failed",
+        "invalid_request",
+        "unavailable"
+      ],
+      "maxLength": 32
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    }
+  },
+  "required": ["code", "message"],
+  "additionalProperties": false
+}

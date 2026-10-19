@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateTier",
+  "description": "Effective policy tier of an intent (#11).",
+  "type": "string",
+  "enum": ["auto", "approval", "forbidden"],
+  "maxLength": 32
+}

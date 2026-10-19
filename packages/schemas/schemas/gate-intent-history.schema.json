@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateIntentHistory",
+  "description": "Response of an intent's state-transition history, oldest first, derived from audit_log (#11 getIntentHistory). from is null on the first entry. An undo is an entry whose from and to are both executed with reason undone.",
+  "type": "object",
+  "properties": {
+    "intentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "title": "GateIntentHistoryEntry",
+        "description": "One transition.",
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 20,
+            "maxLength": 40
+          },
+          "from": {
+            "oneOf": [
+              {
+                "$ref": "gate-intent-state.schema.json"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "to": {
+            "$ref": "gate-intent-state.schema.json"
+          },
+          "actor": {
+            "$ref": "gate-audit-actor.schema.json"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": ["at", "from", "to", "actor"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["intentId", "entries"],
+  "additionalProperties": false
+}

@@ -55,6 +55,129 @@ export interface ConnectorOperation {
 /** Approval tier for one connector operation: auto runs without asking, approval needs a signed approval, forbidden never runs. */
 export type ConnectorTier = "auto" | "approval" | "forbidden"
 
+/** Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. The server (#85) maps codes to HTTP statuses. */
+export interface GateApiError {
+  code: "not_found" | "already_decided" | "verification_failed" | "invalid_request" | "unavailable"
+  message: string
+}
+
+/** Actor recorded on an audit_log row and on intent history entries (#9, #11). Display labels such as you, auto and gate are derived from this by the web app. */
+export type GateAuditActor = "data-plane" | "policy" | "approver" | "executor" | "system"
+
+/** Result of the gate's verifyChain() (#9). When the gate cannot run the check, the endpoint returns GateApiError instead. */
+export type GateAuditChainStatus = {
+  ok: true
+  rows: number
+} | {
+  ok: false
+  brokenAtSeq: number
+  reason: "prev_hash_mismatch" | "seq_gap" | "bad_genesis" | "head_mismatch"
+}
+
+/** Query of the audit view, newest first. before is the lowest seq already loaded. */
+export interface GateAuditPageRequest {
+  before?: number
+  limit?: number
+}
+
+/** One page of audit_log rows, newest first. Rows hold hashes and identifiers, not payload bodies or tokens (#9). nextBefore is the cursor for the next page and is absent on the last page. */
+export interface GateAuditPage {
+  entries: Array<{
+    seq: number
+    ts: string
+    actor: GateAuditActor
+    action: string
+    target: string
+    detailHash: string
+  }>
+  nextBefore?: number
+}
+
+/** Response of connector health (#24 getConnectorHealth), used by the Today page. It has no fields for credentials or payload bodies. */
+export interface GateConnectorHealth {
+  connectors: Array<{
+    name: string
+    health: "healthy" | "degraded" | "open"
+    consecutiveFailures: number
+    lastError?: string
+    nextAttemptAt?: string
+  }>
+}
+
+/** Body of the decision endpoint for one intent: a signed approval, or a reject. Edit-and-sign is not covered (#146). */
+export type GateDecisionRequest = {
+  intentId: string
+  decision: "approved"
+  nonce: string
+  assertion: {
+    credentialId: string
+    authenticatorData: string
+    clientDataJSON: string
+    signature: string
+  }
+} | {
+  intentId: string
+  decision: "rejected"
+  reasonCode?: string
+}
+
+/** Success response of the decision endpoint. approved means the verifier accepted the assertion and the intent moved to approved. Execution is a later gate step, so approved does not mean sent. Failures use GateApiError. */
+export interface GateDecisionResult {
+  intentId: string
+  state: "approved" | "rejected"
+}
+
+/** Response of an intent's state-transition history, oldest first, derived from audit_log (#11 getIntentHistory). from is null on the first entry. An undo is an entry whose from and to are both executed with reason undone. */
+export interface GateIntentHistory {
+  intentId: string
+  entries: Array<{
+    at: string
+    from: GateIntentState | null
+    to: GateIntentState
+    actor: GateAuditActor
+    reason?: string
+  }>
+}
+
+/** What produced the intent (#11 intents.origin). */
+export type GateIntentOrigin = "reactive" | "proactive" | "task"
+
+/** Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are final. */
+export type GateIntentState = "proposed" | "pending" | "approved" | "rejected" | "executed" | "failed"
+
+/** Response of the pending-approvals list: intents in state pending, without payload bodies (#11 listPendingIntents, plus origin, which #33 needs). */
+export interface GatePendingIntentList {
+  intents: Array<{
+    id: string
+    kind: string
+    tier: "approval"
+    state: "pending"
+    origin: GateIntentOrigin
+    createdAt: string
+    editedFrom?: string
+  }>
+}
+
+/** Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce. The byte encoding is not decided yet (#145). */
+export interface GatePrepareApproval {
+  intentId: string
+  kind: string
+  origin: GateIntentOrigin
+  state: "pending"
+  payload: string
+  payloadHash: string
+  nonce: string
+  contextPackId?: string
+  sources: Array<{
+    documentId: string
+    name: string
+  }>
+  editedFrom?: string
+}
+
+/** Effective policy tier of an intent (#11). */
+export type GateTier = "auto" | "approval" | "forbidden"
+
 /** Send an iCalendar invitation (METHOD:REQUEST) from the assistant identity. The gate assigns the event UID. */
 export interface CalendarCreateIntent {
   kind: "calendar.create"

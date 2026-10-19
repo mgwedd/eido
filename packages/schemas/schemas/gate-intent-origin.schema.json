@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateIntentOrigin",
+  "description": "What produced the intent (#11 intents.origin).",
+  "type": "string",
+  "enum": ["reactive", "proactive", "task"],
+  "maxLength": 32
+}
