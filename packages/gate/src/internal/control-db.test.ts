@@ -20,7 +20,7 @@ const version = (db: DatabaseSync) =>
 describe("openControlDb", () => {
   it("creates the schema, enables foreign keys and WAL", () => {
     const db = openControlDb(tempPath())
-    expect(version(db)).toBe(3)
+    expect(version(db)).toBe(4)
     expect(db.prepare("PRAGMA foreign_keys").get()?.["foreign_keys"]).toBe(1)
     expect(db.prepare("PRAGMA journal_mode").get()?.["journal_mode"]).toBe(
       "wal"
@@ -40,7 +40,7 @@ describe("openControlDb", () => {
     )
     first.close()
     const second = openControlDb(path) // re-running migration 1 would throw "table already exists"
-    expect(version(second)).toBe(3)
+    expect(version(second)).toBe(4)
     expect(
       second.prepare("SELECT COUNT(*) AS n FROM audit_log").get()?.["n"]
     ).toBe(1)
@@ -49,7 +49,17 @@ describe("openControlDb", () => {
 
   it("works with :memory:", () => {
     const db = openControlDb(":memory:")
-    expect(version(db)).toBe(3)
+    expect(version(db)).toBe(4)
+    db.close()
+  })
+
+  it("refuses an approved row without its signature, credential, counter and nonce", () => {
+    const db = openControlDb(":memory:")
+    expect(() =>
+      db.exec(
+        "INSERT INTO approvals (intent_id, bundle_hash, decision, decided_at) VALUES ('i', 'h', 'approved', 't')"
+      )
+    ).toThrow(/CHECK constraint failed/)
     db.close()
   })
 })

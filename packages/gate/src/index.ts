@@ -1,5 +1,13 @@
 // Public entry point of the gate: the intent API. Everything else in the package is internal.
 import type { Intent } from "@eido/schemas"
+import { issueNonce, reject, verifyApproval } from "./internal/approvals"
+import type {
+  ApprovalAssertion,
+  ApprovalRequest,
+  ApprovalResult,
+  PreparedApproval,
+  RejectResult,
+} from "./internal/approvals"
 import {
   intentHistory,
   intentStatus,
@@ -19,6 +27,11 @@ import { runningGate } from "./internal/runtime"
 
 export type IntentKind = Intent["kind"]
 export type {
+  ApprovalAssertion,
+  ApprovalRequest,
+  ApprovalResult,
+  PreparedApproval,
+  RejectResult,
   IntentHistoryEntry,
   IntentOrigin,
   IntentState,
@@ -115,4 +128,31 @@ export function getIntentHistory(intentId: string): IntentHistoryEntry[] {
 /** Intents waiting for an approval, oldest first. No payload. */
 export function listPendingIntents(): PendingIntentSummary[] {
   return pendingIntents(runningGate().db)
+}
+
+/**
+ * Prepares the approval card for a pending intent (#32 prepareApproval): issues a fresh
+ * single-use nonce, superseding the one from any earlier call, and returns it with the stored
+ * canonical payload and its hash. A non-pending intent gets no nonce.
+ */
+export function prepareApproval(intentId: string): PreparedApproval {
+  return issueNonce(runningGate().db, intentId)
+}
+
+/**
+ * Approves a pending intent with a WebAuthn assertion over the challenge for the nonce from the
+ * latest prepareApproval. On success the intent is approved, exactly once. Any failure returns
+ * the same generic error; a challenge or payload mismatch also rejects the intent.
+ */
+export function approveIntent(request: ApprovalRequest): ApprovalResult {
+  const gate = runningGate()
+  return verifyApproval(gate.db, gate.webAuthn, request)
+}
+
+/** Rejects a pending intent, recording the optional reason code. */
+export function rejectIntent(
+  intentId: string,
+  reasonCode?: string
+): RejectResult {
+  return reject(runningGate().db, intentId, reasonCode)
 }

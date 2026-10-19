@@ -1,3 +1,5 @@
+import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto"
+import type { KeyObject } from "node:crypto"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -8,10 +10,13 @@ import type {
   ConnectorOperation,
   Intent,
 } from "@eido/schemas"
+import type { ApprovalAssertion } from "./approvals"
 import { pinManifest } from "./connectors"
 import { openControlDb } from "./control-db"
 import { loadPolicy, OVERLAY_FILE } from "./policy"
 import type { IntentKind, Policy, PolicyOptions } from "./policy"
+import type { Registration } from "./credentials"
+import type { WebAuthnConfig } from "./webauthn"
 
 // Test-only fixtures for the policy and intent tests: synthetic connectors (example.com hosts,
 // made-up scopes) and one synthetic payload per verb. No real addresses, ids or tokens.
@@ -210,4 +215,146 @@ export function loggedText(db: DatabaseSync): string {
   const audit = db.prepare("SELECT * FROM audit_log").all()
   const events = db.prepare("SELECT * FROM intent_events").all()
   return JSON.stringify([audit, events])
+}
+
+// A test WebAuthn authenticator: an ES256 key pair from node:crypto that crafts
+// authenticatorData and clientDataJSON byte for byte, so each check can be broken on its own.
+// The relying party is a synthetic host; nothing here talks to a browser or network.
+
+export const WEBAUTHN: WebAuthnConfig = {
+  rpId: "eido.example.invalid",
+  origin: "https://eido.example.invalid",
+}
+
+const FLAG_UP = 0x01
+const FLAG_UV = 0x04
+const FLAG_AT = 0x40
+export const FLAGS_UP_UV = FLAG_UP | FLAG_UV
+
+export type TestAuthenticator = {
+  credentialId: string
+  publicKey: string
+  privateKey: KeyObject
+}
+
+export function testAuthenticator(): TestAuthenticator {
+  const { publicKey, privateKey } = generateKeyPairSync("ec", {
+    namedCurve: "P-256",
+  })
+  return {
+    credentialId: randomBytes(16).toString("base64url"),
+    publicKey: publicKey
+      .export({ type: "spki", format: "der" })
+      .toString("base64url"),
+    privateKey,
+  }
+}
+
+const digest = (data: Buffer | string) =>
+  createHash("sha256").update(data).digest()
+
+/**
+ * The challenge as the device builds it: SHA-256 over the JSON array of the three strings,
+ * written here with JSON.stringify (equal to RFC 8785 for these ASCII strings) rather than the
+ * gate's canonicalize, so the test does not reuse the code under test.
+ */
+export function deviceChallenge(
+  payloadHash: string,
+  intentId: string,
+  nonce: string
+): string {
+  return digest(JSON.stringify([payloadHash, intentId, nonce])).toString(
+    "base64url"
+  )
+}
+
+export type CeremonyOptions = {
+  type?: string
+  origin?: string
+  crossOrigin?: boolean
+  rpId?: string
+  flags?: number
+  signCount?: number
+}
+
+function authenticatorData(
+  options: CeremonyOptions,
+  defaultFlags: number,
+  attested?: Buffer
+): Buffer {
+  const header = Buffer.alloc(37)
+  digest(options.rpId ?? WEBAUTHN.rpId).copy(header, 0)
+  header.writeUInt8(options.flags ?? defaultFlags, 32)
+  header.writeUInt32BE(options.signCount ?? 0, 33)
+  if (attested === undefined) return header
+  const length = Buffer.alloc(2)
+  length.writeUInt16BE(attested.length)
+  // aaguid of zeros, the id, then a stand-in for the COSE key the gate does not read.
+  return Buffer.concat([
+    header,
+    Buffer.alloc(16),
+    length,
+    attested,
+    Buffer.from([0xa0]),
+  ])
+}
+
+function clientData(
+  type: string,
+  challenge: string,
+  options: CeremonyOptions
+): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      type: options.type ?? type,
+      challenge,
+      origin: options.origin ?? WEBAUTHN.origin,
+      crossOrigin: options.crossOrigin ?? false,
+    }),
+    "utf8"
+  )
+}
+
+/** A navigator.credentials.get response over `challenge` (base64url). */
+export function assertion(
+  auth: TestAuthenticator,
+  challenge: string,
+  options: CeremonyOptions = {}
+): ApprovalAssertion {
+  const authData = authenticatorData(options, FLAGS_UP_UV)
+  const clientDataJSON = clientData("webauthn.get", challenge, options)
+  const signature = sign(
+    "sha256",
+    Buffer.concat([authData, digest(clientDataJSON)]),
+    auth.privateKey
+  )
+  return {
+    credentialId: auth.credentialId,
+    authenticatorData: authData.toString("base64url"),
+    clientDataJSON: clientDataJSON.toString("base64url"),
+    signature: signature.toString("base64url"),
+  }
+}
+
+/** A navigator.credentials.create response (attestation "none") over `challenge`. */
+export function registration(
+  auth: TestAuthenticator,
+  challenge: string,
+  options: CeremonyOptions & { attestedId?: Buffer; algorithm?: number } = {}
+): Registration {
+  const attested =
+    options.attestedId ?? Buffer.from(auth.credentialId, "base64url")
+  return {
+    credentialId: auth.credentialId,
+    clientDataJSON: clientData("webauthn.create", challenge, options).toString(
+      "base64url"
+    ),
+    authenticatorData: authenticatorData(
+      options,
+      FLAGS_UP_UV | FLAG_AT,
+      attested
+    ).toString("base64url"),
+    publicKey: auth.publicKey,
+    publicKeyAlgorithm: options.algorithm ?? -7,
+  }
 }
