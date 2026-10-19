@@ -30,6 +30,8 @@ pnpm boundaries                      # package boundary checks (turbo)
 pnpm check:deps                      # dependency-cruiser boundaries (blocking)
 pnpm check:deps-fixture              # must show the violation fixture failing
 pnpm check:gate-deps                 # gate dependency allowlist
+pnpm check:no-js                     # no stray .js/.jsx/.mjs/.cjs files (allowlist in the script)
+pnpm check:no-js-fixture             # self-test: the check still catches a stray JS file
 pnpm check:secrets                   # secret scan
 pnpm check:versions                  # exact-version pinning check
 pnpm format:check                    # prettier --check
@@ -45,6 +47,7 @@ Work is issue-driven and worktree-driven. Read the rule file before you do the t
 - No placeholders, fake features or dead ends: leave unfinished work out and open an issue for it. `.claude/rules/no-placeholders.md`
 - Design and plan: every UI issue links its design page and plan section; the live artifact wins over exported images. `.claude/rules/design-and-plan-traceability.md`
 - Commits and PR titles: Conventional Commits. `.claude/rules/conventional-commits.md`
+- TypeScript: types from `@eido/schemas`, no `any`, no casts on external input, TypeScript only. `.claude/rules/typescript.md`
 - Tests: run only the affected tests while iterating, everything before the PR. `.claude/rules/testing.md`, `.claude/rules/affected-tests.md`
 
 ## Invariants

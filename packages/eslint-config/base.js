@@ -31,8 +31,50 @@ export const config = [
     ...js.configs.recommended,
     languageOptions: { globals: globals.node },
   },
-  ...tseslint.configs.recommended.map((cfg) => ({ ...cfg, files: TS_FILES })),
+  // recommendedTypeChecked (not strict): type-aware rules such as no-floating-promises.
+  ...tseslint.configs.recommendedTypeChecked.map((cfg) => ({
+    ...cfg,
+    files: TS_FILES,
+  })),
+  {
+    files: TS_FILES,
+    languageOptions: {
+      // projectService finds the nearest tsconfig.json for each file.
+      parserOptions: { projectService: true },
+    },
+    rules: {
+      // Each of these is already in recommendedTypeChecked; listed so the
+      // guardrails the team agreed on are visible and cannot be dropped quietly.
+      "@typescript-eslint/no-explicit-any": "error",
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/ban-ts-comment": [
+        "error",
+        {
+          "ts-expect-error": "allow-with-description",
+          "ts-ignore": true,
+          "ts-nocheck": true,
+          "ts-check": false,
+          minimumDescriptionLength: 10,
+        },
+      ],
+      // Not in the recommended set.
+      "@typescript-eslint/consistent-type-imports": [
+        "error",
+        { fixStyle: "inline-type-imports" },
+      ],
+    },
+  },
+  {
+    // Config files are plain JS and are not part of any tsconfig.
+    files: ["**/*.{js,mjs,cjs,jsx}"],
+    ...tseslint.configs.disableTypeChecked,
+  },
   eslintConfigPrettier,
+  {
+    // Fail on eslint-disable comments that no longer suppress anything.
+    linterOptions: { reportUnusedDisableDirectives: "error" },
+  },
   {
     plugins: {
       turbo: turboPlugin,
