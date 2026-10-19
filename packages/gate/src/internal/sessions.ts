@@ -222,7 +222,9 @@ export function login(
 }
 
 /** The session cookie's value from a Cookie header, or undefined. */
-export function sessionToken(cookieHeader: string | undefined): string | undefined {
+export function sessionToken(
+  cookieHeader: string | undefined
+): string | undefined {
   if (cookieHeader === undefined) return undefined
   for (const part of cookieHeader.split(";")) {
     const separator = part.indexOf("=")

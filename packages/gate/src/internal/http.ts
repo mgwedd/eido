@@ -20,8 +20,8 @@ export type GateRequest = {
   method: string
   path: string
   query: URLSearchParams
-  /** The Host and Cookie request headers; absent when the request had none. */
-  headers: { host?: string; cookie?: string }
+  /** The Host, Cookie and Content-Type request headers; absent when the request had none. */
+  headers: { host?: string; cookie?: string; contentType?: string }
   /** Reads the body; `ok: false` when it is over MAX_BODY_BYTES. */
   body: () => Promise<Body>
 }
@@ -112,6 +112,9 @@ export function createGateServer(
         ...(request.headers.cookie === undefined
           ? {}
           : { cookie: request.headers.cookie }),
+        ...(request.headers["content-type"] === undefined
+          ? {}
+          : { contentType: request.headers["content-type"] }),
       },
       body: () => readBody(request),
     }
