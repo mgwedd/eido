@@ -312,9 +312,36 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
               "maxLength": 256,
               "description": "Message id to reply to"
             },
+            "messageSha256": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "description": "SHA-256 (lowercase hex) of the raw message, so only that exact message is the target"
+            },
             "replyAll": {
               "type": "boolean",
               "description": "True replies to all recipients"
+            },
+            "to": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 50,
+              "items": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 320
+              },
+              "description": "Recipients the reply goes to, as approved"
+            },
+            "cc": {
+              "type": "array",
+              "maxItems": 50,
+              "items": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 320
+              },
+              "description": "Cc recipients, as approved"
             },
             "body": {
               "type": "string",
@@ -325,7 +352,9 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
           },
           "required": [
             "messageId",
+            "messageSha256",
             "replyAll",
+            "to",
             "body"
           ],
           "additionalProperties": false
@@ -355,6 +384,12 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
               "maxLength": 256,
               "description": "Message id to forward"
             },
+            "messageSha256": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "description": "SHA-256 (lowercase hex) of the raw message, so only that exact message is the target"
+            },
             "to": {
               "type": "array",
               "maxItems": 50,
@@ -374,6 +409,7 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
           },
           "required": [
             "messageId",
+            "messageSha256",
             "to"
           ],
           "additionalProperties": false

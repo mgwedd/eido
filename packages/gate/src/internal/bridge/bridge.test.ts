@@ -6,6 +6,7 @@ import {
   createProtonBridge,
   imapOptions,
   parseFallbackId,
+  rawSha256,
   smtpOptions,
 } from "./bridge"
 import type { ProtonBridge } from "./bridge"
@@ -283,6 +284,46 @@ describe("reads against the fake Bridge", () => {
     expect(await bridge.locate("proton:Nowhere:1700000001:3")).toBeUndefined()
     expect(await bridge.find("proton:INBOX:1700000001:5")).toBeUndefined()
   })
+
+  it("does not locate a fallback id whose UID the folder does not hold", async () => {
+    const { bridge } = await start({ mailboxes: mailboxes() })
+    expect(await bridge.locate("proton:INBOX:1700000001:5")).toBeUndefined()
+  })
+
+  it("with a hash, finds only the message with exactly those bytes", async () => {
+    const copy = rawMessage({
+      messageId: "<first@example.invalid>",
+      subject: "One",
+      body: "planted",
+    })
+    const { bridge } = await start({
+      mailboxes: {
+        INBOX: box(1700000001, [
+          { uid: 3, raw: first },
+          { uid: 5, raw: copy },
+        ]),
+      },
+    })
+    expect(await bridge.find("<first@example.invalid>")).toMatchObject({
+      uid: 3,
+    })
+    expect(
+      await bridge.find("<first@example.invalid>", rawSha256(copy))
+    ).toMatchObject({ uid: 5, raw: copy })
+    expect(
+      await bridge.find("proton:INBOX:1700000001:3", rawSha256(copy))
+    ).toBeUndefined()
+    expect(
+      await bridge.find("<first@example.invalid>", "0f".repeat(32))
+    ).toBeUndefined()
+  })
+
+  it("hashes raw bytes as lowercase hex SHA-256", () => {
+    // SHA-256 of "abc" (FIPS 180-2, appendix B.1).
+    expect(rawSha256(Buffer.from("abc"))).toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    )
+  })
 })
 
 describe("writes against the fake Bridge", () => {
@@ -313,6 +354,22 @@ describe("writes against the fake Bridge", () => {
     ])
     expect(fake.imapCommands.filter((c) => c.startsWith("UID MOVE"))).toEqual([
       "UID MOVE 3,7 Trash",
+    ])
+  })
+
+  it("counts only the messages Bridge moved, and moves nothing when no UID exists", async () => {
+    const { bridge, fake } = await start({ mailboxes: mailboxes() })
+    expect(
+      await bridge.moveToTrash([
+        { folder: "INBOX", uid: 3 },
+        { folder: "INBOX", uid: 99 },
+      ])
+    ).toEqual({ moved: 1 })
+    expect(await bridge.moveToTrash([{ folder: "INBOX", uid: 98 }])).toEqual({
+      moved: 0,
+    })
+    expect(fake.imapCommands.filter((c) => c.startsWith("UID MOVE"))).toEqual([
+      "UID MOVE 3 Trash",
     ])
   })
 
@@ -471,20 +528,28 @@ describe("connection failures", () => {
     expect(fake.imapCommands).toEqual([])
   })
 
-  it("never puts the password in a recorded command or an error", async () => {
+  it("sends the password only in the login of each session, and never in an error", async () => {
     const { bridge, fake } = await start({ mailboxes: mailboxes() })
     await bridge.listFolders()
     await bridge.send({ to: ["a@example.invalid"], text: "x" })
+    // What each line carries, raw and base64-decoded (SMTP AUTH sends base64).
+    const carries = (line: string) =>
+      [
+        line,
+        ...line
+          .split(" ")
+          .map((word) => Buffer.from(word, "base64").toString("utf8")),
+      ].some((text) => text.includes(PASSWORD))
+    expect(fake.imapLines.filter(carries)).toEqual([
+      expect.stringMatching(/^\S+ LOGIN /),
+    ])
+    expect(fake.smtpLines.filter(carries)).toEqual([
+      expect.stringMatching(/^AUTH PLAIN /),
+    ])
     const wrong = await start({}, "wrong-password-0b1d")
     const error: unknown = await wrong.bridge
       .listFolders()
       .catch((e: unknown) => e)
-    const text = JSON.stringify([
-      fake.imapCommands,
-      fake.smtpCommands,
-      wrong.fake.imapCommands,
-    ])
-    expect(text).not.toContain(PASSWORD)
     expect(String(error)).not.toContain("wrong-password-0b1d")
     expect(JSON.stringify(error)).not.toContain("wrong-password-0b1d")
   })

@@ -25,6 +25,9 @@ import { BridgeError } from "./errors"
 //   email.send, email.reply, email.forward   send from the assistant identity (SMTP)
 //   email.trash                              move to Trash (IMAP UID MOVE)
 // None has an inverse: sends cannot be recalled, and the executor refuses to undo a trash.
+// A reply or forward acts only on the message the owner approved, named by the SHA-256 of its
+// raw bytes (a Message-ID is chosen by its sender and can be copied), and a reply goes only to
+// the approved recipients: when the message no longer yields them, nothing is sent.
 
 type BridgeKind = keyof typeof BRIDGE_DESTINATIONS
 type BridgeIntent = Extract<Intent, { kind: BridgeKind }>
@@ -97,6 +100,19 @@ export function replyRecipients(
   return to.length === 0 ? { to: others, cc: [] } : { to, cc: others }
 }
 
+/** True when both lists name the same addresses, ignoring case and order. */
+export function sameRecipients(
+  a: readonly string[],
+  b: readonly string[]
+): boolean {
+  const left = [...new Set(a.map(lower))].sort()
+  const right = [...new Set(b.map(lower))].sort()
+  return (
+    left.length === right.length &&
+    left.every((address, index) => address === right[index])
+  )
+}
+
 /** The subject with `prefix` added once: "Re: x" stays "Re: x". */
 export function prefixed(
   prefix: "Re" | "Fwd",
@@ -122,9 +138,10 @@ function threading(
 
 async function original(
   bridge: ProtonBridge,
-  messageId: string
+  messageId: string,
+  sha256?: string
 ): Promise<FoundMessage> {
-  const found = await bridge.find(messageId)
+  const found = await bridge.find(messageId, sha256)
   if (found === undefined)
     throw new BridgeError("not_found", "no such message in Bridge")
   return found
@@ -195,24 +212,30 @@ async function run(
       })
     }
     case "email.reply": {
-      const found = await original(bridge, intent.args.messageId)
-      const { to, cc } = replyRecipients(
-        found,
-        intent.args.replyAll,
-        bridge.identity
-      )
-      if (to.length === 0)
-        throw new BridgeError("bridge_error", "the reply has no recipient")
+      // The approved message (by its bytes) and the approved recipients, or nothing is sent.
+      const args = intent.args
+      const found = await original(bridge, args.messageId, args.messageSha256)
+      const { to, cc } = replyRecipients(found, args.replyAll, bridge.identity)
+      const approvedCc = args.cc ?? []
+      if (!sameRecipients(to, args.to) || !sameRecipients(cc, approvedCc))
+        throw new BridgeError(
+          "bridge_error",
+          "the reply's recipients differ from the approved ones"
+        )
       return sent(bridge, {
-        to,
-        ...(cc.length === 0 ? {} : { cc }),
+        to: args.to,
+        ...(approvedCc.length === 0 ? {} : { cc: approvedCc }),
         subject: prefixed("Re", found.subject),
         text: intent.args.body,
         ...threading(found),
       })
     }
     case "email.forward": {
-      const found = await original(bridge, intent.args.messageId)
+      const found = await original(
+        bridge,
+        intent.args.messageId,
+        intent.args.messageSha256
+      )
       return sent(bridge, {
         to: intent.args.to,
         subject: prefixed("Fwd", found.subject),

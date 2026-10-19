@@ -16,6 +16,12 @@
           "maxLength": 256,
           "description": "Message id to forward"
         },
+        "messageSha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "description": "SHA-256 (lowercase hex) of the raw message, so only that exact message is the target"
+        },
         "to": {
           "type": "array",
           "maxItems": 50,
@@ -33,7 +39,7 @@
           "description": "Note placed above the forwarded message"
         }
       },
-      "required": ["messageId", "to"],
+      "required": ["messageId", "messageSha256", "to"],
       "additionalProperties": false
     }
   },

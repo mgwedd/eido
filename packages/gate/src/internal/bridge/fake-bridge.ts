@@ -6,7 +6,8 @@ import type { AddressInfo, Server, Socket } from "node:net"
 // Bridge. It speaks just enough of each protocol for the adapter, answers anything else with
 // BAD or 502, and records every client command (LOGIN and AUTH arguments redacted, literal
 // bytes left out) so tests can assert what the gate sent, for example that it never sent
-// EXPUNGE. All mail in it is synthetic.
+// EXPUNGE. It also keeps every line received, unredacted (`imapLines`, `smtpLines`), so a test
+// can check where a credential went on the wire. All mail and credentials in it are synthetic.
 
 export type FakeMessage = { uid: number; raw: Buffer; flags: string[] }
 export type FakeMailbox = {
@@ -33,7 +34,12 @@ export type FakeBridgeOptions = {
 /** What the fake records and serves; the servers share it with the returned FakeBridge. */
 type FakeState = Pick<
   FakeBridge,
-  "mailboxes" | "imapCommands" | "smtpCommands" | "sent"
+  | "mailboxes"
+  | "imapCommands"
+  | "smtpCommands"
+  | "imapLines"
+  | "smtpLines"
+  | "sent"
 >
 
 export type FakeBridge = {
@@ -44,6 +50,9 @@ export type FakeBridge = {
   /** IMAP commands as `COMMAND args`, the tag removed. */
   imapCommands: string[]
   smtpCommands: string[]
+  /** Every line received, as sent and unredacted; IMAP literal bytes left out. */
+  imapLines: string[]
+  smtpLines: string[]
   sent: SentMail[]
   close: () => Promise<void>
 }
@@ -394,6 +403,7 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
       if (end === -1) return
       const line = session.buffer.subarray(0, end).toString("utf8")
       session.buffer = session.buffer.subarray(end + 2)
+      fake.imapLines.push(line)
       command(session, line)
     }
   }
@@ -437,6 +447,7 @@ function smtpServer(fake: FakeState, options: FakeBridgeOptions): Server {
         if (end === -1) return
         const line = buffer.slice(0, end)
         buffer = buffer.slice(end + 2)
+        fake.smtpLines.push(line)
         if (data !== undefined) {
           if (line === ".") {
             fake.sent.push({ from, to, data: data.join(CRLF) })
@@ -534,6 +545,8 @@ export async function startFakeBridge(
     ),
     imapCommands: [],
     smtpCommands: [],
+    imapLines: [],
+    smtpLines: [],
     sent: [],
   }
   const sockets = new Set<Socket>()

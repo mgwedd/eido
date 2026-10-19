@@ -226,22 +226,26 @@ function writeDestination(
 }
 
 /**
- * A Bridge write is allowed only for the Proton connector whose pinned manifest uses a password
- * and declares no HTTP egress (Bridge is a local IMAP and SMTP service), and only to the one
- * destination of its intent kind.
+ * Bridge writes run only for the Proton connector whose pinned manifest uses a password and
+ * declares no HTTP egress (Bridge is a local IMAP and SMTP service). A connector that fails this
+ * is misconfigured, which is refused on its own code rather than reported as tampering.
  */
+function bridgeConfigured(db: DatabaseSync, connector: string): boolean {
+  const manifest = getPinnedManifest(db, connector)
+  return (
+    connector === PROTON_CONNECTOR &&
+    manifest?.auth.type === "password" &&
+    manifest.egress.hosts.length === 0
+  )
+}
+
+/** The one destination of a Bridge intent kind; any other request is not the approved one. */
 function bridgeDestination(
-  db: DatabaseSync,
-  connector: string,
   kind: Intent["kind"],
   request: UpstreamRequest
 ): string {
-  const manifest = getPinnedManifest(db, connector)
   const destination = bridgeDestinationFor(kind)
   if (
-    connector !== PROTON_CONNECTOR ||
-    manifest?.auth.type !== "password" ||
-    manifest.egress.hosts.length !== 0 ||
     destination === undefined ||
     request.method !== "POST" ||
     request.url !== destination
@@ -392,6 +396,11 @@ export function createExecutor(
         health === "open"
       )
         return refuse(id, direction, "connector_unavailable")
+      if (
+        writer.channel === "bridge" &&
+        !bridgeConfigured(db, binding.connector)
+      )
+        return refuse(id, direction, "connector_misconfigured")
       connector = binding.connector
       operation = binding.operation
     } catch {
@@ -410,7 +419,7 @@ export function createExecutor(
       })
       const destination =
         writer.channel === "bridge"
-          ? bridgeDestination(db, connector, intent.kind, snapshot)
+          ? bridgeDestination(intent.kind, snapshot)
           : writeDestination(db, connector, operation, snapshot)
       if (destination !== snapshot.url) throw new Error("noncanonical target")
       const decoded = writer.intentFromRequest(

@@ -23,16 +23,17 @@ import {
 } from "../test-fixtures"
 import type { Setup, TestAuthenticator } from "../test-fixtures"
 import { InMemoryVault } from "../vault/vault"
-import { BRIDGE_PASSWORD_KEY, createProtonBridge } from "./bridge"
+import { BRIDGE_PASSWORD_KEY, createProtonBridge, rawSha256 } from "./bridge"
 import type { FoundMessage } from "./bridge"
 import { PROTON_CONNECTOR } from "./config"
 import { rawMessage, startFakeBridge } from "./fake-bridge"
-import type { FakeBridge } from "./fake-bridge"
+import type { FakeBridge, FakeMessage } from "./fake-bridge"
 import {
   BRIDGE_WRITERS,
   bridgeTransport,
   prefixed,
   replyRecipients,
+  sameRecipients,
 } from "./writers"
 
 const USER = "assistant@example.invalid"
@@ -67,6 +68,15 @@ const original = rawMessage({
   cc: "Carol <carol@example.invalid>",
 })
 
+/** Another message carrying the original's Message-ID, as a sender could plant one. */
+const planted = rawMessage({
+  messageId: "<original@example.invalid>",
+  subject: "Plans",
+  body: "planted-body-5e1c",
+  replyTo: "Mallory <mallory@example.invalid>",
+  to: "assistant@example.invalid",
+})
+
 let s: Setup | undefined
 let fake: FakeBridge | undefined
 afterEach(async () => {
@@ -84,7 +94,10 @@ type World = {
   propose: (intent: Intent) => string
 }
 
-async function world(connector = protonManifest()): Promise<World> {
+async function world(
+  connector = protonManifest(),
+  inbox: FakeMessage[] = [{ uid: 7, raw: original, flags: [] }]
+): Promise<World> {
   s = setup([connector])
   const db = s.db
   const policy = s.policy
@@ -95,7 +108,7 @@ async function world(connector = protonManifest()): Promise<World> {
       INBOX: {
         uidValidity: 1700000001,
         uidNext: 8,
-        messages: [{ uid: 7, raw: original, flags: [] }],
+        messages: inbox,
       },
       Drafts: { uidValidity: 1700000002, uidNext: 1, messages: [] },
       Trash: { uidValidity: 1700000003, uidNext: 1, messages: [] },
@@ -217,7 +230,10 @@ describe("Bridge writers through the executor", () => {
     const id = w.propose(
       sample("email.reply", {
         messageId: "proton:INBOX:1700000001:7",
+        messageSha256: rawSha256(original),
         replyAll: true,
+        to: ["desk@example.invalid"],
+        cc: ["owner@example.invalid", "carol@example.invalid"],
         body: BODY_MARKER,
       })
     )
@@ -241,6 +257,7 @@ describe("Bridge writers through the executor", () => {
     const id = w.propose(
       sample("email.forward", {
         messageId: "<original@example.invalid>",
+        messageSha256: rawSha256(original),
         to: ["colleague@example.invalid"],
         note: BODY_MARKER,
       })
@@ -257,6 +274,95 @@ describe("Bridge writers through the executor", () => {
     expect(mail?.data).toContain("Message-ID: <original@example.invalid>")
     expect(writes(w.fake)).toEqual([])
   })
+
+  it("replies to the approved message, not a planted one with a copied Message-ID", async () => {
+    const w = await world(protonManifest(), [
+      { uid: 3, raw: planted, flags: [] },
+      { uid: 7, raw: original, flags: [] },
+    ])
+    const id = w.propose(
+      sample("email.reply", {
+        messageId: "<original@example.invalid>",
+        messageSha256: rawSha256(original),
+        replyAll: false,
+        to: ["desk@example.invalid"],
+        body: BODY_MARKER,
+      })
+    )
+    approve(w, id)
+    expect(await w.run(id)).toMatchObject({ ok: true })
+    expect(w.fake.sent.map((mail) => mail.to)).toEqual([
+      ["desk@example.invalid"],
+    ])
+  })
+
+  it("forwards the approved message, not a planted one with a copied Message-ID", async () => {
+    const w = await world(protonManifest(), [
+      { uid: 3, raw: planted, flags: [] },
+      { uid: 7, raw: original, flags: [] },
+    ])
+    const id = w.propose(
+      sample("email.forward", {
+        messageId: "<original@example.invalid>",
+        messageSha256: rawSha256(original),
+        to: ["colleague@example.invalid"],
+      })
+    )
+    approve(w, id)
+    expect(await w.run(id)).toMatchObject({ ok: true })
+    const data = w.fake.sent[0]?.data ?? ""
+    expect(data).toContain("lorem ipsum")
+    expect(data).not.toContain("planted-body-5e1c")
+  })
+
+  it("sends no reply when only a planted message carries the id", async () => {
+    const w = await world(protonManifest(), [
+      { uid: 3, raw: planted, flags: [] },
+    ])
+    const id = w.propose(
+      sample("email.reply", {
+        messageId: "<original@example.invalid>",
+        messageSha256: rawSha256(original),
+        replyAll: false,
+        to: ["desk@example.invalid"],
+        body: BODY_MARKER,
+      })
+    )
+    approve(w, id)
+    expect(await w.run(id)).toEqual({ ok: false, code: "upstream_error" })
+    expect(w.fake.smtpCommands).toEqual([])
+  })
+
+  it.each([
+    [
+      "a recipient the message does not name",
+      ["mallory@example.invalid"],
+      ["owner@example.invalid", "carol@example.invalid"],
+    ],
+    [
+      "a missing Cc of a reply-all",
+      ["desk@example.invalid"],
+      ["owner@example.invalid"],
+    ],
+  ])(
+    "sends no reply when the approved recipients differ: %s",
+    async (_case, to, cc) => {
+      const w = await world()
+      const id = w.propose(
+        sample("email.reply", {
+          messageId: "<original@example.invalid>",
+          messageSha256: rawSha256(original),
+          replyAll: true,
+          to,
+          cc,
+          body: BODY_MARKER,
+        })
+      )
+      approve(w, id)
+      expect(await w.run(id)).toEqual({ ok: false, code: "upstream_error" })
+      expect(w.fake.smtpCommands).toEqual([])
+    }
+  )
 
   it("runs an approved trash as one UID MOVE to Trash and sends nothing", async () => {
     const w = await world()
@@ -328,15 +434,49 @@ describe("Bridge writers through the executor", () => {
       auth: { type: "oauth2", scopes: ["write"] },
     })
     const id = w.propose(sample("email.draft"))
-    expect(await w.run(id)).toEqual({ ok: false, code: "hash_mismatch" })
+    expect(await w.run(id)).toEqual({
+      ok: false,
+      code: "connector_misconfigured",
+    })
+    expect(w.fake.imapCommands).toEqual([])
+    expect(auditRows(w.db).at(-1)?.action).toBe(
+      "execute.refused.connector_misconfigured"
+    )
+  })
+
+  it("runs nothing when the Proton manifest declares HTTP egress", async () => {
+    const proton = protonManifest()
+    const w = await world({
+      ...proton,
+      egress: {
+        hosts: [
+          {
+            host: "mail.example.invalid",
+            methods: ["POST"],
+            pathPrefixes: ["/v1"],
+          },
+        ],
+      },
+    })
+    const id = w.propose(sample("email.draft"))
+    expect(await w.run(id)).toEqual({
+      ok: false,
+      code: "connector_misconfigured",
+    })
     expect(w.fake.imapCommands).toEqual([])
   })
 
   it("runs nothing when another connector is bound to the Bridge kinds", async () => {
     const w = await world(protonManifest("mail"))
     const id = w.propose(sample("email.draft"))
-    expect(await w.run(id)).toEqual({ ok: false, code: "hash_mismatch" })
+    expect(await w.run(id)).toEqual({
+      ok: false,
+      code: "connector_misconfigured",
+    })
     expect(w.fake.imapCommands).toEqual([])
+    expect(auditRows(w.db).at(-1)?.action).toBe(
+      "execute.refused.connector_misconfigured"
+    )
   })
 
   it("moves nothing when one of the messages to trash is not found", async () => {
@@ -350,6 +490,16 @@ describe("Bridge writers through the executor", () => {
     expect(await w.run(id)).toEqual({ ok: false, code: "upstream_error" })
     expect(writes(w.fake)).toEqual([])
     expect(w.fake.mailboxes.get("INBOX")?.messages).toHaveLength(1)
+  })
+
+  it("moves nothing when a fallback id names a UID the folder does not hold", async () => {
+    const w = await world()
+    const id = w.propose(
+      sample("email.trash", { messageIds: ["proton:INBOX:1700000001:99"] })
+    )
+    approve(w, id)
+    expect(await w.run(id)).toEqual({ ok: false, code: "upstream_error" })
+    expect(writes(w.fake)).toEqual([])
   })
 
   it("sends nothing when the message replied to is not found", async () => {
@@ -448,6 +598,21 @@ describe("reply helpers", () => {
       cc: [],
     })
     expect(replyRecipients(own, false, USER)).toEqual({ to: [], cc: [] })
+  })
+
+  it("compares recipients ignoring case, order and repeats", () => {
+    expect(
+      sameRecipients(
+        ["A@example.invalid", "b@example.invalid"],
+        ["b@example.invalid", "a@example.invalid", "a@example.invalid"]
+      )
+    ).toBe(true)
+    expect(
+      sameRecipients(["a@example.invalid"], ["a@example.invalid", "c@x.io"])
+    ).toBe(false)
+    expect(sameRecipients(["a@example.invalid"], ["c@example.invalid"])).toBe(
+      false
+    )
   })
 
   it("adds a prefix once", () => {

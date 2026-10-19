@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto"
+import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto"
 import { ImapFlow } from "imapflow"
 import type { FetchMessageObject, ImapFlowOptions } from "imapflow"
 import { createTransport } from "nodemailer"
@@ -86,8 +86,12 @@ export interface ProtonBridge {
   ): Promise<RawPage | undefined>
   /** Locates a message by its Message-ID, or by core's `proton:<folder>:<uidValidity>:<uid>` id. */
   locate(messageId: string): Promise<MessageRef | undefined>
-  /** Locates a message as `locate` does and fetches it. */
-  find(messageId: string): Promise<FoundMessage | undefined>
+  /**
+   * Fetches a message with this id. With `sha256` (hex of the raw bytes), only the message with
+   * exactly those bytes is returned, so a second message carrying a copied Message-ID is never
+   * taken for the approved one.
+   */
+  find(messageId: string, sha256?: string): Promise<FoundMessage | undefined>
   /** Appends a raw message to the Drafts folder with the \Draft flag. */
   appendDraft(raw: Buffer): Promise<{ folder: string; uid: number | null }>
   /** Moves messages to the Trash folder with UID MOVE. */
@@ -98,8 +102,19 @@ export interface ProtonBridge {
 
 // A password hash with real work (scrypt) and a per-process salt, so the remembered value is no
 // shortcut to the password. It is only computed after Bridge refused a login.
+// Asynchronous, so the hash never blocks the event loop.
 const SALT = randomBytes(16)
-const passwordHash = (secret: string) => scryptSync(secret, SALT, 32)
+const passwordHash = (secret: string) =>
+  new Promise<Buffer>((resolve, reject) => {
+    scrypt(secret, SALT, 32, (error, key) => {
+      if (error === null) resolve(key)
+      else reject(error)
+    })
+  })
+
+/** Lowercase hex SHA-256 of a raw message, the form an intent approves it by. */
+export const rawSha256 = (raw: Buffer) =>
+  createHash("sha256").update(raw).digest("hex")
 
 export function imapOptions(
   config: BridgeConfig,
@@ -188,7 +203,7 @@ export function createProtonBridge({
     }
     if (
       refused !== undefined &&
-      timingSafeEqual(passwordHash(secret), refused)
+      timingSafeEqual(await passwordHash(secret), refused)
     ) {
       throw new BridgeError(
         "auth_failed",
@@ -198,8 +213,11 @@ export function createProtonBridge({
     return secret
   }
 
-  function remember<T extends BridgeError>(error: T, secret: string): T {
-    if (error.code === "auth_failed") refused = passwordHash(secret)
+  async function remember<T extends BridgeError>(
+    error: T,
+    secret: string
+  ): Promise<T> {
+    if (error.code === "auth_failed") refused = await passwordHash(secret)
     return error
   }
 
@@ -214,7 +232,7 @@ export function createProtonBridge({
       await client.connect()
     } catch (error) {
       client.close()
-      throw remember(imapError(error), secret)
+      throw await remember(imapError(error), secret)
     }
     try {
       return await work(client)
@@ -245,23 +263,49 @@ export function createProtonBridge({
     return (await folders(client)).some((entry) => entry.path === folder)
   }
 
-  async function locate(
+  /** The UIDs among `uids` that exist in the selected folder. */
+  async function present(
+    client: ImapFlow,
+    uids: readonly number[]
+  ): Promise<number[]> {
+    const fetched = await client.fetchAll(
+      uids.join(","),
+      { uid: true },
+      {
+        uid: true,
+      }
+    )
+    const found = new Set(fetched.map((message) => message.uid))
+    return uids.filter((uid) => found.has(uid))
+  }
+
+  /** Every message with this id: the fallback id's one message, or each exact Message-ID match. */
+  async function candidates(
     client: ImapFlow,
     messageId: string
-  ): Promise<MessageRef | undefined> {
+  ): Promise<MessageRef[]> {
     const fallback = parseFallbackId(messageId)
     if (fallback !== undefined) {
-      if (!(await exists(client, fallback.folder))) return undefined
+      if (!(await exists(client, fallback.folder))) return []
       const status = await client.status(fallback.folder, { uidValidity: true })
       if (
         String(status === false ? "" : status.uidValidity) !==
         fallback.uidValidity
       ) {
-        return undefined
+        return []
       }
-      return { folder: fallback.folder, uid: fallback.uid }
+      const lock = await client.getMailboxLock(fallback.folder, {
+        readOnly: true,
+      })
+      try {
+        const [uid] = await present(client, [fallback.uid])
+        return uid === undefined ? [] : [{ folder: fallback.folder, uid }]
+      } finally {
+        lock.release()
+      }
     }
     const wanted = bare(messageId)
+    const refs: MessageRef[] = []
     for (const folder of config.searchFolders) {
       if (!(await exists(client, folder))) continue
       const lock = await client.getMailboxLock(folder, { readOnly: true })
@@ -277,18 +321,20 @@ export function createProtonBridge({
           { uid: true, envelope: true },
           { uid: true }
         )
-        const exact = fetched
-          .filter(
-            (message) => bare(message.envelope?.messageId ?? "") === wanted
-          )
-          .map((message) => message.uid)
-          .sort((a, b) => a - b)[0]
-        if (exact !== undefined) return { folder, uid: exact }
+        refs.push(
+          ...fetched
+            .filter(
+              (message) => bare(message.envelope?.messageId ?? "") === wanted
+            )
+            .map((message) => message.uid)
+            .sort((a, b) => a - b)
+            .map((uid) => ({ folder, uid }))
+        )
       } finally {
         lock.release()
       }
     }
-    return undefined
+    return refs
   }
 
   async function sources(
@@ -375,32 +421,38 @@ export function createProtonBridge({
         }
       }),
 
-    locate: (messageId) => withImap((client) => locate(client, messageId)),
+    locate: (messageId) =>
+      withImap(async (client) => (await candidates(client, messageId))[0]),
 
-    find: (messageId) =>
+    find: (messageId, sha256) =>
       withImap(async (client) => {
-        const ref = await locate(client, messageId)
-        if (ref === undefined) return undefined
-        const lock = await client.getMailboxLock(ref.folder, { readOnly: true })
-        try {
-          const [message] = await sources(client, ref.folder, [ref.uid])
-          if (message?.source === undefined || message.uid !== ref.uid)
-            return undefined
-          const envelope = message.envelope
-          return {
-            ...ref,
-            raw: message.source,
-            messageId: envelope?.messageId,
-            references: references(message.source),
-            subject: envelope?.subject,
-            from: envelope?.from ?? [],
-            replyTo: envelope?.replyTo ?? [],
-            to: envelope?.to ?? [],
-            cc: envelope?.cc ?? [],
+        for (const ref of await candidates(client, messageId)) {
+          const lock = await client.getMailboxLock(ref.folder, {
+            readOnly: true,
+          })
+          try {
+            const [message] = await sources(client, ref.folder, [ref.uid])
+            if (message?.source === undefined || message.uid !== ref.uid)
+              continue
+            if (sha256 !== undefined && rawSha256(message.source) !== sha256)
+              continue
+            const envelope = message.envelope
+            return {
+              ...ref,
+              raw: message.source,
+              messageId: envelope?.messageId,
+              references: references(message.source),
+              subject: envelope?.subject,
+              from: envelope?.from ?? [],
+              replyTo: envelope?.replyTo ?? [],
+              to: envelope?.to ?? [],
+              cc: envelope?.cc ?? [],
+            }
+          } finally {
+            lock.release()
           }
-        } finally {
-          lock.release()
         }
+        return undefined
       }),
 
     appendDraft: (raw) =>
@@ -432,13 +484,17 @@ export function createProtonBridge({
         for (const [folder, uids] of byFolder) {
           const lock = await client.getMailboxLock(folder)
           try {
-            const result = await client.messageMove(uids.join(","), trash, {
+            // Only UIDs that exist are moved and counted.
+            const existing = await present(client, uids)
+            if (existing.length === 0) continue
+            const result = await client.messageMove(existing.join(","), trash, {
               uid: true,
             })
             if (result === false) {
               throw new BridgeError("bridge_error", "Bridge refused the move")
             }
-            moved += uids.length
+            // COPYUID (UIDPLUS) names each message the server moved.
+            moved += result.uidMap?.size ?? existing.length
           } finally {
             lock.release()
           }
@@ -458,7 +514,7 @@ export function createProtonBridge({
         })
         return { messageId: info.messageId }
       } catch (error) {
-        throw remember(smtpError(error), secret)
+        throw await remember(smtpError(error), secret)
       } finally {
         transport.close()
       }

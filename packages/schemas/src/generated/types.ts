@@ -401,6 +401,7 @@ export interface EmailForwardIntent {
   kind: "email.forward"
   args: {
     messageId: string
+    messageSha256: string
     to: Array<string>
     note?: string
   }
@@ -430,7 +431,10 @@ export interface EmailReplyIntent {
   kind: "email.reply"
   args: {
     messageId: string
+    messageSha256: string
     replyAll: boolean
+    to: Array<string>
+    cc?: Array<string>
     body: string
   }
 }
