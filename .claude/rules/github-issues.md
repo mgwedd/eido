@@ -16,7 +16,14 @@
 
   ## Acceptance criteria
   - [ ] an outcome a reviewer can check by a test or a stated manual step
+
+  ## References
+  UI design: link to the design artifact page (web and UI issues)
+  Plan: the plan section
   ```
+
+- Status is on the issue: `in-progress` when you claim it, `in-review` when the PR opens, `blocked` when waiting on another issue (name it in a comment and in the body's `Needs` line). Remove the label when it no longer applies. Issues and PRs are the only tracker; do not track work in chat or files.
+- Use the issue and PR templates in `.github/`.
 
 - The PR body says `Closes #N`. Tick acceptance criteria as they are met. A finding that changes the scope goes in an issue comment, or a new issue.
 - Create issues with `gh issue create --repo mgwedd/eido --title ... --label ... --assignee ... --body-file ...`.

@@ -8,3 +8,5 @@
 - If part of a task must wait, leave it out entirely and open a GitHub issue for it: `gh issue create --repo mgwedd/eido --title "..." --body "..."`. Say what is missing, why, and what done looks like.
 - If you hit a bug you cannot fix within the task, open a GitHub issue with the evidence (error text, failing test, steps) instead of working around it quietly.
 - Link the issues in the PR body and in your report, so the gap is visible rather than hidden in the code.
+- No explanatory how-it-works text in the UI. Definitions go on the page's side board; use a tooltip only where something needs clarifying.
+- UI copy never claims something no issue implements, for example that a payload was hashed on the device before #94 ships.

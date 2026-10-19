@@ -43,6 +43,7 @@ Work is issue-driven and worktree-driven. Read the rule file before you do the t
 - Git: every task in its own worktree cut from `origin/main`; the `sync-main` hook keeps `main` current. `.claude/rules/git-workflow.md`
 - Issues: every feature, bug and open question is an issue with acceptance criteria; claim it (assign yourself) before starting. `.claude/rules/github-issues.md`
 - No placeholders, fake features or dead ends: leave unfinished work out and open an issue for it. `.claude/rules/no-placeholders.md`
+- Design and plan: every UI issue links its design page and plan section; the live artifact wins over exported images. `.claude/rules/design-and-plan-traceability.md`
 - Commits and PR titles: Conventional Commits. `.claude/rules/conventional-commits.md`
 - Tests: run only the affected tests while iterating, everything before the PR. `.claude/rules/testing.md`, `.claude/rules/affected-tests.md`
 
