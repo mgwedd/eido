@@ -17,6 +17,7 @@ import type { MailReads } from "./bridge/mail-routes"
 import { payloadHash } from "./canonical"
 import { apiError, NOT_FOUND } from "./http"
 import type { GateRequest, Handler, Reply } from "./http"
+import type { ExecutionResult } from "./executor"
 import {
   intentHistory,
   intentSummary,
@@ -55,7 +56,8 @@ function trimmed(errors: readonly string[]): string[] {
 
 async function proposeRoute(
   request: GateRequest,
-  gate: GateState
+  gate: GateState,
+  execute?: (id: string) => Promise<ExecutionResult>
 ): Promise<Reply> {
   const body = await request.body()
   if (!body.ok) {
@@ -94,10 +96,13 @@ async function proposeRoute(
       : { rationale: proposal.rationale }),
   })
   if (result.ok) {
+    if (result.tier === "auto" && execute !== undefined) {
+      await execute(result.intentId)
+    }
     const stored: GateProposeResult = {
       id: result.intentId,
       tier: result.tier,
-      state: result.state,
+      state: intentSummary(gate.db, result.intentId)?.state ?? result.state,
     }
     return { status: 201, body: stored }
   }
@@ -248,12 +253,13 @@ function readRoute(request: GateRequest, gate: GateState): Reply | undefined {
  */
 export function dataPlaneHandler(
   gate: () => GateState,
-  mail?: MailReads
+  mail?: MailReads,
+  execute?: (id: string) => Promise<ExecutionResult>
 ): Handler {
   return (request) => {
     const state = gate()
     if (request.method === "POST" && request.path === "/intents") {
-      return proposeRoute(request, state)
+      return proposeRoute(request, state, execute)
     }
     if (request.method === "POST" && request.path === "/audit") {
       return auditRoute(request, state)

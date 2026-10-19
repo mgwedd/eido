@@ -18,6 +18,7 @@ import {
   it,
 } from "vitest"
 import { BRIDGE_PASSWORD_KEY } from "./internal/bridge/bridge"
+import { PROTON_CONNECTOR } from "./internal/bridge/config"
 import { rawMessage, startFakeBridge } from "./internal/bridge/fake-bridge"
 import { createTestCertificate } from "./internal/bridge/test-certificate"
 import type { FakeBridge } from "./internal/bridge/fake-bridge"
@@ -28,12 +29,19 @@ import {
 } from "./internal/client"
 import { runningGate } from "./internal/runtime"
 import {
+  MAIL_OPS,
   assertion,
+  deviceChallenge,
   loggedText,
+  manifest,
+  sample,
+  signedPin,
   socketAddress,
   testAuthenticator,
   WEBAUTHN,
 } from "./internal/test-fixtures"
+import { reloadPolicy } from "./internal/runtime"
+import { validateGatePrepareApproval } from "@eido/schemas"
 import { FileVault } from "./internal/vault/file-vault"
 import { CONTROL_DB_FILE, GATE_LOG_FILE, gateConfig, runGate } from "./main"
 import type { GateConfig } from "./main"
@@ -55,6 +63,41 @@ function config(): GateConfig {
     controlSocketPath: socketAddress(dir, "control.sock"),
     webAuthn: WEBAUTHN,
   }
+}
+
+type Answer = {
+  status: number
+  headers: Record<string, string | string[] | undefined>
+  body: unknown
+}
+
+function send(
+  port: number,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+  body?: unknown
+): Promise<Answer> {
+  return new Promise((resolve, reject) => {
+    const text = body === undefined ? "" : JSON.stringify(body)
+    const req = request(
+      { host: "127.0.0.1", port, method, path, headers, setHost: false },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on("data", (chunk: Buffer) => chunks.push(chunk))
+        res.on("end", () => {
+          const raw = Buffer.concat(chunks).toString("utf8")
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: raw === "" ? undefined : JSON.parse(raw),
+          })
+        })
+      }
+    )
+    req.on("error", reject)
+    req.end(text)
+  })
 }
 
 describe("gateConfig", () => {
@@ -186,41 +229,6 @@ describe("runGate", () => {
     const again = await runGate(config())
     await again.close()
   })
-
-  type Answer = {
-    status: number
-    headers: Record<string, string | string[] | undefined>
-    body: unknown
-  }
-
-  function send(
-    port: number,
-    method: string,
-    path: string,
-    headers: Record<string, string>,
-    body?: unknown
-  ): Promise<Answer> {
-    return new Promise((resolve, reject) => {
-      const text = body === undefined ? "" : JSON.stringify(body)
-      const req = request(
-        { host: "127.0.0.1", port, method, path, headers, setHost: false },
-        (res) => {
-          const chunks: Buffer[] = []
-          res.on("data", (chunk: Buffer) => chunks.push(chunk))
-          res.on("end", () => {
-            const raw = Buffer.concat(chunks).toString("utf8")
-            resolve({
-              status: res.statusCode ?? 0,
-              headers: res.headers,
-              body: raw === "" ? undefined : JSON.parse(raw),
-            })
-          })
-        }
-      )
-      req.on("error", reject)
-      req.end(text)
-    })
-  }
 
   it("serves the phone listener on loopback TCP, by Host, below its base path", async () => {
     const c: GateConfig = {
@@ -385,6 +393,24 @@ describe("runGate with Bridge", () => {
     fake = undefined
   })
 
+  function pinProton(): void {
+    const operations = MAIL_OPS.filter((op) =>
+      [
+        "email.draft",
+        "email.send",
+        "email.reply",
+        "email.forward",
+        "email.trash",
+      ].includes(op.intentKind ?? "")
+    )
+    signedPin(runningGate().db, {
+      ...manifest(PROTON_CONNECTOR, operations),
+      auth: { type: "password", scopes: ["write"] },
+      egress: { hosts: [] },
+    })
+    reloadPolicy()
+  }
+
   async function bridged(
     vaultEntry: string,
     devVault = true
@@ -445,6 +471,158 @@ describe("runGate with Bridge", () => {
         status: 404,
         code: "not_found",
       })
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("executes an auto-tier draft through the running gate", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    const gate = await runGate(c)
+    try {
+      pinProton()
+      const client = createIntentClient({ socketPath: c.socketPath })
+      const proposal = await client.propose({
+        intent: sample("email.draft", {
+          to: ["guest@example.invalid"],
+          subject: "Agenda",
+          body: "Synthetic agenda",
+        }),
+        origin: "reactive",
+      })
+      expect(proposal).toMatchObject({ tier: "auto", state: "executed" })
+      expect(fake?.mailboxes.get("Drafts")?.messages).toHaveLength(1)
+      expect(fake?.sent).toEqual([])
+      expect(await client.history(proposal.id)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ actor: "executor", to: "executed" }),
+        ])
+      )
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("sends a signed approval through the running gate and records execute", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    c.phone = {
+      host: "127.0.0.1",
+      port: 0,
+      basePath: "",
+      allowedHosts: [],
+    }
+    const gate = await runGate(c)
+    try {
+      pinProton()
+      const phone = gate.phone
+      if (phone === undefined) throw new Error("phone listener did not start")
+      const host = `127.0.0.1:${String(phone.port)}`
+      const headers = { host, "content-type": "application/json" }
+      const auth = testAuthenticator()
+      runningGate()
+        .db.prepare(
+          "INSERT INTO credentials (credential_id, public_key, sign_count, created_at) VALUES (?, ?, 0, ?)"
+        )
+        .run(auth.credentialId, auth.publicKey, new Date().toISOString())
+      const loginOptions = await send(
+        phone.port,
+        "POST",
+        "/auth/login/options",
+        headers
+      )
+      const challenge =
+        typeof loginOptions.body === "object" &&
+        loginOptions.body !== null &&
+        "challenge" in loginOptions.body
+          ? String(loginOptions.body.challenge)
+          : ""
+      const login = await send(phone.port, "POST", "/auth/login", headers, {
+        assertion: assertion(auth, challenge),
+      })
+      expect(login.status).toBe(200)
+      const cookie = login.headers["set-cookie"]?.[0]?.split(";")[0] ?? ""
+      const client = createIntentClient({ socketPath: c.socketPath })
+      const proposal = await client.propose({
+        intent: sample("email.send", {
+          to: ["guest@example.invalid"],
+          subject: "Agenda",
+          body: "Synthetic agenda",
+        }),
+        origin: "reactive",
+      })
+      expect(proposal).toMatchObject({ tier: "approval", state: "pending" })
+      const prepared = await send(
+        phone.port,
+        "POST",
+        `/approvals/${proposal.id}/nonce`,
+        { ...headers, cookie }
+      )
+      const checked = validateGatePrepareApproval(prepared.body)
+      if (!checked.ok) throw new Error(checked.errors.join("; "))
+      const decision = await send(
+        phone.port,
+        "POST",
+        `/approvals/${proposal.id}/decision`,
+        { ...headers, cookie },
+        {
+          intentId: proposal.id,
+          decision: "approved",
+          nonce: checked.value.nonce,
+          assertion: assertion(
+            auth,
+            deviceChallenge(
+              checked.value.payloadHash,
+              proposal.id,
+              checked.value.nonce
+            )
+          ),
+        }
+      )
+      expect(decision.status).toBe(200)
+      expect(fake?.sent).toEqual([
+        expect.objectContaining({
+          from: USER,
+          to: ["guest@example.invalid"],
+        }),
+      ])
+      expect(await client.status(proposal.id)).toMatchObject({
+        state: "executed",
+      })
+      expect(
+        runningGate()
+          .db.prepare(
+            "SELECT action FROM audit_log WHERE target=? ORDER BY seq"
+          )
+          .all(proposal.id)
+          .map((row) => row["action"])
+      ).toContain("execute")
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("records a failed Proton write when Bridge is not configured", async () => {
+    const c = config()
+    const gate = await runGate(c)
+    try {
+      pinProton()
+      const client = createIntentClient({ socketPath: c.socketPath })
+      const proposal = await client.propose({
+        intent: sample("email.draft"),
+        origin: "reactive",
+      })
+      expect(proposal).toMatchObject({ tier: "auto", state: "failed" })
+      expect(await client.status(proposal.id)).toMatchObject({
+        state: "failed",
+      })
+      expect(
+        runningGate()
+          .db.prepare(
+            "SELECT action FROM audit_log WHERE target=? ORDER BY seq"
+          )
+          .all(proposal.id)
+          .map((row) => row["action"])
+      ).toContain("execute.failed.upstream_error")
     } finally {
       await gate.close()
     }

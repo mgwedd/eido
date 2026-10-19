@@ -5,7 +5,9 @@ import type { DatabaseSync } from "node:sqlite"
 import { createProtonBridge } from "./internal/bridge/bridge"
 import { bridgeConfig } from "./internal/bridge/config"
 import type { BridgeConfig } from "./internal/bridge/config"
+import { BRIDGE_WRITERS, bridgeTransport } from "./internal/bridge/writers"
 import { openControlDb } from "./internal/control-db"
+import { createExecutor } from "./internal/executor"
 import {
   basePath,
   close,
@@ -177,9 +179,17 @@ export async function runGate(
               devFlag: config.bridge.devVault,
             }),
           })
+    // Register only gate-owned adapters. A missing Bridge still takes a Proton intent through
+    // the executor, where the attempted write is claimed and its failure is recorded.
+    const transport =
+      mail === undefined
+        ? () => Promise.reject(new Error("Bridge is not configured"))
+        : bridgeTransport(mail)
+    const executor = createExecutor(db, BRIDGE_WRITERS, transport)
+    const execute = (id: string) => executor.execute(id)
     const dataPlane = createGateServer(
       "data-plane",
-      dataPlaneHandler(state, mail),
+      dataPlaneHandler(state, mail, execute),
       log
     )
     const control = createGateServer("control", controlHandler(state), log)
@@ -196,6 +206,7 @@ export async function runGate(
           allowedHosts,
           basePath: options.basePath,
           now,
+          execute,
         })
       let handler = handlerFor([])
       const server = createGateServer(
