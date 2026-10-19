@@ -61,12 +61,32 @@ export const gmailMarkReadWriter: UpstreamWriter = {
     }
   },
   intentFromRequest: markReadIntent,
-  // Undo flips the flag back: a message marked read becomes unread again, and the reverse.
-  inverse(intent) {
+  // Undo restores each message's own prior state, not the intent's flag for all of them. batchModify
+  // answers with an empty body, so the write transport reports the prior state in the result as
+  // `{ previouslyUnread: string[] }` (the intent's ids that carried UNREAD before the call). Without
+  // that report the prior state is unknown, and the result is no undo rather than a guess.
+  inverse(intent, result) {
     if (intent.kind !== "email.markRead") return null
+    const previouslyUnread = priorUnread(result)
+    if (previouslyUnread === null) return null
+    const { messageIds, read } = intent.args
+    // Marked read: undo re-marks unread only what was unread. Marked unread: undo marks read only
+    // what was read before.
+    const changed = new Set(previouslyUnread)
+    const affected = messageIds.filter((id) => changed.has(id) === read)
+    if (affected.length === 0) return null
     return {
       kind: "email.markRead",
-      args: { messageIds: intent.args.messageIds, read: !intent.args.read },
+      args: { messageIds: affected, read: !read },
     }
   },
+}
+
+/** The prior-state report in a write result, or null when the transport gave none. */
+function priorUnread(result: unknown): string[] | null {
+  if (typeof result !== "object" || result === null) return null
+  const reported: unknown = Object.fromEntries(Object.entries(result))[
+    "previouslyUnread"
+  ]
+  return isStringArray(reported) ? reported : null
 }

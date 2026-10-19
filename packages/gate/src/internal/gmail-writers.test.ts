@@ -48,6 +48,7 @@ function fakeGmail(labels: Record<string, string[]>) {
   const mailbox = new Map(
     Object.entries(labels).map(([id, list]) => [id, new Set(list)])
   )
+  const unread = (id: string) => mailbox.get(id)?.has("UNREAD") ?? false
   const transport = vi.fn((request: WriteRequest) => {
     const body: unknown = JSON.parse(request.body)
     if (typeof body !== "object" || body === null) throw new Error("no body")
@@ -60,15 +61,16 @@ function fakeGmail(labels: Record<string, string[]>) {
       "removeLabelIds" in body && Array.isArray(body.removeLabelIds)
         ? body.removeLabelIds
         : []
+    // The write transport reports each message's UNREAD state from before the call.
+    const previouslyUnread = ids.map(String).filter((id) => unread(id))
     for (const id of ids) {
       const set = mailbox.get(String(id))
       for (const label of add) set?.add(String(label))
       for (const label of remove) set?.delete(String(label))
     }
-    // batchModify answers 204 with an empty body.
-    return Promise.resolve({ upstreamRef: null, result: {} })
+    // batchModify itself answers 204 with an empty body.
+    return Promise.resolve({ upstreamRef: null, result: { previouslyUnread } })
   })
-  const unread = (id: string) => mailbox.get(id)?.has("UNREAD") ?? false
   return { transport, unread }
 }
 
@@ -89,7 +91,7 @@ describe("Gmail mark read through the executor", () => {
     expect(await executor.execute(proposed.intentId)).toEqual({
       ok: true,
       upstreamRef: null,
-      result: {},
+      result: { previouslyUnread: ["18c2f0a1b2c3d4e5"] },
     })
     expect(gmail.unread("18c2f0a1b2c3d4e5")).toBe(false)
     expect(
@@ -117,6 +119,35 @@ describe("Gmail mark read through the executor", () => {
       body: '{"addLabelIds":["UNREAD"],"ids":["18c2f0a1b2c3d4e5"]}',
       idempotencyKey: `${proposed.intentId}:undo`,
     })
+  })
+
+  it("undo marks unread only the message that was unread before", async () => {
+    const { db, policy } = pinnedGmail()
+    const gmail = fakeGmail({
+      unreadMsg: ["INBOX", "UNREAD"],
+      readMsg: ["INBOX"],
+    })
+    const proposed = propose(db, policy, {
+      intent: {
+        kind: "email.markRead",
+        args: { messageIds: ["unreadMsg", "readMsg"], read: true },
+      },
+      origin: "task",
+    })
+    if (!proposed.ok) throw new Error(proposed.code)
+    const executor = createExecutor(db, [gmailMarkReadWriter], gmail.transport)
+    expect((await executor.execute(proposed.intentId)).ok).toBe(true)
+    expect(gmail.unread("unreadMsg")).toBe(false)
+    expect(
+      db
+        .prepare("SELECT inverse_op FROM executions WHERE intent_id=?")
+        .get(proposed.intentId)?.["inverse_op"]
+    ).toBe(
+      '{"args":{"messageIds":["unreadMsg"],"read":false},"kind":"email.markRead"}'
+    )
+    expect((await executor.undo(proposed.intentId)).ok).toBe(true)
+    expect(gmail.unread("unreadMsg")).toBe(true)
+    expect(gmail.unread("readMsg")).toBe(false)
   })
 
   it("leaves what the Done automatically list needs in the intent API and audit history", async () => {
@@ -197,6 +228,44 @@ describe("gmailMarkReadWriter", () => {
     expect(() => gmailMarkReadWriter.intentFromRequest(request)).toThrow(
       "not a Gmail mark read request"
     )
+  })
+
+  describe("inverse", () => {
+    const two = (read: boolean): Intent => ({
+      kind: "email.markRead",
+      args: { messageIds: ["a", "b"], read },
+    })
+
+    it("marking unread is undone by marking read only what was read before", () => {
+      expect(
+        gmailMarkReadWriter.inverse(two(false), { previouslyUnread: ["a"] })
+      ).toEqual({
+        kind: "email.markRead",
+        args: { messageIds: ["b"], read: true },
+      })
+    })
+
+    it("gives no undo when nothing changed", () => {
+      expect(
+        gmailMarkReadWriter.inverse(two(true), { previouslyUnread: [] })
+      ).toBeNull()
+    })
+
+    it("gives no undo, not a guess, when the prior state is not reported", () => {
+      expect(gmailMarkReadWriter.inverse(two(true), {})).toBeNull()
+      expect(
+        gmailMarkReadWriter.inverse(two(true), { previouslyUnread: [1] })
+      ).toBeNull()
+    })
+
+    it("ignores reported ids the intent did not name", () => {
+      expect(
+        gmailMarkReadWriter.inverse(two(true), { previouslyUnread: ["a", "z"] })
+      ).toEqual({
+        kind: "email.markRead",
+        args: { messageIds: ["a"], read: false },
+      })
+    })
   })
 
   it("builds and inverts mark read only", () => {
