@@ -32,6 +32,11 @@ export const ALLOWED = [
     pattern: /^packages\/eslint-config\/[^/]+\.js$/,
     reason: "shared ESLint presets are loaded by the ESLint config files as JS",
   },
+  {
+    pattern: /^apps\/web\/public\/sw(-routing)?\.js$/,
+    reason:
+      "the service worker is served as-is from /public and runs without a build step",
+  },
 ]
 
 /** Returns the tracked JavaScript files that are not allowed. */
