@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProfileAddress",
+  "description": "An email address Eido acts for.",
+  "type": "object",
+  "properties": {
+    "address": { "type": "string", "minLength": 3, "maxLength": 254 },
+    "label": { "type": "string", "maxLength": 100 }
+  },
+  "required": ["address"],
+  "additionalProperties": false
+}

@@ -3,7 +3,16 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
-import { cn } from "@eido/ui/lib/utils"
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@eido/ui/components/sidebar"
 import { isActive, NAV_ITEMS } from "@/lib/nav"
 
 function BrandBlock() {
@@ -24,33 +33,44 @@ function AppSidebar() {
   const pathname = usePathname()
 
   return (
-    <aside className="sticky top-0 hidden h-svh w-[232px] shrink-0 flex-col gap-4 border-r border-sidebar-border bg-sidebar p-4 text-sidebar-foreground md:flex">
-      <BrandBlock />
-      <nav aria-label="Primary">
-        <ul className="flex flex-col gap-1">
-          {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
-            const active = isActive(pathname, href)
-            return (
-              <li key={href}>
-                <Link
-                  href={href}
-                  aria-current={active ? "page" : undefined}
-                  className={cn(
-                    "flex min-h-10 items-center gap-3 rounded-lg px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-sidebar-ring/50",
-                    active
-                      ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                      : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                  )}
-                >
-                  <Icon aria-hidden className="size-4 shrink-0" />
-                  {label}
-                </Link>
-              </li>
-            )
-          })}
-        </ul>
-      </nav>
-    </aside>
+    <Sidebar
+      collapsible="none"
+      className="sticky top-0 hidden h-svh border-r border-sidebar-border md:flex"
+    >
+      <SidebarHeader>
+        <BrandBlock />
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <nav aria-label="Primary">
+              <SidebarMenu>
+                {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+                  const active = isActive(pathname, href)
+                  return (
+                    <SidebarMenuItem key={href}>
+                      <SidebarMenuButton
+                        isActive={active}
+                        className="min-h-10"
+                        render={
+                          <Link
+                            href={href}
+                            aria-current={active ? "page" : undefined}
+                          />
+                        }
+                      >
+                        <Icon aria-hidden />
+                        <span>{label}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )
+                })}
+              </SidebarMenu>
+            </nav>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+    </Sidebar>
   )
 }
 

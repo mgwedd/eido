@@ -270,9 +270,30 @@ const promptOutput = [
   tsConst("INTENT_RESULT_JSON_SCHEMA", resolvedResult, "JsonSchema"),
 ].join("\n")
 
+// Non-intent schemas whose writes core validates: every profile-*.schema.json gets a
+// validator. Structural checks only; semantic ones (IANA timezone, email, HH:MM) live in core.
+const profileFiles = [...schemas.keys()].filter((file) =>
+  file.startsWith("profile-")
+)
+const constName = (name) =>
+  `${name.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()}_JSON_SCHEMA`
+const profileValidators = profileFiles.flatMap((file) => {
+  const name = schemaName(schemas, file)
+  const resolved = resolveSchema(schemas, schemas.get(file), file)
+  return [
+    tsConst(constName(name), resolved, "JsonSchema"),
+    `export function validate${name}(value: unknown): ValidationResult<${name}> {`,
+    `  const errors = validate(${constName(name)}, value)`,
+    "  // The schema check above is what makes this narrowing sound.",
+    `  return errors.length === 0 ? { ok: true, value: value as ${name} } : { ok: false, errors }`,
+    "}",
+    "",
+  ]
+})
+
 const validatorsOutput = [
   ...header,
-  'import type { Intent, IntentResult } from "./types"',
+  `import type { Intent, IntentResult, ${profileFiles.map((f) => schemaName(schemas, f)).join(", ")} } from "./types"`,
   'import { validate } from "../validate"',
   'import { INTENT_RESULT_JSON_SCHEMA } from "./prompt"',
   'import type { JsonSchema, ValidationResult } from "../validate"',
@@ -290,6 +311,7 @@ const validatorsOutput = [
   "  return errors.length === 0 ? { ok: true, value: value as IntentResult } : { ok: false, errors }",
   "}",
   "",
+  ...profileValidators,
 ].join("\n")
 
 mkdirSync(outDir, { recursive: true })

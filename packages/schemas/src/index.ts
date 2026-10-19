@@ -12,5 +12,9 @@ export {
   INTENT_JSON_SCHEMA,
   validateIntent,
   validateIntentResult,
+  validateProfileAccountAssignment,
+  validateProfileEntityInput,
+  validateProfileEntityPatch,
+  validateProfileUpdate,
 } from "./generated/validators"
 export type { JsonSchema, ValidationResult } from "./validate"
