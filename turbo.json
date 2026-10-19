@@ -1,7 +1,8 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "ui": "tui",
+  "ui": "stream",
   "globalEnv": ["NODE_ENV"],
+  "globalDependencies": ["tsconfig.base.json", "tsconfig.json"],
   "remoteCache": {
     "enabled": false
   },
@@ -33,6 +34,89 @@
     "dev": {
       "cache": false,
       "persistent": true
+    },
+    "//#check:deps": {
+      "inputs": [
+        "apps/**/*.{ts,tsx,js,mjs,cjs,json}",
+        "packages/**/*.{ts,tsx,js,mjs,cjs,json}",
+        ".dependency-cruiser.cjs",
+        "tsconfig*.json",
+        "!**/node_modules/**",
+        "!**/.turbo/**",
+        "!**/coverage/**",
+        "!**/.next/**",
+        "!**/dist/**"
+      ]
+    },
+    "//#check:deps-fixture": {
+      "dependsOn": ["//#check:deps"],
+      "inputs": [
+        "fixtures/boundary-violation/**",
+        ".dependency-cruiser.cjs",
+        "scripts/check-boundary-fixture.mjs"
+      ]
+    },
+    "//#check:gate-deps": {
+      "inputs": [
+        "packages/gate/package.json",
+        "packages/gate/ALLOWED_DEPENDENCIES",
+        "scripts/check-gate-deps.mjs"
+      ]
+    },
+    "//#check:lint-coverage": {
+      "inputs": [
+        "apps/**",
+        "packages/**",
+        "scripts/check-lint-coverage.mjs",
+        "tsconfig*.json",
+        "!**/node_modules/**",
+        "!**/.turbo/**",
+        "!**/coverage/**",
+        "!**/.next/**",
+        "!**/dist/**"
+      ]
+    },
+    "//#check:no-js": {
+      "inputs": [
+        "**",
+        "!**/node_modules/**",
+        "!**/.turbo/**",
+        "!**/coverage/**",
+        "!**/.next/**",
+        "!**/dist/**"
+      ]
+    },
+    "//#check:no-js-fixture": {
+      "inputs": ["scripts/check-no-js.mjs"]
+    },
+    "//#check:secrets": {
+      "inputs": [
+        "**",
+        "!**/node_modules/**",
+        "!**/.turbo/**",
+        "!**/coverage/**",
+        "!**/.next/**",
+        "!**/dist/**"
+      ]
+    },
+    "//#check:versions": {
+      "inputs": [
+        "package.json",
+        "apps/*/package.json",
+        "packages/*/package.json",
+        ".node-version",
+        "scripts/check-exact-versions.mjs"
+      ]
+    },
+    "//#format:check": {
+      "inputs": [
+        "**",
+        "!**/node_modules/**",
+        "!**/.turbo/**",
+        "!**/coverage/**",
+        "!**/.next/**",
+        "!**/dist/**"
+      ]
     }
   }
 }

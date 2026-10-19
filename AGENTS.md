@@ -26,17 +26,12 @@ scripts/               repo checks (gate allowlist, secret scan, boundary fixtur
 pnpm install --frozen-lockfile
 pnpm build                           # turbo build
 pnpm turbo run typecheck lint test   # typecheck, lint and tests
-pnpm boundaries                      # package boundary checks (turbo)
-pnpm check:deps                      # dependency-cruiser boundaries (blocking)
-pnpm check:deps-fixture              # must show the violation fixture failing
-pnpm check:gate-deps                 # gate dependency allowlist
-pnpm check:no-js                     # no stray .js/.jsx/.mjs/.cjs files (allowlist in the script)
-pnpm check:no-js-fixture             # self-test: the check still catches a stray JS file
-pnpm check:secrets                   # secret scan
-pnpm check:versions                  # exact-version pinning check
-pnpm format:check                    # prettier --check
-pnpm verify                          # everything CI runs, from one list (scripts/verify.mjs); turbo tasks limited to changed packages locally
+pnpm verify                          # every check CI runs, as one turbo run; tasks limited to changed packages locally
 pnpm verify --full                   # the exact CI run: every package
+pnpm turbo run //#check:deps         # one repo check alone; also //#check:deps-fixture, //#check:gate-deps,
+                                     # //#check:lint-coverage, //#check:no-js, //#check:no-js-fixture,
+                                     # //#check:secrets, //#check:versions, //#format:check
+pnpm format:check                    # prettier --check (uncached; verify runs it as the cached //#format:check task)
 ```
 
 ## Working rules

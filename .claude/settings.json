@@ -8,7 +8,6 @@
       "Bash(pnpm typecheck:*)",
       "Bash(pnpm build:*)",
       "Bash(pnpm check:*)",
-      "Bash(pnpm boundaries:*)",
       "Bash(pnpm exec depcruise:*)",
       "Bash(pnpm turbo:*)",
       "Bash(git worktree add:*)",

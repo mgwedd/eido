@@ -10,7 +10,6 @@
     "format:check": "prettier --check .",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
-    "boundaries": "turbo boundaries",
     "check:deps": "depcruise packages apps --config .dependency-cruiser.cjs",
     "check:deps-fixture": "node scripts/check-boundary-fixture.mjs",
     "check:gate-deps": "node scripts/check-gate-deps.mjs",

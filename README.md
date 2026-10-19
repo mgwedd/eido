@@ -22,7 +22,7 @@ Requires Node 24 (`.node-version`) and pnpm 10 (pinned by `packageManager`; run 
 pnpm install --frozen-lockfile
 pnpm --filter @eido/web dev      # web app at http://localhost:3000
 pnpm turbo run typecheck lint test
-pnpm check                       # also runs boundary, allowlist, secret, exact-version and format checks
+pnpm verify                      # everything CI runs: tests plus boundary, allowlist, secret, exact-version and format checks
 ```
 
 ## Layout
