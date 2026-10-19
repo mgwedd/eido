@@ -18,5 +18,5 @@ Copy the criteria from the issue and tick each one met.
 
 ## Checks
 
-- [ ] Affected tests pass locally; `pnpm check` run before opening
+- [ ] `pnpm verify` passed locally
 - [ ] No placeholder, no-op control or unexplained UI text added

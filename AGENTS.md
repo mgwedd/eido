@@ -35,7 +35,8 @@ pnpm check:no-js-fixture             # self-test: the check still catches a stra
 pnpm check:secrets                   # secret scan
 pnpm check:versions                  # exact-version pinning check
 pnpm format:check                    # prettier --check
-pnpm check                           # all of the above, including format:check
+pnpm verify                          # everything CI runs, from one list (scripts/verify.mjs); turbo tasks limited to changed packages locally
+pnpm verify --full                   # the exact CI run: every package
 ```
 
 ## Working rules
