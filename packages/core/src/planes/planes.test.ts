@@ -303,7 +303,10 @@ describe(
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ kind: "personal", name: CLEAR.name, tag: "X" }),
       })
-      expect(refused.status).toBe(500)
+      expect(refused.status).toBe(503)
+      expect(await refused.json()).toEqual({
+        error: { code: "gate_unavailable", message: "gate unavailable" },
+      })
       expect(performance.now() - started).toBeLessThan(2500)
       const listed = await fetch(`${planes.coreUrl}/entities`)
       expect(await listed.json()).toEqual({ entities: [] })
