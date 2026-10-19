@@ -32,10 +32,32 @@ describe("the no-permanent-delete lint rule", () => {
     ["a computed messageDelete", "void client['messageDelete']"],
     ["the \\Deleted flag", "export const flag = '\\\\Deleted'"],
     ["the \\Deleted flag in a template", "export const flag = `\\\\Deleted`"],
+    ["a destructured expunge", "export const { expunge } = client"],
+    [
+      "a renamed destructured key",
+      "export const { messageDelete: md } = client",
+    ],
+    ["a template computed key", "void client[`expunge`]"],
+    ["Reflect.get with the name", "void Reflect.get(client, 'mailboxDelete')"],
+    ["raw run on the client", "void client.run('NOOP')"],
+    ["raw exec on the client", "void client.exec('NOOP', [])"],
+    [
+      "an EXPUNGE literal to any run",
+      "declare const other: { run(c: string): void }\nother.run('EXPUNGE')",
+    ],
+    [
+      "a STORE template to any exec",
+      "declare const other: { exec(c: string): void }\nother.exec(`UID STORE 1 +FLAGS (x)`)",
+    ],
+    [
+      "a CLOSE literal to any exec",
+      "declare const other: { exec(c: string, a: unknown[]): void }\nother.exec('close', [])",
+    ],
   ])(
     "flags %s",
     async (_name, line) => {
-      expect(await banned(`${client}${line}\n`)).toBe(1)
+      // A shorthand key is reported twice, once as key and once as value.
+      expect(await banned(`${client}${line}\n`)).toBeGreaterThan(0)
     },
     30_000
   )
@@ -43,7 +65,14 @@ describe("the no-permanent-delete lint rule", () => {
   it("allows moving mail and the other flags", async () => {
     expect(
       await banned(
-        `${client}void client.messageMove('1', 'Trash')\nexport const flag = '\\\\Seen'\n`
+        [
+          client,
+          "void client.messageMove('1', 'Trash')",
+          "export const flag = '\\\\Seen'",
+          "export const found = /^a/.exec('abc')",
+          "declare const db: { prepare(q: string): { run(): void } }",
+          "db.prepare('DELETE FROM t').run()",
+        ].join("\n")
       )
     ).toBe(0)
   }, 30_000)
