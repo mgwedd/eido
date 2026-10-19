@@ -11,16 +11,16 @@
 
 One token set lives in `src/styles/globals.css`. `:root` is light, `.dark` is dark; `next-themes` (in `apps/web/components/theme-provider.tsx`) sets the class, dark by default, with system following the OS. Components and pages use token utilities only (`bg-card`, `text-muted-foreground`, `border-approval-border`); no hex, rgb or oklch literals outside `globals.css` (`apps/web/test/tokens.test.ts` fails on them, with three documented exceptions for the manifest, the viewport meta and the generated icon).
 
-| Group | Tokens |
-| --- | --- |
-| Surface | `background`, `foreground`, `card`, `popover` (each with `-foreground`), `border`, `input`, `ring` |
-| Action | `primary`, `secondary`, `accent`, `muted`, `destructive` (each with `-foreground` except `destructive`, `muted-foreground` for secondary text) |
-| Sidebar | `sidebar`, `sidebar-foreground`, `sidebar-primary(-foreground)`, `sidebar-accent(-foreground)`, `sidebar-border`, `sidebar-ring` |
-| Chart | `chart-1` to `chart-5` |
-| Approval | `approval`, `approval-foreground`, `approval-border`: an action waiting for the owner's signed approval |
-| Confirm | `confirm`, `confirm-foreground`, `confirm-border`: the confirm card |
-| Status | `status-ok`, `status-warn`, `status-error` |
-| Shape | `radius` and the derived `radius-sm` to `radius-4xl`, `radius-card` |
+| Group    | Tokens                                                                                                                                         |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Surface  | `background`, `foreground`, `card`, `popover` (each with `-foreground`), `border`, `input`, `ring`                                             |
+| Action   | `primary`, `secondary`, `accent`, `muted`, `destructive` (each with `-foreground` except `destructive`, `muted-foreground` for secondary text) |
+| Sidebar  | `sidebar`, `sidebar-foreground`, `sidebar-primary(-foreground)`, `sidebar-accent(-foreground)`, `sidebar-border`, `sidebar-ring`               |
+| Chart    | `chart-1` to `chart-5`                                                                                                                         |
+| Approval | `approval`, `approval-foreground`, `approval-border`: an action waiting for the owner's signed approval                                        |
+| Confirm  | `confirm`, `confirm-foreground`, `confirm-border`: the confirm card                                                                            |
+| Status   | `status-ok`, `status-warn`, `status-error`                                                                                                     |
+| Shape    | `radius` and the derived `radius-sm` to `radius-4xl`, `radius-card`                                                                            |
 
 Add a token:
 
