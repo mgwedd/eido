@@ -1,8 +1,11 @@
 import type {
   CoreApiAssignmentList,
+  CoreApiEntity,
   CoreApiEntityList,
   CoreApiError,
+  CoreApiProfile,
   CoreApiProfileResponse,
+  ProfileAccountAssignment,
 } from "@eido/schemas"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
@@ -10,6 +13,12 @@ import type { ProfileStore } from "../profile/store"
 
 export interface ApiDeps {
   profile: ProfileStore
+  /**
+   * Host header values core answers to, such as `127.0.0.1:8787`. A request with any other
+   * Host gets 421. Core has no auth, so this stops a page that rebinds its own domain to the
+   * listen address (DNS rebinding) from driving core through the owner's browser.
+   */
+  allowedHosts: readonly string[]
 }
 
 export type ApiHandler = (request: Request) => Promise<Response>
@@ -26,6 +35,7 @@ const STATUS: Record<ErrorCode, number> = {
   unsupported_media_type: 415,
   payload_too_large: 413,
   method_not_allowed: 405,
+  misdirected_request: 421,
   internal: 500,
 }
 
@@ -91,6 +101,11 @@ function profileFailure(error: ProfileError): Response {
   return failure(code, error.message)
 }
 
+/**
+ * Writes require a JSON content type. Besides parsing, this keeps cross-site forms out: a
+ * browser sends application/json cross-origin only after a CORS preflight, which core does not
+ * answer.
+ */
 async function readJson(request: Request): Promise<unknown> {
   const type = request.headers.get("content-type") ?? ""
   if (!/^application\/json\s*(;|$)/i.test(type)) {
@@ -118,9 +133,14 @@ const ENTITY_PATH = /^\/entities\/([^/]+)$/
 
 export function createApiHandler(deps: ApiDeps): ApiHandler {
   const { profile } = deps
+  const allowedHosts = new Set(deps.allowedHosts.map((h) => h.toLowerCase()))
 
   async function route(request: Request): Promise<Response> {
     const url = new URL(request.url)
+    const host = (request.headers.get("host") ?? url.host).toLowerCase()
+    if (!allowedHosts.has(host)) {
+      return failure("misdirected_request", "host not served")
+    }
     const method = request.method
     const path = url.pathname.replace(/(.)\/$/, "$1")
     const notAllowed = (...methods: string[]): Response => {
@@ -136,7 +156,10 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return json(body)
       }
       if (method === "PATCH") {
-        return json(profile.updateProfile(await readJson(request)))
+        const body: CoreApiProfile = profile.updateProfile(
+          await readJson(request)
+        )
+        return json(body)
       }
       return notAllowed("GET", "PATCH")
     }
@@ -149,7 +172,10 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return json(body)
       }
       if (method === "POST") {
-        return json(profile.createEntity(await readJson(request)), 201)
+        const body: CoreApiEntity = profile.createEntity(
+          await readJson(request)
+        )
+        return json(body, 201)
       }
       return notAllowed("GET", "POST")
     }
@@ -163,7 +189,11 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         throw new HttpError("bad_request", "malformed entity id")
       }
       if (method === "PATCH") {
-        return json(profile.updateEntity(id, await readJson(request)))
+        const body: CoreApiEntity = profile.updateEntity(
+          id,
+          await readJson(request)
+        )
+        return json(body)
       }
       if (method === "DELETE") {
         profile.deleteEntity(id)
@@ -180,7 +210,10 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return json(body)
       }
       if (method === "PUT") {
-        return json(profile.assignAccount(await readJson(request)))
+        const body: ProfileAccountAssignment = profile.assignAccount(
+          await readJson(request)
+        )
+        return json(body)
       }
       if (method === "DELETE") {
         const connector = url.searchParams.get("connector")

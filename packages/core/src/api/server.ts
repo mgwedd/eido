@@ -18,7 +18,8 @@ async function readBody(req: IncomingMessage): Promise<Buffer | null> {
 
 /**
  * Node adapter for the handler. The caller picks the address and calls `listen`: core has no
- * credentials and no auth of its own, so it must listen on loopback or a private interface only.
+ * credentials and no auth of its own, so it must listen on loopback or a private interface only,
+ * with that address in the handler's `allowedHosts`.
  */
 export function createApiServer(handler: ApiHandler): Server {
   return createServer((req, res) => {

@@ -74,10 +74,10 @@ export interface CoreApiEntity {
   createdAt: string
 }
 
-/** Every non-2xx response of core's HTTP API. `fields` carries one entry per invalid field for code invalid; `referencedBy` names the tables that reference an entity for code entity_in_use. */
+/** Body of a non-2xx response from core's HTTP API. `fields` carries one entry per invalid field for code invalid; `referencedBy` names the tables that reference an entity for code entity_in_use. */
 export interface CoreApiError {
   error: {
-    code: "invalid" | "duplicate_name" | "duplicate_tag" | "not_found" | "entity_in_use" | "bad_request" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "internal"
+    code: "invalid" | "duplicate_name" | "duplicate_tag" | "not_found" | "entity_in_use" | "bad_request" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "misdirected_request" | "internal"
     message: string
     fields?: Array<{
       field: string

@@ -1,6 +1,7 @@
 import type { CoreApiEntity, CoreApiProfileResponse } from "@eido/schemas"
 import type { AddressInfo } from "node:net"
 import { afterEach, beforeEach, expect, test } from "vitest"
+import { request as httpRequest } from "node:http"
 import type { Server } from "node:http"
 import { openIndex } from "../index/schema"
 import { createProfileStore } from "../profile/index"
@@ -15,9 +16,13 @@ beforeEach(async () => {
   const profile = createProfileStore(openIndex(":memory:"), {
     audit: () => undefined,
   })
-  server = createApiServer(createApiHandler({ profile }))
+  // The allowed host carries the port, which is known only after listen.
+  let handler = createApiHandler({ profile, allowedHosts: [] })
+  server = createApiServer((request) => handler(request))
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  const host = `127.0.0.1:${(server.address() as AddressInfo).port}`
+  handler = createApiHandler({ profile, allowedHosts: [host] })
+  base = `http://${host}`
 })
 
 afterEach(async () => {
@@ -68,6 +73,22 @@ test("a body over the limit is 413 and the server keeps serving", async () => {
   })
   expect(big.status).toBe(413)
   expect((await fetch(`${base}/profile`)).status).toBe(200)
+})
+
+test("a foreign Host header is refused at the socket", async () => {
+  const status = await new Promise<number | undefined>((resolve, reject) => {
+    const req = httpRequest(
+      `${base}/profile`,
+      { headers: { host: "rebound.example.invalid" } },
+      (res) => {
+        res.resume()
+        resolve(res.statusCode)
+      }
+    )
+    req.on("error", reject)
+    req.end()
+  })
+  expect(status).toBe(421)
 })
 
 test("a handler that throws becomes a 500 with no cause", async () => {

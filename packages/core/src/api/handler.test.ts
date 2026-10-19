@@ -33,7 +33,7 @@ let db: ReturnType<typeof openIndex>
 beforeEach(() => {
   db = openIndex(":memory:")
   const profile = createProfileStore(db, { audit: () => undefined })
-  handle = createApiHandler({ profile })
+  handle = createApiHandler({ profile, allowedHosts: ["core.test"] })
 })
 
 async function call(
@@ -345,6 +345,7 @@ describe("routing and failures", () => {
 
   test("an unexpected failure is a 500 that does not quote the cause", async () => {
     const broken = createApiHandler({
+      allowedHosts: ["core.test"],
       profile: {
         ...createProfileStore(db, { audit: () => undefined }),
         getProfile: () => {
@@ -357,6 +358,38 @@ describe("routing and failures", () => {
     expect(response.status).toBe(500)
     expect(text).not.toContain("secret")
     expect((JSON.parse(text) as Body).error.code).toBe("internal")
+  })
+})
+
+describe("host check", () => {
+  test("a request for another host is 421 and writes nothing", async () => {
+    const response = await handle(
+      new Request("http://rebound.example.invalid/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(OWNER),
+      })
+    )
+    expect(response.status).toBe(421)
+    expect(((await response.json()) as Body).error.code).toBe(
+      "misdirected_request"
+    )
+    expect((await call("GET", "/profile")).json).toEqual({})
+  })
+
+  test("the Host header decides, not the request URL, and case does not matter", async () => {
+    const spoofed = await handle(
+      new Request("http://core.test/profile", {
+        headers: { host: "rebound.example.invalid" },
+      })
+    )
+    expect(spoofed.status).toBe(421)
+    const upper = await handle(
+      new Request("http://core.test/profile", {
+        headers: { host: "CORE.TEST" },
+      })
+    )
+    expect(upper.status).toBe(200)
   })
 })
 
