@@ -14,7 +14,7 @@ import {
 } from "./approvals"
 import type { ApprovalRequest, VerifiedApproval } from "./approvals"
 import { verifyChain } from "./audit"
-import { pinManifest } from "./connectors"
+
 import { openControlDb } from "./control-db"
 import {
   beginRegistration,
@@ -38,6 +38,7 @@ import {
   sample,
   setup,
   testAuthenticator,
+  signedPin,
 } from "./test-fixtures"
 import type { CeremonyOptions, Setup, TestAuthenticator } from "./test-fixtures"
 
@@ -597,7 +598,7 @@ describe("concurrent verification", () => {
       b.close()
       rmSync(dir, { recursive: true, force: true })
     })
-    pinManifest(a, manifest("mail", MAIL_OPS), "owner")
+    signedPin(a, manifest("mail", MAIL_OPS), "owner")
     const policy = loadPolicy(a, {
       dataDir: dir,
       ownerAddresses: [OWNER],

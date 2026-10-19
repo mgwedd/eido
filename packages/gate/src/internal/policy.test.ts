@@ -23,6 +23,7 @@ import {
   manifest,
   sample,
   setup,
+  signedPolicy,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
@@ -138,6 +139,10 @@ describe("the overlay", () => {
       version: 1,
       tiers: { "email.archive": "approval", "email.trash": "auto" },
     })
+    signedPolicy(s.db, {
+      version: 1,
+      tiers: { "email.archive": "approval", "email.trash": "auto" },
+    })
     const { policy, errors } = loadPolicy(s.db, s.options, s.policy)
     expect(errors).toEqual([])
     expect(kindTier(s.db, policy, "email.archive")).toEqual({
@@ -151,6 +156,7 @@ describe("the overlay", () => {
   it("is applied on first load too", () => {
     const s = fresh()
     s.writeOverlay({ version: 1, tiers: { "email.draft": "approval" } })
+    signedPolicy(s.db, { version: 1, tiers: { "email.draft": "approval" } })
     const { policy } = loadPolicy(s.db, s.options)
     expect(kindTier(s.db, policy, "email.draft")).toEqual({ tier: "approval" })
   })
@@ -210,6 +216,7 @@ describe("guards no config can lift", () => {
   it("a kind absent from the pinned manifests is forbidden even with an overlay entry", () => {
     const s = fresh([manifest("mail", MAIL_OPS)])
     s.writeOverlay({ version: 1, tiers: { "file.delete": "approval" } })
+    signedPolicy(s.db, { version: 1, tiers: { "file.delete": "approval" } })
     const { policy, errors } = loadPolicy(s.db, s.options, s.policy)
     expect(errors).toEqual([])
     expect(kindTier(s.db, policy, "file.delete")).toEqual({
@@ -226,6 +233,7 @@ describe("guards no config can lift", () => {
     )
     const s = fresh([manifest("mail", forbiddenTrash)])
     s.writeOverlay({ version: 1, tiers: { "email.trash": "approval" } })
+    signedPolicy(s.db, { version: 1, tiers: { "email.trash": "approval" } })
     const { policy } = loadPolicy(s.db, s.options, s.policy)
     expect(kindTier(s.db, policy, "email.trash")).toEqual({
       tier: "forbidden",
@@ -278,14 +286,13 @@ describe("policy changes are audited", () => {
 
     const overlay = { version: 1, tiers: { "email.archive": "approval" } }
     s.writeOverlay(overlay)
+    signedPolicy(s.db, overlay)
     const { policy } = loadPolicy(s.db, s.options, s.policy)
-    const after = payloadHash({ shipped, overlay })
     const changed = auditRows(s.db).filter((r) => r.action === "policy.changed")
     expect(changed).toEqual([
       expect.objectContaining({
-        actor: "system",
-        target: join(s.dataDir, OVERLAY_FILE),
-        detail_hash: payloadHash({ before_hash: before, after_hash: after }),
+        actor: "owner",
+        target: "permissions",
       }),
     ])
     expect(JSON.stringify(auditRows(s.db))).not.toContain("email.archive")
@@ -342,6 +349,7 @@ describe("invalid overlays are rejected, not applied, and audited", () => {
   it.each(cases)("%s", (_name, overlay, error) => {
     const s = fresh()
     s.writeOverlay({ version: 1, tiers: { "email.archive": "approval" } })
+    signedPolicy(s.db, { version: 1, tiers: { "email.archive": "approval" } })
     const applied = loadPolicy(s.db, s.options, s.policy).policy
     s.writeOverlay(overlay)
     const raw = readFileSync(join(s.dataDir, OVERLAY_FILE))

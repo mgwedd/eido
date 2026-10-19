@@ -11,9 +11,18 @@ import type {
   Intent,
 } from "@eido/schemas"
 import type { ApprovalAssertion } from "./approvals"
-import { pinManifest } from "./connectors"
+import { pinManifest, prepareManifestPin } from "./connectors"
+import type {
+  PreparedControlApproval,
+  ControlAuthorization,
+} from "./control-approvals"
 import { openControlDb } from "./control-db"
-import { loadPolicy, OVERLAY_FILE } from "./policy"
+import {
+  loadPolicy,
+  OVERLAY_FILE,
+  preparePolicyChange,
+  setPolicyOverrides,
+} from "./policy"
 import type { IntentKind, Policy, PolicyOptions } from "./policy"
 import type { Registration } from "./credentials"
 import type { WebAuthnConfig } from "./webauthn"
@@ -163,7 +172,7 @@ export function setup(
 ): Setup {
   const dataDir = mkdtempSync(join(tmpdir(), "eido-gate-"))
   const db = openControlDb(":memory:")
-  for (const connector of connectors) pinManifest(db, connector, "owner")
+  for (const connector of connectors) signedPin(db, connector)
   const options: PolicyOptions = {
     dataDir,
     ownerAddresses: [OWNER],
@@ -333,6 +342,68 @@ export function assertion(
     authenticatorData: authData.toString("base64url"),
     clientDataJSON: clientDataJSON.toString("base64url"),
     signature: signature.toString("base64url"),
+  }
+}
+
+/** A real synthetic WebAuthn signature for a prepared control change. */
+export function controlAuthorization(
+  db: DatabaseSync,
+  prepared: PreparedControlApproval
+): ControlAuthorization & { credentialId: string } {
+  const auth = testAuthenticator()
+  db.prepare(
+    "INSERT INTO credentials (credential_id, public_key, sign_count, created_at) VALUES (?, ?, 0, ?)"
+  ).run(auth.credentialId, auth.publicKey, new Date().toISOString())
+  const challenge = digest(
+    JSON.stringify([
+      "eido.control.v1",
+      prepared.purpose,
+      prepared.target,
+      prepared.id,
+      prepared.payloadHash,
+      prepared.nonce,
+    ])
+  ).toString("base64url")
+  return {
+    config: WEBAUTHN,
+    credentialId: auth.credentialId,
+    request: {
+      id: prepared.id,
+      nonce: prepared.nonce,
+      assertion: assertion(auth, challenge),
+    },
+  }
+}
+
+export function signedPin(
+  db: DatabaseSync,
+  connector: ConnectorManifest,
+  actor = "owner"
+): void {
+  const prepared = prepareManifestPin(db, connector)
+  const authorization = controlAuthorization(db, prepared)
+  try {
+    pinManifest(db, connector, actor, authorization)
+  } finally {
+    db.prepare("DELETE FROM credentials WHERE credential_id = ?").run(
+      authorization.credentialId
+    )
+  }
+}
+
+export function signedPolicy(
+  db: DatabaseSync,
+  value: unknown,
+  actor = "owner"
+): void {
+  const prepared = preparePolicyChange(db, value)
+  const authorization = controlAuthorization(db, prepared)
+  try {
+    setPolicyOverrides(db, value, actor, authorization)
+  } finally {
+    db.prepare("DELETE FROM credentials WHERE credential_id = ?").run(
+      authorization.credentialId
+    )
   }
 }
 

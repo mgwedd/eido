@@ -5,11 +5,20 @@ import type { DatabaseSync } from "node:sqlite"
 import { INTENT_KINDS } from "@eido/schemas"
 import type { ConnectorOperation, ConnectorTier, Intent } from "@eido/schemas"
 import { append } from "./audit"
-import { payloadHash } from "./canonical"
+import { canonicalize, payloadHash } from "./canonical"
+import {
+  approvedControlValue,
+  prepareControlApproval,
+  withControlApproval,
+} from "./control-approvals"
+import type {
+  ControlAuthorization,
+  PreparedControlApproval,
+} from "./control-approvals"
 import { intentBindings, pinnedOperation } from "./connectors"
 
-// The permission table. The gate ships a versioned default; the owner's overlay in the gate's
-// data dir changes the tier of single kinds. Effective tier: overlay entry, else shipped entry,
+// The permission table. The gate ships a versioned default; a signed owner override
+// changes the tier of single kinds. Effective tier: overlay entry, else shipped entry,
 // else the pinned operation's defaultTier. Guards that no config can lift: auto needs an
 // operation the pinned manifest marks reversible, a kind with no pinned operation is forbidden,
 // guests other than the owner force approval, and a file root outside the allowed list is
@@ -304,60 +313,152 @@ function configHash(
   return payloadHash({ shipped, overlay: overlay ?? null })
 }
 
-/**
- * Loads the shipped table and the overlay. A rejected overlay is not applied: on first load the
- * shipped table alone is in force, on a reload the previous policy stays. Audits
- * `policy.loaded` on first load, `policy.changed` when a reload changes the effective config
- * (detail: before and after hashes), and `policy.rejected` for a refused overlay. No config
- * body reaches the audit log, only hashes.
- */
+function approvedOverlay(db: DatabaseSync): PermissionTable | undefined {
+  const row = db
+    .prepare(
+      "SELECT payload_json, payload_hash, approval_id FROM approved_policy WHERE singleton = 1"
+    )
+    .get()
+  if (row === undefined) {
+    // Deleting the active pointer must not roll back a previously approved policy.
+    if (
+      db
+        .prepare(
+          "SELECT id FROM control_approvals WHERE purpose = 'policy.set' AND used_at IS NOT NULL LIMIT 1"
+        )
+        .get() !== undefined
+    )
+      throw new Error("approved policy is missing")
+    return undefined
+  }
+  const parsed: unknown = JSON.parse(String(row["payload_json"]))
+  const result = parseTable(parsed, "approved policy")
+  if (!result.ok) throw new Error("invalid approved policy")
+  const hash = payloadHash(result.table)
+  if (
+    canonicalize(result.table) !== row["payload_json"] ||
+    hash !== row["payload_hash"] ||
+    !approvedControlValue(
+      db,
+      String(row["approval_id"]),
+      "policy.set",
+      "permissions",
+      hash,
+      "policy.changed",
+      (approvalRefHash) => payloadHash({ policyHash: hash, approvalRefHash })
+    )
+  )
+    throw new Error("approved policy does not match its signed approval")
+  // The latest accepted policy is authoritative: an old signed row is not a rollback token.
+  const latest = db
+    .prepare(
+      "SELECT id FROM control_approvals WHERE purpose = 'policy.set' AND used_at IS NOT NULL ORDER BY audit_seq DESC LIMIT 1"
+    )
+    .get()
+  if (latest?.["id"] !== row["approval_id"])
+    throw new Error("approved policy is stale")
+  return result.table
+}
+
+function validatedChange(db: DatabaseSync, value: unknown): PermissionTable {
+  const result = parseTable(value, OVERLAY_FILE, db)
+  if (!result.ok)
+    throw new Error(`invalid policy change: ${result.errors.join("; ")}`)
+  return result.table
+}
+
+/** Prepares a proposed override; preparation never changes effective permissions. */
+export function preparePolicyChange(
+  db: DatabaseSync,
+  value: unknown
+): PreparedControlApproval {
+  return prepareControlApproval(
+    db,
+    "policy.set",
+    "permissions",
+    validatedChange(db, value)
+  )
+}
+
+/** Applies the exact signed table; an empty tiers object is the signed reset operation. */
+export function setPolicyOverrides(
+  db: DatabaseSync,
+  value: unknown,
+  actor: string,
+  authorization?: ControlAuthorization
+): PermissionTable {
+  const table = validatedChange(db, value)
+  const hash = payloadHash(table)
+  return withControlApproval(
+    db,
+    "policy.set",
+    "permissions",
+    hash,
+    authorization,
+    (approvalRefHash, approvalId) => {
+      db.prepare(
+        "INSERT INTO approved_policy (singleton, payload_json, payload_hash, approval_id) VALUES (1, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET payload_json = excluded.payload_json, payload_hash = excluded.payload_hash, approval_id = excluded.approval_id"
+      ).run(canonicalize(table), hash, approvalId)
+      const audit = append(db, {
+        actor,
+        action: "policy.changed",
+        target: "permissions",
+        detailHash: payloadHash({ policyHash: hash, approvalRefHash }),
+      })
+      return { result: table, auditSeq: audit.seq }
+    }
+  )
+}
+
+/** Loads only approved DB overrides. The owner-only file is a proposal, never authorization. */
 export function loadPolicy(
   db: DatabaseSync,
   options: PolicyOptions,
   previous?: Policy
 ): { policy: Policy; errors: string[] } {
   const shipped = readShipped(options.shippedPath ?? SHIPPED_DEFAULT_PATH)
-  const path = join(options.dataDir, OVERLAY_FILE)
-  const read = readOverlay(db, path)
-  const base = {
+  const overlay = approvedOverlay(db)
+  const policy: Policy = {
     shipped,
+    overlay,
     ownerAddresses: [...options.ownerAddresses],
     allowedRoots: [...options.allowedRoots],
   }
-  if (read.status === "rejected") {
+  const path = join(options.dataDir, OVERLAY_FILE)
+  const read = readOverlay(db, path)
+  const errors =
+    read.status === "rejected"
+      ? read.errors
+      : read.status === "ok" &&
+          payloadHash(read.table) !== payloadHash(overlay ?? null)
+        ? [`${OVERLAY_FILE}: a changed proposal requires a signed approval`]
+        : []
+  if (errors.length > 0) {
+    const fileHash =
+      read.status === "rejected"
+        ? read.fileHash
+        : payloadHash(read.status === "ok" ? read.table : null)
     append(db, {
       actor: "system",
       action: "policy.rejected",
       target: path,
-      detailHash: payloadHash({
-        file_hash: read.fileHash,
-        errors: read.errors,
-      }),
+      detailHash: payloadHash({ file_hash: fileHash, errors }),
     })
-    return {
-      policy: previous ?? { ...base, overlay: undefined },
-      errors: read.errors,
-    }
   }
-  const overlay = read.status === "ok" ? read.table : undefined
-  const after = configHash(shipped, overlay)
-  if (previous === undefined) {
+  if (previous === undefined)
     append(db, {
       actor: "system",
       action: "policy.loaded",
       target: path,
-      detailHash: payloadHash({ after_hash: after }),
+      detailHash: payloadHash({ after_hash: configHash(shipped, overlay) }),
     })
-  } else {
-    const before = configHash(previous.shipped, previous.overlay)
-    if (before !== after) {
-      append(db, {
-        actor: "system",
-        action: "policy.changed",
-        target: path,
-        detailHash: payloadHash({ before_hash: before, after_hash: after }),
-      })
-    }
+  return {
+    policy:
+      errors.length > 0 &&
+      previous !== undefined &&
+      payloadHash(previous.overlay ?? null) === payloadHash(overlay ?? null)
+        ? previous
+        : policy,
+    errors,
   }
-  return { policy: { ...base, overlay }, errors: [] }
 }

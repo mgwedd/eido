@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test, vi } from "vitest"
 import type { ConnectorManifest } from "@eido/schemas"
 import { startEgressProxy } from "./egress"
-import { checkDrift, pinManifest } from "./connectors"
+import { checkDrift } from "./connectors"
 import { openControlDb } from "./control-db"
+import { signedPin } from "./test-fixtures"
 import { verifyChain } from "./audit"
 import { payloadHash } from "./canonical"
 import { InMemoryVault } from "./vault/vault"
@@ -71,7 +72,7 @@ async function setup(
   manifest = fixture()
 ) {
   const db = openControlDb(":memory:")
-  pinManifest(db, manifest, "owner")
+  signedPin(db, manifest, "owner")
   const vault = new InMemoryVault()
   await vault.set(
     { connector: "mail", kind: "access_token", client: "read" },
@@ -190,7 +191,7 @@ describe("read egress proxy", () => {
       { host: "other.example.com", methods: ["GET"], pathPrefixes: ["/v1"] },
     ]
     other.operations.forEach((op) => delete op.routes)
-    pinManifest(db, other, "owner")
+    signedPin(db, other, "owner")
     expect(
       await (await request("https://other.example.com/v1/messages/one")).json()
     ).toEqual({ reason: "connector_host_denied" })

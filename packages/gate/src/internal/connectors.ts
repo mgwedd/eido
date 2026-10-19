@@ -7,6 +7,14 @@ import type {
 } from "@eido/schemas"
 import { append } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
+import {
+  prepareControlApproval,
+  withControlApproval,
+} from "./control-approvals"
+import type {
+  ControlAuthorization,
+  PreparedControlApproval,
+} from "./control-approvals"
 
 // Pinned connector manifests. The pinned manifest is the only description of a connector that
 // policy reads: what a server says about its own tools (names, annotations) is never trusted.
@@ -41,10 +49,18 @@ function parseStored(json: string, hash: string): ConnectorManifest {
 function storedRow(
   db: DatabaseSync,
   name: string
-): { manifest: ConnectorManifest; hash: string; enabled: boolean } | undefined {
+):
+  | {
+      manifest: ConnectorManifest
+      hash: string
+      enabled: boolean
+      approvalRefHash: string | null
+      drifted: boolean
+    }
+  | undefined {
   const row = db
     .prepare(
-      "SELECT manifest_json, manifest_hash, enabled FROM connectors WHERE name = ?"
+      "SELECT manifest_json, manifest_hash, enabled, pin_approval_ref_hash, drift_json FROM connectors WHERE name = ?"
     )
     .get(name)
   if (row === undefined) return undefined
@@ -53,6 +69,11 @@ function storedRow(
     manifest: parseStored(String(row["manifest_json"]), hash),
     hash,
     enabled: Number(row["enabled"]) === 1,
+    approvalRefHash:
+      typeof row["pin_approval_ref_hash"] === "string"
+        ? row["pin_approval_ref_hash"]
+        : null,
+    drifted: row["drift_json"] !== null,
   }
 }
 
@@ -77,7 +98,8 @@ function inTransaction<T>(db: DatabaseSync, work: () => T): T {
 export function pinManifest(
   db: DatabaseSync,
   manifest: unknown,
-  actor: string
+  actor: string,
+  authorization?: ControlAuthorization
 ): void {
   const result = validateConnectorManifest(manifest)
   if (!result.ok) {
@@ -85,25 +107,34 @@ export function pinManifest(
   }
   const valid = result.value
   const hash = manifestHash(valid)
-  inTransaction(db, () => {
-    const current = storedRow(db, valid.name)
-    if (current !== undefined && valid.version <= current.manifest.version) {
-      // A changed manifest is a new review, so it needs a new version. A drift-disabled
-      // connector is re-enabled only by such a re-review, never by re-pinning the same manifest.
-      if (current.hash !== hash) {
-        throw new Error(
-          `connector ${valid.name}: a changed manifest needs a version above ${current.manifest.version}`
-        )
+  withControlApproval(
+    db,
+    "manifest.pin",
+    valid.name,
+    hash,
+    authorization,
+    (approvalRefHash) => {
+      const current = storedRow(db, valid.name)
+      if (current !== undefined && valid.version <= current.manifest.version) {
+        // A changed manifest is a new review, so it needs a new version. A drift-disabled
+        // connector is re-enabled only by such a re-review, never by re-pinning the same manifest.
+        if (current.hash !== hash) {
+          throw new Error(
+            `connector ${valid.name}: a changed manifest needs a version above ${current.manifest.version}`
+          )
+        }
+        if (
+          !current.enabled &&
+          (current.approvalRefHash !== null || current.drifted)
+        ) {
+          throw new Error(
+            `connector ${valid.name} is disabled after drift: pin a re-reviewed manifest with a version above ${current.manifest.version}`
+          )
+        }
       }
-      if (!current.enabled) {
-        throw new Error(
-          `connector ${valid.name} is disabled after drift: pin a re-reviewed manifest with a version above ${current.manifest.version}`
-        )
-      }
-    }
-    db.prepare(
-      `INSERT INTO connectors (name, manifest_json, manifest_hash, pinned_at, enabled, health, consecutive_failures, drift_json)
-       VALUES (?, ?, ?, ?, 1, 'healthy', 0, NULL)
+      db.prepare(
+        `INSERT INTO connectors (name, manifest_json, manifest_hash, pinned_at, enabled, health, consecutive_failures, drift_json, pin_approval_ref_hash)
+       VALUES (?, ?, ?, ?, 1, 'healthy', 0, NULL, ?)
        ON CONFLICT (name) DO UPDATE SET
          manifest_json = excluded.manifest_json,
          manifest_hash = excluded.manifest_hash,
@@ -111,15 +142,40 @@ export function pinManifest(
          enabled = 1,
          health = 'healthy',
          consecutive_failures = 0,
-         drift_json = NULL`
-    ).run(valid.name, canonicalize(valid), hash, new Date().toISOString())
-    append(db, {
-      actor,
-      action: "connector.pinned",
-      target: valid.name,
-      detailHash: hash,
-    })
-  })
+         drift_json = NULL,
+         pin_approval_ref_hash = excluded.pin_approval_ref_hash`
+      ).run(
+        valid.name,
+        canonicalize(valid),
+        hash,
+        new Date().toISOString(),
+        approvalRefHash
+      )
+      const audit = append(db, {
+        actor,
+        action: "connector.pinned",
+        target: valid.name,
+        detailHash: payloadHash({ manifestHash: hash, approvalRefHash }),
+      })
+      return { result: undefined, auditSeq: audit.seq }
+    }
+  )
+}
+
+/** Prepares the exact validated manifest for a local admin's signed review. */
+export function prepareManifestPin(
+  db: DatabaseSync,
+  manifest: unknown
+): PreparedControlApproval {
+  const result = validateConnectorManifest(manifest)
+  if (!result.ok)
+    throw new Error(`invalid connector manifest: ${result.errors.join("; ")}`)
+  return prepareControlApproval(
+    db,
+    "manifest.pin",
+    result.value.name,
+    result.value
+  )
 }
 
 /** The stored pinned manifest, or undefined when the connector was never pinned. */

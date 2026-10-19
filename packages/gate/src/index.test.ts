@@ -30,6 +30,7 @@ import {
   registration,
   sample,
   setup,
+  signedPolicy,
   testAuthenticator,
 } from "./internal/test-fixtures"
 import type { Setup } from "./internal/test-fixtures"
@@ -228,6 +229,7 @@ describe("reloading the policy", () => {
   it("applies a changed overlay and keeps the current policy when the overlay is rejected", () => {
     const s = started()
     s.writeOverlay({ version: 1, tiers: { "email.archive": "approval" } })
+    signedPolicy(s.db, { version: 1, tiers: { "email.archive": "approval" } })
     expect(reloadPolicy()).toEqual([])
     expect(kindTier(s.db, runningGate().policy, "email.archive")).toEqual({
       tier: "approval",
