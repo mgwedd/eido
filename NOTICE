@@ -1,1 +1,8 @@
 Eido, created by Michael Wedd - Astrea Labs LLC.
+
+Copyright (c) 2026 Michael Wedd, Astrea Labs LLC. All rights reserved.
+Licensed under the Eido Source-Available License (see LICENSE).
+
+Third-party components keep their own licenses. Their names, versions and
+license texts are listed in the package manifests and lockfile of this
+repository and shipped with each release.
