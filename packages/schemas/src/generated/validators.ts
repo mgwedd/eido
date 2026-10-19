@@ -316,6 +316,7 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
               "type": "string",
               "minLength": 64,
               "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
               "description": "SHA-256 (lowercase hex) of the raw message, so only that exact message is the target"
             },
             "replyAll": {
@@ -388,6 +389,7 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
               "type": "string",
               "minLength": 64,
               "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
               "description": "SHA-256 (lowercase hex) of the raw message, so only that exact message is the target"
             },
             "to": {
@@ -1446,7 +1448,8 @@ export const GATE_AUDIT_PAGE_JSON_SCHEMA: JsonSchema = {
             "type": "string",
             "minLength": 64,
             "maxLength": 64,
-            "description": "Lowercase hex SHA-256 of the entry detail. Only the length is checked here."
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Lowercase hex SHA-256 of the entry detail."
           }
         },
         "required": [
@@ -1481,7 +1484,7 @@ export function validateGateAuditPage(value: unknown): ValidationResult<GateAudi
 export const GATE_AUDIT_RECORD_REQUEST_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateAuditRecordRequest",
-  "description": "Body of POST /audit on the data-plane listener (#181): one profile change for the gate to append to its audit log as an audit.profile.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector or account reference is sent in clear. The gate also checks that the hashes are lowercase hex and that beforeHash and afterHash are null or set as the action requires.",
+  "description": "Body of POST /audit on the data-plane listener (#181): one profile change for the gate to append to its audit log as an audit.profile.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector or account reference is sent in clear. The gate also checks that beforeHash and afterHash are null or set as the action requires.",
   "type": "object",
   "properties": {
     "action": {
@@ -1498,14 +1501,16 @@ export const GATE_AUDIT_RECORD_REQUEST_JSON_SCHEMA: JsonSchema = {
     "subjectHash": {
       "type": "string",
       "minLength": 64,
-      "maxLength": 64
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
     },
     "beforeHash": {
       "oneOf": [
         {
           "type": "string",
           "minLength": 64,
-          "maxLength": 64
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
         },
         {
           "type": "null"
@@ -1517,7 +1522,8 @@ export const GATE_AUDIT_RECORD_REQUEST_JSON_SCHEMA: JsonSchema = {
         {
           "type": "string",
           "minLength": 64,
-          "maxLength": 64
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
         },
         {
           "type": "null"
@@ -1690,6 +1696,7 @@ export const GATE_DECISION_REQUEST_JSON_SCHEMA: JsonSchema = {
           "type": "string",
           "minLength": 43,
           "maxLength": 43,
+          "pattern": "^[A-Za-z0-9_-]{43}$",
           "description": "The nonce the assertion was signed over, as returned by prepare."
         },
         "assertion": {
@@ -2141,6 +2148,7 @@ export const GATE_LOGIN_OPTIONS_JSON_SCHEMA: JsonSchema = {
       "type": "string",
       "minLength": 43,
       "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
       "description": "32 random bytes as unpadded base64url; clientDataJSON.challenge must carry it unchanged."
     },
     "rpId": {
@@ -2465,13 +2473,15 @@ export const GATE_PREPARE_APPROVAL_JSON_SCHEMA: JsonSchema = {
       "type": "string",
       "minLength": 64,
       "maxLength": 64,
-      "description": "Lowercase hex SHA-256 the gate computed over the stored canonical payload. Only the length is checked here."
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256 the gate computed over the stored canonical payload."
     },
     "nonce": {
       "type": "string",
       "minLength": 43,
       "maxLength": 43,
-      "description": "Single-use nonce: 32 random bytes as unpadded base64url. Only the length is checked here."
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "description": "Single-use nonce: 32 random bytes as unpadded base64url."
     },
     "contextPackId": {
       "type": "string",

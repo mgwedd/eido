@@ -19,6 +19,7 @@ export interface JsonSchema {
   readonly oneOf?: readonly JsonSchema[]
   readonly minLength?: number
   readonly maxLength?: number
+  readonly pattern?: string
   readonly minimum?: number
   readonly maximum?: number
   readonly format?: "date-time"
@@ -74,7 +75,14 @@ function validateOneOf(
       ? [variants[index] ?? []]
       : []
   )
-  const candidates = claimed.length > 0 ? claimed : variants
+  // Else the variants of the value's own type: "expected null" is no help for a bad string.
+  const sameType = (schema.oneOf ?? []).flatMap((variant, index) =>
+    variant.type !== undefined && matchesType(variant.type, value)
+      ? [variants[index] ?? []]
+      : []
+  )
+  const candidates =
+    claimed.length > 0 ? claimed : sameType.length > 0 ? sameType : variants
   return candidates.reduce((best, errors) =>
     errors.length < best.length ? errors : best
   )
@@ -146,6 +154,12 @@ function validateString(
   }
   if (schema.maxLength !== undefined && value.length > schema.maxLength) {
     errors.push(`${path}: allows at most ${schema.maxLength} characters`)
+  }
+  if (
+    schema.pattern !== undefined &&
+    !new RegExp(schema.pattern, "u").test(value)
+  ) {
+    errors.push(`${path}: does not match pattern ${schema.pattern}`)
   }
   if (schema.format === "date-time" && !RFC_3339.test(value)) {
     errors.push(`${path}: not an RFC 3339 date-time`)

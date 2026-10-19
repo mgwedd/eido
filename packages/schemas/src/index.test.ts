@@ -158,6 +158,30 @@ describe("rejections", () => {
     ).toContain("$.args.replyAll: required")
   })
 
+  test("a reply and a forward refuse a messageSha256 that is not lowercase hex", () => {
+    const message = "does not match pattern ^[0-9a-f]{64}$"
+    expect(
+      errorsOf(
+        intent("email.reply", {
+          messageId: "m1",
+          messageSha256: "Z".repeat(64),
+          replyAll: false,
+          to: ["a@example.com"],
+          body: "x",
+        })
+      )
+    ).toEqual([`$.args.messageSha256: ${message}`])
+    expect(
+      errorsOf(
+        intent("email.forward", {
+          messageId: "m1",
+          messageSha256: "Z".repeat(64),
+          to: ["a@example.com"],
+        })
+      )
+    ).toEqual([`$.args.messageSha256: ${message}`])
+  })
+
   test("a reply and a forward name their target by its bytes, and a reply its recipients", () => {
     const reply = errorsOf(
       intent("email.reply", { messageId: "m1", replyAll: false, body: "x" })
@@ -389,11 +413,7 @@ describe("codegen", () => {
   })
 
   test.each([
-    [
-      "pattern",
-      { type: "string", maxLength: 5, pattern: "^a" },
-      "not supported",
-    ],
+    ["keyword", { type: "integer", multipleOf: 2 }, "not supported"],
     ["format", { type: "string", maxLength: 5, format: "email" }, "format"],
     [
       "open object",
@@ -426,6 +446,20 @@ describe("codegen", () => {
 })
 
 describe("validate keywords no verb uses today", () => {
+  test("pattern rejects a non-matching string and names the path", () => {
+    const schema: JsonSchema = {
+      type: "object",
+      properties: { id: { type: "string", pattern: "^[0-9a-f]{4}$" } },
+    }
+    expect(validate(schema, { id: "beef" })).toEqual([])
+    expect(validate(schema, { id: "beeg" })).toEqual([
+      "$.id: does not match pattern ^[0-9a-f]{4}$",
+    ])
+    expect(validate(schema, { id: "beef0" })).toEqual([
+      "$.id: does not match pattern ^[0-9a-f]{4}$",
+    ])
+  })
+
   test("numbers, integers and bounds", () => {
     const bounded: JsonSchema = { type: "integer", minimum: 1, maximum: 3 }
     expect(validate(bounded, 2)).toEqual([])

@@ -327,12 +327,12 @@ describe("POST /audit", () => {
     [
       "an uppercase hash",
       { ...created, subjectHash: SUBJECT.toUpperCase() },
-      "$.subjectHash: not lowercase hex",
+      "$.subjectHash: does not match pattern ^[0-9a-f]{64}$",
     ],
     [
       "a non-hex side",
       { ...created, afterHash: "z".repeat(64) },
-      "$.afterHash: not lowercase hex",
+      "$.afterHash: does not match pattern ^[0-9a-f]{64}$",
     ],
     [
       "a create with a before side",
