@@ -232,8 +232,9 @@ export function createAuditClient(options: IntentClientOptions): AuditClient {
 /**
  * Core's view of Proton mail through the gate (#195): it matches core's ProtonMailSource. A call
  * rejects with GateRequestError whose `code` is handshake_failed or auth_failed when Bridge
- * refused the connection or the password, and with GateUnavailableError when the gate cannot
- * be reached.
+ * refused the connection or the password, with GateRequestError status 503 and code
+ * `unavailable` when the gate is already reading mail (wait before asking again; the gate sends
+ * Retry-After), and with GateUnavailableError when the gate cannot be reached.
  */
 export type ProtonMailClient = {
   listFolders: () => Promise<string[]>

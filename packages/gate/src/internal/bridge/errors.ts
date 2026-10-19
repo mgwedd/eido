@@ -1,6 +1,7 @@
 // How Bridge failures reach the gate's callers (#195). Core reads `code` (handshake_failed,
 // auth_failed) and backs off; nothing else from the library error is passed on, since its
-// message can quote the server's response.
+// message can quote the server's response. `busy` is the gate's own refusal when mail reads are
+// at their limit (#219); core waits before asking again.
 
 export type BridgeErrorCode =
   | "handshake_failed"
@@ -8,6 +9,7 @@ export type BridgeErrorCode =
   | "not_found"
   | "unsupported"
   | "bridge_error"
+  | "busy"
 
 export class BridgeError extends Error {
   override readonly name = "BridgeError"

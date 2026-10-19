@@ -11,6 +11,7 @@ import {
 } from "./bridge"
 import type { ProtonBridge } from "./bridge"
 import type { BridgeConfig } from "./config"
+import { BridgeError } from "./errors"
 import { closedPort, rawMessage, startFakeBridge } from "./fake-bridge"
 import type { FakeBridge, FakeBridgeOptions, FakeMailbox } from "./fake-bridge"
 
@@ -246,6 +247,110 @@ describe("reads against the fake Bridge", () => {
     expect(page?.skipped).toEqual([1])
     expect(page?.messages.map((message) => message.uid)).toEqual([2, 3])
     expect(page?.messages[1]?.raw.length).toBe(half.length)
+  })
+
+  it("counts the real bytes of a message whose size Bridge omits toward the page cap", async () => {
+    const half = Buffer.concat([first, Buffer.alloc(17 * 1024 * 1024, 0x62)])
+    const { bridge } = await start({
+      omitSize: true,
+      mailboxes: {
+        INBOX: box(1700000001, [
+          { uid: 1, raw: half },
+          { uid: 2, raw: half },
+        ]),
+        Drafts: box(1700000002, []),
+        Trash: box(1700000003, []),
+      },
+    })
+    const page = await bridge.fetchRaw("INBOX", 1, 10)
+    // Both count as 0 by report, but 17 MiB twice passes 32 MiB: the page ends before UID 2.
+    expect(page?.messages.map((message) => message.uid)).toEqual([1])
+    const next = await bridge.fetchRaw("INBOX", 2, 10)
+    expect(next?.messages.map((message) => message.uid)).toEqual([2])
+  })
+
+  it("skips a message over the per-message cap whose size Bridge omits", async () => {
+    const big = Buffer.concat([
+      first,
+      Buffer.alloc(MAX_MESSAGE_BYTES + 1 - first.length, 0x61),
+    ])
+    const { bridge } = await start({
+      omitSize: true,
+      mailboxes: {
+        INBOX: box(1700000001, [
+          { uid: 1, raw: big },
+          { uid: 2, raw: first },
+        ]),
+        Drafts: box(1700000002, []),
+        Trash: box(1700000003, []),
+      },
+    })
+    const page = await bridge.fetchRaw("INBOX", 1, 10)
+    expect(page?.skipped).toEqual([1])
+    expect(page?.messages).toEqual([{ uid: 2, raw: first }])
+  })
+
+  it("opens at most the configured number of sessions for parallel reads and refuses the rest", async () => {
+    const fake = await startFakeBridge({
+      username: USER,
+      password: PASSWORD,
+      mailboxes: mailboxes(),
+      fetchDelayMs: 150,
+    })
+    opened.push(fake)
+    const vault = new InMemoryVault()
+    await vault.set(BRIDGE_PASSWORD_KEY, PASSWORD)
+    const bridge = createProtonBridge({
+      config: config(fake),
+      vault,
+      maxConcurrentReads: 2,
+    })
+    const results = await Promise.allSettled(
+      Array.from({ length: 5 }, () => bridge.fetchRaw("INBOX", 1, 10))
+    )
+    const refused = results.filter(
+      (result) =>
+        result.status === "rejected" &&
+        result.reason instanceof BridgeError &&
+        result.reason.code === "busy"
+    )
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(2)
+    expect(refused).toHaveLength(3)
+    expect(fake.imapSessions.peak).toBe(2)
+    // The slots are free again once those reads end.
+    expect((await bridge.fetchRaw("INBOX", 1, 10))?.messages).toHaveLength(2)
+  })
+
+  it("runs one mail read at a time by default, across read kinds", async () => {
+    const fake = await startFakeBridge({
+      username: USER,
+      password: PASSWORD,
+      mailboxes: mailboxes(),
+      fetchDelayMs: 150,
+    })
+    opened.push(fake)
+    const vault = new InMemoryVault()
+    await vault.set(BRIDGE_PASSWORD_KEY, PASSWORD)
+    const bridge = createProtonBridge({ config: config(fake), vault })
+    const [page, folders, state] = await Promise.allSettled([
+      bridge.fetchRaw("INBOX", 1, 10),
+      bridge.listFolders(),
+      bridge.folderState("INBOX"),
+    ])
+    expect(page.status).toBe("fulfilled")
+    expect(folders).toMatchObject({ status: "rejected" })
+    expect(state).toMatchObject({ status: "rejected" })
+    expect(fake.imapSessions.peak).toBe(1)
+  })
+
+  it("frees the read slot when a read fails", async () => {
+    const { bridge, vault } = await start({ mailboxes: mailboxes() })
+    await vault.set(BRIDGE_PASSWORD_KEY, "")
+    await expect(bridge.listFolders()).rejects.toMatchObject({
+      code: "auth_failed",
+    })
+    await vault.set(BRIDGE_PASSWORD_KEY, PASSWORD)
+    await expect(bridge.listFolders()).resolves.toContain("INBOX")
   })
 
   it("finds a message by Message-ID in the search folders, with its envelope", async () => {
