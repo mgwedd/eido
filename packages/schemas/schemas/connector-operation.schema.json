@@ -4,18 +4,64 @@
   "description": "What one connector tool does, as pinned by the user. Policy reads this, never the server's own tool annotations.",
   "type": "object",
   "properties": {
-    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
-    "effect": { "enum": ["read", "write"] },
-    "reversibility": { "enum": ["reversible", "irreversible"] },
-    "sensitivity": { "enum": ["normal", "sensitive"] },
-    "untrustedOutput": { "type": "boolean" },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "effect": {
+      "enum": ["read", "write"]
+    },
+    "reversibility": {
+      "enum": ["reversible", "irreversible"]
+    },
+    "sensitivity": {
+      "enum": ["normal", "sensitive"]
+    },
+    "untrustedOutput": {
+      "type": "boolean"
+    },
     "authScopes": {
       "type": "array",
       "maxItems": 20,
-      "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
     },
-    "intentKind": { "type": "string", "minLength": 1, "maxLength": 64 },
-    "defaultTier": { "$ref": "connector-tier.schema.json" }
+    "intentKind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "defaultTier": {
+      "$ref": "connector-tier.schema.json"
+    },
+    "routes": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253
+          },
+          "method": {
+            "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+          },
+          "pathPattern": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": ["host", "method", "pathPattern"],
+        "additionalProperties": false
+      }
+    }
   },
   "required": [
     "name",

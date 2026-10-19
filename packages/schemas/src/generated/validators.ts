@@ -1027,6 +1027,40 @@ export const CONNECTOR_MANIFEST_JSON_SCHEMA: JsonSchema = {
               "approval",
               "forbidden"
             ]
+          },
+          "routes": {
+            "type": "array",
+            "maxItems": 40,
+            "items": {
+              "type": "object",
+              "properties": {
+                "host": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 253
+                },
+                "method": {
+                  "enum": [
+                    "GET",
+                    "POST",
+                    "PUT",
+                    "PATCH",
+                    "DELETE"
+                  ]
+                },
+                "pathPattern": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "required": [
+                "host",
+                "method",
+                "pathPattern"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
