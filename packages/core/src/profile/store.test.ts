@@ -546,6 +546,42 @@ describe("audit", () => {
     expect((await gated.listEntities()).map((e) => e.name)).toEqual(["B"])
   })
 
+  test("a burst behind a hanging gate is capped and refused calls can retry", async () => {
+    let release: () => void = () => undefined
+    let auditCalls = 0
+    const gated = createProfileStore(db, {
+      audit: () => {
+        auditCalls++
+        return auditCalls === 1
+          ? new Promise<void>((resolve) => {
+              release = resolve
+            })
+          : Promise.resolve()
+      },
+    })
+    const admitted = Array.from({ length: 32 }, (_, i) =>
+      gated.createEntity({ kind: "personal", name: `N${i}`, tag: `n${i}` })
+    )
+    await Promise.resolve()
+    expect(auditCalls).toBe(1)
+    expect(
+      await codeOf(() =>
+        gated.createEntity({ kind: "personal", name: "Overflow", tag: "o" })
+      )
+    ).toBe("busy")
+    expect(await codeOf(() => gated.listEntities())).toBe("busy")
+    release()
+    await Promise.all(admitted)
+    expect(auditCalls).toBe(32)
+    expect(
+      (await gated.listEntities()).map((entity) => entity.name)
+    ).not.toContain("Overflow")
+    expect(
+      (await gated.createEntity({ kind: "personal", name: "Retry", tag: "r" }))
+        .name
+    ).toBe("Retry")
+  })
+
   test("the hash of a stored assignment does not depend on the client's key order", async () => {
     const a = await store.createEntity({ kind: "company", name: "A", tag: "a" })
     const b = await store.createEntity({ kind: "company", name: "B", tag: "b" })

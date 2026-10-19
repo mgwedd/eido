@@ -27,6 +27,9 @@ import {
 
 type Row = Record<string, unknown>
 
+/** Active and waiting calls together; a full queue refuses work before retaining its arguments. */
+export const MAX_PROFILE_CALLS = 32
+
 export interface ProfileStoreOptions {
   /** Receives one entry per entity or assignment change. Required: those changes are audited. */
   audit: ProfileAuditSink
@@ -95,12 +98,24 @@ export function createProfileStore(
   // run inside the first one's open transaction. The audit client's timeout (2 s) bounds how
   // long one call holds the queue.
   let tail: Promise<unknown> = Promise.resolve()
+  let admitted = 0
   function serialized<A extends unknown[], T>(
     work: (...args: A) => T | Promise<T>
   ): (...args: A) => Promise<T> {
     return (...args) => {
+      if (admitted >= MAX_PROFILE_CALLS) {
+        return Promise.reject(new ProfileError("busy", "profile store busy"))
+      }
+      admitted++
       const result = tail.then(() => work(...args))
-      tail = result.catch(() => undefined)
+      tail = result.then(
+        () => {
+          admitted--
+        },
+        () => {
+          admitted--
+        }
+      )
       return result
     }
   }

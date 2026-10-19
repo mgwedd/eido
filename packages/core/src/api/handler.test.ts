@@ -60,6 +60,35 @@ async function call(
 }
 
 describe("profile", () => {
+  test("a full profile queue responds with 503 and a stable busy code", async () => {
+    let release: () => void = () => undefined
+    const profile = createProfileStore(db, {
+      audit: () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        }),
+    })
+    const busyHandle = createApiHandler({
+      profile,
+      allowedHosts: ["core.test"],
+    })
+    const first = profile.createEntity({
+      kind: "personal",
+      name: "First",
+      tag: "first",
+    })
+    await Promise.resolve()
+    const pending = Array.from({ length: 31 }, () => profile.getProfile())
+    const response = await busyHandle(new Request("http://core.test/profile"))
+    expect([response.status, await response.json()]).toEqual([
+      503,
+      { error: { code: "busy", message: "profile store busy" } },
+    ])
+    release()
+    await first
+    await Promise.all(pending)
+  })
+
   test("GET before the first write has no profile key", async () => {
     const res = await call("GET", "/profile")
     expect(res.status).toBe(200)
