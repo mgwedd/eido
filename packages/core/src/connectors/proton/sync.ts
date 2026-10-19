@@ -64,7 +64,7 @@ async function toDocuments(
         name: a.name ?? a.address,
       })),
     ],
-    addresses: await extractAddresses(raw),
+    addresses: extractAddresses(parsed),
     content: raw,
   }
   // One document per attachment, keyed off the message's hash so the same file attached to two
