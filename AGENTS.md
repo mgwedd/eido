@@ -45,6 +45,7 @@ Work is issue-driven and worktree-driven. Read the rule file before you do the t
 - Subagents: do small issues directly, use a subagent per independent piece for medium and large ones. `.claude/rules/subagent-development.md`, agent `.claude/agents/issue-implementer.md`
 - Commits and PR titles: Conventional Commits. `.claude/rules/conventional-commits.md`
 - TypeScript: types from `@eido/schemas`, no `any`, no casts on external input, TypeScript only. `.claude/rules/typescript.md`
+- UI: use shadcn components first; hand-roll only when the registries are exhausted or the component would need warping. `.claude/rules/shadcn-first.md`
 - Tests: run only the affected tests while iterating, everything before the PR. `.claude/rules/testing.md`, `.claude/rules/affected-tests.md`
 
 ## Invariants
