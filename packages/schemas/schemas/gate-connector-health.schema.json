@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateConnectorHealth",
-  "description": "Response of connector health (#24 getConnectorHealth), used by the Today page. Contains no secrets or payload bodies.",
+  "description": "Response of connector health (#24 getConnectorHealth), used by the Today page. It has no fields for credentials or payload bodies.",
   "type": "object",
   "properties": {
     "connectors": {
@@ -31,7 +31,8 @@
           "lastError": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 500
+            "maxLength": 500,
+            "description": "Short error summary shown to the user. The gate writes it without tokens, request headers or upstream response bodies."
           },
           "nextAttemptAt": {
             "type": "string",

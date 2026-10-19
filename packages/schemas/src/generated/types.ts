@@ -10,7 +10,7 @@ export interface GateApiError {
 /** Actor recorded on an audit_log row and on intent history entries (#9, #11). Display labels such as you, auto and gate are derived from this by the web app. */
 export type GateAuditActor = "data-plane" | "policy" | "approver" | "executor" | "system"
 
-/** Result of the gate's verifyChain() (#9). The web app shows a failure unless ok is true. An unreachable gate returns an error response instead. */
+/** Result of the gate's verifyChain() (#9). When the gate cannot run the check, the endpoint returns GateApiError instead. */
 export type GateAuditChainStatus = {
   ok: true
   rows: number
@@ -39,7 +39,7 @@ export interface GateAuditPage {
   nextBefore?: number
 }
 
-/** Response of connector health (#24 getConnectorHealth), used by the Today page. Contains no secrets or payload bodies. */
+/** Response of connector health (#24 getConnectorHealth), used by the Today page. It has no fields for credentials or payload bodies. */
 export interface GateConnectorHealth {
   connectors: Array<{
     name: string
@@ -50,7 +50,7 @@ export interface GateConnectorHealth {
   }>
 }
 
-/** Body of the decision endpoint for one intent: a signed approval, or a reject. Edit-and-sign is not covered (open question). */
+/** Body of the decision endpoint for one intent: a signed approval, or a reject. Edit-and-sign is not covered (#146). */
 export type GateDecisionRequest = {
   intentId: string
   decision: "approved"
@@ -67,7 +67,7 @@ export type GateDecisionRequest = {
   reasonCode?: string
 }
 
-/** Success response of the decision endpoint. Approved means the verifier accepted the signature and the intent moved to approved; Execution is a later gate step, so this does not say sent. Failures use GateApiError. */
+/** Success response of the decision endpoint. approved means the verifier accepted the assertion and the intent moved to approved. Execution is a later gate step, so approved does not mean sent. Failures use GateApiError. */
 export interface GateDecisionResult {
   intentId: string
   state: "approved" | "rejected"
@@ -104,7 +104,7 @@ export interface GatePendingIntentList {
   }>
 }
 
-/** Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce. The byte encoding is an open question. */
+/** Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce. The byte encoding is not decided yet (#145). */
 export interface GatePrepareApproval {
   intentId: string
   kind: string

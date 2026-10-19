@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GatePrepareApproval",
-  "description": "Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce. The byte encoding is an open question.",
+  "description": "Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce. The byte encoding is not decided yet (#145).",
   "type": "object",
   "properties": {
     "intentId": {
@@ -24,19 +24,19 @@
       "type": "string",
       "minLength": 2,
       "maxLength": 200000,
-      "description": "The stored canonical payload: the JCS string (UTF-8) the card is rendered from and the hash covers."
+      "description": "The stored canonical payload as RFC 8785 JSON text. The card is rendered from it, and payloadHash is the SHA-256 of its UTF-8 bytes."
     },
     "payloadHash": {
       "type": "string",
       "minLength": 64,
       "maxLength": 64,
-      "description": "Lowercase hex SHA-256 the gate computed over the stored canonical payload."
+      "description": "Lowercase hex SHA-256 the gate computed over the stored canonical payload. Only the length is checked here."
     },
     "nonce": {
       "type": "string",
       "minLength": 43,
       "maxLength": 43,
-      "description": "Single-use nonce: 32 random bytes as unpadded base64url."
+      "description": "Single-use nonce: 32 random bytes as unpadded base64url. Only the length is checked here."
     },
     "contextPackId": {
       "type": "string",

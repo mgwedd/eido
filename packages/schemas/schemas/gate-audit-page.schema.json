@@ -40,7 +40,7 @@
             "type": "string",
             "minLength": 64,
             "maxLength": 64,
-            "description": "Lowercase hex SHA-256 of the entry detail."
+            "description": "Lowercase hex SHA-256 of the entry detail. Only the length is checked here."
           }
         },
         "required": ["seq", "ts", "actor", "action", "target", "detailHash"],

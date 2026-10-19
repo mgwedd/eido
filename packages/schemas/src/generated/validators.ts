@@ -927,7 +927,7 @@ export function validateGateAuditActor(value: unknown): ValidationResult<GateAud
 export const GATE_AUDIT_CHAIN_STATUS_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateAuditChainStatus",
-  "description": "Result of the gate's verifyChain() (#9). The web app shows a failure unless ok is true. An unreachable gate returns an error response instead.",
+  "description": "Result of the gate's verifyChain() (#9). When the gate cannot run the check, the endpoint returns GateApiError instead.",
   "oneOf": [
     {
       "title": "GateAuditChainOk",
@@ -959,8 +959,9 @@ export const GATE_AUDIT_CHAIN_STATUS_JSON_SCHEMA: JsonSchema = {
         },
         "brokenAtSeq": {
           "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "seq of the row where verification failed, as verifyChain returns it. It is 0 for head_mismatch on an empty log, and a tampered log can hold seq values below 1."
         },
         "reason": {
           "type": "string",
@@ -1069,7 +1070,7 @@ export const GATE_AUDIT_PAGE_JSON_SCHEMA: JsonSchema = {
             "type": "string",
             "minLength": 64,
             "maxLength": 64,
-            "description": "Lowercase hex SHA-256 of the entry detail."
+            "description": "Lowercase hex SHA-256 of the entry detail. Only the length is checked here."
           }
         },
         "required": [
@@ -1104,7 +1105,7 @@ export function validateGateAuditPage(value: unknown): ValidationResult<GateAudi
 export const GATE_CONNECTOR_HEALTH_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateConnectorHealth",
-  "description": "Response of connector health (#24 getConnectorHealth), used by the Today page. Contains no secrets or payload bodies.",
+  "description": "Response of connector health (#24 getConnectorHealth), used by the Today page. It has no fields for credentials or payload bodies.",
   "type": "object",
   "properties": {
     "connectors": {
@@ -1138,7 +1139,8 @@ export const GATE_CONNECTOR_HEALTH_JSON_SCHEMA: JsonSchema = {
           "lastError": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 500
+            "maxLength": 500,
+            "description": "Short error summary shown to the user. The gate writes it without tokens, request headers or upstream response bodies."
           },
           "nextAttemptAt": {
             "type": "string",
@@ -1171,7 +1173,7 @@ export function validateGateConnectorHealth(value: unknown): ValidationResult<Ga
 export const GATE_DECISION_REQUEST_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateDecisionRequest",
-  "description": "Body of the decision endpoint for one intent: a signed approval, or a reject. Edit-and-sign is not covered (open question).",
+  "description": "Body of the decision endpoint for one intent: a signed approval, or a reject. Edit-and-sign is not covered (#146).",
   "oneOf": [
     {
       "title": "GateApproveRequest",
@@ -1201,25 +1203,25 @@ export const GATE_DECISION_REQUEST_JSON_SCHEMA: JsonSchema = {
               "type": "string",
               "minLength": 1,
               "maxLength": 1024,
-              "description": "Credential id."
+              "description": "PublicKeyCredential rawId."
             },
             "authenticatorData": {
               "type": "string",
               "minLength": 1,
               "maxLength": 1024,
-              "description": "authenticatorData."
+              "description": "AuthenticatorAssertionResponse authenticatorData."
             },
             "clientDataJSON": {
               "type": "string",
               "minLength": 1,
               "maxLength": 4096,
-              "description": "clientDataJSON."
+              "description": "AuthenticatorAssertionResponse clientDataJSON."
             },
             "signature": {
               "type": "string",
               "minLength": 1,
               "maxLength": 1024,
-              "description": "Signature."
+              "description": "AuthenticatorAssertionResponse signature."
             }
           },
           "required": [
@@ -1254,6 +1256,7 @@ export const GATE_DECISION_REQUEST_JSON_SCHEMA: JsonSchema = {
         },
         "reasonCode": {
           "type": "string",
+          "description": "Free text until the code list exists (#147).",
           "minLength": 1,
           "maxLength": 64
         }
@@ -1276,7 +1279,7 @@ export function validateGateDecisionRequest(value: unknown): ValidationResult<Ga
 export const GATE_DECISION_RESULT_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateDecisionResult",
-  "description": "Success response of the decision endpoint. Approved means the verifier accepted the signature and the intent moved to approved; Execution is a later gate step, so this does not say sent. Failures use GateApiError.",
+  "description": "Success response of the decision endpoint. approved means the verifier accepted the assertion and the intent moved to approved. Execution is a later gate step, so approved does not mean sent. Failures use GateApiError.",
   "type": "object",
   "properties": {
     "intentId": {
@@ -1533,7 +1536,7 @@ export function validateGatePendingIntentList(value: unknown): ValidationResult<
 export const GATE_PREPARE_APPROVAL_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GatePrepareApproval",
-  "description": "Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce. The byte encoding is an open question.",
+  "description": "Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce. The byte encoding is not decided yet (#145).",
   "type": "object",
   "properties": {
     "intentId": {
@@ -1565,19 +1568,19 @@ export const GATE_PREPARE_APPROVAL_JSON_SCHEMA: JsonSchema = {
       "type": "string",
       "minLength": 2,
       "maxLength": 200000,
-      "description": "The stored canonical payload: the JCS string (UTF-8) the card is rendered from and the hash covers."
+      "description": "The stored canonical payload as RFC 8785 JSON text. The card is rendered from it, and payloadHash is the SHA-256 of its UTF-8 bytes."
     },
     "payloadHash": {
       "type": "string",
       "minLength": 64,
       "maxLength": 64,
-      "description": "Lowercase hex SHA-256 the gate computed over the stored canonical payload."
+      "description": "Lowercase hex SHA-256 the gate computed over the stored canonical payload. Only the length is checked here."
     },
     "nonce": {
       "type": "string",
       "minLength": 43,
       "maxLength": 43,
-      "description": "Single-use nonce: 32 random bytes as unpadded base64url."
+      "description": "Single-use nonce: 32 random bytes as unpadded base64url. Only the length is checked here."
     },
     "contextPackId": {
       "type": "string",

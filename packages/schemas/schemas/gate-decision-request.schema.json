@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateDecisionRequest",
-  "description": "Body of the decision endpoint for one intent: a signed approval, or a reject. Edit-and-sign is not covered (open question).",
+  "description": "Body of the decision endpoint for one intent: a signed approval, or a reject. Edit-and-sign is not covered (#146).",
   "oneOf": [
     {
       "title": "GateApproveRequest",
@@ -31,25 +31,25 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 1024,
-              "description": "Credential id."
+              "description": "PublicKeyCredential rawId."
             },
             "authenticatorData": {
               "type": "string",
               "minLength": 1,
               "maxLength": 1024,
-              "description": "authenticatorData."
+              "description": "AuthenticatorAssertionResponse authenticatorData."
             },
             "clientDataJSON": {
               "type": "string",
               "minLength": 1,
               "maxLength": 4096,
-              "description": "clientDataJSON."
+              "description": "AuthenticatorAssertionResponse clientDataJSON."
             },
             "signature": {
               "type": "string",
               "minLength": 1,
               "maxLength": 1024,
-              "description": "Signature."
+              "description": "AuthenticatorAssertionResponse signature."
             }
           },
           "required": [
@@ -79,6 +79,7 @@
         },
         "reasonCode": {
           "type": "string",
+          "description": "Free text until the code list exists (#147).",
           "minLength": 1,
           "maxLength": 64
         }

@@ -68,6 +68,16 @@ describe("pending intent list", () => {
     ).toEqual(["$.intents[0].payload: unknown key"])
   })
 
+  test("rejects an auto-tier intent in the pending list", () => {
+    expect(
+      errorsOf(
+        validateGatePendingIntentList({
+          intents: [{ ...PENDING_ITEM, tier: "auto" }],
+        })
+      )
+    ).toEqual(['$.intents[0].tier: must be "approval"'])
+  })
+
   test("rejects a missing origin and a non-ISO createdAt", () => {
     expect(
       errorsOf(
@@ -79,19 +89,21 @@ describe("pending intent list", () => {
     expect(
       errorsOf(
         validateGatePendingIntentList({
-          intents: [{ ...PENDING_ITEM, createdAt: "yesterday" }],
+          intents: [{ ...PENDING_ITEM, createdAt: "2030-01-02 09:00:00.000Z" }],
         })
       )
-    ).toContain("$.intents[0].createdAt: not an RFC 3339 date-time")
+    ).toEqual(["$.intents[0].createdAt: not an RFC 3339 date-time"])
   })
 })
 
 describe("intent history", () => {
+  const first = { at: AT, from: null, to: "proposed", actor: "data-plane" }
+  const second = { at: AT, from: "proposed", to: "pending", actor: "policy" }
   const history = {
     intentId: "i-1",
     entries: [
-      { at: AT, from: null, to: "proposed", actor: "data-plane" },
-      { at: AT, from: "proposed", to: "pending", actor: "policy" },
+      first,
+      second,
       {
         at: AT,
         from: "pending",
@@ -118,20 +130,23 @@ describe("intent history", () => {
       errorsOf(
         validateGateIntentHistory({
           intentId: "i-1",
-          entries: [without(history.entries[0] as object, "from")],
+          entries: [without(first, "from")],
         })
       )
     ).toEqual(["$.entries[0].from: required"])
   })
 
   test("rejects an unknown state such as expired", () => {
-    const errors = errorsOf(
-      validateGateIntentHistory({
-        intentId: "i-1",
-        entries: [{ ...history.entries[1], to: "expired" }],
-      })
-    )
-    expect(errors.join("\n")).toContain("must be one of")
+    expect(
+      errorsOf(
+        validateGateIntentHistory({
+          intentId: "i-1",
+          entries: [{ ...second, to: "expired" }],
+        })
+      )
+    ).toEqual([
+      '$.entries[0].to: must be one of "proposed", "pending", "approved", "rejected", "executed", "failed"',
+    ])
   })
 
   test("rejects an actor outside the audit actor enum", () => {
@@ -139,10 +154,12 @@ describe("intent history", () => {
       errorsOf(
         validateGateIntentHistory({
           intentId: "i-1",
-          entries: [{ ...history.entries[1], actor: "you" }],
+          entries: [{ ...second, actor: "you" }],
         })
-      ).join("\n")
-    ).toContain("$.entries[0].actor")
+      )
+    ).toEqual([
+      '$.entries[0].actor: must be one of "data-plane", "policy", "approver", "executor", "system"',
+    ])
   })
 })
 
@@ -163,7 +180,7 @@ describe("prepare approval", () => {
     expect(validateGatePrepareApproval(prepared).ok).toBe(true)
   })
 
-  test("rejects a nonce that is not 32 bytes of base64url", () => {
+  test("rejects a nonce that is not 43 characters long", () => {
     expect(
       errorsOf(validateGatePrepareApproval({ ...prepared, nonce: "short" }))
     ).toEqual(["$.nonce: needs at least 43 characters"])
@@ -264,8 +281,10 @@ describe("decision request", () => {
 
   test("rejects an unknown decision and an oversized clientDataJSON", () => {
     expect(
-      validateGateDecisionRequest({ intentId: "i-1", decision: "edited" }).ok
-    ).toBe(false)
+      errorsOf(
+        validateGateDecisionRequest({ intentId: "i-1", decision: "edited" })
+      )
+    ).toEqual(['$.decision: must be "rejected"'])
     expect(
       errorsOf(
         validateGateDecisionRequest({
@@ -291,8 +310,8 @@ describe("decision result and error", () => {
     expect(
       errorsOf(
         validateGateDecisionResult({ intentId: "i-1", state: "executed" })
-      ).join("\n")
-    ).toContain("$.state: must be one of")
+      )
+    ).toEqual(['$.state: must be one of "approved", "rejected"'])
   })
 
   test("accepts an error with a known code and rejects an unknown code", () => {
@@ -303,10 +322,10 @@ describe("decision result and error", () => {
       }).ok
     ).toBe(true)
     expect(
-      errorsOf(validateGateApiError({ code: "teapot", message: "x" })).join(
-        "\n"
-      )
-    ).toContain("$.code: must be one of")
+      errorsOf(validateGateApiError({ code: "teapot", message: "x" }))
+    ).toEqual([
+      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unavailable"',
+    ])
     expect(
       errorsOf(validateGateApiError({ code: "not_found", message: "" }))
     ).toEqual(["$.message: needs at least 1 characters"])
@@ -334,6 +353,11 @@ describe("audit page", () => {
     expect(
       errorsOf(validateGateAuditPage({ entries: [{ ...entry, detail: "x" }] }))
     ).toEqual(["$.entries[0].detail: unknown key"])
+    expect(
+      errorsOf(
+        validateGateAuditPage({ entries: [{ ...entry, prev_hash: HASH }] })
+      )
+    ).toEqual(["$.entries[0].prev_hash: unknown key"])
   })
 
   test("rejects seq 0 and a short detail hash", () => {
@@ -382,14 +406,26 @@ describe("audit chain status", () => {
     }
   })
 
+  test("accepts seq 0, which verifyChain reports for head_mismatch on an empty log", () => {
+    expect(
+      validateGateAuditChainStatus({
+        ok: false,
+        brokenAtSeq: 0,
+        reason: "head_mismatch",
+      }).ok
+    ).toBe(true)
+  })
+
   test("rejects a break that omits the seq, so the page cannot lose it", () => {
     expect(
-      validateGateAuditChainStatus({ ok: false, reason: "seq_gap" }).ok
-    ).toBe(false)
+      errorsOf(validateGateAuditChainStatus({ ok: false, reason: "seq_gap" }))
+    ).toEqual(["$.brokenAtSeq: required"])
   })
 
   test("rejects ok true without a row count", () => {
-    expect(validateGateAuditChainStatus({ ok: true }).ok).toBe(false)
+    expect(errorsOf(validateGateAuditChainStatus({ ok: true }))).toEqual([
+      "$.rows: required",
+    ])
   })
 })
 
@@ -413,8 +449,10 @@ describe("connector health", () => {
         validateGateConnectorHealth({
           connectors: [{ ...item, health: "down" }],
         })
-      ).join("\n")
-    ).toContain("$.connectors[0].health: must be one of")
+      )
+    ).toEqual([
+      '$.connectors[0].health: must be one of "healthy", "degraded", "open"',
+    ])
     expect(
       errorsOf(
         validateGateConnectorHealth({
