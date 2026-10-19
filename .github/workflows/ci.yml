@@ -31,7 +31,7 @@ jobs:
       - name: Enable pnpm (version pinned by packageManager)
         run: corepack enable
       - run: pnpm install --frozen-lockfile
-      # The checks live in scripts/verify.mjs and nowhere else: edit that list to change CI and
+      # The checks are one turbo run, defined by scripts/verify.mjs and turbo.json: edit those to change CI and
       # `pnpm verify` together. Pull requests that only touch docs or images run the light steps;
       # every push to main runs everything (auto-release waits on that run).
       - name: Verify

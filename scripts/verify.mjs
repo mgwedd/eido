@@ -1,25 +1,21 @@
-// `pnpm verify`: the one list of checks. CI runs this same script, so the two cannot drift.
-// To add, remove or reorder a check, edit STEPS below; nothing else needs to change.
+// `pnpm verify`: one `turbo run` over every repo check. CI runs this same script, so the two cannot drift.
+// Turborepo runs the tasks in parallel where independent and caches passing ones; the root tasks
+// (`//#check:*`, `//#format:check`) and their inputs are defined in turbo.json.
+// To add or remove a check, edit TASKS below and turbo.json; nothing else needs to change.
 //
-//   pnpm verify             limit turbo tasks to changed packages (--affected) when origin/main exists, full run in CI
-//   pnpm verify --full      always run every turbo task (the CI behaviour)
+//   pnpm verify             limit tasks to changed packages (--affected) when origin/main exists, full run in CI
+//   pnpm verify --full      always run every task (the CI behaviour)
 //   pnpm verify --affected  force the affected subset
 //
-// Docs and images only (.md, .png, .jpg, .jpeg, .gif, .webp): only the steps marked `always` run.
-// Output is one line per step; a failing step prints its output, its name and the command to rerun it.
+// Docs and images only (.md, .png, .jpg, .jpeg, .gif, .webp): only the `always` tasks run.
+// Run one check alone with `pnpm turbo run <task>`, for example `pnpm turbo run //#check:secrets`.
 import { spawnSync } from "node:child_process"
 import { appendFileSync } from "node:fs"
 
 const args = process.argv.slice(2)
 const inCI = process.env.CI === "true"
-const sh = (cmd) =>
-  spawnSync(cmd, {
-    shell: true,
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
-  })
 const git = (cmd) => {
-  const r = sh(`git ${cmd}`)
+  const r = spawnSync(`git ${cmd}`, { shell: true, encoding: "utf8" })
   return r.status === 0 ? r.stdout.trim() : null
 }
 
@@ -37,6 +33,22 @@ function changedFiles() {
   return `${tracked}\n${untracked}`.split("\n").filter(Boolean)
 }
 
+// always: runs even for docs-only changes.
+const TASKS = [
+  { task: "typecheck" },
+  { task: "lint" },
+  { task: "test" },
+  { task: "//#check:deps" },
+  { task: "//#check:deps-fixture" },
+  { task: "//#check:gate-deps" },
+  { task: "//#check:lint-coverage" },
+  { task: "//#check:no-js", always: true },
+  { task: "//#check:no-js-fixture", always: true },
+  { task: "//#check:secrets", always: true },
+  { task: "//#format:check", always: true },
+  { task: "//#check:versions", always: true },
+]
+
 const files = changedFiles()
 const docsOnly =
   files !== null && files.every((f) => /\.(md|png|jpe?g|gif|webp)$/.test(f))
@@ -44,67 +56,28 @@ const hasBase = !inCI && git("rev-parse --verify -q origin/main") !== null
 const affected =
   args.includes("--affected") || (hasBase && !args.includes("--full"))
 
-// always: runs even for docs-only changes. advisory: reported, never fails the run.
-const STEPS = [
-  {
-    name: "Typecheck, lint, test (with coverage)",
-    cmd: `pnpm turbo run typecheck lint test${affected ? " --affected" : ""}`,
-    summary: true,
-  },
-  { name: "Dependency boundaries", cmd: "pnpm check:deps" },
-  {
-    name: "Boundary-violation fixture must fail",
-    cmd: "pnpm check:deps-fixture",
-  },
-  { name: "Gate dependency allowlist", cmd: "pnpm check:gate-deps" },
-  { name: "Lint covers TypeScript files", cmd: "pnpm check:lint-coverage" },
-  {
-    name: "No stray JavaScript files",
-    cmd: "pnpm check:no-js && pnpm check:no-js-fixture",
-    always: true,
-  },
-  { name: "Secret scan", cmd: "pnpm check:secrets", always: true },
-  {
-    name: "Turborepo boundaries (advisory)",
-    cmd: "pnpm boundaries",
-    advisory: true,
-  },
-  { name: "Formatting", cmd: "pnpm format:check", always: true },
-  { name: "Version consistency", cmd: "pnpm check:versions", always: true },
-]
+const tasks = TASKS.filter((t) => !docsOnly || t.always).map((t) => t.task)
+// `--affected` also filters root tasks; the root package counts as changed when its own files do.
+const cmd = `pnpm turbo run ${tasks.join(" ")}${affected ? " --affected" : ""}`
 
 if (docsOnly) console.log("Docs and images only: running the light checks.")
-else if (affected) console.log("Turbo tasks limited to changed packages.")
+else if (affected) console.log("Tasks limited to changed packages.")
+console.log(`$ ${cmd}`)
 
-function fail(step, out) {
-  process.stdout.write(out)
-  console.error(`\nFAILED: ${step.name}\nrerun:  ${step.cmd}`)
+const run = spawnSync(cmd, { shell: true, stdio: "inherit" })
+if (inCI && process.env.GITHUB_STEP_SUMMARY && !docsOnly) {
+  const summary = spawnSync("node", ["scripts/coverage-summary.mjs"], {
+    encoding: "utf8",
+  })
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.stdout ?? "")
+}
+if (run.status !== 0) {
+  console.error(`\nFAILED. Rerun the failing task alone: pnpm turbo run <task>`)
   console.error(
     inCI
       ? "also run locally: pnpm verify"
       : "fix it, then run pnpm verify again"
   )
-  process.exit(1)
-}
-
-for (const step of STEPS) {
-  if (docsOnly && !step.always) continue
-  const start = Date.now()
-  const r = sh(step.cmd)
-  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`
-  const secs = ((Date.now() - start) / 1000).toFixed(1)
-  if (step.summary && process.env.GITHUB_STEP_SUMMARY) {
-    appendFileSync(
-      process.env.GITHUB_STEP_SUMMARY,
-      sh("node scripts/coverage-summary.mjs").stdout
-    )
-  }
-  if (r.status === 0) {
-    console.log(`ok   ${step.name} (${secs}s)`)
-  } else if (step.advisory) {
-    console.log(`warn ${step.name} (${secs}s), advisory; rerun: ${step.cmd}`)
-  } else {
-    fail(step, out)
-  }
+  process.exit(run.status ?? 1)
 }
 console.log("verify passed")

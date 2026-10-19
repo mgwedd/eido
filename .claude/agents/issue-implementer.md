@@ -13,7 +13,7 @@ You implement one issue in `mgwedd/eido`. The input is an issue number and any e
 4. Worktree: `cd /Users/wedd/dev/eido && git fetch -q origin main && git worktree add /Users/wedd/dev/eido-worktrees/<slug> -b <branch> origin/main`. Work only in that worktree; never switch the main checkout. Run `pnpm install --frozen-lockfile` in it.
 5. Build only what the issue asks. No placeholders, fake features or dead ends: leave unfinished work out and open an issue for it. Tests ship with the change.
 6. Iterate with `pnpm turbo run typecheck lint test --affected`. Merge `origin/main` when the sync hook reports it moved (`git merge --no-edit origin/main`); never rebase or force-push; never run bare `git stash`.
-7. Before the PR, run `pnpm verify` if the script exists, otherwise the affected tests plus `pnpm check`. Merge the PR's base branch once more first.
+7. Before the PR, run `pnpm verify`. Merge the PR's base branch once more first.
 8. Commit with Conventional Commits, as the maintainer. No AI attribution or model identifiers in commits, PR or issue text.
 9. Push: if the SSH remote lacks keys, `git -c credential.helper= -c "credential.helper=!gh auth git-credential" push -q https://github.com/mgwedd/eido.git HEAD:<branch>`.
 10. Open the PR from `.github/pull_request_template.md`: Conventional Commit title, body starting `Closes #N`, acceptance criteria ticked as met, design and plan section filled in.
