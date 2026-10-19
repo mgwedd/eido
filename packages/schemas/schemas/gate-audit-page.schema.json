@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateAuditPage",
-  "description": "One page of audit_log rows, newest first. Hashes and identifiers only; never payload bodies or tokens (#9). nextBefore is the cursor for the next page and is absent on the last page.",
+  "description": "One page of audit_log rows, newest first. Rows hold hashes and identifiers, not payload bodies or tokens (#9). nextBefore is the cursor for the next page and is absent on the last page.",
   "type": "object",
   "properties": {
     "entries": {

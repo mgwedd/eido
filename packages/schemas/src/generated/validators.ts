@@ -870,7 +870,7 @@ export function validateIntentResult(value: unknown): ValidationResult<IntentRes
 export const GATE_API_ERROR_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateApiError",
-  "description": "Error body for every gate endpoint here. The code is the contract; the message is human text and never carries payload bodies, nonces or signatures. HTTP status mapping is the server's (#85).",
+  "description": "Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. The server (#85) maps codes to HTTP statuses.",
   "type": "object",
   "properties": {
     "code": {
@@ -927,7 +927,7 @@ export function validateGateAuditActor(value: unknown): ValidationResult<GateAud
 export const GATE_AUDIT_CHAIN_STATUS_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateAuditChainStatus",
-  "description": "Result of the gate's verifyChain() (#9). Anything but ok true is shown as a failure; an unreachable gate is an error response, never ok.",
+  "description": "Result of the gate's verifyChain() (#9). The web app shows a failure unless ok is true. An unreachable gate returns an error response instead.",
   "oneOf": [
     {
       "title": "GateAuditChainOk",
@@ -1019,7 +1019,7 @@ export function validateGateAuditPageRequest(value: unknown): ValidationResult<G
 export const GATE_AUDIT_PAGE_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateAuditPage",
-  "description": "One page of audit_log rows, newest first. Hashes and identifiers only; never payload bodies or tokens (#9). nextBefore is the cursor for the next page and is absent on the last page.",
+  "description": "One page of audit_log rows, newest first. Rows hold hashes and identifiers, not payload bodies or tokens (#9). nextBefore is the cursor for the next page and is absent on the last page.",
   "type": "object",
   "properties": {
     "entries": {
@@ -1104,7 +1104,7 @@ export function validateGateAuditPage(value: unknown): ValidationResult<GateAudi
 export const GATE_CONNECTOR_HEALTH_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateConnectorHealth",
-  "description": "Response of connector health (#24 getConnectorHealth), consumed by the Today page. Never carries secrets or payload bodies.",
+  "description": "Response of connector health (#24 getConnectorHealth), used by the Today page. Contains no secrets or payload bodies.",
   "type": "object",
   "properties": {
     "connectors": {
@@ -1276,7 +1276,7 @@ export function validateGateDecisionRequest(value: unknown): ValidationResult<Ga
 export const GATE_DECISION_RESULT_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateDecisionResult",
-  "description": "Success response of the decision endpoint. Approved means the verifier accepted the signature and the intent moved to approved; execution is a later gate step, so this never says sent. Failures use GateApiError.",
+  "description": "Success response of the decision endpoint. Approved means the verifier accepted the signature and the intent moved to approved; Execution is a later gate step, so this does not say sent. Failures use GateApiError.",
   "type": "object",
   "properties": {
     "intentId": {
@@ -1336,7 +1336,7 @@ export const GATE_INTENT_HISTORY_JSON_SCHEMA: JsonSchema = {
               {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "title": "GateIntentState",
-                "description": "Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are terminal.",
+                "description": "Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are final.",
                 "type": "string",
                 "enum": [
                   "proposed",
@@ -1356,7 +1356,7 @@ export const GATE_INTENT_HISTORY_JSON_SCHEMA: JsonSchema = {
           "to": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "title": "GateIntentState",
-            "description": "Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are terminal.",
+            "description": "Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are final.",
             "type": "string",
             "enum": [
               "proposed",
@@ -1433,7 +1433,7 @@ export function validateGateIntentOrigin(value: unknown): ValidationResult<GateI
 export const GATE_INTENT_STATE_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateIntentState",
-  "description": "Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are terminal.",
+  "description": "Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are final.",
   "type": "string",
   "enum": [
     "proposed",
@@ -1455,7 +1455,7 @@ export function validateGateIntentState(value: unknown): ValidationResult<GateIn
 export const GATE_PENDING_INTENT_LIST_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GatePendingIntentList",
-  "description": "Response of the pending-approvals list: every intent in state pending, no payload bodies (#11 listPendingIntents, plus origin that #33 needs).",
+  "description": "Response of the pending-approvals list: intents in state pending, without payload bodies (#11 listPendingIntents, plus origin, which #33 needs).",
   "type": "object",
   "properties": {
     "intents": {
@@ -1533,7 +1533,7 @@ export function validateGatePendingIntentList(value: unknown): ValidationResult<
 export const GATE_PREPARE_APPROVAL_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GatePrepareApproval",
-  "description": "Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Every call issues a fresh nonce and invalidates the previous one. The challenge is not part of the response: the device builds it from payloadHash, intentId and nonce, and its byte encoding is an open question.",
+  "description": "Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce. The byte encoding is an open question.",
   "type": "object",
   "properties": {
     "intentId": {
@@ -1565,7 +1565,7 @@ export const GATE_PREPARE_APPROVAL_JSON_SCHEMA: JsonSchema = {
       "type": "string",
       "minLength": 2,
       "maxLength": 200000,
-      "description": "The stored canonical payload, the exact JCS string the card is rendered from and the hash covers (UTF-8)."
+      "description": "The stored canonical payload: the JCS string (UTF-8) the card is rendered from and the hash covers."
     },
     "payloadHash": {
       "type": "string",

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GatePendingIntentList",
-  "description": "Response of the pending-approvals list: every intent in state pending, no payload bodies (#11 listPendingIntents, plus origin that #33 needs).",
+  "description": "Response of the pending-approvals list: intents in state pending, without payload bodies (#11 listPendingIntents, plus origin, which #33 needs).",
   "type": "object",
   "properties": {
     "intents": {

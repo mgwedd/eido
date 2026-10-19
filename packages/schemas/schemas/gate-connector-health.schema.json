@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateConnectorHealth",
-  "description": "Response of connector health (#24 getConnectorHealth), consumed by the Today page. Never carries secrets or payload bodies.",
+  "description": "Response of connector health (#24 getConnectorHealth), used by the Today page. Contains no secrets or payload bodies.",
   "type": "object",
   "properties": {
     "connectors": {

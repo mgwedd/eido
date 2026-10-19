@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateAuditChainStatus",
-  "description": "Result of the gate's verifyChain() (#9). Anything but ok true is shown as a failure; an unreachable gate is an error response, never ok.",
+  "description": "Result of the gate's verifyChain() (#9). The web app shows a failure unless ok is true. An unreachable gate returns an error response instead.",
   "oneOf": [
     {
       "title": "GateAuditChainOk",
