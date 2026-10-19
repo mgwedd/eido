@@ -42,6 +42,7 @@ export interface ProfileStore {
   deleteEntity(id: string): void
   assignAccount(input: unknown): AccountAssignment
   unassignAccount(connector: string, accountRef: string): boolean
+  listAssignments(): AccountAssignment[]
   entityForAccount(connector: string, accountRef: string): Entity | null
   entityByTag(tag: string): Entity | null
 }
@@ -368,6 +369,14 @@ export function createProfileStore(
     deleteEntity,
     assignAccount,
     unassignAccount,
+    listAssignments: () =>
+      all(
+        "SELECT connector, account_ref, entity_id FROM entity_assignments ORDER BY connector, account_ref"
+      ).map((r) => ({
+        connector: text(r, "connector"),
+        accountRef: text(r, "account_ref"),
+        entityId: text(r, "entity_id"),
+      })),
     entityForAccount: (connector, accountRef) => {
       const row = one(
         `SELECT e.* FROM entities e JOIN entity_assignments a ON a.entity_id = e.id

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiProfileResponse",
+  "description": "Response of GET /profile. The profile is absent until the first write sets displayName and timezone.",
+  "type": "object",
+  "properties": {
+    "profile": { "$ref": "core-api-profile.schema.json" }
+  },
+  "additionalProperties": false
+}
