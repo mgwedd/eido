@@ -82,7 +82,7 @@ describe("parseMessage", () => {
         "<html><head><title>x</title></head><body><p>Hello &amp; <b>bye</b></p><p>second&nbsp;line</p><style>p{color:red}</style></body></html>",
       ])
     )
-    expect(parsed.text).toBe("Hello & bye\n\nsecond line")
+    expect(parsed.text).toBe("Hello & bye\n\nsecond\u00a0line")
   })
 
   test("a binary attachment has no text, and an unnamed one gets a positional name", async () => {
@@ -142,11 +142,20 @@ describe("htmlToText", () => {
   test.each([
     ["a<br>b", "a\nb"],
     ["<script>alert(1)</script>kept", "kept"],
-    ["x &#65;&#x42; &lt;tag&gt; &unknown; &#0;", "x AB <tag> &unknown; &#0;"],
+    ["<style>p{}</style><head><title>T</title></head>kept", "kept"],
+    ["x &#65;&#x42; &lt;tag&gt; &mdash; &rsquo;", "x AB <tag> — ’"],
     ["1 & 2", "1 & 2"],
-    ["<h1>Title</h1>body", "Title\nbody"],
-    ["text <unclosed", "text"],
+    ["<h1>Title</h1>body", "Title\n\nbody"],
     ["<p>a</p><p></p><p></p><p></p>b", "a\n\nb"],
+    [
+      '<a title="x>y" href="https://example.com/">site</a> after',
+      "site [https://example.com/] after",
+    ],
+    [
+      '<a href="https://example.com/">https://example.com/</a>',
+      "https://example.com/",
+    ],
+    ['<img src="x.png" alt="pic">t', "t"],
   ])("%j", (html, expected) => {
     expect(htmlToText(html)).toBe(expected)
   })

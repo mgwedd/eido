@@ -16,11 +16,13 @@
   "dependencies": {
     "@eido/gate": "workspace:*",
     "@eido/schemas": "workspace:*",
+    "html-to-text": "9.0.5",
     "postal-mime": "4.0.5"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
     "@eido/typescript-config": "workspace:*",
+    "@types/html-to-text": "9.0.4",
     "@types/node": "24.19.2",
     "@vitest/coverage-v8": "5.0.5",
     "eslint": "10.12.0",
