@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateMailFolderList",
+  "description": "Response of GET /mail/proton/folders on the data-plane socket (#195): the Bridge mailbox names, by their full IMAP path.",
+  "type": "object",
+  "properties": {
+    "folders": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    }
+  },
+  "required": ["folders"],
+  "additionalProperties": false
+}

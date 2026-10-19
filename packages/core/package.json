@@ -15,15 +15,21 @@
   },
   "dependencies": {
     "@eido/gate": "workspace:*",
-    "@eido/schemas": "workspace:*"
+    "@eido/schemas": "workspace:*",
+    "dom-serializer": "2.0.0",
+    "domhandler": "5.0.3",
+    "html-to-text": "9.0.5",
+    "htmlparser2": "8.0.2",
+    "postal-mime": "4.0.5"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
     "@eido/typescript-config": "workspace:*",
+    "@types/html-to-text": "9.0.4",
     "@types/node": "24.19.2",
+    "@vitest/coverage-v8": "5.0.5",
     "eslint": "10.12.0",
     "typescript": "5.9.3",
-    "vitest": "5.0.5",
-    "@vitest/coverage-v8": "5.0.5"
+    "vitest": "5.0.5"
   }
 }

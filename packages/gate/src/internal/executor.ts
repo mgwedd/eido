@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { validateIntent } from "@eido/schemas"
 import type { Intent } from "@eido/schemas"
 import { append } from "./audit"
+import { PROTON_CONNECTOR } from "./bridge/config"
 import { canonicalize, payloadHash } from "./canonical"
 import {
   getPinnedManifest,
@@ -30,6 +31,30 @@ export interface UpstreamWriter {
   /** Reconstruct all intent semantics from the exact method, URL and canonical body. */
   intentFromRequest(this: void, request: Readonly<UpstreamRequest>): unknown
   inverse(this: void, intent: Intent, result: unknown): unknown
+  /**
+   * "bridge": the request goes to Proton Bridge through the gate's own IMAP and SMTP adapter
+   * (#195), not over HTTPS, so its destination is one of BRIDGE_DESTINATIONS, not a pinned route.
+   */
+  channel?: "bridge"
+}
+
+/**
+ * The one destination each Bridge intent kind may name. The URL is a label for the adapter call,
+ * not an address: the transport sends it to the configured loopback Bridge only.
+ */
+export const BRIDGE_DESTINATIONS = {
+  "email.draft": "bridge:imap/append-draft",
+  "email.send": "bridge:smtp/send",
+  "email.reply": "bridge:smtp/send",
+  "email.forward": "bridge:smtp/send",
+  "email.trash": "bridge:imap/move-to-trash",
+} as const satisfies Partial<Record<Intent["kind"], string>>
+
+/** The Bridge destination for `kind`, or undefined when Bridge does not run that kind. */
+export function bridgeDestinationFor(kind: string): string | undefined {
+  return Object.entries(BRIDGE_DESTINATIONS).find(
+    ([entry]) => entry === kind
+  )?.[1]
 }
 
 /** Gate-internal credential-backed transport, separate from the read-only HTTP proxy. */
@@ -200,6 +225,35 @@ function writeDestination(
   return destination.href
 }
 
+/**
+ * Bridge writes run only for the Proton connector whose pinned manifest uses a password and
+ * declares no HTTP egress (Bridge is a local IMAP and SMTP service). A connector that fails this
+ * is misconfigured, which is refused on its own code rather than reported as tampering.
+ */
+function bridgeConfigured(db: DatabaseSync, connector: string): boolean {
+  const manifest = getPinnedManifest(db, connector)
+  return (
+    connector === PROTON_CONNECTOR &&
+    manifest?.auth.type === "password" &&
+    manifest.egress.hosts.length === 0
+  )
+}
+
+/** The one destination of a Bridge intent kind; any other request is not the approved one. */
+function bridgeDestination(
+  kind: Intent["kind"],
+  request: UpstreamRequest
+): string {
+  const destination = bridgeDestinationFor(kind)
+  if (
+    destination === undefined ||
+    request.method !== "POST" ||
+    request.url !== destination
+  )
+    throw new Error("unpinned bridge route")
+  return destination
+}
+
 export function createExecutor(
   db: DatabaseSync,
   writers: readonly UpstreamWriter[],
@@ -342,6 +396,11 @@ export function createExecutor(
         health === "open"
       )
         return refuse(id, direction, "connector_unavailable")
+      if (
+        writer.channel === "bridge" &&
+        !bridgeConfigured(db, binding.connector)
+      )
+        return refuse(id, direction, "connector_misconfigured")
       connector = binding.connector
       operation = binding.operation
     } catch {
@@ -358,7 +417,10 @@ export function createExecutor(
         url: built.url,
         body: canonicalize(built.body),
       })
-      const destination = writeDestination(db, connector, operation, snapshot)
+      const destination =
+        writer.channel === "bridge"
+          ? bridgeDestination(intent.kind, snapshot)
+          : writeDestination(db, connector, operation, snapshot)
       if (destination !== snapshot.url) throw new Error("noncanonical target")
       const decoded = writer.intentFromRequest(
         Object.freeze({ ...snapshot, body: parse(snapshot.body) })

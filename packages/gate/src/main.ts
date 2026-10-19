@@ -2,6 +2,9 @@ import { mkdirSync } from "node:fs"
 import type { Server } from "node:http"
 import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
+import { createProtonBridge } from "./internal/bridge/bridge"
+import { bridgeConfig } from "./internal/bridge/config"
+import type { BridgeConfig } from "./internal/bridge/config"
 import { openControlDb } from "./internal/control-db"
 import {
   basePath,
@@ -18,6 +21,7 @@ import { phoneHandler } from "./internal/phone-routes"
 import { controlHandler, dataPlaneHandler } from "./internal/routes"
 import type { Clock } from "./internal/sessions"
 import { runningGate, startGate, stopGate } from "./internal/runtime"
+import { devFlagFromEnv, FileVault } from "./internal/vault/file-vault"
 import type { WebAuthnConfig } from "./internal/webauthn"
 
 // The gate process (ADR 0003). It owns eido-control.db and opens no other database. It
@@ -51,6 +55,18 @@ export type GateConfig = {
   webAuthn: WebAuthnConfig
   /** Absent when EIDO_GATE_PHONE_PORT is not set: the gate then has no TCP listener. */
   phone?: PhoneListenerConfig
+  /** Absent when EIDO_BRIDGE_HOST is not set: the gate then serves no mail routes (#195). */
+  bridge?: BridgeListenerConfig
+}
+
+export type BridgeListenerConfig = {
+  config: BridgeConfig
+  /**
+   * The development vault file holding the Bridge password. The Keychain vault (#67) replaces
+   * it; until then Bridge needs EIDO_DEV_VAULT=1 and EIDO_GATE_VAULT_FILE.
+   */
+  vaultPath: string
+  devVault: boolean
 }
 
 const REQUIRED = {
@@ -79,8 +95,25 @@ export function gateConfig(
     webAuthn: { rpId: read(REQUIRED.rpId), origin: read(REQUIRED.origin) },
   }
   const port = env["EIDO_GATE_PHONE_PORT"] ?? ""
-  if (port === "") return config
-  return { ...config, phone: phoneConfig(env, port) }
+  const bridge = bridgeConfig(env)
+  return {
+    ...config,
+    ...(port === "" ? {} : { phone: phoneConfig(env, port) }),
+    ...(bridge === undefined ? {} : { bridge: bridgeVault(env, bridge) }),
+  }
+}
+
+function bridgeVault(
+  env: Readonly<Record<string, string | undefined>>,
+  config: BridgeConfig
+): BridgeListenerConfig {
+  const vaultPath = env["EIDO_GATE_VAULT_FILE"] ?? ""
+  if (vaultPath === "") {
+    throw new Error(
+      "Bridge needs EIDO_GATE_VAULT_FILE, the development vault holding its password, until the Keychain vault (#67)"
+    )
+  }
+  return { config, vaultPath, devVault: devFlagFromEnv({ ...env }) }
 }
 
 // The production host, base path and allowed hosts wait on the serve measurements (#178).
@@ -133,9 +166,20 @@ export async function runGate(
       config.webAuthn
     )
     const state = () => runningGate()
+    // FileVault refuses to open without the explicit development flag.
+    const mail =
+      config.bridge === undefined
+        ? undefined
+        : createProtonBridge({
+            config: config.bridge.config,
+            vault: new FileVault({
+              path: config.bridge.vaultPath,
+              devFlag: config.bridge.devVault,
+            }),
+          })
     const dataPlane = createGateServer(
       "data-plane",
-      dataPlaneHandler(state),
+      dataPlaneHandler(state, mail),
       log
     )
     const control = createGateServer("control", controlHandler(state), log)
@@ -173,6 +217,7 @@ export async function runGate(
       socket: config.socketPath,
       controlSocket: config.controlSocketPath,
       phonePort: phone?.port ?? "off",
+      mail: mail === undefined ? "off" : "bridge",
       overlayErrors: overlayErrors.length,
     })
   } catch (error) {

@@ -4,6 +4,9 @@ import {
   validateGateAuditRecordResult,
   validateGateIntentHistory,
   validateGateIntentStatus,
+  validateGateMailFolderList,
+  validateGateMailFolderState,
+  validateGateMailMessagePage,
   validateGatePendingIntentList,
   validateGateProposeRefusal,
   validateGateProposeResult,
@@ -14,6 +17,7 @@ import type {
   GateIntentHistory,
   GateIntentProposal,
   GateIntentStatus,
+  GateMailFolderState,
   GatePendingIntentList,
   GateProposeResult,
   ValidationResult,
@@ -222,5 +226,78 @@ export function createAuditClient(options: IntentClientOptions): AuditClient {
         validateGateAuditRecordResult,
         "GateAuditRecordResult"
       ),
+  }
+}
+
+/**
+ * Core's view of Proton mail through the gate (#195): it matches core's ProtonMailSource. A call
+ * rejects with GateRequestError whose `code` is handshake_failed or auth_failed when Bridge
+ * refused the connection or the password, and with GateUnavailableError when the gate cannot
+ * be reached.
+ */
+export type ProtonMailClient = {
+  listFolders: () => Promise<string[]>
+  folderState: (folder: string) => Promise<GateMailFolderState>
+  /** Raw RFC 5322 messages with UID >= fromUid, ascending; the gate caps `limit` at 100. */
+  fetchRaw: (
+    folder: string,
+    fromUid: number,
+    limit: number
+  ) => Promise<{ uid: number; raw: Uint8Array }[]>
+}
+
+// A page can carry 32 MiB that Bridge has to read first; the other calls answer quickly.
+const FETCH_TIMEOUT_MS = 60_000
+
+const folderPath = (folder: string) =>
+  `/mail/proton/folders/${encodeURIComponent(folder)}`
+
+/** A client for the Proton mail read routes on the gate's data-plane listener at `socketPath`. */
+export function createProtonMailClient(
+  options: IntentClientOptions
+): ProtonMailClient {
+  const quick = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  const slow = {
+    socketPath: options.socketPath,
+    timeoutMs: Math.max(quick.timeoutMs, FETCH_TIMEOUT_MS),
+  }
+  return {
+    listFolders: async () =>
+      expect(
+        await call(quick, "GET", "/mail/proton/folders"),
+        [200],
+        validateGateMailFolderList,
+        "GateMailFolderList"
+      ).folders,
+    folderState: async (folder) =>
+      expect(
+        await call(quick, "GET", `${folderPath(folder)}/state`),
+        [200],
+        validateGateMailFolderState,
+        "GateMailFolderState"
+      ),
+    fetchRaw: async (folder, fromUid, limit) => {
+      const query = new URLSearchParams({
+        fromUid: String(fromUid),
+        limit: String(limit),
+      })
+      const page = expect(
+        await call(
+          slow,
+          "GET",
+          `${folderPath(folder)}/messages?${query.toString()}`
+        ),
+        [200],
+        validateGateMailMessagePage,
+        "GateMailMessagePage"
+      )
+      return page.messages.map((message) => ({
+        uid: message.uid,
+        raw: new Uint8Array(Buffer.from(message.raw, "base64")),
+      }))
+    },
   }
 }
