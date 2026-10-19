@@ -3,7 +3,7 @@ import { endpointFor } from "./connection"
 import type { ConnectionFactory } from "./connection"
 import { AuthFailedError, HandshakeFailedError, ProtonError } from "./errors"
 import { WireReader } from "./imap-wire"
-import { buildMessage } from "./mime"
+import { angleSpan, buildMessage } from "./mime"
 import type { OutgoingMessage } from "./mime"
 
 // Sends one message through Bridge's SMTP. Always from the configured identity: callers cannot
@@ -51,8 +51,8 @@ async function expectCode(
 const dotStuff = (raw: string): string => raw.replace(/(^|\r\n)\./g, "$1..")
 
 const bareAddress = (value: string): string => {
-  const angle = /<([^>]+)>/.exec(value)
-  const address = (angle?.[1] ?? value).trim()
+  const angle = angleSpan(value)
+  const address = (angle?.inner ?? value).trim()
   if (!/^[^\s<>@]+@[^\s<>@]+$/.test(address))
     throw new RangeError("recipient is not an address")
   return address

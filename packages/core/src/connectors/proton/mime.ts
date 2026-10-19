@@ -109,12 +109,11 @@ function parseAddresses(value: string | undefined): Address[] {
   parts.push(current)
   const out: Address[] = []
   for (const part of parts) {
-    const angle = /<([^>]+)>/.exec(part)
-    const address = (angle?.[1] ?? part).trim()
+    const angle = angleSpan(part)
+    const address = (angle?.inner ?? part).trim()
     if (!address.includes("@")) continue
     const name = decodeWords(
-      part
-        .replace(/<[^>]*>/, "")
+      removeFirstBrackets(part)
         .replace(/^\s*"|"\s*$/g, "")
         .trim()
     )
@@ -148,11 +147,65 @@ function decodeBody(body: Buffer, encoding: string | undefined): Buffer {
   return body
 }
 
+/**
+ * The first `<...>` span with a non-empty inside, found by index scanning (linear time, no regex
+ * backtracking on adversarial input). `inner` is the text between the brackets.
+ */
+export function angleSpan(
+  value: string
+): { inner: string; start: number; end: number } | null {
+  let start = value.indexOf("<")
+  while (start >= 0) {
+    const end = value.indexOf(">", start + 1)
+    if (end < 0) return null
+    if (end > start + 1)
+      return { inner: value.slice(start + 1, end), start, end: end + 1 }
+    start = value.indexOf("<", end)
+  }
+  return null
+}
+
+function removeFirstBrackets(value: string): string {
+  const start = value.indexOf("<")
+  const end = start < 0 ? -1 : value.indexOf(">", start)
+  return end < 0 ? value : value.slice(0, start) + value.slice(end + 1)
+}
+
+const BLOCK_ENDS = new Set(["p", "div", "br"])
+
+/**
+ * HTML to plain text with a single linear scan. Every `<...>` span is dropped (script and style
+ * with their content), and any `<` or `>` left over is removed too, so nested or overlapping
+ * input such as `<scr<script>ipt>` cannot leave markup behind. Entities are decoded after
+ * stripping, and `&amp;` last, so decoded text is never reinterpreted.
+ */
 function stripHtml(html: string): string {
-  return html
-    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, "")
-    .replace(/<br\s*\/?>|<\/p>|<\/div>/gi, "\n")
-    .replace(/<[^>]*>/g, "")
+  let out = ""
+  let i = 0
+  while (i < html.length) {
+    const open = html.indexOf("<", i)
+    if (open < 0) {
+      out += html.slice(i)
+      break
+    }
+    out += html.slice(i, open)
+    const close = html.indexOf(">", open + 1)
+    if (close < 0) break
+    const tag = html.slice(open + 1, close)
+    const name = /^\/?([a-zA-Z0-9]+)/.exec(tag.slice(0, 20))?.[1]?.toLowerCase()
+    i = close + 1
+    if (name === undefined) continue
+    if ((name === "script" || name === "style") && !tag.startsWith("/")) {
+      const end = html.toLowerCase().indexOf(`</${name}`, i)
+      if (end < 0) break
+      const endClose = html.indexOf(">", end)
+      i = endClose < 0 ? html.length : endClose + 1
+    } else if (BLOCK_ENDS.has(name) && (name === "br" || tag.startsWith("/"))) {
+      out += "\n"
+    }
+  }
+  return out
+    .replace(/[<>]/g, "")
     .replace(/&nbsp;/g, " ")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")

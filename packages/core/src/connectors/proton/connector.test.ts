@@ -469,6 +469,14 @@ describe("SMTP send", () => {
     expect(parsed.from).toEqual([{ address: ASSISTANT }])
   })
 
+  test("a long adversarial recipient is refused quickly", async () => {
+    const started = Date.now()
+    await expect(
+      sendMail(factory, config, { ...plain, to: ["<" + "<=".repeat(50_000)] })
+    ).rejects.toThrow(/not an address/)
+    expect(Date.now() - started).toBeLessThan(1000)
+  })
+
   test("refuses no recipients, a malformed recipient and an injected command, connecting to nothing", async () => {
     await expect(
       sendMail(factory, config, { ...plain, to: [] })

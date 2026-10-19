@@ -1,7 +1,35 @@
 import { describe, expect, test } from "vitest"
-import { attachmentText, buildMessage, decodeWords, parseMessage } from "./mime"
+import {
+  angleSpan,
+  attachmentText,
+  buildMessage,
+  decodeWords,
+  parseMessage,
+} from "./mime"
 
 const crlf = (lines: string[]): Buffer => Buffer.from(lines.join("\r\n"))
+
+describe("angleSpan", () => {
+  test("finds the first non-empty bracket pair and skips empty ones", () => {
+    expect(angleSpan("Bo <bo@example.com>")).toEqual({
+      inner: "bo@example.com",
+      start: 3,
+      end: 19,
+    })
+    expect(angleSpan("<>x<a@example.com>")?.inner).toBe("a@example.com")
+    expect(angleSpan("no brackets")).toBeNull()
+    expect(angleSpan("<unterminated")).toBeNull()
+  })
+
+  test("adversarial input of repeated '<=' stays linear", () => {
+    const started = Date.now()
+    expect(angleSpan("<" + "<=".repeat(50_000))).toBeNull()
+    expect(angleSpan("<" + "<=".repeat(50_000) + ">")?.inner.length).toBe(
+      100_000
+    )
+    expect(Date.now() - started).toBeLessThan(1000)
+  })
+})
 
 describe("parseMessage", () => {
   test("reads headers, addresses and the plain body", () => {
@@ -129,6 +157,40 @@ describe("attachmentText", () => {
     mime,
     data: Buffer.from(text),
   })
+  test("nested or overlapping tags leave no script tag behind", () => {
+    const text = attachmentText(
+      part("text/html", "<scr<script>ipt>alert(1)</script>ok<b>bold</b>")
+    )
+    expect(text).not.toMatch(/<\s*\/?script/i)
+    expect(text).not.toMatch(/[<>]/)
+    expect(text).toBe("iptalert(1)okbold")
+  })
+
+  test("script and style content is dropped, block ends become newlines", () => {
+    expect(
+      attachmentText(
+        part(
+          "text/html",
+          "a<script>x()</script>b<style>p{}</style>c<br>d</p>e&lt;f&amp;gt;"
+        )
+      )
+    ).toBe("abc\nd\ne<f&gt;")
+  })
+
+  test("unterminated tags and scripts do not loop or leak markup", () => {
+    expect(attachmentText(part("text/html", "ok<script>never closed"))).toBe(
+      "ok"
+    )
+    expect(attachmentText(part("text/html", "ok<b never closed"))).toBe("ok")
+  })
+
+  test("a long run of angle brackets completes quickly", () => {
+    const started = Date.now()
+    const text = attachmentText(part("text/html", "<".repeat(100_000)))
+    expect(text).toBe("")
+    expect(Date.now() - started).toBeLessThan(1000)
+  })
+
   test("strips html and reads calendar and xml parts", () => {
     expect(attachmentText(part("text/html", "<b>hi</b>"))).toBe("hi")
     expect(attachmentText(part("text/calendar", "BEGIN:VCALENDAR"))).toBe(
