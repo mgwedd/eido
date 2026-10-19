@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url"
 import { defineConfig } from "vitest/config"
 
 // Coverage gate (issue #112): every package must stay at or above 90% on all four metrics.
@@ -5,6 +6,8 @@ import { defineConfig } from "vitest/config"
 export default defineConfig({
   // tsconfig keeps jsx: preserve for Next, so tell the test transform to compile JSX itself.
   oxc: { jsx: { runtime: "automatic" } },
+  // Mirror the "@/*" path alias from tsconfig.json.
+  resolve: { alias: { "@": fileURLToPath(new URL(".", import.meta.url)) } },
   test: {
     coverage: {
       provider: "v8",

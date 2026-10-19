@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
+import { runInNewContext } from "node:vm"
 import { describe, expect, test } from "vitest"
 
 type Kind = "static" | "navigation" | "api-read" | "network-only"
@@ -16,9 +17,11 @@ const source = readFileSync(
   path.join(__dirname, "..", "public", "sw-routing.js"),
   "utf8"
 )
-const { classifyRequest, isCacheableResponse } = new Function(
-  `${source}\nreturn { classifyRequest, isCacheableResponse }`
-)() as {
+const exported: unknown = runInNewContext(
+  `${source}\n({ classifyRequest, isCacheableResponse })`,
+  { URL }
+)
+const { classifyRequest, isCacheableResponse } = exported as {
   classifyRequest: (request: Request) => Kind
   isCacheableResponse: (response: Response) => boolean
 }
