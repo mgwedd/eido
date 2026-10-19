@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./vectors/jcs-vectors.json": "./vectors/jcs-vectors.json"
   },
   "scripts": {
     "codegen": "node scripts/codegen.mjs",
