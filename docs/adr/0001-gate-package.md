@@ -18,7 +18,7 @@ Eido's main boundary is that only the gate holds credentials and executes extern
 Proton Mail has no HTTP API the gate can call; Proton Bridge exposes the mailbox as IMAP and SMTP on this machine. `fetch` speaks neither, so the allowlist adds two packages for Bridge only:
 
 - `imapflow` (IMAP) and `nodemailer` (SMTP and MIME composing), pinned to exact versions, with their transitive packages listed and checked for install scripts in `packages/gate/ALLOWED_DEPENDENCIES`.
-- They connect to Bridge on loopback only: `bridgeConfig` refuses any host but `127.0.0.1`, `::1` or `localhost`. No other code in the gate may use them for another destination.
+- They connect to Bridge on loopback only: `bridgeConfig` refuses any host but `127.0.0.1` or `::1`; a name such as `localhost` is refused, since a resolver could point it elsewhere. No other code in the gate may use them for another destination.
 - The Bridge password lives in the vault and is read only when a connection opens; it is never in configuration, logs, audit rows or responses.
 - No code path deletes mail permanently: the adapter exposes no delete, expunge or mailbox removal, the gate's lint config bans calling them and the `\Deleted` flag, and the tests check the commands sent to a fake Bridge.
 

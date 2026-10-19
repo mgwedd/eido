@@ -56,6 +56,11 @@ describe("bridgeConfig", () => {
       { EIDO_BRIDGE_HOST: "mail.example.invalid" },
       /EIDO_BRIDGE_HOST must be one of/,
     ],
+    [
+      "the name localhost, which a resolver decides",
+      { EIDO_BRIDGE_HOST: "localhost" },
+      /EIDO_BRIDGE_HOST must be one of 127\.0\.0\.1, ::1, not "localhost"/,
+    ],
     ["no username", { EIDO_BRIDGE_USERNAME: "" }, /needs EIDO_BRIDGE_USERNAME/],
     [
       "no IMAP port",

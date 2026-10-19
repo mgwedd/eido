@@ -8,7 +8,9 @@ export const PROTON_CONNECTOR = "proton-mail"
 export const BRIDGE_TLS_MODES = ["starttls", "tls", "none"] as const
 export type BridgeTlsMode = (typeof BRIDGE_TLS_MODES)[number]
 
-export const BRIDGE_HOSTS = ["127.0.0.1", "::1", "localhost"] as const
+// Loopback addresses only. A name such as localhost is refused: the resolver (hosts file, DNS)
+// decides where a name points, and could send the password off this machine.
+export const BRIDGE_HOSTS = ["127.0.0.1", "::1"] as const
 export type BridgeHost = (typeof BRIDGE_HOSTS)[number]
 
 export type BridgeConfig = {
