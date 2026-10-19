@@ -38,6 +38,12 @@
       },
       "required": ["contextPackId", "documentIds"],
       "additionalProperties": false
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "The agent's note on why it proposes the intent, shown on the approval card. Stored next to the intent, never in the payload or its hash."
     }
   },
   "required": ["intent", "origin"],

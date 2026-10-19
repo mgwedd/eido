@@ -40,7 +40,7 @@ export function inspectControlDb(path: string): ControlDbView {
 export function rejectIntent(path: string, intentId: string): string {
   const db = openControlDb(path)
   try {
-    return JSON.stringify(reject(db, intentId, "test_reject"))
+    return JSON.stringify(reject(db, intentId, "other"))
   } finally {
     db.close()
   }

@@ -5,12 +5,17 @@ import {
   rmSync,
   statSync,
 } from "node:fs"
+import { request } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createIntentClient } from "./internal/client"
 import { runningGate } from "./internal/runtime"
-import { WEBAUTHN } from "./internal/test-fixtures"
+import {
+  assertion,
+  testAuthenticator,
+  WEBAUTHN,
+} from "./internal/test-fixtures"
 import { CONTROL_DB_FILE, GATE_LOG_FILE, gateConfig, runGate } from "./main"
 import type { GateConfig } from "./main"
 
@@ -49,6 +54,73 @@ describe("gateConfig", () => {
       controlSocketPath: "/d/control.sock",
       webAuthn: WEBAUTHN,
     })
+  })
+
+  const BASE = {
+    EIDO_GATE_DATA_DIR: "/d",
+    EIDO_GATE_SOCKET: "/d/gate.sock",
+    EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+    EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+    EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+  }
+
+  it("reads the phone listener when its port is set", () => {
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_PHONE_PORT: "8443",
+        EIDO_GATE_PHONE_HOST: "::1",
+        EIDO_GATE_PHONE_BASE_PATH: "/api/gate",
+        EIDO_GATE_PHONE_ALLOWED_HOSTS:
+          " mac.example.invalid , ,other.example.invalid",
+      }).phone
+    ).toEqual({
+      host: "::1",
+      port: 8443,
+      basePath: "/api/gate",
+      allowedHosts: ["mac.example.invalid", "other.example.invalid"],
+    })
+  })
+
+  it("defaults the phone listener to 127.0.0.1, no base path and no extra hosts", () => {
+    expect(gateConfig({ ...BASE, EIDO_GATE_PHONE_PORT: "0" }).phone).toEqual({
+      host: "127.0.0.1",
+      port: 0,
+      basePath: "",
+      allowedHosts: [],
+    })
+  })
+
+  it.each(["0.0.0.0", "192.168.1.10", "localhost", "::"])(
+    "refuses to bind the phone listener to %s",
+    (host) => {
+      expect(() =>
+        gateConfig({
+          ...BASE,
+          EIDO_GATE_PHONE_PORT: "0",
+          EIDO_GATE_PHONE_HOST: host,
+        })
+      ).toThrow("the phone listener binds to 127.0.0.1 or ::1 only")
+    }
+  )
+
+  it.each(["http", "-1", "65536", "80.5"])(
+    "refuses the phone port %j",
+    (port) => {
+      expect(() => gateConfig({ ...BASE, EIDO_GATE_PHONE_PORT: port })).toThrow(
+        "EIDO_GATE_PHONE_PORT must be a port number"
+      )
+    }
+  )
+
+  it("refuses a base path with a trailing slash", () => {
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_PHONE_PORT: "0",
+        EIDO_GATE_PHONE_BASE_PATH: "/api/gate/",
+      })
+    ).toThrow("the base path must look like /api/gate")
   })
 
   it("names every missing or empty variable", () => {
@@ -94,5 +166,126 @@ describe("runGate", () => {
     expect(() => runningGate()).toThrow("the gate is not started")
     const again = await runGate(config())
     await again.close()
+  })
+
+  type Answer = {
+    status: number
+    headers: Record<string, string | string[] | undefined>
+    body: unknown
+  }
+
+  function send(
+    port: number,
+    method: string,
+    path: string,
+    headers: Record<string, string>,
+    body?: unknown
+  ): Promise<Answer> {
+    return new Promise((resolve, reject) => {
+      const text = body === undefined ? "" : JSON.stringify(body)
+      const req = request(
+        { host: "127.0.0.1", port, method, path, headers, setHost: false },
+        (res) => {
+          const chunks: Buffer[] = []
+          res.on("data", (chunk: Buffer) => chunks.push(chunk))
+          res.on("end", () => {
+            const raw = Buffer.concat(chunks).toString("utf8")
+            resolve({
+              status: res.statusCode ?? 0,
+              headers: res.headers,
+              body: raw === "" ? undefined : JSON.parse(raw),
+            })
+          })
+        }
+      )
+      req.on("error", reject)
+      req.end(text)
+    })
+  }
+
+  it("serves the phone listener on loopback TCP, by Host, below its base path", async () => {
+    const c: GateConfig = {
+      ...config(),
+      phone: {
+        host: "127.0.0.1",
+        port: 0,
+        basePath: "/api/gate",
+        allowedHosts: ["mac.example.invalid"],
+      },
+    }
+    const gate = await runGate(c)
+    try {
+      const phone = gate.phone
+      if (phone === undefined)
+        throw new Error("the phone listener did not start")
+      const listen = `127.0.0.1:${String(phone.port)}`
+      expect(phone.allowedHosts).toEqual([listen, "mac.example.invalid"])
+      const auth = testAuthenticator()
+      runningGate()
+        .db.prepare(
+          "INSERT INTO credentials (credential_id, public_key, sign_count, created_at) VALUES (?, ?, 0, ?)"
+        )
+        .run(auth.credentialId, auth.publicKey, new Date().toISOString())
+      const json = {
+        host: "mac.example.invalid",
+        "content-type": "application/json",
+      }
+
+      const misdirected = await send(
+        phone.port,
+        "GET",
+        "/api/gate/passkey/status",
+        {
+          host: "evil.example.invalid",
+        }
+      )
+      expect(misdirected.status).toBe(421)
+      const admin = await send(phone.port, "GET", "/api/gate/audit/chain", json)
+      expect(admin.status).toBe(404)
+      const gated = await send(phone.port, "GET", "/api/gate/approvals", json)
+      expect(gated.status).toBe(401)
+
+      const options = await send(
+        phone.port,
+        "POST",
+        "/api/gate/auth/login/options",
+        json
+      )
+      const challenge =
+        typeof options.body === "object" &&
+        options.body !== null &&
+        "challenge" in options.body
+          ? String(options.body.challenge)
+          : ""
+      const login = await send(
+        phone.port,
+        "POST",
+        "/api/gate/auth/login",
+        json,
+        {
+          assertion: assertion(auth, challenge),
+        }
+      )
+      expect(login.status).toBe(200)
+      const setCookie = login.headers["set-cookie"]?.[0] ?? ""
+      expect(setCookie).toContain(
+        "; Path=/api/gate; HttpOnly; Secure; SameSite=Strict"
+      )
+      expect(login.headers["cache-control"]).toBe("no-store")
+
+      const listed = await send(phone.port, "GET", "/api/gate/approvals", {
+        host: listen,
+        cookie: setCookie.split(";")[0] ?? "",
+      })
+      expect(listed).toMatchObject({ status: 200, body: { intents: [] } })
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("has no TCP listener when the phone port is not set", async () => {
+    const gate = await runGate(config())
+    expect(gate.phone).toBeUndefined()
+    await gate.close()
   })
 })

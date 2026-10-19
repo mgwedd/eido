@@ -110,9 +110,9 @@ export interface CoreApiProfile {
   updatedAt: string
 }
 
-/** Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. The server (#85) maps codes to HTTP statuses. */
+/** Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. Statuses: not_found 404, already_decided 409, verification_failed 403, invalid_request 400 (413 over 1 MiB, 422 for an edited intent the schemas or the original's kind refuse), unauthenticated 401 (no valid session cookie on a gated phone route), misdirected_request 421 (a Host header the listener does not serve), unsupported_media_type 415 (a phone-listener POST whose Content-Type is not application/json), tier_changed 409 and forbidden 403 (an edit refused by policy), unavailable 500. */
 export interface GateApiError {
-  code: "not_found" | "already_decided" | "verification_failed" | "invalid_request" | "unavailable"
+  code: "not_found" | "already_decided" | "verification_failed" | "invalid_request" | "unauthenticated" | "misdirected_request" | "unsupported_media_type" | "tier_changed" | "forbidden" | "unavailable"
   message: string
 }
 
@@ -172,27 +172,33 @@ export interface GateConnectorHealth {
   }>
 }
 
-/** Body of the decision endpoint for one intent: a signed approval, or a reject. Edit-and-sign is not covered (#146). */
+/** Response of GET /passkey/status on the phone listener, which needs no session. enrolled is true when the gate holds at least one unrevoked passkey; when it is false the PWA blocks Approve and links to /enroll. sessionExpiresAt is when the session cookie sent with the request ends, or null when there is no valid session. */
+export interface GateCredentialStatus {
+  enrolled: boolean
+  sessionExpiresAt: string | null
+}
+
+/** Body of POST /approvals/:id/decision on the phone listener: a signed approval, or a reject. intentId must equal the id in the path. An edit is POST /approvals/:id/edit (GateEditRequest), whose new intent is then approved here. */
 export type GateDecisionRequest = {
   intentId: string
   decision: "approved"
   nonce: string
-  assertion: {
-    credentialId: string
-    authenticatorData: string
-    clientDataJSON: string
-    signature: string
-  }
+  assertion: GateWebAuthnAssertion
 } | {
   intentId: string
   decision: "rejected"
-  reasonCode?: string
+  reasonCode?: GateRejectReason
 }
 
 /** Success response of the decision endpoint. approved means the verifier accepted the assertion and the intent moved to approved. Execution is a later gate step, so approved does not mean sent. Failures use GateApiError. */
 export interface GateDecisionResult {
   intentId: string
   state: "approved" | "rejected"
+}
+
+/** Body of POST /approvals/:id/edit (decided in #85, was #146). Unsigned: it creates a new pending intent with editedFrom set and marks the original rejected (edited). The response is a GatePrepareApproval for the new intent, which the device then signs, so one Face ID prompt covers the edit. An edit that changes the tier is refused with tier_changed, one policy forbids with forbidden. */
+export interface GateEditRequest {
+  intent: Record<string, unknown>
 }
 
 /** Response of an intent's state-transition history, oldest first, derived from audit_log (#11 getIntentHistory). from is null on the first entry. An undo is an entry whose from and to are both executed with reason undone. */
@@ -219,6 +225,7 @@ export interface GateIntentProposal {
     contextPackId: string
     documentIds: Array<string>
   }
+  rationale?: string
 }
 
 /** Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are final. */
@@ -233,6 +240,18 @@ export interface GateIntentStatus {
   edited_from: string | null
 }
 
+/** Response of POST /auth/login/options on the phone listener: a single-use login challenge for navigator.credentials.get with a discoverable passkey (no allowCredentials). It expires after five minutes. */
+export interface GateLoginOptions {
+  challenge: string
+  rpId: string
+  expiresAt: string
+}
+
+/** Body of POST /auth/login on the phone listener: an assertion over the challenge from the latest login options. */
+export interface GateLoginRequest {
+  assertion: GateWebAuthnAssertion
+}
+
 /** Response of the pending-approvals list: intents in state pending, without payload bodies (#11 listPendingIntents, plus origin, which #33 needs). */
 export interface GatePendingIntentList {
   intents: Array<{
@@ -243,10 +262,11 @@ export interface GatePendingIntentList {
     origin: GateIntentOrigin
     createdAt: string
     editedFrom?: string
+    rationale?: string
   }>
 }
 
-/** Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce. The byte encoding is not decided yet (#145). */
+/** Response of POST /approvals/:id/nonce on the phone listener (#15 issueNonce, consumed by #32 prepareApproval), and of POST /approvals/:id/edit for the new intent. Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce as decided in #85 (vectors/approval-challenge-vectors.json), so a compromised core cannot hand the device a challenge for a different payload. */
 export interface GatePrepareApproval {
   intentId: string
   kind: string
@@ -256,11 +276,9 @@ export interface GatePrepareApproval {
   payloadHash: string
   nonce: string
   contextPackId?: string
-  sources: Array<{
-    documentId: string
-    name: string
-  }>
+  documentIds: Array<string>
   editedFrom?: string
+  rationale?: string
 }
 
 /** Response 422 of POST /intents (#42): the intent does not match the intent schemas and nothing was stored. Each error names a field path and a reason, for example "$.args.body: required", and never a payload value. */
@@ -277,8 +295,24 @@ export interface GateProposeResult {
   reason?: string
 }
 
+/** Why the owner rejected an intent; feeds the eval set (decided in #85, was #147). wrong_recipient: the right action addressed to the wrong person or place. wrong_content: what the intent says or does is wrong. wrong_tone: the content is right but the wording is not how the owner would put it. wrong_time: the action is right but not now, or scheduled for the wrong time. not_needed: nothing should have been proposed. other: none of these. */
+export type GateRejectReason = "wrong_recipient" | "wrong_content" | "wrong_tone" | "wrong_time" | "not_needed" | "other"
+
+/** Response of POST /auth/login. The session itself is the HttpOnly cookie the same response sets; the body only says when it ends (12 hours after login). */
+export interface GateSession {
+  expiresAt: string
+}
+
 /** Effective policy tier of an intent (#11). */
 export type GateTier = "auto" | "approval" | "forbidden"
+
+/** navigator.credentials.get response, each binary field as unpadded base64url. */
+export interface GateWebAuthnAssertion {
+  credentialId: string
+  authenticatorData: string
+  clientDataJSON: string
+  signature: string
+}
 
 /** Send an iCalendar invitation (METHOD:REQUEST) from the assistant identity. The gate assigns the event UID. */
 export interface CalendarCreateIntent {

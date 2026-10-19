@@ -87,6 +87,9 @@ async function proposeRoute(
           contextPackId: proposal.sources.contextPackId,
           documentIds: proposal.sources.documentIds,
         }),
+    ...(proposal.rationale === undefined
+      ? {}
+      : { rationale: proposal.rationale }),
   })
   if (result.ok) {
     const stored: GateProposeResult = {

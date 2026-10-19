@@ -30,8 +30,8 @@ export function sha256(data: Buffer | string): Buffer {
 /**
  * The challenge the device signs to approve one intent: SHA-256 over the UTF-8 bytes of the
  * RFC 8785 canonical JSON array `[payloadHash, intentId, nonce]`, where payloadHash is lowercase
- * hex and nonce is the unpadded base64url string the gate issued. The layout is proposed in #145;
- * the shared vectors are packages/schemas/vectors/approval-challenge-vectors.json.
+ * hex and nonce is the unpadded base64url string the gate issued. The layout was decided in #85 (was
+ * #145); the shared vectors are packages/schemas/vectors/approval-challenge-vectors.json.
  */
 export function approvalChallenge(
   payloadHash: string,

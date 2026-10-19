@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateSession",
+  "description": "Response of POST /auth/login. The session itself is the HttpOnly cookie the same response sets; the body only says when it ends (12 hours after login).",
+  "type": "object",
+  "properties": {
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
+    }
+  },
+  "required": ["expiresAt"],
+  "additionalProperties": false
+}
