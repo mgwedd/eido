@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmailMarkReadIntent",
+  "description": "Change the read flag only. The message stays in the index and in triage; read false marks it unread again.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "email.markRead"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "messageIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "description": "Message ids"
+        },
+        "read": {
+          "type": "boolean",
+          "description": "True marks read, false marks unread"
+        }
+      },
+      "required": ["messageIds", "read"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

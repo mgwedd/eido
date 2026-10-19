@@ -1,10 +1,55 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Intent",
-  "type": "object",
-  "properties": {
-    "id": { "type": "string" },
-    "kind": { "type": "string" }
-  },
-  "required": ["id", "kind"]
+  "description": "One proposed write. The model never supplies an id; the gate assigns it.",
+  "oneOf": [
+    {
+      "$ref": "intent-email-draft.schema.json"
+    },
+    {
+      "$ref": "intent-email-label.schema.json"
+    },
+    {
+      "$ref": "intent-email-archive.schema.json"
+    },
+    {
+      "$ref": "intent-email-markRead.schema.json"
+    },
+    {
+      "$ref": "intent-email-send.schema.json"
+    },
+    {
+      "$ref": "intent-email-reply.schema.json"
+    },
+    {
+      "$ref": "intent-email-forward.schema.json"
+    },
+    {
+      "$ref": "intent-email-trash.schema.json"
+    },
+    {
+      "$ref": "intent-calendar-create.schema.json"
+    },
+    {
+      "$ref": "intent-calendar-edit.schema.json"
+    },
+    {
+      "$ref": "intent-calendar-delete.schema.json"
+    },
+    {
+      "$ref": "intent-reminder-create.schema.json"
+    },
+    {
+      "$ref": "intent-file-create.schema.json"
+    },
+    {
+      "$ref": "intent-file-rename.schema.json"
+    },
+    {
+      "$ref": "intent-file-move.schema.json"
+    },
+    {
+      "$ref": "intent-file-delete.schema.json"
+    }
+  ]
 }

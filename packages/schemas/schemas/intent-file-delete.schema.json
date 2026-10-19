@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileDeleteIntent",
+  "description": "Move a file to the Eido trash folder. Never a permanent delete.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "file.delete"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Allowed-folder id from local config"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Path relative to the root"
+        }
+      },
+      "required": ["root", "path"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

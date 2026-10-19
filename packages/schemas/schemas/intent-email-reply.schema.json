@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmailReplyIntent",
+  "description": "Reply to a message.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "email.reply"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Message id to reply to"
+        },
+        "replyAll": {
+          "type": "boolean",
+          "description": "True replies to all recipients"
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000,
+          "description": "Plain-text body"
+        }
+      },
+      "required": ["messageId", "replyAll", "body"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

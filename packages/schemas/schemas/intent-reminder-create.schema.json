@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReminderCreateIntent",
+  "description": "Create a reminder.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "reminder.create"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "list": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Reminder list name"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Title"
+        },
+        "due": {
+          "type": "string",
+          "format": "date-time",
+          "minLength": 20,
+          "maxLength": 40,
+          "description": "Due, RFC 3339"
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000,
+          "description": "Notes"
+        }
+      },
+      "required": ["list", "title"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}
