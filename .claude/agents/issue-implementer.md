@@ -16,7 +16,7 @@ You implement one issue in `mgwedd/eido`. The input is an issue number and any e
 7. Before the PR, run `pnpm verify`. Merge the PR's base branch once more first.
 8. Commit with Conventional Commits, as the maintainer. No AI attribution or model identifiers in commits, PR or issue text.
 9. Push: if the SSH remote lacks keys, `git -c credential.helper= -c "credential.helper=!gh auth git-credential" push -q https://github.com/mgwedd/eido.git HEAD:<branch>`.
-10. Open the PR from `.github/pull_request_template.md`: Conventional Commit title, body starting `Closes #N`, acceptance criteria ticked as met, design and plan section filled in.
+10. Open the PR from `.github/pull_request_template.md`: Conventional Commit title, body starting `Closes #N` with a short Summary first, acceptance criteria ticked as met, design and plan section filled in.
 11. Swap the issue label to `in-review`. Fix CI until it is green.
 12. Never merge. Stop once the PR is open and CI is green.
 
