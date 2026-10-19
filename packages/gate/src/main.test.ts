@@ -8,9 +8,18 @@ import {
 import { request } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest"
 import { BRIDGE_PASSWORD_KEY } from "./internal/bridge/bridge"
 import { rawMessage, startFakeBridge } from "./internal/bridge/fake-bridge"
+import { createTestCertificate } from "./internal/bridge/test-certificate"
 import type { FakeBridge } from "./internal/bridge/fake-bridge"
 import {
   GateRequestError,
@@ -310,7 +319,16 @@ describe("gateConfig with Bridge", () => {
     EIDO_BRIDGE_IMAP_PORT: "1143",
     EIDO_BRIDGE_SMTP_PORT: "1025",
     EIDO_BRIDGE_USERNAME: "assistant@example.invalid",
+    EIDO_BRIDGE_CERT_PATH: "",
+    EIDO_BRIDGE_CERT_SHA256: "",
   }
+  let certificate: ReturnType<typeof createTestCertificate>
+  beforeAll(() => {
+    certificate = createTestCertificate()
+    BASE.EIDO_BRIDGE_CERT_PATH = certificate.certPath
+    BASE.EIDO_BRIDGE_CERT_SHA256 = certificate.sha256
+  })
+  afterAll(() => certificate.cleanup())
 
   it("reads Bridge and its development vault, with no password in the config", () => {
     const config = gateConfig({
@@ -324,7 +342,8 @@ describe("gateConfig with Bridge", () => {
         imapPort: 1143,
         smtpPort: 1025,
         tls: "starttls",
-        allowSelfSigned: false,
+        certificatePem: certificate.cert,
+        certificateSha256: certificate.sha256,
         username: "assistant@example.invalid",
         searchFolders: ["INBOX"],
       },
@@ -395,7 +414,6 @@ describe("runGate with Bridge", () => {
           imapPort: fake.imapPort,
           smtpPort: fake.smtpPort,
           tls: "none",
-          allowSelfSigned: false,
           username: USER,
           searchFolders: ["INBOX"],
         },

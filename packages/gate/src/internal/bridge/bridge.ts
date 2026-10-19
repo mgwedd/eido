@@ -1,4 +1,5 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto"
+import type { PeerCertificate } from "node:tls"
 import { ImapFlow } from "imapflow"
 import type { FetchMessageObject, ImapFlowOptions } from "imapflow"
 import { createTransport } from "nodemailer"
@@ -123,6 +124,37 @@ const passwordHash = (secret: string) =>
 export const rawSha256 = (raw: Buffer) =>
   createHash("sha256").update(raw).digest("hex")
 
+function bridgeTlsOptions(config: BridgeConfig) {
+  if (config.tls === "none") return undefined
+  if (
+    config.certificatePem === undefined ||
+    config.certificateSha256 === undefined
+  ) {
+    throw new Error("Bridge TLS needs a pinned certificate")
+  }
+  const expected = config.certificateSha256
+  return {
+    ca: config.certificatePem,
+    rejectUnauthorized: true,
+    checkServerIdentity: (
+      _host: string,
+      cert: PeerCertificate
+    ): Error | undefined => {
+      const actual =
+        cert.raw === undefined
+          ? undefined
+          : createHash("sha256").update(cert.raw).digest("hex")
+      if (actual === expected) return undefined
+      return Object.assign(
+        new Error("Bridge certificate fingerprint mismatch"),
+        {
+          code: "ERR_BRIDGE_CERT_MISMATCH",
+        }
+      )
+    },
+  }
+}
+
 export function imapOptions(
   config: BridgeConfig,
   password: string
@@ -133,7 +165,7 @@ export function imapOptions(
     secure: config.tls === "tls",
     // true requires STARTTLS, false never sends it.
     doSTARTTLS: config.tls === "starttls",
-    tls: { rejectUnauthorized: !config.allowSelfSigned },
+    tls: bridgeTlsOptions(config),
     auth: { user: config.username, pass: password },
     logger: false,
     emitLogs: false,
@@ -157,7 +189,7 @@ export function smtpOptions(
     secure: config.tls === "tls",
     requireTLS: config.tls === "starttls",
     ignoreTLS: config.tls === "none",
-    tls: { rejectUnauthorized: !config.allowSelfSigned },
+    tls: bridgeTlsOptions(config),
     auth: { user: config.username, pass: password },
     // The EHLO name; the default would send this machine's hostname.
     name: "localhost",

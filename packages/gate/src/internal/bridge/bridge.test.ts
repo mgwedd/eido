@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
 import { InMemoryVault } from "../vault/vault"
 import {
   BRIDGE_PASSWORD_KEY,
@@ -13,6 +13,7 @@ import type { ProtonBridge } from "./bridge"
 import type { BridgeConfig } from "./config"
 import { BridgeError } from "./errors"
 import { closedPort, rawMessage, startFakeBridge } from "./fake-bridge"
+import { createTestCertificate } from "./test-certificate"
 import type { FakeBridge, FakeBridgeOptions, FakeMailbox } from "./fake-bridge"
 
 const USER = "assistant@example.invalid"
@@ -29,7 +30,6 @@ function config(fake: Pick<FakeBridge, "imapPort" | "smtpPort">): BridgeConfig {
     imapPort: fake.imapPort,
     smtpPort: fake.smtpPort,
     tls: "none",
-    allowSelfSigned: false,
     username: USER,
     searchFolders: ["INBOX", "Archive"],
   }
@@ -107,18 +107,19 @@ describe("connection options", () => {
     imapPort: 1143,
     smtpPort: 1025,
     tls: "starttls",
-    allowSelfSigned: true,
+    certificatePem: "synthetic certificate",
+    certificateSha256: "a".repeat(64),
     username: USER,
     searchFolders: ["INBOX"],
   }
 
-  it("requires STARTTLS on both protocols and accepts the self-signed certificate when allowed", () => {
+  it("requires STARTTLS and the pinned certificate on both protocols", () => {
     expect(imapOptions(base, PASSWORD)).toMatchObject({
       host: "127.0.0.1",
       port: 1143,
       secure: false,
       doSTARTTLS: true,
-      tls: { rejectUnauthorized: false },
+      tls: { rejectUnauthorized: true, ca: "synthetic certificate" },
       logger: false,
     })
     expect(smtpOptions(base, PASSWORD)).toMatchObject({
@@ -127,7 +128,7 @@ describe("connection options", () => {
       secure: false,
       requireTLS: true,
       ignoreTLS: false,
-      tls: { rejectUnauthorized: false },
+      tls: { rejectUnauthorized: true, ca: "synthetic certificate" },
       name: "localhost",
       logger: false,
       disableFileAccess: true,
@@ -136,7 +137,7 @@ describe("connection options", () => {
   })
 
   it("uses implicit TLS and verifies the certificate in tls mode", () => {
-    const tls = { ...base, tls: "tls" as const, allowSelfSigned: false }
+    const tls = { ...base, tls: "tls" as const }
     expect(imapOptions(tls, PASSWORD)).toMatchObject({
       secure: true,
       doSTARTTLS: false,
@@ -149,7 +150,7 @@ describe("connection options", () => {
     })
   })
 
-  it("never upgrades in none mode", () => {
+  it("keeps clear-text mode only for direct test fixtures", () => {
     const none = { ...base, tls: "none" as const }
     expect(imapOptions(none, PASSWORD)).toMatchObject({
       secure: false,
@@ -160,6 +161,75 @@ describe("connection options", () => {
       requireTLS: false,
       ignoreTLS: true,
     })
+  })
+})
+
+describe("certificate pinning against an implicit-TLS fake Bridge", () => {
+  let pinned: ReturnType<typeof createTestCertificate>
+  let other: ReturnType<typeof createTestCertificate>
+  beforeAll(() => {
+    pinned = createTestCertificate()
+    other = createTestCertificate()
+  })
+  afterAll(() => {
+    pinned.cleanup()
+    other.cleanup()
+  })
+
+  async function bridgeFor(
+    cert: ReturnType<typeof createTestCertificate>,
+    expectedSha256 = pinned.sha256
+  ) {
+    const fake = await startFakeBridge({
+      username: USER,
+      password: PASSWORD,
+      implicitTls: { cert: cert.cert, key: cert.key },
+    })
+    opened.push(fake)
+    const vault = new InMemoryVault()
+    await vault.set(BRIDGE_PASSWORD_KEY, PASSWORD)
+    const bridge = createProtonBridge({
+      config: {
+        host: "127.0.0.1",
+        imapPort: fake.imapPort,
+        smtpPort: fake.smtpPort,
+        tls: "tls",
+        certificatePem: pinned.cert,
+        certificateSha256: expectedSha256,
+        username: USER,
+        searchFolders: ["INBOX"],
+      },
+      vault,
+    })
+    return { fake, bridge }
+  }
+
+  it("connects through the pinned certificate on IMAP and SMTP", async () => {
+    const { fake, bridge } = await bridgeFor(pinned)
+    expect(await bridge.listFolders()).toContain("INBOX")
+    await bridge.send({ to: ["guest@example.invalid"], text: "synthetic" })
+    expect(fake.imapCommands).toContain("LOGIN <redacted>")
+    expect(fake.smtpCommands.some((line) => line.startsWith("AUTH"))).toBe(true)
+  })
+
+  it("refuses a peer whose trusted certificate does not match the configured fingerprint", async () => {
+    const { fake, bridge } = await bridgeFor(pinned, other.sha256)
+    await expect(bridge.listFolders()).rejects.toMatchObject({
+      code: "handshake_failed",
+    })
+    expect(fake.imapLines.some((line) => line.includes("LOGIN"))).toBe(false)
+  })
+
+  it("refuses a different certificate before IMAP LOGIN or SMTP AUTH", async () => {
+    const { fake, bridge } = await bridgeFor(other)
+    await expect(bridge.listFolders()).rejects.toMatchObject({
+      code: "handshake_failed",
+    })
+    await expect(
+      bridge.send({ to: ["guest@example.invalid"], text: "synthetic" })
+    ).rejects.toMatchObject({ code: "handshake_failed" })
+    expect(fake.imapLines.some((line) => line.includes("LOGIN"))).toBe(false)
+    expect(fake.smtpLines.some((line) => line.startsWith("AUTH"))).toBe(false)
   })
 })
 
