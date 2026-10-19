@@ -41,6 +41,17 @@ export function hostHeader(host: LoopbackHost, port: number): string {
   return host === "::1" ? `[::1]:${String(port)}` : `${host}:${String(port)}`
 }
 
+/** The listener's own Host appears once, even if configured as an extra allowed Host. */
+export function withListenHost(
+  listenHost: string,
+  allowedHosts: readonly string[]
+): string[] {
+  return [
+    listenHost,
+    ...allowedHosts.filter((allowed) => allowed !== listenHost),
+  ]
+}
+
 export type CoreApiOptions = {
   profile: ProfileStore
   host: LoopbackHost
@@ -81,10 +92,7 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
   // listen on a host and port always yields an AddressInfo, never a pipe name.
   const { port } = server.address() as AddressInfo
   const listenHost = hostHeader(options.host, port)
-  const allowedHosts = [
-    listenHost,
-    ...options.allowedHosts.filter((allowed) => allowed !== listenHost),
-  ]
+  const allowedHosts = withListenHost(listenHost, options.allowedHosts)
   handler = handlerFor(allowedHosts)
   return {
     host: options.host,
