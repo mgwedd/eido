@@ -2,6 +2,8 @@ import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { soundex, tokenize } from "./text"
 
+export type MailAddressRole = "from" | "reply_to" | "to" | "cc"
+
 export interface IndexedDocument {
   sha256: string
   source: string
@@ -20,6 +22,8 @@ export interface IndexedDocument {
     attachmentOf?: string
   }
   names?: { role: "from" | "to" | "cc"; name: string }[]
+  /** Header addresses of a mail message, in header order within each role. */
+  addresses?: { role: MailAddressRole; address: string }[]
   /** The canonical bytes the sha256 was computed from. When given, the digest is verified. */
   content?: Uint8Array
 }
@@ -101,6 +105,15 @@ function insertDocument(
       const key = soundex(token)
       if (key !== null) insertName.run(doc.sha256, role, name, key)
     }
+  }
+  const insertAddress = db.prepare(
+    "INSERT INTO mail_addresses (sha256, role, position, address) VALUES (?, ?, ?, ?)"
+  )
+  const positions = new Map<MailAddressRole, number>()
+  for (const { role, address } of doc.addresses ?? []) {
+    const position = positions.get(role) ?? 0
+    positions.set(role, position + 1)
+    insertAddress.run(doc.sha256, role, position, address)
   }
   return true
 }

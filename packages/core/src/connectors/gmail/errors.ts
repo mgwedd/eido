@@ -6,6 +6,7 @@ export type GmailErrorCode =
   | "grant_revoked"
   | "history_expired"
   | "not_found"
+  | "no_recipients"
   | "gate_unavailable"
   | "upstream_error"
   | "invalid_response"

@@ -63,7 +63,11 @@ describe("manifest", () => {
 
   test("declares exactly the facade's verbs, no more and no fewer", () => {
     const verbs = Object.keys(
-      createGmailFacade({ db: openIndex(":memory:"), intents: unusedIntents })
+      createGmailFacade({
+        db: openIndex(":memory:"),
+        intents: unusedIntents,
+        identity: "assistant@example.com",
+      })
     ).sort()
     expect(manifest.operations.map((op) => op.name).sort()).toEqual(verbs)
   })

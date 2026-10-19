@@ -12,9 +12,24 @@ import { search } from "../../index/index"
 import type { SearchHit } from "../../index/index"
 import { ProtonError } from "./errors"
 import { isTextMime } from "../mail/parse"
+import { replyRecipients, storedAddresses } from "../reply-target"
 import { CONNECTOR } from "./sync"
 
 export type IntentReceipt = { intentId: string }
+
+/** What the model gives for a reply: the hash and the recipients are core's to fill. */
+export type ReplyRequest = {
+  messageId: string
+  replyAll: boolean
+  body: string
+}
+
+/** What the model gives for a forward: the hash is core's to fill. */
+export type ForwardRequest = {
+  messageId: string
+  to: EmailForwardIntent["args"]["to"]
+  note?: string
+}
 
 export type MailDocument = {
   messageId: string
@@ -35,6 +50,8 @@ export type AttachmentTextResult = {
 export type ProtonFacadeDeps = {
   db: DatabaseSync
   intents: IntentClient
+  /** The assistant address: never a recipient of its own reply. */
+  identity: string
   origin?: GateIntentOrigin
 }
 
@@ -71,8 +88,20 @@ const FROM = `FROM document_text t JOIN documents d ON d.sha256 = t.sha256
  * The verbs the model sees. Reads answer from the local index only. Write verbs only propose an intent to the gate and return its id: no source call.
  */
 export function createProtonFacade(deps: ProtonFacadeDeps) {
-  const { db, intents } = deps
+  const { db, intents, identity } = deps
   const origin = deps.origin ?? "reactive"
+  /** The indexed message the Message-ID names: its raw-byte hash and its stored addresses. */
+  const target = (messageId: string) => {
+    const row = db
+      .prepare(
+        `SELECT d.sha256 ${FROM} AND t.message_id = ? AND t.attachment_of IS NULL LIMIT 1`
+      )
+      .get(messageId)
+    if (row === undefined)
+      throw new ProtonError("not_found", "no such message in the index")
+    const sha256 = String(row["sha256"])
+    return { sha256, addresses: storedAddresses(db, sha256) }
+  }
   const propose = async (intent: {
     kind: string
     args: object
@@ -133,10 +162,37 @@ export function createProtonFacade(deps: ProtonFacadeDeps) {
       propose({ kind: "email.draft", args }),
     send: (args: EmailSendIntent["args"]) =>
       propose({ kind: "email.send", args }),
-    reply: (args: EmailReplyIntent["args"]) =>
-      propose({ kind: "email.reply", args }),
-    forward: (args: EmailForwardIntent["args"]) =>
-      propose({ kind: "email.forward", args }),
+    reply: (args: ReplyRequest) => {
+      // Only the named fields pass: a hash or recipients in model output are dropped, not trusted.
+      const { sha256, addresses } = target(args.messageId)
+      const { to, cc } = replyRecipients(addresses, args.replyAll, identity)
+      if (to.length === 0)
+        throw new ProtonError(
+          "no_recipients",
+          "the message yields no recipient to reply to"
+        )
+      return propose({
+        kind: "email.reply",
+        args: {
+          messageId: args.messageId,
+          messageSha256: sha256,
+          replyAll: args.replyAll,
+          to,
+          ...(cc.length === 0 ? {} : { cc }),
+          body: args.body,
+        } satisfies EmailReplyIntent["args"],
+      })
+    },
+    forward: (args: ForwardRequest) =>
+      propose({
+        kind: "email.forward",
+        args: {
+          messageId: args.messageId,
+          messageSha256: target(args.messageId).sha256,
+          to: args.to,
+          ...(args.note === undefined ? {} : { note: args.note }),
+        } satisfies EmailForwardIntent["args"],
+      }),
     trash: (args: EmailTrashIntent["args"]) =>
       propose({ kind: "email.trash", args }),
   }
