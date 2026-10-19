@@ -6,7 +6,9 @@
   "scripts": {
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest --watch"
   },
   "dependencies": {
     "@base-ui/react": "1.9.0",
@@ -30,7 +32,9 @@
     "react-dom": "19.3.0",
     "shadcn": "4.22.0",
     "tailwindcss": "4.3.3",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "@vitest/coverage-v8": "5.0.5",
+    "vitest": "5.0.5"
   },
   "exports": {
     "./globals.css": "./src/styles/globals.css",

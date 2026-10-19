@@ -48,6 +48,9 @@ jobs:
       - name: Typecheck, lint, test
         if: steps.changes.outputs.code == 'true'
         run: pnpm turbo run typecheck lint test
+      - name: Coverage per package (job summary)
+        if: always() && steps.changes.outputs.code == 'true'
+        run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
       - name: Dependency boundaries (blocking)
         if: steps.changes.outputs.code == 'true'
         run: pnpm check:deps
