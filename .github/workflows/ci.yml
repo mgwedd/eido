@@ -24,25 +24,46 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2 # the PR merge commit and its base parent, for the change filter
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
       - name: Enable pnpm (version pinned by packageManager)
         run: corepack enable
       - run: pnpm install --frozen-lockfile
+      # Pull requests that only touch docs or images skip the heavy steps below.
+      # Format, secret scan and version checks always run, and every push to main
+      # runs everything (auto-release waits on that run).
+      - name: Detect code changes
+        id: changes
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only HEAD^1 HEAD | grep -qvE '\.(md|png|jpe?g|gif|webp)$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "Docs and images only: skipping typecheck, lint, test and boundary checks."
+          fi
       - name: Typecheck, lint, test
+        if: steps.changes.outputs.code == 'true'
         run: pnpm turbo run typecheck lint test
       - name: Dependency boundaries (blocking)
+        if: steps.changes.outputs.code == 'true'
         run: pnpm check:deps
       - name: Boundary-violation fixture must fail
+        if: steps.changes.outputs.code == 'true'
         run: pnpm check:deps-fixture
       - name: Gate dependency allowlist
+        if: steps.changes.outputs.code == 'true'
         run: pnpm check:gate-deps
       - name: Lint covers TypeScript files
+        if: steps.changes.outputs.code == 'true'
         run: pnpm check:lint-coverage
       - name: Secret scan
         run: pnpm check:secrets
       - name: Turborepo boundaries (advisory)
+        if: steps.changes.outputs.code == 'true'
         run: pnpm boundaries
         continue-on-error: true
       - name: Formatting
