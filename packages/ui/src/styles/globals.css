@@ -2,6 +2,10 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/*
+ * Root token set. Light values in :root, dark in .dark (dark is the default, set by next-themes).
+ * Add a token: define it in both blocks, map it in @theme inline. See packages/ui/AGENTS.md.
+ */
 @custom-variant dark (&:is(.dark *));
 @source "../../../../apps/**/*.{ts,tsx}";
 @source "../../../../packages/**/*.{ts,tsx}";
