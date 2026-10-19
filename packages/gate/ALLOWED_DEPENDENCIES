@@ -7,3 +7,4 @@
 eslint  # lint script
 typescript  # typecheck script
 vitest  # test script
+@vitest/coverage-v8  # test script coverage (v8 provider, same version as vitest); dev-only, no runtime or network access
