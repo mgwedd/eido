@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Intent } from "@eido/schemas"
-import { getPinnedManifest, pinManifest } from "./connectors"
+import { getPinnedManifest } from "./connectors"
 import { verifyChain } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
 import { openControlDb } from "./control-db"
@@ -15,6 +15,7 @@ import {
   auditRows,
   loggedText,
   manifest,
+  signedPin,
   sample,
   setup,
 } from "./test-fixtures"
@@ -655,7 +656,7 @@ describe("executor", () => {
           },
         ]
       }
-      pinManifest(s.db, mail, "system")
+      signedPin(s.db, mail, "system")
       expect(await f.executor.execute(f.id)).toEqual({
         ok: false,
         code: "hash_mismatch",
@@ -680,7 +681,7 @@ describe("executor", () => {
         pathPattern: "/v1/labels/{messageId}",
       },
     ]
-    pinManifest(s.db, mail, "system")
+    signedPin(s.db, mail, "system")
     const build = f.writer.buildRequest
     f.writer.buildRequest = (intent) => ({
       ...build(intent),

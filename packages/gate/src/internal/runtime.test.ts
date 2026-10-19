@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { kindTier } from "./policy"
-import { reloadPolicy, runningGate, startGate, stopGate } from "./runtime"
-import { WEBAUTHN, setup } from "./test-fixtures"
+import { kindTier, preparePolicyChange } from "./policy"
+import {
+  applyPolicyOverrides,
+  reloadPolicy,
+  runningGate,
+  startGate,
+  stopGate,
+} from "./runtime"
+import { WEBAUTHN, controlAuthorization, setup } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
 let current: Setup | undefined
@@ -42,10 +48,15 @@ describe("the running gate", () => {
     )
   })
 
-  it("applies a changed overlay and keeps the current policy when the overlay is rejected", () => {
+  it("applies a signed override and keeps it when a later proposal is rejected", () => {
     const s = started()
-    s.writeOverlay({ version: 1, tiers: { "email.archive": "approval" } })
-    expect(reloadPolicy()).toEqual([])
+    const override = { version: 1, tiers: { "email.archive": "approval" } }
+    s.writeOverlay(override)
+    const prepared = preparePolicyChange(s.db, override)
+    const authorization = controlAuthorization(s.db, prepared)
+    expect(
+      applyPolicyOverrides(override, "owner", authorization.request)
+    ).toEqual([])
     expect(kindTier(s.db, runningGate().policy, "email.archive")).toEqual({
       tier: "approval",
     })

@@ -8,11 +8,11 @@ import {
   egressAllowlist,
   getPinnedManifest,
   manifestHash,
-  pinManifest,
   pinnedOperation,
   resolveTier,
 } from "./connectors"
 import { openControlDb } from "./control-db"
+import { signedPin } from "./test-fixtures"
 
 // Synthetic connectors: example.com hosts, made-up scopes, no real client ids or tokens.
 function mail(version = 1): ConnectorManifest {
@@ -131,7 +131,7 @@ function auditRows(db: DatabaseSync): Array<Record<string, unknown>> {
 
 function pinned(): DatabaseSync {
   const db = openControlDb(":memory:")
-  pinManifest(db, mail(), "owner")
+  signedPin(db, mail(), "owner")
   return db
 }
 
@@ -152,7 +152,7 @@ describe("pinManifest", () => {
     const db = openControlDb(":memory:")
     const bad = mail()
     delete bad.operations[1]?.intentKind
-    expect(() => pinManifest(db, bad, "owner")).toThrow(
+    expect(() => signedPin(db, bad, "owner")).toThrow(
       "intentKind: required for a write operation"
     )
     expect(getPinnedManifest(db, "example-mail")).toBeUndefined()
@@ -162,7 +162,7 @@ describe("pinManifest", () => {
   it("refuses a changed manifest that does not bump the version", () => {
     const db = pinned()
     const changed = { ...mail(), description: "Changed without a bump" }
-    expect(() => pinManifest(db, changed, "owner")).toThrow(
+    expect(() => signedPin(db, changed, "owner")).toThrow(
       "needs a version above 1"
     )
     expect(getPinnedManifest(db, "example-mail")).toEqual(mail())
@@ -171,9 +171,9 @@ describe("pinManifest", () => {
 
   it("refuses a changed manifest with a lower version", () => {
     const db = openControlDb(":memory:")
-    pinManifest(db, mail(2), "owner")
+    signedPin(db, mail(2), "owner")
     const older = { ...mail(1), description: "An older review" }
-    expect(() => pinManifest(db, older, "owner")).toThrow(
+    expect(() => signedPin(db, older, "owner")).toThrow(
       "needs a version above 2"
     )
     expect(getPinnedManifest(db, "example-mail")).toEqual(mail(2))
@@ -182,7 +182,7 @@ describe("pinManifest", () => {
   it("refuses to re-enable a drift-disabled connector with the same manifest", () => {
     const db = pinned()
     checkDrift(db, "example-mail", [...PINNED_TOOLS, "delete_message"])
-    expect(() => pinManifest(db, mail(), "owner")).toThrow(
+    expect(() => signedPin(db, mail(), "owner")).toThrow(
       "disabled after drift: pin a re-reviewed manifest with a version above 1"
     )
     expect(row(db).enabled).toBe(0)
@@ -196,7 +196,7 @@ describe("pinManifest", () => {
   it("keeps an identical re-pin enabled with the same hash", () => {
     const db = pinned()
     const before = row(db).manifest_hash
-    pinManifest(db, mail(), "owner")
+    signedPin(db, mail(), "owner")
     expect(row(db).enabled).toBe(1)
     expect(row(db).manifest_hash).toBe(before)
     expect(auditRows(db).map((r) => r["action"])).toEqual([
@@ -210,7 +210,7 @@ describe("pinManifest", () => {
     db.exec(
       "UPDATE connectors SET health = 'open', consecutive_failures = 3 WHERE name = 'example-mail'"
     )
-    pinManifest(db, mail(2), "owner")
+    signedPin(db, mail(2), "owner")
     expect(row(db).health).toBe("healthy")
     expect(row(db).consecutive_failures).toBe(0)
   })
@@ -287,7 +287,7 @@ describe("checkDrift", () => {
       intentKind: "email.trash",
       defaultTier: "approval",
     })
-    pinManifest(db, reviewed, "owner")
+    signedPin(db, reviewed, "owner")
     expect(row(db).enabled).toBe(1)
     expect(row(db).drift_json).toBeNull()
     expect(row(db).manifest_hash).not.toBe(firstHash)
@@ -371,7 +371,7 @@ describe("resolveTier", () => {
 describe("egressAllowlist", () => {
   it("lists hosts, methods and path prefixes of enabled connectors only", () => {
     const db = pinned()
-    pinManifest(db, files(), "owner")
+    signedPin(db, files(), "owner")
     const both = [
       {
         connector: "example-files",
@@ -404,7 +404,12 @@ describe("audit", () => {
       ["owner", "connector.pinned", "example-mail"],
       ["system", "connector.disabled_drift", "example-mail"],
     ])
-    expect(rows[0]?.["detail_hash"]).toBe(row(db).manifest_hash)
+    const approvalRefHash = db
+      .prepare("SELECT pin_approval_ref_hash FROM connectors WHERE name = ?")
+      .get("example-mail")?.["pin_approval_ref_hash"]
+    expect(rows[0]?.["detail_hash"]).toBe(
+      payloadHash({ manifestHash: row(db).manifest_hash, approvalRefHash })
+    )
     for (const r of rows) {
       expect(String(r["detail_hash"])).toMatch(/^[0-9a-f]{64}$/)
     }

@@ -1,7 +1,9 @@
 import { DatabaseSync } from "node:sqlite"
+import { append } from "./audit"
+import { payloadHash } from "./canonical"
 
 // Ordered migrations, tracked with PRAGMA user_version. Append new entries; never edit applied ones.
-const MIGRATIONS: readonly string[] = [
+const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
   `CREATE TABLE audit_log (
      seq         INTEGER PRIMARY KEY AUTOINCREMENT,
      ts          TEXT NOT NULL,
@@ -110,6 +112,46 @@ const MIGRATIONS: readonly string[] = [
      result TEXT NOT NULL,
      audit_seq INTEGER NOT NULL UNIQUE REFERENCES audit_log(seq)
    ) STRICT;`,
+  // Signed control changes (#160). Unsigned legacy pins must be reviewed before reuse.
+  (db) => {
+    db.exec(`ALTER TABLE connectors ADD COLUMN pin_approval_ref_hash TEXT;
+      CREATE TABLE control_approvals (
+        id TEXT PRIMARY KEY,
+        purpose TEXT NOT NULL CHECK (purpose IN ('manifest.pin', 'policy.set')),
+        target TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        nonce TEXT NOT NULL UNIQUE,
+        issued_at TEXT NOT NULL,
+        superseded_at TEXT,
+        used_at TEXT,
+        approval_ref_hash TEXT UNIQUE,
+        credential_hash TEXT,
+        signature_hash TEXT,
+        sign_count INTEGER,
+        audit_seq INTEGER REFERENCES audit_log(seq),
+        CHECK (used_at IS NULL OR (approval_ref_hash IS NOT NULL AND credential_hash IS NOT NULL AND signature_hash IS NOT NULL AND sign_count IS NOT NULL AND audit_seq IS NOT NULL))
+      ) STRICT;
+      CREATE TRIGGER control_approval_binding_immutable BEFORE UPDATE OF id, purpose, target, payload_hash, nonce, issued_at ON control_approvals BEGIN SELECT RAISE(ABORT, 'control approval binding is immutable'); END;
+      CREATE TRIGGER control_approval_consumed_immutable BEFORE UPDATE ON control_approvals WHEN OLD.used_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'consumed control approval is immutable'); END;
+      CREATE TRIGGER control_approval_consumed_no_delete BEFORE DELETE ON control_approvals WHEN OLD.used_at IS NOT NULL BEGIN SELECT RAISE(ABORT, 'consumed control approval is immutable'); END;
+      CREATE TABLE approved_policy (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        payload_json TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        approval_id TEXT NOT NULL REFERENCES control_approvals(id)
+      ) STRICT;`)
+    for (const row of db
+      .prepare("SELECT name, manifest_hash FROM connectors WHERE enabled = 1")
+      .all()) {
+      append(db, {
+        actor: "system",
+        action: "connector.disabled_unsigned",
+        target: String(row["name"]),
+        detailHash: payloadHash({ manifestHash: String(row["manifest_hash"]) }),
+      })
+    }
+    db.exec("UPDATE connectors SET enabled = 0 WHERE enabled = 1")
+  },
 ]
 
 function userVersion(db: DatabaseSync): number {
@@ -128,7 +170,8 @@ export function openControlDb(path: string): DatabaseSync {
     try {
       // Re-check under the write lock so two openers never apply the same migration twice.
       if (userVersion(db) === v && sql !== undefined) {
-        db.exec(sql)
+        if (typeof sql === "string") db.exec(sql)
+        else sql(db)
         db.exec(`PRAGMA user_version = ${v + 1}`)
       }
       db.exec("COMMIT")
