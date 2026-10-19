@@ -1,0 +1,272 @@
+{
+  "version": 1,
+  "valid": [
+    {
+      "id": "empty-object",
+      "inputJson": "{}",
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "id": "empty-array",
+      "inputJson": "[]",
+      "canonical": "[]",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "id": "null",
+      "inputJson": "null",
+      "canonical": "null",
+      "sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "true",
+      "inputJson": "true",
+      "canonical": "true",
+      "sha256": "b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+    },
+    {
+      "id": "false",
+      "inputJson": "false",
+      "canonical": "false",
+      "sha256": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa"
+    },
+    {
+      "id": "empty-string",
+      "inputJson": "\"\"",
+      "canonical": "\"\"",
+      "sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
+    },
+    {
+      "id": "rfc8785-3.2.3-key-sorting",
+      "inputJson": "{\"\\u20ac\":\"Euro Sign\",\"\\r\":\"Carriage Return\",\"\\ufb33\":\"Hebrew Letter Dalet With Dagesh\",\"1\":\"One\",\"\\ud83d\\ude00\":\"Emoji: Grinning Face\",\"\\u0080\":\"Control\",\"\\u00f6\":\"Latin Small Letter O With Diaeresis\"}",
+      "canonical": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u0080\":\"Control\",\"\u00f6\":\"Latin Small Letter O With Diaeresis\",\"\u20ac\":\"Euro Sign\",\"\ud83d\ude00\":\"Emoji: Grinning Face\",\"\ufb33\":\"Hebrew Letter Dalet With Dagesh\"}",
+      "sha256": "5e321556d22018a9656991a9e94f77ec175fa193e52a2429d312f8419ec8b08c"
+    },
+    {
+      "id": "key-order-utf16-emoji-before-dalet",
+      "inputJson": "{\"\\ufb33\":1,\"\\ud83d\\ude00\":2}",
+      "canonical": "{\"\ud83d\ude00\":2,\"\ufb33\":1}",
+      "sha256": "ec4e7d8c2963caa38dccc3d42693719ac9c6ecd783891b583d333565620ac2be"
+    },
+    {
+      "id": "key-order-ascii",
+      "inputJson": "{\"b\":1,\"a\":2,\"B\":3,\"10\":4,\"9\":5,\"\":6}",
+      "canonical": "{\"\":6,\"10\":4,\"9\":5,\"B\":3,\"a\":2,\"b\":1}",
+      "sha256": "3a799ffabdc5ecc455f3564b9deb82e527f25a4c21125d2a6076e3fa9704ffbd"
+    },
+    {
+      "id": "number-0",
+      "inputJson": "0",
+      "canonical": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "id": "number-negative-zero",
+      "inputJson": "-0",
+      "canonical": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "id": "number-min-subnormal",
+      "inputJson": "5e-324",
+      "canonical": "5e-324",
+      "sha256": "c46e7ca1be4c8734f373a56530787288fa2058d73d07855e9247e949f811a42a"
+    },
+    {
+      "id": "number-min-double",
+      "inputJson": "-1.7976931348623157e+308",
+      "canonical": "-1.7976931348623157e+308",
+      "sha256": "f0347276b171ff0c36491c912285a2833de7313d1a103a4b1be0274bfe7c021f"
+    },
+    {
+      "id": "number-2-pow-53",
+      "inputJson": "9007199254740992",
+      "canonical": "9007199254740992",
+      "sha256": "c681da39d7273a6a24c15c9cac3a75526ff2ecf8ba4ee60346a0c70c8163bdb2"
+    },
+    {
+      "id": "number-large-integer-plain",
+      "inputJson": "295147905179352830000",
+      "canonical": "295147905179352830000",
+      "sha256": "7933ef1b34c194c7a327ef424e54282dd2872bc7bda27812f9edf7882ca340c0"
+    },
+    {
+      "id": "number-9.999999999999997e22",
+      "inputJson": "9.999999999999997e+22",
+      "canonical": "9.999999999999997e+22",
+      "sha256": "143eadc1fc2fe10a563df313c717399d1835652d710fa189119ff2e1d5cde33d"
+    },
+    {
+      "id": "number-1e23",
+      "inputJson": "1e+23",
+      "canonical": "1e+23",
+      "sha256": "0b1af6b73e932475817f8eb620deecf21ad7570df3400a23db5c79a9001597f7"
+    },
+    {
+      "id": "number-1.0000000000000001e23",
+      "inputJson": "1.0000000000000001e+23",
+      "canonical": "1.0000000000000001e+23",
+      "sha256": "de7cb5db5ee06bf7ef5b74ebcf94cd9d7efda28125905f7ff590724953173c7b"
+    },
+    {
+      "id": "number-999999999999999700000",
+      "inputJson": "999999999999999700000",
+      "canonical": "999999999999999700000",
+      "sha256": "dcabf7269f6bb6ec5ba8b9530825cd7ffe215d4dd26e0a237f9d753513792c07"
+    },
+    {
+      "id": "number-999999999999999900000",
+      "inputJson": "999999999999999900000",
+      "canonical": "999999999999999900000",
+      "sha256": "914b4f8b4bbe2f6e7c36ad7791fc842a7516d149e694b3a71b78cee465ff6d7a"
+    },
+    {
+      "id": "number-1e21",
+      "inputJson": "1e+21",
+      "canonical": "1e+21",
+      "sha256": "241c4643fa70b1dcde1205b71be4e3bebb17e9f880c8e1a33d0ead6c27271d3c"
+    },
+    {
+      "id": "number-9.999999999999997e-7",
+      "inputJson": "9.999999999999997e-7",
+      "canonical": "9.999999999999997e-7",
+      "sha256": "2ace34b29d30d300aeacd4f2bb83367fa186f11a3f02ed461f35f00fd741a242"
+    },
+    {
+      "id": "number-0.000001",
+      "inputJson": "0.000001",
+      "canonical": "0.000001",
+      "sha256": "159fb29a827ad04b260aa6c8ab6d8637f8f2b38af5c4f3cb49d6a21205e040f8"
+    },
+    {
+      "id": "number-exponent-normalised-in",
+      "inputJson": "1E30",
+      "canonical": "1e+30",
+      "sha256": "7412d94bdf30adfa71080e057185e1a8de86e2e99a8350b011df8ac41ed5a6e3"
+    },
+    {
+      "id": "number-trailing-zero-fraction",
+      "inputJson": "1.0",
+      "canonical": "1",
+      "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "id": "number-exponent-to-integer",
+      "inputJson": "4.5E2",
+      "canonical": "450",
+      "sha256": "83151157c10d85af7c84657c71c3e3603d955160f0526fce672481da83a2e090"
+    },
+    {
+      "id": "number-small-negative-exponent",
+      "inputJson": "-1.5e-7",
+      "canonical": "-1.5e-7",
+      "sha256": "5d1523c3c7ec2cb017ae6d4de39dadc71a857a10a05fa897aee1bb71213a9168"
+    },
+    {
+      "id": "number-negative-zero-fraction",
+      "inputJson": "-0.0",
+      "canonical": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "id": "string-escapes",
+      "inputJson": "\"quote\\\" backslash\\\\ slash\\/ tab\\t newline\\n cr\\r bs\\b ff\\f\"",
+      "canonical": "\"quote\\\" backslash\\\\ slash/ tab\\t newline\\n cr\\r bs\\b ff\\f\"",
+      "sha256": "47115fd86f98c916919ec5c9abcd67be411d29d2d589f3f87092e318b200cf5b"
+    },
+    {
+      "id": "string-control-characters",
+      "inputJson": "\"\\u0000\\u0001\\u000b\\u001f\\u007f\"",
+      "canonical": "\"\\u0000\\u0001\\u000b\\u001f\u007f\"",
+      "sha256": "8df40bc9d26a5662ebf43736ecef76f7088d7b7c3be266f08231c8261580ce5d"
+    },
+    {
+      "id": "string-slash-and-html",
+      "inputJson": "\"a/b</script>&\\u2028\"",
+      "canonical": "\"a/b</script>&\u2028\"",
+      "sha256": "47566a33d9f1430947af4ec2b2ab92b3712cbb9f500ee29095ac9f9d37b97aa7"
+    },
+    {
+      "id": "string-combining-no-normalisation",
+      "inputJson": "[\"e\\u0301\",\"\\u00e9\"]",
+      "canonical": "[\"e\u0301\",\"\u00e9\"]",
+      "sha256": "d056a09c651dab55ceb8f30b349ec21de471bdf5ce4a94db7f29dc9594f54ec3"
+    },
+    {
+      "id": "string-non-bmp",
+      "inputJson": "\"\\ud83d\\ude00 \\ud800\\udc00 \\udbff\\udfff\"",
+      "canonical": "\"\ud83d\ude00 \ud800\udc00 \udbff\udfff\"",
+      "sha256": "e1776b0372a3e548d039cd9d757a3e1a14faa8d16321ffd4c655bea060d28a81"
+    },
+    {
+      "id": "string-cjk-and-literal-utf8",
+      "inputJson": "\"\u65e5\u672c\u8a9e \u00fc\"",
+      "canonical": "\"\u65e5\u672c\u8a9e \u00fc\"",
+      "sha256": "8fa35f7edfe3252e315c8bb7c0faed2955ce7526d42ca0adf722b8aa66924d12"
+    },
+    {
+      "id": "array-mixed-types",
+      "inputJson": "[1,\"a\",null,true,false,{\"b\":2,\"a\":1},[],[[]]]",
+      "canonical": "[1,\"a\",null,true,false,{\"a\":1,\"b\":2},[],[[]]]",
+      "sha256": "d9ccd14a83368de0e8f1a646937669741964649402e1a44e942e4844f48c4306"
+    },
+    {
+      "id": "array-order-preserved",
+      "inputJson": "[3,1,2]",
+      "canonical": "[3,1,2]",
+      "sha256": "51bda7ab4e44726cde71fcb6e4b515357059bb6b6dd5146d1fc50f73f11678c6"
+    },
+    {
+      "id": "nested-depth-5",
+      "inputJson": "{\"z\":1,\"a\":{\"y\":[{\"b\":2,\"a\":1}],\"x\":null,\"c\":{\"e\":{\"d\":{\"f\":0}}}}}",
+      "canonical": "{\"a\":{\"c\":{\"e\":{\"d\":{\"f\":0}}},\"x\":null,\"y\":[{\"a\":1,\"b\":2}]},\"z\":1}",
+      "sha256": "7adb79be8632414c83bee85bddf73b454226325a74e0a3c9a9b933e7c79e5070"
+    },
+    {
+      "id": "whitespace-insensitive-input",
+      "inputJson": "{\n  \"b\" : [ 1 , 2 ] ,\n\t\"a\" : \"x\"\n}",
+      "canonical": "{\"a\":\"x\",\"b\":[1,2]}",
+      "sha256": "721ef82f2d6c0997bffb7a8ab3f40f8fb45b0b52ce2af3afa6b0f05efbdc317f"
+    },
+    {
+      "id": "object-with-empty-members",
+      "inputJson": "{\"b\":{},\"a\":[]}",
+      "canonical": "{\"a\":[],\"b\":{}}",
+      "sha256": "9959f7ea5ff37e0cf81634a894845a335eb6e26fbad0877944e9bc009b4f0644"
+    },
+    {
+      "id": "intent-email-send",
+      "inputJson": "{\"intent_id\":\"int_0001\",\"kind\":\"email.send\",\"account\":\"primary\",\"payload\":{\"to\":[\"alice@example.com\"],\"cc\":[],\"subject\":\"Lunch \u2014 Thursday?\",\"body\":\"Hi Alice,\\nThursday at 12:30 works.\\n\\nThanks\",\"attachments\":[],\"send_at\":null,\"reply_to_message_id\":\"msg_0042\"},\"version\":1}",
+      "canonical": "{\"account\":\"primary\",\"intent_id\":\"int_0001\",\"kind\":\"email.send\",\"payload\":{\"attachments\":[],\"body\":\"Hi Alice,\\nThursday at 12:30 works.\\n\\nThanks\",\"cc\":[],\"reply_to_message_id\":\"msg_0042\",\"send_at\":null,\"subject\":\"Lunch \u2014 Thursday?\",\"to\":[\"alice@example.com\"]},\"version\":1}",
+      "sha256": "7bf268b96a1f0106937be058096913009252aa3689ea3c93764e1c166344e253"
+    }
+  ],
+  "invalid": [
+    {
+      "id": "lone-high-surrogate-value",
+      "inputJson": "\"\\ud800\"",
+      "reason": "string value holds an unpaired high surrogate"
+    },
+    {
+      "id": "lone-low-surrogate-value",
+      "inputJson": "\"\\udc00\"",
+      "reason": "string value holds an unpaired low surrogate"
+    },
+    {
+      "id": "reversed-surrogate-pair",
+      "inputJson": "\"\\ude00\\ud83d\"",
+      "reason": "low surrogate before high surrogate is not a valid pair"
+    },
+    {
+      "id": "lone-surrogate-object-key",
+      "inputJson": "{\"a\\ud800\":1}",
+      "reason": "object key holds an unpaired surrogate"
+    },
+    {
+      "id": "lone-surrogate-nested-in-array",
+      "inputJson": "[1,{\"k\":[\"ok\",\"x\\udfffy\"]}]",
+      "reason": "unpaired surrogate nested in an array inside an object"
+    }
+  ]
+}
