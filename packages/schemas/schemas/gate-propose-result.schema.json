@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateProposeResult",
+  "description": "Response of POST /intents (#42) when the gate stored the intent. 201: tier auto lands in approved, tier approval in pending. 403: policy refused it, so tier is forbidden, state is rejected and reason says why (for example connector_disabled).",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "tier": {
+      "$ref": "gate-tier.schema.json"
+    },
+    "state": {
+      "$ref": "gate-intent-state.schema.json"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    }
+  },
+  "required": ["id", "tier", "state"],
+  "additionalProperties": false
+}
