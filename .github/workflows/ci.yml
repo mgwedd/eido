@@ -39,7 +39,7 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
-          elif git diff --name-only HEAD^1 HEAD | grep -qvE '\.(md|png|jpe?g|gif|webp)$'; then
+          elif [ -n "$(git diff --name-only HEAD^1 HEAD | grep -vE '\.(md|png|jpe?g|gif|webp)$')" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
