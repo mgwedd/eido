@@ -148,6 +148,19 @@ export interface GateAuditPage {
   nextBefore?: number
 }
 
+/** Body of POST /audit on the data-plane listener (#181): one profile change for the gate to append to its audit log as an audit.profile.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector or account reference is sent in clear. The gate also checks that the hashes are lowercase hex and that beforeHash and afterHash are null or set as the action requires. */
+export interface GateAuditRecordRequest {
+  action: "entity.create" | "entity.update" | "entity.delete" | "account.assign" | "account.unassign"
+  subjectHash: string
+  beforeHash: string | null
+  afterHash: string | null
+}
+
+/** Response 201 of POST /audit (#181): the gate appended the entry to its audit log at this seq. */
+export interface GateAuditRecordResult {
+  seq: number
+}
+
 /** Response of connector health (#24 getConnectorHealth), used by the Today page. It has no fields for credentials or payload bodies. */
 export interface GateConnectorHealth {
   connectors: Array<{

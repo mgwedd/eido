@@ -232,6 +232,196 @@ describe("POST /intents", () => {
   })
 })
 
+const SUBJECT = "ab".repeat(32)
+const BEFORE = "cd".repeat(32)
+const AFTER = "ef".repeat(32)
+const created = {
+  action: "entity.create" as const,
+  subjectHash: SUBJECT,
+  beforeHash: null,
+  afterHash: AFTER,
+}
+
+describe("POST /audit", () => {
+  it("appends one hash-only audit.profile row and the chain still verifies", async () => {
+    const result = await client.recordAudit(created)
+    const rows = auditRows(s.db)
+    const last = rows.at(-1)
+    expect(result).toEqual({ seq: last?.seq })
+    expect(last).toEqual({
+      seq: result.seq,
+      actor: "data-plane",
+      action: "audit.profile.entity.create",
+      target: SUBJECT,
+      detail_hash: payloadHash({
+        action: "entity.create",
+        subjectHash: SUBJECT,
+        beforeHash: null,
+        afterHash: AFTER,
+      }),
+    })
+    const chain = await raw(controlSocket, "GET", "/audit/chain")
+    expect(JSON.parse(chain.text)).toEqual({ ok: true, rows: rows.length })
+  })
+
+  it("records each profile action under its own name, without storing an intent", async () => {
+    await client.recordAudit(created)
+    await client.recordAudit({
+      action: "entity.update",
+      subjectHash: SUBJECT,
+      beforeHash: BEFORE,
+      afterHash: AFTER,
+    })
+    await client.recordAudit({
+      action: "entity.delete",
+      subjectHash: SUBJECT,
+      beforeHash: BEFORE,
+      afterHash: null,
+    })
+    await client.recordAudit({
+      action: "account.assign",
+      subjectHash: SUBJECT,
+      beforeHash: BEFORE,
+      afterHash: AFTER,
+    })
+    await client.recordAudit({
+      action: "account.unassign",
+      subjectHash: SUBJECT,
+      beforeHash: BEFORE,
+      afterHash: null,
+    })
+    expect(actions()).toEqual([
+      "audit.profile.entity.create",
+      "audit.profile.entity.update",
+      "audit.profile.entity.delete",
+      "audit.profile.account.assign",
+      "audit.profile.account.unassign",
+    ])
+    expect(s.db.prepare("SELECT COUNT(*) AS n FROM intents").get()).toEqual({
+      n: 0,
+    })
+    const chain = await raw(controlSocket, "GET", "/audit/chain")
+    expect(JSON.parse(chain.text)).toMatchObject({ ok: true })
+  })
+
+  it("refuses a clear-text field with 400 naming only the path, and audits the refusal", async () => {
+    const refused = client.recordAudit({
+      ...created,
+      // A record smuggled in beside the hashes.
+      ...{ name: BODY_MARKER },
+    })
+    await expect(refused).rejects.toMatchObject({
+      name: "GateRequestError",
+      status: 400,
+      code: "invalid_request",
+      message: "the body is not an audit entry: $.name: unknown key",
+    })
+    expect(actions()).toEqual(["audit.request_refused.invalid_request"])
+    expect(JSON.stringify(auditRows(s.db))).not.toContain(BODY_MARKER)
+  })
+
+  it.each([
+    [
+      "an uppercase hash",
+      { ...created, subjectHash: SUBJECT.toUpperCase() },
+      "$.subjectHash: not lowercase hex",
+    ],
+    [
+      "a non-hex side",
+      { ...created, afterHash: "z".repeat(64) },
+      "$.afterHash: not lowercase hex",
+    ],
+    [
+      "a create with a before side",
+      { ...created, beforeHash: BEFORE },
+      "$.beforeHash: must be null",
+    ],
+    [
+      "a delete with no before side",
+      { ...created, action: "entity.delete", afterHash: null },
+      "$.beforeHash: must be a hash",
+    ],
+    [
+      "an unassign with an after side",
+      { ...created, action: "account.unassign", beforeHash: BEFORE },
+      "$.afterHash: must be null",
+    ],
+    [
+      "an assign with no after side",
+      { ...created, action: "account.assign", afterHash: null },
+      "$.afterHash: must be a hash",
+    ],
+    [
+      "an intent kind as the action",
+      { ...created, action: "email.send" },
+      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign"',
+    ],
+  ])(
+    "refuses %s with 400 and writes no profile row",
+    async (_name, body, error) => {
+      const reply = await raw(
+        dataSocket,
+        "POST",
+        "/audit",
+        JSON.stringify(body)
+      )
+      expect(reply.status).toBe(400)
+      expect(JSON.parse(reply.text)).toEqual({
+        code: "invalid_request",
+        message: `the body is not an audit entry: ${error}`,
+      })
+      expect(actions()).toEqual(["audit.request_refused.invalid_request"])
+    }
+  )
+
+  it("accepts an assign that replaces an earlier assignment or adds a first one", async () => {
+    await client.recordAudit({ ...created, action: "account.assign" })
+    await client.recordAudit({
+      ...created,
+      action: "account.assign",
+      beforeHash: BEFORE,
+    })
+    expect(actions()).toEqual([
+      "audit.profile.account.assign",
+      "audit.profile.account.assign",
+    ])
+  })
+
+  it("refuses malformed JSON with 400 without echoing the body, and audits it", async () => {
+    const reply = await raw(dataSocket, "POST", "/audit", `{"${BODY_MARKER}"`)
+    expect(reply.status).toBe(400)
+    expect(reply.text).not.toContain(BODY_MARKER)
+    expect(actions()).toEqual(["audit.request_refused.malformed_json"])
+  })
+
+  it("refuses a body over 1 MiB with 413, audits it and keeps serving", async () => {
+    const big = Buffer.alloc(MAX_BODY_BYTES + 1, "a")
+    const reply = await raw(dataSocket, "POST", "/audit", big)
+    expect(reply.status).toBe(413)
+    expect(actions()).toEqual(["audit.request_refused.too_large"])
+    expect(await client.recordAudit(created)).toMatchObject({
+      seq: expect.any(Number) as unknown,
+    })
+  })
+
+  it("is served for POST only", async () => {
+    const before = dump(s.db)
+    for (const method of ["GET", "PUT", "DELETE"]) {
+      const reply = await raw(
+        dataSocket,
+        method,
+        "/audit",
+        method === "GET" ? undefined : JSON.stringify(created)
+      )
+      expect([method, reply.status]).toEqual([method, 404])
+    }
+    expect((await raw(dataSocket, "POST", "/audit/chain", "{}")).status).toBe(
+      404
+    )
+    expect(dump(s.db)).toBe(before)
+  })
+})
+
 describe("the read routes", () => {
   it("return the same data as the gate's own functions", async () => {
     const pending = await client.propose(proposal)
@@ -337,6 +527,18 @@ describe("the control listener", () => {
       404
     )
   })
+
+  it("does not take audit entries: POST /audit is a data-plane route only", async () => {
+    const before = dump(s.db)
+    const reply = await raw(
+      controlSocket,
+      "POST",
+      "/audit",
+      JSON.stringify(created)
+    )
+    expect(reply.status).toBe(404)
+    expect(dump(s.db)).toBe(before)
+  })
 })
 
 describe("the server wrapper", () => {
@@ -400,6 +602,12 @@ describe("the client", () => {
       offline.status("i-1"),
       offline.history("i-1"),
       offline.listPending(),
+      offline.recordAudit({
+        action: "entity.delete",
+        subjectHash: "ab".repeat(32),
+        beforeHash: "cd".repeat(32),
+        afterHash: null,
+      }),
     ]
     for (const call of calls) {
       await expect(call).rejects.toBeInstanceOf(GateUnavailableError)
@@ -447,6 +655,14 @@ describe("the client", () => {
     await expect(odd.status("i-1")).rejects.toMatchObject({
       status: 500,
       code: "bad_response",
+    })
+  })
+
+  it("refuses an audit answer outside the contract", async () => {
+    const odd = await answering(201, JSON.stringify({ seq: 0 }))
+    await expect(odd.recordAudit(created)).rejects.toMatchObject({
+      code: "bad_response",
+      message: "the gate's response is not a GateAuditRecordResult",
     })
   })
 

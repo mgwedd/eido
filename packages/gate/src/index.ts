@@ -2,6 +2,8 @@
 // process over its data-plane socket (ADR 0003). Everything else in the package is internal
 // and runs only inside the gate process (src/main.ts).
 import type {
+  GateAuditRecordRequest,
+  GateAuditRecordResult,
   GateIntentHistory,
   GateIntentState,
   GateIntentStatus,
@@ -29,3 +31,5 @@ export type IntentHistoryEntry = GateIntentHistory["entries"][number]
 export type PendingIntentSummary = GatePendingIntentList["intents"][number]
 export type IntentState = GateIntentState
 export type Tier = GateTier
+export type AuditRecordRequest = GateAuditRecordRequest
+export type AuditRecordResult = GateAuditRecordResult

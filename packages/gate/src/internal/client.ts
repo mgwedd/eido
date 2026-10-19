@@ -1,6 +1,7 @@
 import { request as httpRequest } from "node:http"
 import {
   validateGateApiError,
+  validateGateAuditRecordResult,
   validateGateIntentHistory,
   validateGateIntentStatus,
   validateGatePendingIntentList,
@@ -8,6 +9,8 @@ import {
   validateGateProposeResult,
 } from "@eido/schemas"
 import type {
+  GateAuditRecordRequest,
+  GateAuditRecordResult,
   GateIntentHistory,
   GateIntentProposal,
   GateIntentStatus,
@@ -66,6 +69,11 @@ export type IntentClient = {
   status: (id: string) => Promise<GateIntentStatus>
   history: (id: string) => Promise<GateIntentHistory["entries"]>
   listPending: () => Promise<GatePendingIntentList["intents"]>
+  /**
+   * Appends one hash-only audit.profile.* row to the gate's audit log (#181). Resolves once the
+   * row is written; rejects with GateRequestError when the gate refuses the entry.
+   */
+  recordAudit: (entry: GateAuditRecordRequest) => Promise<GateAuditRecordResult>
 }
 
 type Answer = { status: number; body: unknown }
@@ -193,5 +201,12 @@ export function createIntentClient(options: IntentClientOptions): IntentClient {
         validateGatePendingIntentList,
         "GatePendingIntentList"
       ).intents,
+    recordAudit: async (entry) =>
+      expect(
+        await call(resolved, "POST", "/audit", entry),
+        [201],
+        validateGateAuditRecordResult,
+        "GateAuditRecordResult"
+      ),
   }
 }
