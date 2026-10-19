@@ -118,7 +118,12 @@ export function createFakeGmail() {
     if (message === undefined) throw new Error(`no message ${id}`)
     historyId += 1
     message.labelIds = message.labelIds.filter((l) => l !== label)
-    history.push({ id: historyId, messageId: id, kind: "labelRemoved", labelIds: [label] })
+    history.push({
+      id: historyId,
+      messageId: id,
+      kind: "labelRemoved",
+      labelIds: [label],
+    })
   }
 
   function page<T>(items: T[], url: URL): { slice: T[]; next?: string } {
