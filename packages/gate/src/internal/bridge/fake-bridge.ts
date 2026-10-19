@@ -1,4 +1,5 @@
 import { createServer } from "node:net"
+import { createServer as createTlsServer } from "node:tls"
 import type { AddressInfo, Server, Socket } from "node:net"
 
 // Test support (#195): a local fake Proton Bridge, IMAP and SMTP, on a configurable host and
@@ -33,6 +34,8 @@ export type FakeBridgeOptions = {
   omitSize?: boolean
   /** Delay every UID FETCH answer, so concurrent sessions overlap. */
   fetchDelayMs?: number
+  /** Test-only implicit TLS certificate and key. */
+  implicitTls?: { cert: string; key: string }
 }
 
 /** What the fake records and serves; the servers share it with the returned FakeBridge. */
@@ -197,6 +200,15 @@ type Session = {
   literal?: { tag: string; box: string; flags: string[]; size: number }
   selected?: { path: string; readOnly: boolean }
   authenticated: boolean
+}
+
+function transportServer(
+  options: FakeBridgeOptions,
+  listener: (socket: Socket) => void
+): Server {
+  return options.implicitTls === undefined
+    ? createServer(listener)
+    : createTlsServer(options.implicitTls, listener)
 }
 
 function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
@@ -419,7 +431,7 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
     }
   }
 
-  return createServer((socket) => {
+  return transportServer(options, (socket) => {
     const session: Session = {
       socket,
       buffer: Buffer.alloc(0),
@@ -443,7 +455,7 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
 }
 
 function smtpServer(fake: FakeState, options: FakeBridgeOptions): Server {
-  return createServer((socket) => {
+  return transportServer(options, (socket) => {
     let buffer = ""
     let data: string[] | undefined
     let from = ""

@@ -43,6 +43,9 @@ const IMAP_HANDSHAKE = new Set([
   "GREETING_TIMEOUT",
   "UPGRADE_TIMEOUT",
   "STARTTLS_INJECTION",
+  "ERR_BRIDGE_CERT_MISMATCH",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
 ])
 
 /** Maps an imapflow (or socket) error to a BridgeError; a BridgeError passes through. */

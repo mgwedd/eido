@@ -73,6 +73,12 @@ An [RFC 9497](https://www.rfc-editor.org/rfc/rfc9497.html) OPRF or VOPRF could b
 - The client's fetch call allows 60 s; the other calls keep the 2 s timeout.
 - Writes do not use these routes. Approved mail intents run through the executor's Bridge writers (`packages/gate/src/internal/bridge/writers.ts`), which accept only the pinned `proton-mail` connector with password auth and no HTTP egress.
 
+## Proton Bridge TLS pin (#218)
+
+The gate authenticates Bridge on loopback before sending its vault-held Bridge password. Production configuration accepts only STARTTLS or implicit TLS. `EIDO_BRIDGE_ALLOW_SELF_SIGNED` and `EIDO_BRIDGE_TLS=none` are refused; direct clear-text settings remain in the fake-Bridge test harness only. IMAP and SMTP trust the exported Bridge certificate as a local CA and require an exact SHA-256 fingerprint match on the peer certificate. A different certificate fails the handshake before LOGIN or AUTH. The same pin applies to both ports; rotation needs an explicit new export, fingerprint and gate restart.
+
+On first setup (#68), use Bridge's **Export TLS certificates** setting to obtain its certificate. Keep only the public certificate in a gate-owned file; never place Bridge's exported private key in Eido's data directory. Compute the SHA-256 digest of the certificate's DER bytes out of band (`openssl x509 -in bridge-cert.pem -outform DER | shasum -a 256` on the Mac), then set `EIDO_BRIDGE_CERT_PATH` to the public PEM file and `EIDO_BRIDGE_CERT_SHA256` to its 64-character lowercase hex digest in the gate's launch configuration. Do not learn the pin by connecting to an unverified loopback port: another local process could be listening there while Bridge is down. The gate checks the file against the configured digest at startup and uses that exact certificate for each TLS connection. Proton documents the export setting at https://proton.me/support/comprehensive-guide-to-bridge-settings.
+
 ## What is not decided here
 
 - OS-level isolation: two macOS users, file ownership, sandbox profiles, pf rules (#70), and the live-host isolation test (#56). Until then the two processes may run as the same user, and the split is enforced by configuration, the environment allowlist and the tests.
