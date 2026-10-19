@@ -20,9 +20,10 @@ import { BridgeError } from "./errors"
 // The executor's writers and transport for Proton Bridge (#195). Each approved (or auto-tier)
 // intent reaches here only after createExecutor has checked its state, tier, hash, signed
 // approval and pinned binding. The request body is the canonical intent itself; the transport
-// re-validates it and runs exactly one adapter action:
+// re-validates it and runs the actions for that intent:
 //   email.draft                              append to Drafts (IMAP APPEND)
 //   email.send, email.reply, email.forward   send from the assistant identity (SMTP)
+//   email.send with draftId                 then move that draft to Trash (IMAP UID MOVE)
 //   email.trash                              move to Trash (IMAP UID MOVE)
 // None has an inverse: sends cannot be recalled, and the executor refuses to undo a trash.
 // A reply or forward acts only on the message the owner approved, named by the SHA-256 of its
@@ -204,12 +205,29 @@ async function run(
       return draft(bridge, intent)
     case "email.send": {
       const args = intent.args
-      return sent(bridge, {
+      const draftRef =
+        args.draftId === undefined
+          ? undefined
+          : await bridge.locateDraft(args.draftId)
+      if (args.draftId !== undefined && draftRef === undefined) {
+        throw new BridgeError("not_found", "no such draft in Bridge")
+      }
+      const result = await sent(bridge, {
         to: args.to,
         ...copies(args),
         subject: args.subject,
         text: args.body,
       })
+      if (draftRef !== undefined) {
+        const { moved } = await bridge.moveToTrash([draftRef])
+        if (moved !== 1) {
+          throw new BridgeError(
+            "not_found",
+            "sent draft was not moved to Trash"
+          )
+        }
+      }
+      return result
     }
     case "email.reply": {
       // The approved message (by its bytes) and the approved recipients, or nothing is sent.

@@ -225,6 +225,47 @@ describe("Bridge writers through the executor", () => {
     expect(writes(w.fake)).toEqual([])
   })
 
+  it("sends an approved draft and moves only that draft to Trash", async () => {
+    const w = await world()
+    const draft = rawMessage({
+      messageId: "<draft-211@example.invalid>",
+      subject: "Draft",
+      body: "saved draft",
+    })
+    w.fake.mailboxes.get("Drafts")?.messages.push({
+      uid: 4,
+      raw: draft,
+      flags: ["\\Draft"],
+    })
+    const id = w.propose(
+      sample("email.send", {
+        draftId: "<draft-211@example.invalid>",
+        to: ["guest@example.invalid"],
+        subject: "Approved subject",
+        body: BODY_MARKER,
+      })
+    )
+    approve(w, id)
+    expect(await w.run(id)).toMatchObject({ ok: true })
+    expect(w.fake.sent[0]?.data).toMatch(/^Subject: Approved subject$/m)
+    expect(writes(w.fake)).toEqual(["UID MOVE 4 Trash"])
+    expect(w.fake.mailboxes.get("Drafts")?.messages).toEqual([])
+    expect(w.fake.mailboxes.get("Trash")?.messages[0]?.raw).toEqual(draft)
+    expect(w.fake.imapCommands).not.toContain("EXPUNGE")
+  })
+
+  it.each(["<missing@example.invalid>", "proton:INBOX:1700000001:7"])(
+    "does not send when draftId %s does not name a draft",
+    async (draftId) => {
+      const w = await world()
+      const id = w.propose(sample("email.send", { draftId }))
+      approve(w, id)
+      expect(await w.run(id)).toEqual({ ok: false, code: "upstream_error" })
+      expect(w.fake.smtpCommands).toEqual([])
+      expect(writes(w.fake)).toEqual([])
+    }
+  )
+
   it("runs an approved reply-all to Reply-To, To and Cc minus the identity, in the thread", async () => {
     const w = await world()
     const id = w.propose(
