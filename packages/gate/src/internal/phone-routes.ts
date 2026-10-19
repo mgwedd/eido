@@ -17,6 +17,7 @@ import { issueNonce, reject, verifyApproval } from "./approvals"
 import type { PreparedApproval } from "./approvals"
 import { apiError, NOT_FOUND } from "./http"
 import type { GateRequest, Handler, Reply } from "./http"
+import type { ExecutionResult } from "./executor"
 import {
   approvalCard,
   editIntent,
@@ -228,7 +229,8 @@ function history(state: PhoneState, id: string): Reply {
 async function decision(
   state: PhoneState,
   request: GateRequest,
-  id: string
+  id: string,
+  execute?: (id: string) => Promise<ExecutionResult>
 ): Promise<Reply> {
   const body = await jsonBody(request)
   if (!body.ok) return body.reply
@@ -247,6 +249,7 @@ async function decision(
     if (!result.ok) {
       return apiError(403, "verification_failed", "the approval was refused")
     }
+    if (execute !== undefined) await execute(id)
     const approved: GateDecisionResult = { intentId: id, state: "approved" }
     return { status: 200, body: approved }
   }
@@ -303,7 +306,8 @@ function route(
   state: PhoneState,
   request: GateRequest,
   matched: Matched,
-  now: Clock
+  now: Clock,
+  execute?: (id: string) => Promise<ExecutionResult>
 ): Reply | Promise<Reply> {
   const path: RoutePath = matched.route.path
   switch (path) {
@@ -322,7 +326,7 @@ function route(
     case "/approvals/:id/nonce":
       return prepared(state, issueNonce(state.db, matched.id))
     case "/approvals/:id/decision":
-      return decision(state, request, matched.id)
+      return decision(state, request, matched.id, execute)
     case "/approvals/:id/edit":
       return edit(state, request, matched.id)
   }
@@ -334,6 +338,7 @@ export type PhoneOptions = {
   allowedHosts: readonly string[]
   basePath: string
   now: Clock
+  execute?: (id: string) => Promise<ExecutionResult>
 }
 
 const NO_STORE = { "cache-control": "no-store" } as const
@@ -371,7 +376,7 @@ export function phoneHandler(options: PhoneOptions): Handler {
     ) {
       return apiError(401, "unauthenticated", "sign in with your passkey")
     }
-    return route(state, request, matched, options.now)
+    return route(state, request, matched, options.now, options.execute)
   }
   return async (request) => {
     const reply = await answer(request)
