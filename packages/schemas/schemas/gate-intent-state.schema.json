@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateIntentState",
+  "description": "Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are terminal.",
+  "type": "string",
+  "enum": ["proposed", "pending", "approved", "rejected", "executed", "failed"],
+  "maxLength": 32
+}

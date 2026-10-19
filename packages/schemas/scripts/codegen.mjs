@@ -270,10 +270,10 @@ const promptOutput = [
   tsConst("INTENT_RESULT_JSON_SCHEMA", resolvedResult, "JsonSchema"),
 ].join("\n")
 
-// Non-intent schemas whose writes core validates: every profile-*.schema.json gets a
+// Non-intent schemas whose writes core validates: every profile-* and gate-* schema gets a
 // validator. Structural checks only; semantic ones (IANA timezone, email, HH:MM) live in core.
-const profileFiles = [...schemas.keys()].filter((file) =>
-  file.startsWith("profile-")
+const profileFiles = [...schemas.keys()].filter(
+  (file) => file.startsWith("profile-") || file.startsWith("gate-")
 )
 const constName = (name) =>
   `${name.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()}_JSON_SCHEMA`

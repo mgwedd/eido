@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateApiError",
+  "description": "Error body for every gate endpoint here. The code is the contract; the message is human text and never carries payload bodies, nonces or signatures. HTTP status mapping is the server's (#85).",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "not_found",
+        "already_decided",
+        "verification_failed",
+        "invalid_request",
+        "unavailable"
+      ],
+      "maxLength": 32
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    }
+  },
+  "required": ["code", "message"],
+  "additionalProperties": false
+}

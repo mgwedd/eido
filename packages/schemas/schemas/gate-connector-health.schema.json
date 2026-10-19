@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateConnectorHealth",
+  "description": "Response of connector health (#24 getConnectorHealth), consumed by the Today page. Never carries secrets or payload bodies.",
+  "type": "object",
+  "properties": {
+    "connectors": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "title": "GateConnectorHealthItem",
+        "description": "Health of one connector.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Connector name, as in the connector manifest (#10)."
+          },
+          "health": {
+            "type": "string",
+            "enum": ["healthy", "degraded", "open"],
+            "maxLength": 32
+          },
+          "consecutiveFailures": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "lastError": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 20,
+            "maxLength": 40
+          }
+        },
+        "required": ["name", "health", "consecutiveFailures"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["connectors"],
+  "additionalProperties": false
+}

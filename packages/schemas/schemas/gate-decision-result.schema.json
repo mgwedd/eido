@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateDecisionResult",
+  "description": "Success response of the decision endpoint. Approved means the verifier accepted the signature and the intent moved to approved; execution is a later gate step, so this never says sent. Failures use GateApiError.",
+  "type": "object",
+  "properties": {
+    "intentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "state": {
+      "type": "string",
+      "enum": ["approved", "rejected"],
+      "maxLength": 32
+    }
+  },
+  "required": ["intentId", "state"],
+  "additionalProperties": false
+}

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePrepareApproval",
+  "description": "Response of prepare (#15 issueNonce, consumed by #32 prepareApproval). Every call issues a fresh nonce and invalidates the previous one. The challenge is not part of the response: the device builds it from payloadHash, intentId and nonce, and its byte encoding is an open question.",
+  "type": "object",
+  "properties": {
+    "intentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "origin": {
+      "$ref": "gate-intent-origin.schema.json"
+    },
+    "state": {
+      "const": "pending"
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 200000,
+      "description": "The stored canonical payload, the exact JCS string the card is rendered from and the hash covers (UTF-8)."
+    },
+    "payloadHash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "description": "Lowercase hex SHA-256 the gate computed over the stored canonical payload."
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "description": "Single-use nonce: 32 random bytes as unpadded base64url."
+    },
+    "contextPackId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "title": "GateContextSource",
+        "description": "A linked source shown as Context used.",
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": ["documentId", "name"],
+        "additionalProperties": false
+      }
+    },
+    "editedFrom": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    }
+  },
+  "required": [
+    "intentId",
+    "kind",
+    "origin",
+    "state",
+    "payload",
+    "payloadHash",
+    "nonce",
+    "sources"
+  ],
+  "additionalProperties": false
+}
