@@ -15,7 +15,11 @@ import type {
   ControlAuthorization,
   PreparedControlApproval,
 } from "./control-approvals"
-import { intentBindings, pinnedOperation } from "./connectors"
+import {
+  hasDisabledIntentBinding,
+  intentBindings,
+  pinnedOperation,
+} from "./connectors"
 
 // The permission table. The gate ships a versioned default; a signed owner override
 // changes the tier of single kinds. Effective tier: overlay entry, else shipped entry,
@@ -89,7 +93,10 @@ type OperationLookup =
 function lookupOperation(db: DatabaseSync, kind: string): OperationLookup {
   const bindings = intentBindings(db, kind)
   const [binding, ...others] = bindings
-  if (binding === undefined) return { status: "none" }
+  if (binding === undefined)
+    return {
+      status: hasDisabledIntentBinding(db, kind) ? "disabled" : "none",
+    }
   // Two connectors claiming one kind leave the target unclear: refuse rather than guess.
   if (others.length > 0) return { status: "ambiguous" }
   const operation = pinnedOperation(db, binding.connector, binding.operation)

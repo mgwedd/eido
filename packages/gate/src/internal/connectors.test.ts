@@ -1,12 +1,14 @@
+import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import type { ConnectorManifest } from "@eido/schemas"
 import { describe, expect, it } from "vitest"
 import { verifyChain } from "./audit"
-import { payloadHash } from "./canonical"
 import {
   checkDrift,
   egressAllowlist,
+  getConnectorState,
   getPinnedManifest,
+  intentBindings,
   manifestHash,
   pinnedOperation,
   resolveTier,
@@ -97,6 +99,22 @@ function files(): ConnectorManifest {
 
 const PINNED_TOOLS = ["list_messages", "send_message"]
 
+// Independent digest for these synthetic JSON fixtures; never call the hash under test to
+// derive an expected value. Their numbers and strings need no RFC 8785 edge-case formatting.
+function expectedHash(value: unknown): string {
+  function sortedJson(input: unknown): string {
+    if (Array.isArray(input)) return `[${input.map(sortedJson).join(",")}]`
+    if (input !== null && typeof input === "object") {
+      return `{${Object.entries(input)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([key, item]) => `${JSON.stringify(key)}:${sortedJson(item)}`)
+        .join(",")}}`
+    }
+    return JSON.stringify(input)
+  }
+  return createHash("sha256").update(sortedJson(value)).digest("hex")
+}
+
 type ConnectorRow = {
   enabled: number
   manifest_hash: string
@@ -140,7 +158,7 @@ describe("pinManifest", () => {
     const db = pinned()
     expect(row(db)).toEqual({
       enabled: 1,
-      manifest_hash: payloadHash(mail()),
+      manifest_hash: expectedHash(mail()),
       drift_json: null,
       health: "healthy",
       consecutive_failures: 0,
@@ -223,6 +241,7 @@ describe("checkDrift", () => {
       checkDrift(db, "example-mail", ["send_message", "list_messages"])
     ).toEqual({
       drifted: false,
+      enabled: true,
       added: [],
       removed: [],
     })
@@ -236,6 +255,7 @@ describe("checkDrift", () => {
       checkDrift(db, "example-mail", [...PINNED_TOOLS, "delete_message"])
     ).toEqual({
       drifted: true,
+      enabled: false,
       added: ["delete_message"],
       removed: [],
     })
@@ -247,6 +267,7 @@ describe("checkDrift", () => {
     const db = pinned()
     expect(checkDrift(db, "example-mail", ["list_messages"])).toEqual({
       drifted: true,
+      enabled: false,
       added: [],
       removed: ["send_message"],
     })
@@ -264,17 +285,42 @@ describe("checkDrift", () => {
     checkDrift(db, "example-mail", [...PINNED_TOOLS, "delete_message"])
 
     // Reporting the original tools again does not re-enable it.
-    expect(checkDrift(db, "example-mail", PINNED_TOOLS).drifted).toBe(false)
+    expect(checkDrift(db, "example-mail", PINNED_TOOLS)).toEqual({
+      drifted: false,
+      enabled: false,
+      added: [],
+      removed: [],
+    })
     expect(row(db).enabled).toBe(0)
     expect(pinnedOperation(db, "example-mail", "list_messages")).toBeUndefined()
+    expect(intentBindings(db, "email.send")).toEqual([])
+    expect(getPinnedManifest(db, "example-mail")).toBeUndefined()
+    expect(getConnectorState(db, "example-mail")).toEqual({
+      manifest: mail(),
+      enabled: false,
+      drift: { added: ["delete_message"], removed: [] },
+    })
 
-    // Further drift while disabled updates the record but does not append another row.
-    checkDrift(db, "example-mail", ["list_messages"])
+    // Distinct drift while disabled updates the record and is auditable once.
+    expect(checkDrift(db, "example-mail", ["list_messages"]).enabled).toBe(
+      false
+    )
     expect(row(db).drift_json).toBe('{"added":[],"removed":["send_message"]}')
     expect(auditRows(db).map((r) => r["action"])).toEqual([
       "connector.pinned",
       "connector.disabled_drift",
+      "connector.drift_changed",
     ])
+    checkDrift(db, "example-mail", ["list_messages"])
+    expect(auditRows(db)).toHaveLength(3)
+    expect(verifyChain(db)).toEqual({ ok: true, rows: 3 })
+    expect(auditRows(db)[2]?.["detail_hash"]).toBe(
+      expectedHash({
+        manifestHash: expectedHash(mail()),
+        added: [],
+        removed: ["send_message"],
+      })
+    )
 
     const reviewed = mail(2)
     reviewed.operations.push({
@@ -291,7 +337,8 @@ describe("checkDrift", () => {
     expect(row(db).enabled).toBe(1)
     expect(row(db).drift_json).toBeNull()
     expect(row(db).manifest_hash).not.toBe(firstHash)
-    expect(row(db).manifest_hash).toBe(payloadHash(reviewed))
+    expect(row(db).manifest_hash).toBe(expectedHash(reviewed))
+    expect(getPinnedManifest(db, "example-mail")).toEqual(reviewed)
   })
 })
 
@@ -319,7 +366,8 @@ describe("policy reads the pinned manifest only", () => {
     })
 
     checkDrift(db, "example-mail", [...PINNED_TOOLS, "export_all"])
-    expect(getPinnedManifest(db, "example-mail")).toEqual(mail())
+    expect(getPinnedManifest(db, "example-mail")).toBeUndefined()
+    expect(getConnectorState(db, "example-mail")?.manifest).toEqual(mail())
   })
 
   it("has no tier for an operation absent from the manifest", () => {
@@ -351,6 +399,24 @@ describe("policy reads the pinned manifest only", () => {
     expect(() => getPinnedManifest(db, "example-mail")).toThrow(
       "stored connector manifest is invalid: $.extra: unknown key"
     )
+  })
+
+  it("refuses a consistent manifest and hash edit without a matching pin audit", () => {
+    const db = pinned()
+    const changed = { ...mail(), description: "Edited in place" }
+    db.prepare(
+      "UPDATE connectors SET manifest_json = ?, manifest_hash = ? WHERE name = ?"
+    ).run(JSON.stringify(changed), expectedHash(changed), "example-mail")
+    expect(() => getPinnedManifest(db, "example-mail")).toThrow(
+      "does not match its pin audit"
+    )
+    expect(() => pinnedOperation(db, "example-mail", "list_messages")).toThrow(
+      "does not match its pin audit"
+    )
+    expect(() => intentBindings(db, "email.send")).toThrow(
+      "does not match its pin audit"
+    )
+    expect(() => egressAllowlist(db)).toThrow("does not match its pin audit")
   })
 })
 
@@ -408,7 +474,7 @@ describe("audit", () => {
       .prepare("SELECT pin_approval_ref_hash FROM connectors WHERE name = ?")
       .get("example-mail")?.["pin_approval_ref_hash"]
     expect(rows[0]?.["detail_hash"]).toBe(
-      payloadHash({ manifestHash: row(db).manifest_hash, approvalRefHash })
+      expectedHash({ manifestHash: expectedHash(mail()), approvalRefHash })
     )
     for (const r of rows) {
       expect(String(r["detail_hash"])).toMatch(/^[0-9a-f]{64}$/)
@@ -436,7 +502,7 @@ describe("manifestHash", () => {
       version: 1,
       name: "example-mail",
     }
-    expect(manifestHash(reordered)).toBe(manifestHash(m))
+    expect(manifestHash(reordered)).toBe(expectedHash(m))
   })
 
   it.each<[string, (m: ConnectorManifest) => void]>([
@@ -470,6 +536,6 @@ describe("manifestHash", () => {
   ])("changes when the %s changes", (_label, mutate) => {
     const changed = mail()
     mutate(changed)
-    expect(manifestHash(changed)).not.toBe(manifestHash(mail()))
+    expect(manifestHash(changed)).not.toBe(expectedHash(mail()))
   })
 })
