@@ -60,6 +60,10 @@ jobs:
       - name: Lint covers TypeScript files
         if: steps.changes.outputs.code == 'true'
         run: pnpm check:lint-coverage
+      - name: No stray JavaScript files
+        run: |
+          pnpm check:no-js
+          pnpm check:no-js-fixture
       - name: Secret scan
         run: pnpm check:secrets
       - name: Turborepo boundaries (advisory)
