@@ -3,13 +3,21 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Intent } from "@eido/schemas"
+import { getPinnedManifest, pinManifest } from "./connectors"
 import { verifyChain } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
 import { openControlDb } from "./control-db"
 import { createExecutor } from "./executor"
 import type { UpstreamRequest, UpstreamWriter, WriteRequest } from "./executor"
 import { intentHistory, intentStatus, propose } from "./intents"
-import { auditRows, loggedText, sample, setup } from "./test-fixtures"
+import {
+  MAIL_OPS,
+  auditRows,
+  loggedText,
+  manifest,
+  sample,
+  setup,
+} from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
 let s: Setup
@@ -30,7 +38,15 @@ const inverse: Intent = {
 const url = "https://mail.example.com/v1/labels"
 
 function fixture() {
-  s = setup()
+  const mail = manifest("mail", MAIL_OPS)
+  const labelsOperation = mail.operations.find(
+    (operation) => operation.intentKind === "email.label"
+  )
+  if (labelsOperation === undefined) throw new Error("missing labels operation")
+  labelsOperation.routes = [
+    { host: "mail.example.com", method: "POST", pathPattern: "/v1/labels" },
+  ]
+  s = setup([mail])
   const labels = new Set<string>()
   const writer: UpstreamWriter = {
     kind: "email.label",
@@ -576,5 +592,107 @@ describe("executor", () => {
     })
     expect(intentStatus(s.db, f.id)?.state).toBe("failed")
     expect(f.transport).toHaveBeenCalledTimes(1)
+  })
+  it.each([
+    "https://other.example.com/v1/labels",
+    "https://mail.example.com/private/labels",
+    "https://mail.example.com/v1/other",
+    "https://mail.example.com/v1/../v1/labels",
+    "https://mail.example.com/v1/%2e%2e/v1/labels",
+    "https://mail.example.com/v1/%2flabels",
+    "https://mail.example.com/v1/%252flabels",
+    "https://mail.example.com/v1/%",
+    "https://mail.example.com:444/v1/labels",
+    "https://mail.example.com/v1//labels",
+  ])(
+    "independently refuses unpinned or ambiguous target %s even if the adapter projection accepts it",
+    async (target) => {
+      const f = fixture()
+      const build = f.writer.buildRequest
+      f.writer.buildRequest = (intent) => ({ ...build(intent), url: target })
+      f.writer.intentFromRequest = () => label
+      expect(await f.executor.execute(f.id)).toEqual({
+        ok: false,
+        code: "hash_mismatch",
+      })
+      expect(f.transport).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(["missing", "wrong_operation", "overlap", "wrong_method"])(
+    "refuses pinned write route configuration %s",
+    async (mode) => {
+      const f = fixture()
+      const mail = getPinnedManifest(s.db, "mail")
+      if (mail === undefined) throw new Error("missing manifest")
+      mail.version++
+      const operation = mail.operations.find(
+        (op) => op.intentKind === "email.label"
+      )
+      if (operation === undefined) throw new Error("missing labels")
+      if (mode === "missing") delete operation.routes
+      if (mode === "wrong_operation") {
+        const other = mail.operations.find(
+          (op) => op.intentKind === "email.archive"
+        )
+        if (other === undefined) throw new Error("missing archive")
+        other.routes = operation.routes
+        delete operation.routes
+      }
+      if (mode === "overlap")
+        operation.routes?.push({
+          host: "mail.example.com",
+          method: "POST",
+          pathPattern: "/v1/{resource}",
+        })
+      if (mode === "wrong_method") {
+        mail.egress.hosts[0]?.methods.splice(0, 1, "GET")
+        operation.routes = [
+          {
+            host: "mail.example.com",
+            method: "GET",
+            pathPattern: "/v1/labels",
+          },
+        ]
+      }
+      pinManifest(s.db, mail, "system")
+      expect(await f.executor.execute(f.id)).toEqual({
+        ok: false,
+        code: "hash_mismatch",
+      })
+      expect(f.transport).not.toHaveBeenCalled()
+    }
+  )
+
+  it("constructs pinned dynamic paths and query parameters before immutable transport dispatch", async () => {
+    const f = fixture()
+    const mail = getPinnedManifest(s.db, "mail")
+    if (mail === undefined) throw new Error("missing manifest")
+    mail.version++
+    const operation = mail.operations.find(
+      (op) => op.intentKind === "email.label"
+    )
+    if (operation === undefined) throw new Error("missing labels")
+    operation.routes = [
+      {
+        host: "mail.example.com",
+        method: "POST",
+        pathPattern: "/v1/labels/{messageId}",
+      },
+    ]
+    pinManifest(s.db, mail, "system")
+    const build = f.writer.buildRequest
+    f.writer.buildRequest = (intent) => ({
+      ...build(intent),
+      url: "https://mail.example.com/v1/labels/msg-1?tag=work&format=json",
+    })
+    f.writer.intentFromRequest = () => label
+    expect((await f.executor.execute(f.id)).ok).toBe(true)
+    expect(f.transport.mock.calls[0]?.[0]).toMatchObject({
+      connector: "mail",
+      operation: "set_labels",
+      intentKind: "email.label",
+      url: "https://mail.example.com/v1/labels/msg-1?tag=work&format=json",
+    })
   })
 })

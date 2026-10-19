@@ -3,7 +3,11 @@ import { validateIntent } from "@eido/schemas"
 import type { Intent } from "@eido/schemas"
 import { append } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
-import { intentBindings, pinnedOperation } from "./connectors"
+import {
+  getPinnedManifest,
+  intentBindings,
+  pinnedOperation,
+} from "./connectors"
 import { atomically } from "./transaction"
 
 /** Provider representation before the gate takes an immutable canonical snapshot. */
@@ -119,6 +123,81 @@ function recorded(
   )
     throw new Error("record_mismatch")
   return { value: { upstreamRef, result }, inverse }
+}
+
+/** Rebuild the destination from a pinned write route, never from an unvalidated authority. */
+function writeDestination(
+  db: DatabaseSync,
+  connector: string,
+  operationName: string,
+  request: UpstreamRequest
+): string {
+  const raw = request.url
+  if (!/^https:\/\//.test(raw) || /[\\\s]/.test(raw))
+    throw new Error("invalid target")
+  const url = new URL(raw)
+  if (url.username || url.password || url.port || url.hash)
+    throw new Error("invalid target")
+  const rawPath = /^https:\/\/[^/?#]+([^?#]*)/.exec(raw)?.[1] ?? "/"
+  if (/%(?:2f|5c|25)/i.test(rawPath)) throw new Error("invalid path")
+  const path = decodeURIComponent(rawPath)
+  if (
+    path.split("/").some((part) => part === "." || part === "..") ||
+    path.includes("//")
+  )
+    throw new Error("invalid path")
+  const manifest = getPinnedManifest(db, connector)
+  const host = manifest?.egress.hosts.find(
+    (entry) => entry.host === url.hostname
+  )
+  if (
+    host === undefined ||
+    !host.methods.some((method) => method === request.method) ||
+    !host.pathPrefixes.some(
+      (prefix) =>
+        path === prefix ||
+        path.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`)
+    )
+  )
+    throw new Error("unpinned host route")
+  const parts = path.split("/")
+  const matching = (manifest?.operations ?? []).flatMap((operation) =>
+    (operation.routes ?? [])
+      .filter((route) => {
+        const template = route.pathPattern.split("/")
+        return (
+          route.host === host.host &&
+          route.method === request.method &&
+          template.length === parts.length &&
+          template.every((part, index) =>
+            /^\{[A-Za-z][A-Za-z0-9_]*\}$/.test(part)
+              ? parts[index] !== ""
+              : parts[index] === part
+          )
+        )
+      })
+      .map((route) => ({ operation, route }))
+  )
+  const selected = matching.length === 1 ? matching[0] : undefined
+  if (
+    selected === undefined ||
+    selected.operation.name !== operationName ||
+    selected.operation.effect !== "write"
+  )
+    throw new Error("unpinned write route")
+  const safePath = selected.route.pathPattern
+    .split("/")
+    .map((part, index) =>
+      /^\{[A-Za-z][A-Za-z0-9_]*\}$/.test(part)
+        ? encodeURIComponent(parts[index] ?? "")
+        : part
+    )
+    .join("/")
+  const destination = new URL(`https://${selected.route.host}${safePath}`)
+  // Preserve query semantics, but construct their bytes through URLSearchParams.
+  for (const [key, value] of url.searchParams)
+    destination.searchParams.append(key, value)
+  return destination.href
 }
 
 export function createExecutor(
@@ -279,21 +358,15 @@ export function createExecutor(
         url: built.url,
         body: canonicalize(built.body),
       })
-      const url = new URL(snapshot.url)
-      if (
-        url.protocol !== "https:" ||
-        url.username ||
-        url.password ||
-        url.hash ||
-        !/^(POST|PUT|PATCH|DELETE)$/.test(snapshot.method)
-      )
-        throw new Error("bad request")
+      const destination = writeDestination(db, connector, operation, snapshot)
+      if (destination !== snapshot.url) throw new Error("noncanonical target")
       const decoded = writer.intentFromRequest(
         Object.freeze({ ...snapshot, body: parse(snapshot.body) })
       )
       checkedIntent(decoded, expectedHash)
       request = Object.freeze({
         ...snapshot,
+        url: destination,
         connector,
         operation,
         intentKind: intent.kind,
