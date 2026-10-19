@@ -45,6 +45,12 @@ const cases = [
     pattern:
       /error\s+web-test-fixtures-are-test-only:\s+\S*apps\/web\/app\/bad-fixture-import\.ts\b/,
   },
+  {
+    label:
+      "app code importing a web test fixture through the @/ alias (bad-fixture-alias-import.ts)",
+    pattern:
+      /error\s+web-test-fixtures-are-test-only:\s+\S*apps\/web\/app\/bad-fixture-alias-import\.ts\b/,
+  },
 ]
 
 const missing = cases.filter((c) => !c.pattern.test(output))

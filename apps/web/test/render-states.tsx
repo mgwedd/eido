@@ -1,7 +1,7 @@
 import type { ReactNode } from "react"
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { afterEach, beforeEach, expect, test, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -36,43 +36,45 @@ function stubFetch(outcome: ProbeOutcome) {
 }
 
 /**
- * Registers one test per row. Each renders the row's tree, lets effects and the stubbed
+ * Registers a `describe` block with one test per row. Each renders the row's tree, lets effects and the stubbed
  * network settle, then asserts the region with the row's role holds exactly the row's
  * message. A row fails when the component shows the wrong message, the wrong role, or a
  * message when it should be silent.
  */
 function describeStates(name: string, cases: readonly StateCase[]) {
-  let container: HTMLElement
-  let root: Root
+  describe(name, () => {
+    let container: HTMLElement
+    let root: Root
 
-  beforeEach(() => {
-    container = document.createElement("div")
-    document.body.appendChild(container)
-    root = createRoot(container)
-  })
-
-  afterEach(() => {
-    act(() => {
-      root.unmount()
+    beforeEach(() => {
+      container = document.createElement("div")
+      document.body.appendChild(container)
+      root = createRoot(container)
     })
-    container.remove()
-    vi.unstubAllGlobals()
-  })
 
-  for (const row of cases) {
-    test(`${name}: ${row.state}`, async () => {
-      if (row.fetch) stubFetch(row.fetch)
-      await act(async () => {
-        root.render(row.render())
-        await new Promise((resolve) => setTimeout(resolve, 0))
+    afterEach(() => {
+      act(() => {
+        root.unmount()
       })
-      const region = container.querySelector(`[role="${row.role}"]`)
-      expect(region, `no element with role="${row.role}"`).not.toBeNull()
-      const text = (region?.textContent ?? "").trim()
-      if (row.message === null) expect(text).toBe("")
-      else expect(text).toBe(row.message)
+      container.remove()
+      vi.unstubAllGlobals()
     })
-  }
+
+    for (const row of cases) {
+      test(row.state, async () => {
+        if (row.fetch) stubFetch(row.fetch)
+        await act(async () => {
+          root.render(row.render())
+          await new Promise((resolve) => setTimeout(resolve, 0))
+        })
+        const region = container.querySelector(`[role="${row.role}"]`)
+        expect(region, `no element with role="${row.role}"`).not.toBeNull()
+        const text = (region?.textContent ?? "").trim()
+        if (row.message === null) expect(text).toBe("")
+        else expect(text).toBe(row.message)
+      })
+    }
+  })
 }
 
 export { describeStates }

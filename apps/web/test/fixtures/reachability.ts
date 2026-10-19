@@ -2,7 +2,7 @@
 // (enforced by the `web-test-fixtures-are-test-only` rule in .dependency-cruiser.cjs).
 import type { ProbeOutcome } from "../render-states"
 
-/** What the same-origin health probe does in each state. The URL is invented. */
+/** What the same-origin health probe returns in each state. */
 const reachabilityProbes = {
   reachable: { kind: "response", status: 204 },
   unreachable: { kind: "network-failure" },
