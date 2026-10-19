@@ -239,12 +239,15 @@ export function createAuditClient(options: IntentClientOptions): AuditClient {
 export type ProtonMailClient = {
   listFolders: () => Promise<string[]>
   folderState: (folder: string) => Promise<GateMailFolderState>
-  /** Raw RFC 5322 messages with UID >= fromUid, ascending; the gate caps `limit` at 100. */
+  /** Raw messages and UIDs skipped for size; the gate caps `limit` at 100. */
   fetchRaw: (
     folder: string,
     fromUid: number,
     limit: number
-  ) => Promise<{ uid: number; raw: Uint8Array }[]>
+  ) => Promise<{
+    messages: { uid: number; raw: Uint8Array }[]
+    skipped: number[]
+  }>
 }
 
 // A page can carry 32 MiB that Bridge has to read first; the other calls answer quickly.
@@ -295,10 +298,13 @@ export function createProtonMailClient(
         validateGateMailMessagePage,
         "GateMailMessagePage"
       )
-      return page.messages.map((message) => ({
-        uid: message.uid,
-        raw: new Uint8Array(Buffer.from(message.raw, "base64")),
-      }))
+      return {
+        messages: page.messages.map((message) => ({
+          uid: message.uid,
+          raw: new Uint8Array(Buffer.from(message.raw, "base64")),
+        })),
+        skipped: page.skipped,
+      }
     },
   }
 }

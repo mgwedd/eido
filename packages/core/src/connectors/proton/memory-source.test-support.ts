@@ -34,6 +34,7 @@ type Folder = {
   uidValidity: string
   uidNext: number
   messages: { uid: number; raw: Uint8Array }[]
+  skipped: number[]
 }
 
 /** An in-memory mail source that records every call, and can fail on demand. */
@@ -51,7 +52,18 @@ export class MemorySource implements ProtonMailSource {
     messages: { uid: number; raw: Uint8Array }[] = []
   ): void {
     const uidNext = Math.max(0, ...messages.map((m) => m.uid)) + 1
-    this.folders.set(name, { uidValidity, uidNext, messages: [...messages] })
+    this.folders.set(name, {
+      uidValidity,
+      uidNext,
+      messages: [...messages],
+      skipped: [],
+    })
+  }
+
+  skipUid(name: string, uid: number): void {
+    const folder = this.folder(name)
+    folder.skipped.push(uid)
+    folder.uidNext = Math.max(folder.uidNext, uid + 1)
   }
 
   /** Server renumbers the folder: a new UIDVALIDITY and new UIDs for the same mail. */
@@ -62,7 +74,10 @@ export class MemorySource implements ProtonMailSource {
       uid: firstUid + i,
       raw: m.raw,
     }))
-    folder.uidNext = firstUid + folder.messages.length
+    folder.skipped = folder.skipped.map(
+      (_, i) => firstUid + folder.messages.length + i
+    )
+    folder.uidNext = firstUid + folder.messages.length + folder.skipped.length
   }
 
   private folder(name: string): Folder {
@@ -97,15 +112,23 @@ export class MemorySource implements ProtonMailSource {
     folder: string,
     fromUid: number,
     limit: number
-  ): Promise<{ uid: number; raw: Uint8Array }[]> {
+  ): Promise<{
+    messages: { uid: number; raw: Uint8Array }[]
+    skipped: number[]
+  }> {
     return this.run(() => {
       this.enter(`fetchRaw ${folder} ${fromUid} ${limit}`)
       this.fetches++
       if (this.failFetchOn?.call === this.fetches) throw this.failFetchOn.error
-      return this.folder(folder)
-        .messages.filter((m) => m.uid >= fromUid)
-        .sort((a, b) => a.uid - b.uid)
+      const f = this.folder(folder)
+      const uids = [...f.messages.map((message) => message.uid), ...f.skipped]
+        .filter((uid) => uid >= fromUid)
+        .sort((a, b) => a - b)
         .slice(0, limit)
+      return {
+        messages: f.messages.filter((message) => uids.includes(message.uid)),
+        skipped: f.skipped.filter((uid) => uids.includes(uid)),
+      }
     })
   }
 
