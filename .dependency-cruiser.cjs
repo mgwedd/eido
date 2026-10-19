@@ -21,6 +21,17 @@ module.exports = {
       to: { path: "(^|/)packages/(?!schemas/|ui/)" },
     },
     {
+      name: "web-test-fixtures-are-test-only",
+      comment:
+        'apps/web/test/fixtures holds synthetic UI-state data. Only test files and other files under apps/web/test may import it (.claude/rules/no-placeholders.md). The second path catches the "@/" alias form, which the root tsconfig does not resolve (see not-to-unresolvable).',
+      severity: "error",
+      from: {
+        path: "(^|/)apps/web/",
+        pathNot: "(^|/)apps/web/(test/|.*\\.test\\.tsx?$)",
+      },
+      to: { path: ["(^|/)apps/web/test/fixtures/", "^@/test/fixtures/"] },
+    },
+    {
       name: "schemas-import-nothing",
       comment: "packages/schemas imports no other workspace package.",
       severity: "error",
