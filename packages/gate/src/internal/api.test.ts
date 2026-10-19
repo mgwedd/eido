@@ -9,9 +9,10 @@ import { payloadHash } from "./canonical"
 import {
   GateRequestError,
   GateUnavailableError,
+  createAuditClient,
   createIntentClient,
 } from "./client"
-import type { IntentClient } from "./client"
+import type { AuditClient, IntentClient } from "./client"
 import { close, createGateServer, listen, MAX_BODY_BYTES } from "./http"
 import type { Handler } from "./http"
 import { intentHistory, pendingIntents } from "./intents"
@@ -76,6 +77,7 @@ let dataSocket: string
 let controlSocket: string
 let servers: Server[]
 let client: IntentClient
+let audit: AuditClient
 
 async function serve(handler: Handler, path: string): Promise<Server> {
   const server = createGateServer("test", handler, silent)
@@ -95,6 +97,7 @@ beforeEach(async () => {
   await serve(dataPlaneHandler(runningGate), dataSocket)
   await serve(controlHandler(runningGate), controlSocket)
   client = createIntentClient({ socketPath: dataSocket })
+  audit = createAuditClient({ socketPath: dataSocket })
 })
 
 afterEach(async () => {
@@ -244,7 +247,7 @@ const created = {
 
 describe("POST /audit", () => {
   it("appends one hash-only audit.profile row and the chain still verifies", async () => {
-    const result = await client.recordAudit(created)
+    const result = await audit.record(created)
     const rows = auditRows(s.db)
     const last = rows.at(-1)
     expect(result).toEqual({ seq: last?.seq })
@@ -265,26 +268,26 @@ describe("POST /audit", () => {
   })
 
   it("records each profile action under its own name, without storing an intent", async () => {
-    await client.recordAudit(created)
-    await client.recordAudit({
+    await audit.record(created)
+    await audit.record({
       action: "entity.update",
       subjectHash: SUBJECT,
       beforeHash: BEFORE,
       afterHash: AFTER,
     })
-    await client.recordAudit({
+    await audit.record({
       action: "entity.delete",
       subjectHash: SUBJECT,
       beforeHash: BEFORE,
       afterHash: null,
     })
-    await client.recordAudit({
+    await audit.record({
       action: "account.assign",
       subjectHash: SUBJECT,
       beforeHash: BEFORE,
       afterHash: AFTER,
     })
-    await client.recordAudit({
+    await audit.record({
       action: "account.unassign",
       subjectHash: SUBJECT,
       beforeHash: BEFORE,
@@ -305,7 +308,7 @@ describe("POST /audit", () => {
   })
 
   it("refuses a clear-text field with 400 naming only the path, and audits the refusal", async () => {
-    const refused = client.recordAudit({
+    const refused = audit.record({
       ...created,
       // A record smuggled in beside the hashes.
       ...{ name: BODY_MARKER },
@@ -375,8 +378,8 @@ describe("POST /audit", () => {
   )
 
   it("accepts an assign that replaces an earlier assignment or adds a first one", async () => {
-    await client.recordAudit({ ...created, action: "account.assign" })
-    await client.recordAudit({
+    await audit.record({ ...created, action: "account.assign" })
+    await audit.record({
       ...created,
       action: "account.assign",
       beforeHash: BEFORE,
@@ -399,7 +402,7 @@ describe("POST /audit", () => {
     const reply = await raw(dataSocket, "POST", "/audit", big)
     expect(reply.status).toBe(413)
     expect(actions()).toEqual(["audit.request_refused.too_large"])
-    expect(await client.recordAudit(created)).toMatchObject({
+    expect(await audit.record(created)).toMatchObject({
       seq: expect.any(Number) as unknown,
     })
   })
@@ -602,7 +605,7 @@ describe("the client", () => {
       offline.status("i-1"),
       offline.history("i-1"),
       offline.listPending(),
-      offline.recordAudit({
+      createAuditClient({ socketPath: join(dir, "none.sock") }).record({
         action: "entity.delete",
         subjectHash: "ab".repeat(32),
         beforeHash: "cd".repeat(32),
@@ -659,8 +662,9 @@ describe("the client", () => {
   })
 
   it("refuses an audit answer outside the contract", async () => {
-    const odd = await answering(201, JSON.stringify({ seq: 0 }))
-    await expect(odd.recordAudit(created)).rejects.toMatchObject({
+    await answering(201, JSON.stringify({ seq: 0 }))
+    const odd = createAuditClient({ socketPath: join(dir, "answer-201.sock") })
+    await expect(odd.record(created)).rejects.toMatchObject({
       code: "bad_response",
       message: "the gate's response is not a GateAuditRecordResult",
     })

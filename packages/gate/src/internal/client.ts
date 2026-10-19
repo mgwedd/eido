@@ -69,11 +69,15 @@ export type IntentClient = {
   status: (id: string) => Promise<GateIntentStatus>
   history: (id: string) => Promise<GateIntentHistory["entries"]>
   listPending: () => Promise<GatePendingIntentList["intents"]>
+}
+
+export type AuditClient = {
   /**
    * Appends one hash-only audit.profile.* row to the gate's audit log (#181). Resolves once the
-   * row is written; rejects with GateRequestError when the gate refuses the entry.
+   * row is written; rejects with GateRequestError when the gate refuses the entry and with
+   * GateUnavailableError when the gate cannot be reached, so the caller can roll back.
    */
-  recordAudit: (entry: GateAuditRecordRequest) => Promise<GateAuditRecordResult>
+  record: (entry: GateAuditRecordRequest) => Promise<GateAuditRecordResult>
 }
 
 type Answer = { status: number; body: unknown }
@@ -201,7 +205,17 @@ export function createIntentClient(options: IntentClientOptions): IntentClient {
         validateGatePendingIntentList,
         "GatePendingIntentList"
       ).intents,
-    recordAudit: async (entry) =>
+  }
+}
+
+/** A client for POST /audit on the gate's data-plane listener at `socketPath`. */
+export function createAuditClient(options: IntentClientOptions): AuditClient {
+  const resolved = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  return {
+    record: async (entry) =>
       expect(
         await call(resolved, "POST", "/audit", entry),
         [201],

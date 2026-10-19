@@ -28,7 +28,7 @@ Two processes, two SQLite files, one narrow API between them.
     - The gate writes an audit row for every proposal it accepts or refuses, including the refusals before parsing (`intent.request_refused.*`).
   - Control listener, at `EIDO_GATE_CONTROL_SOCKET` (mode 0600). It serves the same reads plus `GET /audit/chain`. Its path is never in the data plane's configuration.
 - **Room for more listeners.** Each listener is a handler mounted on the same server wrapper (`createGateServer` in `packages/gate/src/internal/http.ts`), with its own socket or port. The phone listener (#85: loopback TCP behind `tailscale serve`, session-checked, with approve and reject) and the Mac-local admin listener (#78) are added as further handlers, without changing the data-plane listener or this split. The web transport is ADR 0004 (#178).
-- **Client.** `createIntentClient({ socketPath })` from `@eido/gate` (`packages/gate/src/index.ts`, the only public entry) is the data plane's only way into the gate. It offers `propose`, `status`, `history`, `listPending` and `recordAudit`.
+- **Client.** `createIntentClient({ socketPath })` from `@eido/gate` (`packages/gate/src/index.ts`, the only public entry) is the data plane's way into the gate for intents. It offers `propose`, `status`, `history` and `listPending`. Its sibling `createAuditClient({ socketPath })` offers `record`, for `POST /audit`; the two are the data plane's only ways into the gate.
   - Every response is parsed with its schema from `@eido/schemas`.
   - If the gate cannot be reached, a call rejects within 2 s with `GateUnavailableError`. Nothing is queued and nothing silently succeeds.
   - A refusal rejects with `GateRequestError`: status, code, and the field errors for a 422.
@@ -43,7 +43,7 @@ Two processes, two SQLite files, one narrow API between them.
   - it rejects with `GateUnavailableError` (the gate is down), or
   - it rejects with `GateRequestError` (the gate refused the request), or
   - it resolves with `state: "rejected"` (policy refused the intent; `reason` says why).
-- Core's profile audit sink (#141, #153) calls `recordAudit` inside the same transaction, not `propose`. There is no audit intent kind and no exemption to the auto-tier policy (#181).
+- Core's profile audit sink (#141, #153) calls `createAuditClient(...).record` inside the same transaction, not `propose`. There is no audit intent kind and no exemption to the auto-tier policy (#181).
   - `POST /audit` takes a `GateAuditRecordRequest` from `@eido/schemas`: the action (`entity.create`, `entity.update`, `entity.delete`, `account.assign` or `account.unassign`) and the subject, before and after hashes. Nothing else is accepted, so no record goes to the gate in clear.
   - The gate validates the body with the schema, then checks that every hash is lowercase hex and that the before and after hashes are null or set as the action requires. A refusal is 400 (413 over 1 MiB) and is audited as `audit.request_refused.*`.
   - The gate appends the row itself: actor `data-plane`, action `audit.profile.<action>`, target the subject hash, and the detail hash of the whole entry. It answers 201 with the row's `seq`. The data plane still never writes `audit_log`.
