@@ -35,6 +35,11 @@ const cases = [
     pattern:
       /error\s+(?:not-to-unresolvable|gate-internals-are-private):\s+\S*packages\/core\/src\/bad-workspace\.ts\b/,
   },
+  {
+    label: "relative import of the token vault (bad-vault.ts)",
+    pattern:
+      /error\s+gate-internals-are-private:\s+\S*packages\/core\/src\/bad-vault\.ts\b/,
+  },
 ]
 
 const missing = cases.filter((c) => !c.pattern.test(output))
