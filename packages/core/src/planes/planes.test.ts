@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto"
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
 import { join, relative, sep } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -36,6 +38,41 @@ const POLLUTED = {
 }
 
 const CREDENTIAL_NAME = /TOKEN|SECRET|KEY|PASSWORD|REFRESH/
+
+// Synthetic profile values that must never reach the gate in clear.
+const CLEAR = {
+  name: "Lorem Holdings",
+  renamed: "Ipsum Holdings",
+  tag: "LOREMTAG",
+  connector: "mailconnector",
+  accountRef: "box@example.invalid",
+}
+
+/** Hex SHA-256 of the JSON of `value`: the hash the audit entry carries (#181). */
+const hashOf = (value: unknown): string =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex")
+
+/** GET /audit/chain on the gate's control listener. */
+function auditChain(): Promise<{ ok: boolean; rows: number }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { socketPath: planes.paths.controlSocket, path: "/audit/chain" },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on("data", (chunk: Buffer) => chunks.push(chunk))
+        res.on("end", () => {
+          const body: unknown = JSON.parse(Buffer.concat(chunks).toString())
+          resolve({
+            ok: field(body, "ok") === true,
+            rows: Number(field(body, "rows")),
+          })
+        })
+      }
+    )
+    req.on("error", reject)
+    req.end()
+  })
+}
 
 let tmp: string
 let planes: Planes
@@ -183,6 +220,67 @@ describe(
       )
     })
 
+    it("audits every profile change in the gate's chain, as hashes only", async () => {
+      const before = await auditChain()
+      const write = async (
+        method: string,
+        path: string,
+        body?: unknown
+      ): Promise<unknown> => {
+        const response = await fetch(`${planes.coreUrl}${path}`, {
+          method,
+          ...(body === undefined
+            ? {}
+            : {
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(body),
+              }),
+        })
+        expect([method, path, response.status]).toEqual([
+          method,
+          path,
+          method === "POST" ? 201 : method === "DELETE" ? 204 : 200,
+        ])
+        return response.status === 204 ? null : response.json()
+      }
+      const entity = await write("POST", "/entities", {
+        kind: "company",
+        name: CLEAR.name,
+        tag: CLEAR.tag,
+      })
+      const entityId = String(field(entity, "id"))
+      await write("PATCH", `/entities/${entityId}`, { name: CLEAR.renamed })
+      await write("PUT", "/entity-assignments", {
+        connector: CLEAR.connector,
+        accountRef: CLEAR.accountRef,
+        entityId,
+      })
+      await write(
+        "DELETE",
+        `/entity-assignments?connector=${CLEAR.connector}&accountRef=${encodeURIComponent(CLEAR.accountRef)}`
+      )
+      await write("DELETE", `/entities/${entityId}`)
+
+      expect(await auditChain()).toEqual({ ok: true, rows: before.rows + 5 })
+      const control = await planes.inspectControlDb()
+      const account = hashOf([CLEAR.connector, CLEAR.accountRef])
+      expect(
+        auditActions(control).filter((row) =>
+          String(row.action).startsWith("audit.profile.")
+        )
+      ).toEqual([
+        { action: "audit.profile.entity.create", target: hashOf(entityId) },
+        { action: "audit.profile.entity.update", target: hashOf(entityId) },
+        { action: "audit.profile.account.assign", target: account },
+        { action: "audit.profile.account.unassign", target: account },
+        { action: "audit.profile.entity.delete", target: hashOf(entityId) },
+      ])
+      const stored = JSON.stringify(control)
+      for (const clear of [...Object.values(CLEAR), entityId]) {
+        expect(stored).not.toContain(clear)
+      }
+    })
+
     // Last: it stops the gate.
     it("rejects every call within 2 s with GateUnavailableError once the gate is stopped", async () => {
       await planes.stopGate()
@@ -198,6 +296,17 @@ describe(
         })
         expect(Number(field(settled, "ms")), call).toBeLessThan(2000)
       }
+
+      const started = performance.now()
+      const refused = await fetch(`${planes.coreUrl}/entities`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "personal", name: CLEAR.name, tag: "X" }),
+      })
+      expect(refused.status).toBe(500)
+      expect(performance.now() - started).toBeLessThan(2500)
+      const listed = await fetch(`${planes.coreUrl}/entities`)
+      expect(await listed.json()).toEqual({ entities: [] })
 
       expect(await planes.inspectControlDb()).toEqual(controlBefore)
       expect(rowCounts(planes.paths.dataDb)).toEqual(dataBefore)

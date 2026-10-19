@@ -14,7 +14,7 @@ let base: string
 
 beforeEach(async () => {
   const profile = createProfileStore(openIndex(":memory:"), {
-    audit: () => undefined,
+    audit: () => Promise.resolve(),
   })
   // The allowed host carries the port, which is known only after listen.
   let handler = createApiHandler({ profile, allowedHosts: [] })
