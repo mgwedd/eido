@@ -34,6 +34,8 @@ export const OWNER = "owner@example.com"
 export const ALLOWED_ROOT = "notes"
 // A marker no audit or history field may ever contain: it appears only in payload bodies.
 export const BODY_MARKER = "lorem-ipsum-body-7f3a"
+/** A well-formed raw-message hash that matches no message. */
+export const SAMPLE_SHA256 = "0f".repeat(32)
 
 type Op = Pick<
   ConnectorOperation,
@@ -122,8 +124,18 @@ const ARGS = {
     subject: "Hello",
     body: BODY_MARKER,
   },
-  "email.reply": { messageId: "msg-1", replyAll: false, body: BODY_MARKER },
-  "email.forward": { messageId: "msg-1", to: ["someone@example.com"] },
+  "email.reply": {
+    messageId: "msg-1",
+    messageSha256: SAMPLE_SHA256,
+    replyAll: false,
+    to: ["someone@example.com"],
+    body: BODY_MARKER,
+  },
+  "email.forward": {
+    messageId: "msg-1",
+    messageSha256: SAMPLE_SHA256,
+    to: ["someone@example.com"],
+  },
   "email.trash": { messageIds: ["msg-1"] },
   "calendar.create": {
     entity: "personal",

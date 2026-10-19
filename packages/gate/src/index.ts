@@ -1,4 +1,4 @@
-// Public entry point of the gate: the intent API and audit clients the data plane uses to reach the gate
+// Public entry point of the gate: the intent API, audit and Proton mail clients the data plane uses to reach the gate
 // process over its data-plane socket (ADR 0003). Everything else in the package is internal
 // and runs only inside the gate process (src/main.ts).
 import type {
@@ -18,12 +18,14 @@ export {
   GateUnavailableError,
   createAuditClient,
   createIntentClient,
+  createProtonMailClient,
 } from "./internal/client"
 export type {
   AuditClient,
   IntentClient,
   IntentClientOptions,
   IntentProposal,
+  ProtonMailClient,
 } from "./internal/client"
 
 export type IntentKind = Intent["kind"]

@@ -110,9 +110,9 @@ export interface CoreApiProfile {
   updatedAt: string
 }
 
-/** Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. Statuses: not_found 404, already_decided 409, verification_failed 403, invalid_request 400 (413 over 1 MiB, 422 for an edited intent the schemas or the original's kind refuse), unauthenticated 401 (no valid session cookie on a gated phone route), misdirected_request 421 (a Host header the listener does not serve), unsupported_media_type 415 (a phone-listener POST whose Content-Type is not application/json), tier_changed 409 and forbidden 403 (an edit refused by policy), unavailable 500. */
+/** Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. Statuses: not_found 404, already_decided 409, verification_failed 403, invalid_request 400 (413 over 1 MiB, 422 for an edited intent the schemas or the original's kind refuse), unauthenticated 401 (no valid session cookie on a gated phone route), misdirected_request 421 (a Host header the listener does not serve), unsupported_media_type 415 (a phone-listener POST whose Content-Type is not application/json), tier_changed 409 and forbidden 403 (an edit refused by policy), unavailable 500, handshake_failed 502 (Proton Bridge refused the connection or the TLS handshake) and auth_failed 502 (Bridge refused the username or password). */
 export interface GateApiError {
-  code: "not_found" | "already_decided" | "verification_failed" | "invalid_request" | "unauthenticated" | "misdirected_request" | "unsupported_media_type" | "tier_changed" | "forbidden" | "unavailable"
+  code: "not_found" | "already_decided" | "verification_failed" | "invalid_request" | "unauthenticated" | "misdirected_request" | "unsupported_media_type" | "tier_changed" | "forbidden" | "unavailable" | "handshake_failed" | "auth_failed"
   message: string
 }
 
@@ -252,6 +252,26 @@ export interface GateLoginRequest {
   assertion: GateWebAuthnAssertion
 }
 
+/** Response of GET /mail/proton/folders on the data-plane socket (#195): the Bridge mailbox names, by their full IMAP path. */
+export interface GateMailFolderList {
+  folders: Array<string>
+}
+
+/** Response of GET /mail/proton/folders/:folder/state (#195): the folder's UIDVALIDITY, as a decimal string, and its UIDNEXT. */
+export interface GateMailFolderState {
+  uidValidity: string
+  uidNext: number
+}
+
+/** Response of GET /mail/proton/folders/:folder/messages?fromUid=&limit= (#195): raw RFC 5322 messages as base64, UID ascending, at most limit of them and at most 32 MiB of raw bytes in all. The gate does not parse them. skipped lists the UIDs in range that were left out because a message is over 25 MiB on its own. */
+export interface GateMailMessagePage {
+  messages: Array<{
+    uid: number
+    raw: string
+  }>
+  skipped: Array<number>
+}
+
 /** Response of the pending-approvals list: intents in state pending, without payload bodies (#11 listPendingIntents, plus origin, which #33 needs). */
 export interface GatePendingIntentList {
   intents: Array<{
@@ -381,6 +401,7 @@ export interface EmailForwardIntent {
   kind: "email.forward"
   args: {
     messageId: string
+    messageSha256: string
     to: Array<string>
     note?: string
   }
@@ -410,7 +431,10 @@ export interface EmailReplyIntent {
   kind: "email.reply"
   args: {
     messageId: string
+    messageSha256: string
     replyAll: boolean
+    to: Array<string>
+    cc?: Array<string>
     body: string
   }
 }

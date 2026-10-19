@@ -45,8 +45,20 @@ const VALID: Record<string, unknown> = {
     body: "Hello",
     draftId: "d1",
   },
-  "email.reply": { messageId: "m1", replyAll: true, body: "Thanks" },
-  "email.forward": { messageId: "m1", to: ["a@example.com"], note: "FYI" },
+  "email.reply": {
+    messageId: "m1",
+    messageSha256: "ab".repeat(32),
+    replyAll: true,
+    to: ["a@example.com"],
+    cc: ["b@example.com"],
+    body: "Thanks",
+  },
+  "email.forward": {
+    messageId: "m1",
+    messageSha256: "ab".repeat(32),
+    to: ["a@example.com"],
+    note: "FYI",
+  },
   "email.trash": { messageIds: ["m1"] },
   "calendar.create": {
     entity: "personal",
@@ -146,6 +158,37 @@ describe("rejections", () => {
     ).toContain("$.args.replyAll: required")
   })
 
+  test("a reply and a forward name their target by its bytes, and a reply its recipients", () => {
+    const reply = errorsOf(
+      intent("email.reply", { messageId: "m1", replyAll: false, body: "x" })
+    )
+    expect(reply).toContain("$.args.messageSha256: required")
+    expect(reply).toContain("$.args.to: required")
+    expect(
+      errorsOf(intent("email.forward", { messageId: "m1", to: ["a@x.io"] }))
+    ).toContain("$.args.messageSha256: required")
+    expect(
+      errorsOf(
+        intent("email.reply", {
+          messageId: "m1",
+          messageSha256: "ab".repeat(32),
+          replyAll: false,
+          to: [],
+          body: "x",
+        })
+      )
+    ).toContain("$.args.to: needs at least 1 items")
+    expect(
+      errorsOf(
+        intent("email.forward", {
+          messageId: "m1",
+          messageSha256: "ab".repeat(31),
+          to: ["a@x.io"],
+        })
+      )
+    ).toContain("$.args.messageSha256: needs at least 64 characters")
+  })
+
   test("enum and const mismatch", () => {
     const schema: JsonSchema = { enum: ["a", "b"] }
     expect(validateIntentResult({ result: "maybe" }).ok).toBe(false)
@@ -160,7 +203,9 @@ describe("rejections", () => {
       errorsOf(
         intent("email.reply", {
           messageId: "m1",
+          messageSha256: "ab".repeat(32),
           replyAll: false,
+          to: ["a@example.com"],
           body: "x".repeat(20001),
         })
       )

@@ -12,6 +12,8 @@ import type {
   GateProposeResult,
 } from "@eido/schemas"
 import { append, verifyChain } from "./audit"
+import { mailRoute } from "./bridge/mail-routes"
+import type { MailReads } from "./bridge/mail-routes"
 import { payloadHash } from "./canonical"
 import { apiError, NOT_FOUND } from "./http"
 import type { GateRequest, Handler, Reply } from "./http"
@@ -240,8 +242,14 @@ function readRoute(request: GateRequest, gate: GateState): Reply | undefined {
   return { status: 200, body: history }
 }
 
-/** The data-plane listener: the intent API and POST /audit, nothing else. */
-export function dataPlaneHandler(gate: () => GateState): Handler {
+/**
+ * The data-plane listener: the intent API, POST /audit and, when Bridge is configured, the
+ * Proton mail read routes (#195); nothing else.
+ */
+export function dataPlaneHandler(
+  gate: () => GateState,
+  mail?: MailReads
+): Handler {
   return (request) => {
     const state = gate()
     if (request.method === "POST" && request.path === "/intents") {
@@ -250,7 +258,9 @@ export function dataPlaneHandler(gate: () => GateState): Handler {
     if (request.method === "POST" && request.path === "/audit") {
       return auditRoute(request, state)
     }
-    return readRoute(request, state) ?? NOT_FOUND
+    const mailReply =
+      mail === undefined ? undefined : mailRoute(request, state.db, mail)
+    return mailReply ?? readRoute(request, state) ?? NOT_FOUND
   }
 }
 
