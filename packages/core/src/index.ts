@@ -4,3 +4,4 @@
 export * from "./index/index"
 export * from "./profile/index"
 export * from "./api/index"
+export * from "./connectors/proton/index"
