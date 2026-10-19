@@ -19,7 +19,7 @@
     "check:lint-coverage": "node scripts/check-lint-coverage.mjs",
     "check:no-js": "node scripts/check-no-js.mjs",
     "check:no-js-fixture": "node scripts/check-no-js.mjs --self-test",
-    "check": "pnpm turbo run typecheck lint test && pnpm check:deps && pnpm check:deps-fixture && pnpm check:gate-deps && pnpm check:secrets && pnpm check:versions && pnpm check:lint-coverage && pnpm check:no-js && pnpm check:no-js-fixture && pnpm format:check"
+    "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",

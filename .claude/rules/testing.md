@@ -1,6 +1,7 @@
 # Testing
 
-- The interface is pnpm + Turborepo. Local runs and agents use `pnpm turbo run typecheck lint test` (everything), or the affected subset below. `pnpm check` adds the boundary, allowlist and secret checks that CI also runs.
+- The interface is pnpm + Turborepo. `pnpm verify` runs exactly what CI runs (`scripts/verify.mjs` is the one list; CI calls it with `--full`). Run it before every push and open a PR only when it passes. Locally it limits turbo tasks to changed packages and runs only the light checks for docs and images; `pnpm verify --full` is the CI run. A failure names the step and the command to rerun it. To add or change a check, edit the list in `scripts/verify.mjs` and nothing else.
+- While iterating, one-shot `pnpm turbo run typecheck lint test --affected`.
 - Tests are Vitest, next to the code as `*.test.ts` (in `apps/web`, under `test/`). Prefer plain functions you can test without a browser or network. Anything touching the gate ships with tests (see `packages/gate/AGENTS.md`).
 - Do not call `eslint` or `tsc` directly when a turbo task does the job. Call `vitest` directly only for a one-shot `vitest related` or `--changed` run, or through the `test:watch` task below.
 - Never put real tokens, personal data or live-service calls in tests.
