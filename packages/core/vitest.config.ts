@@ -9,6 +9,7 @@ export default defineConfig({
       include: ["src/**/*.ts"],
       exclude: [
         "**/*.test.{ts,tsx}", // test files are not product code
+        "**/*.test-support.ts", // test-only fakes and builders, imported by tests only
       ],
       reporter: ["text", "json-summary"],
       thresholds: {
