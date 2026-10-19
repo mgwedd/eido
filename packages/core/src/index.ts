@@ -5,3 +5,4 @@ import { GATE_API_VERSION } from "@eido/gate"
 export const CORE_GATE_API_VERSION = GATE_API_VERSION
 
 export * from "./index/index"
+export * from "./profile/index"

@@ -184,3 +184,55 @@ export type IntentResult = {
 
 /** One proposed write. The model never supplies an id; the gate assigns it. */
 export type Intent = EmailDraftIntent | EmailLabelIntent | EmailArchiveIntent | EmailMarkReadIntent | EmailSendIntent | EmailReplyIntent | EmailForwardIntent | EmailTrashIntent | CalendarCreateIntent | CalendarEditIntent | CalendarDeleteIntent | ReminderCreateIntent | FileCreateIntent | FileRenameIntent | FileMoveIntent | FileDeleteIntent
+
+/** Assign a connector account, calendar or mailbox to an entity. */
+export interface ProfileAccountAssignment {
+  connector: string
+  accountRef: string
+  entityId: string
+}
+
+/** An email address Eido acts for. */
+export interface ProfileAddress {
+  address: string
+  label?: string
+}
+
+/** Working hours for one weekday, local time, 24-hour HH:MM. */
+export interface ProfileDayHours {
+  start: string
+  end: string
+}
+
+/** Create an entity: a personal context, a property or a company, with a short tag. */
+export interface ProfileEntityInput {
+  kind: "personal" | "property" | "company"
+  name: string
+  tag: string
+}
+
+/** Rename or retag an entity. The kind cannot change. */
+export interface ProfileEntityPatch {
+  name?: string
+  tag?: string
+}
+
+/** Edit the owner profile. Fields left out stay as they are; the first write must set displayName and timezone. */
+export interface ProfileUpdate {
+  displayName?: string
+  timezone?: string
+  workingHours?: ProfileWorkingHours
+  signature?: string
+  addresses?: Array<ProfileAddress>
+}
+
+/** Working hours per weekday; a missing day is a day off. */
+export interface ProfileWorkingHours {
+  mon?: ProfileDayHours
+  tue?: ProfileDayHours
+  wed?: ProfileDayHours
+  thu?: ProfileDayHours
+  fri?: ProfileDayHours
+  sat?: ProfileDayHours
+  sun?: ProfileDayHours
+}

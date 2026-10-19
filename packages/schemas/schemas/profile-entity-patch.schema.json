@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProfileEntityPatch",
+  "description": "Rename or retag an entity. The kind cannot change.",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "tag": { "type": "string", "minLength": 1, "maxLength": 24 }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProfileUpdate",
+  "description": "Edit the owner profile. Fields left out stay as they are; the first write must set displayName and timezone.",
+  "type": "object",
+  "properties": {
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "timezone": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "workingHours": { "$ref": "profile-working-hours.schema.json" },
+    "signature": { "type": "string", "maxLength": 2000 },
+    "addresses": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "$ref": "profile-address.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

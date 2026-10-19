@@ -13,7 +13,8 @@
     "test:watch": "vitest --watch"
   },
   "dependencies": {
-    "@eido/gate": "workspace:*"
+    "@eido/gate": "workspace:*",
+    "@eido/schemas": "workspace:*"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
