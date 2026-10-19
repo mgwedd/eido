@@ -22,8 +22,8 @@ export {
   policyFor,
   protonManifest,
 } from "./manifest"
-export { attachmentText, isTextMime, parseMessage } from "./parse"
-export type { Mailbox, ParsedAttachment, ParsedMessage } from "./parse"
+export { attachmentText, isTextMime, parseMessage } from "../mail/parse"
+export type { Mailbox, ParsedAttachment, ParsedMessage } from "../mail/parse"
 export { callSource } from "./source"
 export type { ProtonMailSource } from "./source"
 export { CONNECTOR, syncFolder, syncProton } from "./sync"

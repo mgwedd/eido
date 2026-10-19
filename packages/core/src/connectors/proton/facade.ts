@@ -11,7 +11,7 @@ import type {
 import { search } from "../../index/index"
 import type { SearchHit } from "../../index/index"
 import { ProtonError } from "./errors"
-import { isTextMime } from "./parse"
+import { isTextMime } from "../mail/parse"
 import { CONNECTOR } from "./sync"
 
 export type IntentReceipt = { intentId: string }
