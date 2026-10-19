@@ -36,3 +36,26 @@ jobs:
       # every push to main runs everything.
       - name: Verify
         run: pnpm verify --full
+
+  # The gate's Bridge tests (local fake IMAP and SMTP) and its Windows named-pipe support (ADR 0003)
+  # must hold off Linux too. The full check run stays on Linux in `check`.
+  gate-os:
+    name: gate tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Enable pnpm (version pinned by packageManager)
+        run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Gate tests
+        run: pnpm turbo run test --filter=@eido/gate
