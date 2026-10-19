@@ -496,10 +496,7 @@ export function createProtonBridge({
             for (const uid of wanted) {
               const [message] = await sources(client, folder, [uid])
               const raw = message?.source
-              if (message === undefined || raw === undefined) {
-                firstUnreturnedUid = uid
-                break
-              }
+              if (message === undefined || raw === undefined) continue
               if (raw.length > MAX_MESSAGE_BYTES) {
                 skipped.push(uid)
                 continue

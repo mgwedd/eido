@@ -126,8 +126,12 @@ export class MemorySource implements ProtonMailSource {
         .sort((a, b) => a - b)
         .slice(0, limit)
       return {
-        messages: f.messages.filter((message) => uids.includes(message.uid)),
-        skipped: f.skipped.filter((uid) => uids.includes(uid)),
+        messages: f.messages
+          .filter((message) => uids.includes(message.uid))
+          .sort((a, b) => a.uid - b.uid),
+        skipped: f.skipped
+          .filter((uid) => uids.includes(uid))
+          .sort((a, b) => a - b),
       }
     })
   }
