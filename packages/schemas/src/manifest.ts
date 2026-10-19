@@ -6,13 +6,28 @@ import { validateConnectorManifest as validateShape } from "./generated/validato
 import type { ValidationResult } from "./validate"
 
 const CONNECTOR_NAME = /^[a-z][a-z0-9-]*$/
-// An exact DNS host name: lowercase labels of letters, digits and inner hyphens. No wildcard,
-// port, scheme, path or trailing dot, so the proxy can compare it byte for byte.
+// An exact DNS host name: two or more lowercase labels of letters, digits and inner hyphens,
+// the last starting with a letter. No wildcard, port, scheme or trailing dot, and no IP
+// literal in any form (dotted, single number, octal or hex), so the proxy compares it byte for
+// byte and a manifest cannot allowlist loopback, private or metadata addresses.
 const HOST_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+// At least two labels, and the last one starts with a letter.
+const TOP_LABEL = /\.[a-z][^.]*$/
+// A path below the root built from RFC 3986 path characters, without query, fragment,
+// percent-encoding, wildcard, empty segment or dot segment, so prefix matching is literal.
+const PATH_PREFIX = /^(\/[A-Za-z0-9._~!$&'()+,;=:@-]+)+\/?$/
+const DOT_SEGMENT = /(^|\/)\.\.?(\/|$)/
 const INTENT_KIND_SET: ReadonlySet<string> = new Set(INTENT_KINDS)
 
 function isExactHost(host: string): boolean {
-  return host.split(".").every((label) => HOST_LABEL.test(label))
+  return (
+    TOP_LABEL.test(host) &&
+    host.split(".").every((label) => HOST_LABEL.test(label))
+  )
+}
+
+function isLiteralPathPrefix(prefix: string): boolean {
+  return PATH_PREFIX.test(prefix) && !DOT_SEGMENT.test(prefix)
 }
 
 function duplicates(values: readonly string[]): string[] {
@@ -47,9 +62,9 @@ function semanticErrors(manifest: ConnectorManifest): string[] {
       errors.push(`${path}.methods: duplicate method ${method}`)
     }
     entry.pathPrefixes.forEach((prefix, i) => {
-      if (!prefix.startsWith("/") || prefix.includes("*")) {
+      if (!isLiteralPathPrefix(prefix)) {
         errors.push(
-          `${path}.pathPrefixes[${i}]: must start with / and contain no wildcard`
+          `${path}.pathPrefixes[${i}]: must be a literal path below / (no wildcard, //, dot segment, ?, # or %)`
         )
       }
     })

@@ -102,6 +102,13 @@ describe("validateConnectorManifest", () => {
     ["a scheme", "https://api.example.com"],
     ["uppercase", "API.example.com"],
     ["a trailing dot", "api.example.com."],
+    ["an empty label", "api..example.com"],
+    ["a single label", "localhost"],
+    ["a dotted IPv4 literal", "169.254.169.254"],
+    ["a single-number IPv4 literal", "2130706433"],
+    ["an octal IPv4 literal", "0177.0.0.1"],
+    ["a hex IPv4 literal", "0x7f.1"],
+    ["a numeric top label", "api.example.123"],
   ])("rejects a host with %s", (_label, host) => {
     expect(
       errorsOf((m) => {
@@ -109,6 +116,17 @@ describe("validateConnectorManifest", () => {
       })
     ).toEqual(["$.egress.hosts[0].host: must be an exact lowercase host name"])
   })
+
+  test.each([["xn--bcher-kva.example"], ["a1.b-2.example.com"]])(
+    "accepts the host %s",
+    (host) => {
+      expect(
+        errorsOf((m) => {
+          hostAt(m, 0).host = host
+        })
+      ).toEqual([])
+    }
+  )
 
   test("rejects a write operation without intentKind", () => {
     expect(
@@ -199,16 +217,37 @@ describe("validateConnectorManifest", () => {
     ])
   })
 
-  test.each([["v1/messages"], ["/v1/*"]])(
-    "rejects the path prefix %s",
+  test.each([
+    ["v1/messages"],
+    ["/v1/*"],
+    ["/"],
+    ["//evil.example"],
+    ["/v1//messages"],
+    ["/v1/../admin"],
+    ["/v1/./messages"],
+    ["/v1/%2e%2e/admin"],
+    ["/v1/messages?all=1"],
+    ["/v1/messages#top"],
+    ["/v1/mes sages"],
+    ["/v1\\messages"],
+  ])("rejects the path prefix %s", (prefix) => {
+    expect(
+      errorsOf((m) => {
+        hostAt(m, 0).pathPrefixes = [prefix]
+      })
+    ).toEqual([
+      "$.egress.hosts[0].pathPrefixes[0]: must be a literal path below / (no wildcard, //, dot segment, ?, # or %)",
+    ])
+  })
+
+  test.each([["/v1/messages/"], ["/v1/users/me:batch"], ["/v1.2/files"]])(
+    "accepts the path prefix %s",
     (prefix) => {
       expect(
         errorsOf((m) => {
           hostAt(m, 0).pathPrefixes = [prefix]
         })
-      ).toEqual([
-        "$.egress.hosts[0].pathPrefixes[0]: must start with / and contain no wildcard",
-      ])
+      ).toEqual([])
     }
   )
 

@@ -169,6 +169,30 @@ describe("pinManifest", () => {
     expect(auditRows(db)).toHaveLength(1)
   })
 
+  it("refuses a changed manifest with a lower version", () => {
+    const db = openControlDb(":memory:")
+    pinManifest(db, mail(2), "owner")
+    const older = { ...mail(1), description: "An older review" }
+    expect(() => pinManifest(db, older, "owner")).toThrow(
+      "needs a version above 2"
+    )
+    expect(getPinnedManifest(db, "example-mail")).toEqual(mail(2))
+  })
+
+  it("refuses to re-enable a drift-disabled connector with the same manifest", () => {
+    const db = pinned()
+    checkDrift(db, "example-mail", [...PINNED_TOOLS, "delete_message"])
+    expect(() => pinManifest(db, mail(), "owner")).toThrow(
+      "disabled after drift: pin a re-reviewed manifest with a version above 1"
+    )
+    expect(row(db).enabled).toBe(0)
+    expect(row(db).drift_json).toBe('{"added":["delete_message"],"removed":[]}')
+    expect(auditRows(db).map((r) => r["action"])).toEqual([
+      "connector.pinned",
+      "connector.disabled_drift",
+    ])
+  })
+
   it("keeps an identical re-pin enabled with the same hash", () => {
     const db = pinned()
     const before = row(db).manifest_hash

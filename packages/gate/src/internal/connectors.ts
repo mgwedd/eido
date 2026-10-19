@@ -70,7 +70,8 @@ function inTransaction<T>(db: DatabaseSync, work: () => T): T {
 
 /**
  * Validates and stores a manifest, enabling the connector and clearing any drift. Re-pinning a
- * changed manifest is the re-review path and needs a higher version than the one pinned.
+ * changed manifest is the re-review path and needs a higher version than the one pinned; a
+ * drift-disabled connector needs that too, so re-pinning the same manifest cannot re-enable it.
  * Appends `connector.pinned` to the audit log with the manifest hash as the detail.
  */
 export function pinManifest(
@@ -86,14 +87,19 @@ export function pinManifest(
   const hash = manifestHash(valid)
   inTransaction(db, () => {
     const current = storedRow(db, valid.name)
-    if (
-      current !== undefined &&
-      current.hash !== hash &&
-      valid.version <= current.manifest.version
-    ) {
-      throw new Error(
-        `connector ${valid.name}: a changed manifest needs a version above ${current.manifest.version}`
-      )
+    if (current !== undefined && valid.version <= current.manifest.version) {
+      // A changed manifest is a new review, so it needs a new version. A drift-disabled
+      // connector is re-enabled only by such a re-review, never by re-pinning the same manifest.
+      if (current.hash !== hash) {
+        throw new Error(
+          `connector ${valid.name}: a changed manifest needs a version above ${current.manifest.version}`
+        )
+      }
+      if (!current.enabled) {
+        throw new Error(
+          `connector ${valid.name} is disabled after drift: pin a re-reviewed manifest with a version above ${current.manifest.version}`
+        )
+      }
     }
     db.prepare(
       `INSERT INTO connectors (name, manifest_json, manifest_hash, pinned_at, enabled, health, consecutive_failures, drift_json)
