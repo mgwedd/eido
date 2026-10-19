@@ -64,16 +64,26 @@ describe("loopbackHost", () => {
 })
 
 describe("basePath", () => {
-  test.each(["", "/api/core", "/core"])("accepts %j", (path) => {
-    expect(basePath(path)).toBe(path)
-  })
-
-  test.each(["/", "api/core", "/api/core/", "/api//core", "/api core"])(
-    "refuses %j",
+  test.each(["", "/api/core", "/core", "/.well", "/api/..core"])(
+    "accepts %j",
     (path) => {
-      expect(() => basePath(path)).toThrow("the base path must look like")
+      expect(basePath(path)).toBe(path)
     }
   )
+
+  test.each([
+    "/",
+    "api/core",
+    "/api/core/",
+    "/api//core",
+    "/api core",
+    "/.",
+    "/..",
+    "/api/../core",
+    "/api/.",
+  ])("refuses %j", (path) => {
+    expect(() => basePath(path)).toThrow("the base path must look like")
+  })
 })
 
 describe("hostHeader", () => {

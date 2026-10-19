@@ -133,7 +133,8 @@ export type DataPlane = {
   /** The owner profile and entities; each entity or assignment change is audited by the gate. */
   profile: ProfileStore
   log: (event: string, fields?: Readonly<Record<string, string>>) => void
-  close: () => void
+  /** Waits for the profile store's queued calls to settle, then closes eido-data.db. */
+  close: () => Promise<void>
 }
 
 /**
@@ -164,7 +165,8 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     gate,
     profile,
     log,
-    close: () => {
+    close: async () => {
+      await profile.drain()
       db.close()
       log("stopped")
     },
@@ -216,7 +218,8 @@ type SignalSource = { once: (signal: Signal, listener: () => void) => unknown }
 
 /**
  * The listening API keeps the process up. On the first stop signal it stops taking requests,
- * then closes the data plane; resolves once both are closed.
+ * then closes the data plane once its queued store calls settle, even when closing the API fails;
+ * resolves once both are closed.
  */
 export function holdUntilStopped(
   plane: DataPlane,
@@ -229,13 +232,14 @@ export function holdUntilStopped(
       signals.once(signal, () => {
         if (stopped) return
         stopped = true
-        api
-          .close()
-          .then(() => {
-            plane.close()
-            resolve()
-          })
-          .catch(reject)
+        const stop = async (): Promise<void> => {
+          try {
+            await api.close()
+          } finally {
+            await plane.close()
+          }
+        }
+        stop().then(resolve, reject)
       })
     }
   })

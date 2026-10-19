@@ -545,6 +545,72 @@ describe("audit", () => {
     expect((await second).name).toBe("B")
     expect((await gated.listEntities()).map((e) => e.name)).toEqual(["B"])
   })
+
+  test("the hash of a stored assignment does not depend on the client's key order", async () => {
+    const a = await store.createEntity({ kind: "company", name: "A", tag: "a" })
+    const b = await store.createEntity({ kind: "company", name: "B", tag: "b" })
+    audits.length = 0
+    const returned = await store.assignAccount({
+      entityId: a.id,
+      accountRef: "box-1",
+      connector: "mail",
+    })
+    expect(Object.keys(returned)).toEqual([
+      "connector",
+      "accountRef",
+      "entityId",
+    ])
+    await store.assignAccount({
+      accountRef: "box-1",
+      entityId: b.id,
+      connector: "mail",
+    })
+    expect(audits[1]?.beforeHash).toBe(audits[0]?.afterHash)
+  })
+
+  test("a transaction that already ended keeps the audit call's error", async () => {
+    const failure = new GateUnavailableError("unreachable")
+    const gated = createProfileStore(db, {
+      audit: () => {
+        // Ends the transaction under the store, as a failed COMMIT would.
+        db.exec("ROLLBACK")
+        return Promise.reject(failure)
+      },
+    })
+    await expect(
+      gated.createEntity({ kind: "personal", name: "N", tag: "n" })
+    ).rejects.toBe(failure)
+    expect(await gated.listEntities()).toEqual([])
+  })
+
+  test("drain waits for a write whose audit is in flight, and for calls queued meanwhile", async () => {
+    let release: () => void = () => undefined
+    let calls = 0
+    const gated = createProfileStore(db, {
+      audit: () => {
+        calls++
+        return calls > 1
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              release = resolve
+            })
+      },
+    })
+    const first = gated.createEntity({ kind: "personal", name: "A", tag: "a" })
+    let drained = false
+    const draining = gated.drain().then(() => {
+      drained = true
+    })
+    const second = gated.createEntity({ kind: "personal", name: "B", tag: "b" })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(drained).toBe(false)
+    release()
+    await draining
+    expect(calls).toBe(2)
+    db.close()
+    expect((await first).name).toBe("A")
+    expect((await second).name).toBe("B")
+  })
 })
 
 describe("profile_history", () => {

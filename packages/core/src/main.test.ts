@@ -1,12 +1,18 @@
 import { execFile } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
-import { request as httpRequest } from "node:http"
+import {
+  createServer as createHttpServer,
+  request as httpRequest,
+} from "node:http"
+import type { ServerResponse } from "node:http"
 import { EventEmitter } from "node:events"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { GateUnavailableError } from "@eido/gate"
+import { DatabaseSync } from "node:sqlite"
 import { afterEach, beforeEach, describe, expect, it, test } from "vitest"
+import type { CoreApi } from "./api/index"
 import {
   DATA_DB_FILE,
   DATA_PLANE_LOG_FILE,
@@ -141,7 +147,7 @@ describe("runDataPlane", () => {
     await expect(plane.gate.listPending()).rejects.toBeInstanceOf(
       GateUnavailableError
     )
-    plane.close()
+    await plane.close()
     expect(plane.db.isOpen).toBe(false)
 
     const lines = readFileSync(
@@ -247,7 +253,7 @@ describe("serveDataPlane", () => {
       })
     } finally {
       await api.close()
-      plane.close()
+      await plane.close()
     }
     const listening = readFileSync(config.logPath, "utf8")
       .trim()
@@ -283,7 +289,7 @@ describe("serveDataPlane", () => {
         })
       } finally {
         await api.close()
-        plane.close()
+        await plane.close()
       }
     }
   )
@@ -325,7 +331,7 @@ describe("serveDataPlane", () => {
       expect((await status("eido.example.invalid")).status).toBe(200)
     } finally {
       await api.close()
-      plane.close()
+      await plane.close()
     }
   })
 })
@@ -382,6 +388,69 @@ describe("holdUntilStopped", () => {
       .split("\n")
       .map((line) => field(JSON.parse(line), "event"))
     expect(events).toEqual(["started", "listening", "stopped"])
+  })
+  it("lets a write whose audit is in flight finish before it closes eido-data.db", async () => {
+    // A gate that holds POST /audit until the test answers it.
+    const socketPath = join(dir, "gate.sock")
+    let answer: (response: ServerResponse) => void = () => undefined
+    const held = new Promise<ServerResponse>((resolve) => {
+      answer = resolve
+    })
+    const gate = createHttpServer((request, response) => {
+      request.resume()
+      answer(response)
+    })
+    await new Promise<void>((resolve) => gate.listen(socketPath, resolve))
+    try {
+      const env = servedEnv({ EIDO_GATE_SOCKET: socketPath })
+      const config = dataPlaneConfig(env)
+      const plane = runDataPlane(config, env)
+      const api = await serveDataPlane(plane, config.api)
+      const signals = new EventEmitter()
+      const stopped = holdUntilStopped(plane, api, signals)
+      const write = fetch(`http://127.0.0.1:${String(api.port)}/entities`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "personal", name: "N", tag: "n" }),
+      }).catch(() => undefined)
+      const audit = await held
+      signals.emit("SIGTERM")
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(plane.db.isOpen).toBe(true)
+      audit.writeHead(201, { "content-type": "application/json" })
+      audit.end(JSON.stringify({ seq: 1 }))
+      await stopped
+      await write
+      expect(plane.db.isOpen).toBe(false)
+      const reopened = new DatabaseSync(config.dbPath)
+      expect(
+        reopened
+          .prepare("SELECT name FROM entities")
+          .all()
+          .map((r) => r["name"])
+      ).toEqual(["N"])
+      reopened.close()
+    } finally {
+      gate.closeAllConnections()
+      await new Promise<void>((resolve) => gate.close(() => resolve()))
+    }
+  })
+
+  it("still closes the data plane when closing the API fails", async () => {
+    const env = servedEnv()
+    const plane = runDataPlane(dataPlaneConfig(env), env)
+    const failure = new Error("close failed")
+    const api: CoreApi = {
+      host: "127.0.0.1",
+      port: 1,
+      allowedHosts: [],
+      close: () => Promise.reject(failure),
+    }
+    const signals = new EventEmitter()
+    const stopped = holdUntilStopped(plane, api, signals)
+    signals.emit("SIGINT")
+    await expect(stopped).rejects.toBe(failure)
+    expect(plane.db.isOpen).toBe(false)
   })
 })
 

@@ -23,9 +23,10 @@ export function loopbackHost(value: string): LoopbackHost {
   return host
 }
 
-const BASE_PATH = /^(\/[A-Za-z0-9._~-]+)+$/
+// Each segment is unreserved characters, and never `.` or `..`.
+const BASE_PATH = /^(\/(?!\.\.?(?:\/|$))[A-Za-z0-9._~-]+)+$/
 
-/** `value` as a base path: empty, or segments like `/api/core` with no trailing slash. */
+/** `value` as a base path: empty, or segments like `/api/core` with no trailing slash, `.` or `..`. */
 export function basePath(value: string): string {
   if (value !== "" && !BASE_PATH.test(value)) {
     throw new Error(

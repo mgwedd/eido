@@ -31,8 +31,8 @@ export type ProfileAuditAction = GateAuditRecordRequest["action"]
 
 /**
  * One audit entry for an entity or assignment change, the body of the gate's POST /audit.
- * Hashes only (hex SHA-256 of the canonical JSON of the record): no name, tag, connector or
- * account reference in clear.
+ * Hashes only (hex SHA-256 of `JSON.stringify` of the record, whose keys the store
+ * always builds in the same order): no name, tag, connector or account reference in clear.
  */
 export type ProfileAuditEntry = GateAuditRecordRequest
 

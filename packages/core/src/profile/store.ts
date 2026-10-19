@@ -53,6 +53,8 @@ export interface ProfileStore {
     accountRef: string
   ): Promise<Entity | null>
   entityByTag(tag: string): Promise<Entity | null>
+  /** Resolves once every call queued so far, and any queued while waiting, has settled. */
+  drain(): Promise<void>
 }
 
 const sha256 = (value: unknown): string =>
@@ -110,7 +112,9 @@ export function createProfileStore(
       db.exec("COMMIT")
       return result
     } catch (error) {
-      db.exec("ROLLBACK")
+      // A failed COMMIT may already have ended the transaction; a second error here would hide
+      // the first.
+      if (db.isTransaction) db.exec("ROLLBACK")
       throw error
     }
   }
@@ -350,23 +354,30 @@ export function createProfileStore(
       if (!entityById(value.entityId)) {
         throw new ProfileError("not_found", "no such entity")
       }
-      const before = assignmentOf(value.connector, value.accountRef)
-      if (before?.entityId === value.entityId) return before
+      // Built field by field, in the order assignmentOf reads it back, so the hash of a stored
+      // assignment does not depend on the key order the client sent.
+      const after: AccountAssignment = {
+        connector: value.connector,
+        accountRef: value.accountRef,
+        entityId: value.entityId,
+      }
+      const before = assignmentOf(after.connector, after.accountRef)
+      if (before?.entityId === after.entityId) return before
       run(
         `INSERT INTO entity_assignments (connector, account_ref, entity_id) VALUES (?, ?, ?)
          ON CONFLICT(connector, account_ref) DO UPDATE SET entity_id = excluded.entity_id`,
-        value.connector,
-        value.accountRef,
-        value.entityId
+        after.connector,
+        after.accountRef,
+        after.entityId
       )
-      record("assignment", before, value)
+      record("assignment", before, after)
       await audit(
         "account.assign",
-        [value.connector, value.accountRef],
+        [after.connector, after.accountRef],
         before,
-        value
+        after
       )
-      return value
+      return after
     })
   }
 
@@ -421,5 +432,11 @@ export function createProfileStore(
       const row = one("SELECT * FROM entities WHERE tag = ?", tag)
       return row ? toEntity(row) : null
     }),
+    drain: async () => {
+      for (let settled = tail; ; settled = tail) {
+        await settled
+        if (settled === tail) return
+      }
+    },
   }
 }
