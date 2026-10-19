@@ -105,11 +105,28 @@ function storedRow(
       "SELECT detail_hash FROM audit_log WHERE action = 'connector.pinned' AND target = ? ORDER BY seq DESC LIMIT 1"
     )
     .get(name)
+  // Migration disabled pre-approval pins and recorded the old hash before a signed pin could
+  // exist. Keep that disabled row available for an owner's signed re-review.
+  const unsignedMigration =
+    pin === undefined &&
+    approvalRefHash === null &&
+    Number(row["enabled"]) === 0
+      ? db
+          .prepare(
+            "SELECT detail_hash FROM audit_log WHERE action = 'connector.disabled_unsigned' AND target = ? ORDER BY seq DESC LIMIT 1"
+          )
+          .get(name)
+      : undefined
   const expectedDetail =
     approvalRefHash === null
       ? hash
       : payloadHash({ manifestHash: hash, approvalRefHash })
-  if (pin === undefined || pin["detail_hash"] !== expectedDetail) {
+  const migrated =
+    unsignedMigration?.["detail_hash"] === payloadHash({ manifestHash: hash })
+  if (
+    (pin === undefined || pin["detail_hash"] !== expectedDetail) &&
+    !migrated
+  ) {
     throw new Error("stored connector manifest does not match its pin audit")
   }
   return {
@@ -266,11 +283,11 @@ export function intentBindings(
     .prepare("SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC")
     .all()
     .flatMap((row) => {
-      const manifest = storedRow(db, String(row["name"]))?.manifest
-      if (manifest === undefined) return []
-      return manifest.operations
+      const state = storedRow(db, String(row["name"]))
+      if (state === undefined || !state.enabled) return []
+      return state.manifest.operations
         .filter((op) => op.intentKind === intentKind)
-        .map((op) => ({ connector: manifest.name, operation: op.name }))
+        .map((op) => ({ connector: state.manifest.name, operation: op.name }))
     })
 }
 
@@ -282,11 +299,14 @@ export function hasDisabledIntentBinding(
   const rows = db
     .prepare("SELECT name FROM connectors WHERE enabled = 0 ORDER BY name ASC")
     .all()
-  return rows.some((row) =>
-    storedRow(db, String(row["name"]))?.manifest.operations.some(
-      (op) => op.intentKind === intentKind
+  return rows.some((row) => {
+    const state = storedRow(db, String(row["name"]))
+    return (
+      state !== undefined &&
+      !state.enabled &&
+      state.manifest.operations.some((op) => op.intentKind === intentKind)
     )
-  )
+  })
 }
 
 /**
@@ -347,10 +367,10 @@ export function egressAllowlist(db: DatabaseSync): EgressEntry[] {
     .prepare("SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC")
     .all()
   return rows.flatMap((row) => {
-    const manifest = storedRow(db, String(row["name"]))?.manifest
-    if (manifest === undefined) return []
-    return manifest.egress.hosts.map((entry) => ({
-      connector: manifest.name,
+    const state = storedRow(db, String(row["name"]))
+    if (state === undefined || !state.enabled) return []
+    return state.manifest.egress.hosts.map((entry) => ({
+      connector: state.manifest.name,
       host: entry.host,
       methods: [...entry.methods],
       pathPrefixes: [...entry.pathPrefixes],

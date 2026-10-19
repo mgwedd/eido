@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import type { ConnectorManifest } from "@eido/schemas"
 import { describe, expect, it } from "vitest"
-import { verifyChain } from "./audit"
+import { append, verifyChain } from "./audit"
 import {
   checkDrift,
   egressAllowlist,
@@ -221,6 +221,37 @@ describe("pinManifest", () => {
       "connector.pinned",
       "connector.pinned",
     ])
+  })
+
+  it("allows a signed same-version re-pin of a migration-disabled unsigned connector", () => {
+    const db = openControlDb(":memory:")
+    const original = mail()
+    const hash = expectedHash(original)
+    db.prepare(
+      "INSERT INTO connectors (name, manifest_json, manifest_hash, pinned_at, enabled, health, consecutive_failures) VALUES (?, ?, ?, ?, 0, 'healthy', 0)"
+    ).run(
+      original.name,
+      JSON.stringify(original),
+      hash,
+      new Date().toISOString()
+    )
+    expect(() => getConnectorState(db, original.name)).toThrow("pin audit")
+    append(db, {
+      actor: "system",
+      action: "connector.disabled_unsigned",
+      target: original.name,
+      detailHash: expectedHash({ manifestHash: hash }),
+    })
+
+    expect(getPinnedManifest(db, original.name)).toBeUndefined()
+    expect(getConnectorState(db, original.name)).toEqual({
+      manifest: original,
+      enabled: false,
+      drift: null,
+    })
+    signedPin(db, original, "owner")
+    expect(getPinnedManifest(db, original.name)).toEqual(original)
+    expect(verifyChain(db)).toEqual({ ok: true, rows: 2 })
   })
 
   it("resets health and failures on a re-pin", () => {
