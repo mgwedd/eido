@@ -1,3 +1,4 @@
+import { GateUnavailableError } from "@eido/gate"
 import type {
   CoreApiAssignmentList,
   CoreApiEntity,
@@ -43,6 +44,7 @@ const STATUS: Record<ErrorCode, number> = {
   method_not_allowed: 405,
   misdirected_request: 421,
   busy: 503,
+  gate_unavailable: 503,
   internal: 500,
 }
 
@@ -266,6 +268,8 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
     } catch (error) {
       if (error instanceof ProfileError) return profileFailure(error)
       if (error instanceof HttpError) return failure(error.code, error.message)
+      if (error instanceof GateUnavailableError)
+        return failure("gate_unavailable", "gate unavailable")
       // Unexpected: say nothing about the cause, since it may quote stored values.
       return failure("internal", "internal error")
     }
