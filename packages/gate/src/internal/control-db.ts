@@ -25,6 +25,34 @@ const MIGRATIONS: readonly string[] = [
      consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
      drift_json           TEXT
    ) STRICT;`,
+  // Intents and their state transitions (#11). payload_json is the canonical (RFC 8785) intent
+  // and payload_hash its SHA-256; reason says why an intent was rejected. intent_events links
+  // each transition to its audit_log row, so an intent's history is read from the audit chain.
+  `CREATE TABLE intents (
+     id              TEXT PRIMARY KEY,
+     kind            TEXT NOT NULL,
+     payload_json    TEXT NOT NULL,
+     payload_hash    TEXT NOT NULL,
+     tier            TEXT NOT NULL CHECK (tier IN ('auto', 'approval', 'forbidden')),
+     state           TEXT NOT NULL CHECK (state IN ('proposed', 'pending', 'approved', 'rejected', 'executed', 'failed')),
+     origin          TEXT NOT NULL CHECK (origin IN ('reactive', 'proactive', 'task')),
+     edited_from     TEXT REFERENCES intents (id),
+     task_id         TEXT,
+     context_pack_id TEXT,
+     reason          TEXT,
+     created_at      TEXT NOT NULL
+   ) STRICT;
+   CREATE INDEX intents_state ON intents (state, created_at);
+   CREATE TABLE intent_events (
+     audit_seq  INTEGER PRIMARY KEY REFERENCES audit_log (seq),
+     intent_id  TEXT NOT NULL REFERENCES intents (id),
+     from_state TEXT,
+     to_state   TEXT NOT NULL,
+     reason     TEXT
+   ) STRICT;
+   CREATE INDEX intent_events_intent ON intent_events (intent_id, audit_seq);
+   CREATE TRIGGER intent_events_no_update BEFORE UPDATE ON intent_events BEGIN SELECT RAISE(ABORT, 'intent_events is append-only'); END;
+   CREATE TRIGGER intent_events_no_delete BEFORE DELETE ON intent_events BEGIN SELECT RAISE(ABORT, 'intent_events is append-only'); END;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

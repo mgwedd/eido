@@ -1,6 +1,9 @@
 import { expect, test } from "vitest"
-import { CORE_GATE_API_VERSION } from "./index"
+import * as core from "./index"
+import { openIndex } from "./index/index"
+import { createProfileStore } from "./profile/index"
 
-test("core package loads", () => {
-  expect(CORE_GATE_API_VERSION).toBe(0)
+test("the core entry point re-exports the index and profile modules", () => {
+  expect(core.openIndex).toBe(openIndex)
+  expect(core.createProfileStore).toBe(createProfileStore)
 })

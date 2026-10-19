@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "tiers": {
+    "email.draft": "auto",
+    "email.label": "auto",
+    "email.archive": "auto",
+    "email.markRead": "auto",
+    "email.send": "approval",
+    "email.reply": "approval",
+    "email.forward": "approval",
+    "email.trash": "approval",
+    "calendar.create": "auto",
+    "calendar.edit": "auto",
+    "calendar.delete": "auto",
+    "file.create": "auto",
+    "file.rename": "auto",
+    "file.move": "auto",
+    "file.delete": "approval"
+  }
+}
