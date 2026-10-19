@@ -492,19 +492,34 @@ export function createProtonBridge({
             // than MAX_PAGE_BYTES plus the one message that ends it, whatever Bridge reported.
             const messages: RawPage["messages"] = []
             let budget = MAX_PAGE_BYTES
+            let firstUnreturnedUid: number | undefined
             for (const uid of wanted) {
               const [message] = await sources(client, folder, [uid])
               const raw = message?.source
-              if (message === undefined || raw === undefined) continue
+              if (message === undefined || raw === undefined) {
+                firstUnreturnedUid = uid
+                break
+              }
               if (raw.length > MAX_MESSAGE_BYTES) {
                 skipped.push(uid)
                 continue
               }
-              if (raw.length > budget) break
+              if (raw.length > budget) {
+                firstUnreturnedUid = uid
+                break
+              }
               budget -= raw.length
               messages.push({ uid: message.uid, raw })
             }
-            return { messages, skipped: skipped.sort((a, b) => a - b) }
+            return {
+              messages,
+              skipped: skipped
+                .filter(
+                  (uid) =>
+                    firstUnreturnedUid === undefined || uid < firstUnreturnedUid
+                )
+                .sort((a, b) => a - b),
+            }
           } finally {
             lock.release()
           }
