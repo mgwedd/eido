@@ -27,6 +27,8 @@ export const MAX_PAGE_LIMIT = 100
 /** Folders one listing returns at most (the schema's cap). */
 export const MAX_FOLDERS = 1000
 const MAX_UID = 4294967295
+/** How long core is told to wait before asking again after a busy refusal. */
+export const BUSY_RETRY_AFTER_SECONDS = 5
 
 const FOLDERS_PATH = "/mail/proton/folders"
 const FOLDER_PATH = /^\/mail\/proton\/folders\/([^/]+)\/(state|messages)$/
@@ -52,6 +54,14 @@ function failed(db: DatabaseSync, read: Read, error: unknown): Reply {
   audit(db, read, `failed.${mapped.code}`, {})
   if (mapped.code === "handshake_failed" || mapped.code === "auth_failed") {
     return apiError(502, mapped.code, mapped.message)
+  }
+  if (mapped.code === "busy") {
+    // The gate's own limit on concurrent reads (#219): 503 with Retry-After, so core waits
+    // and asks again later rather than looping. The code is the schema's `unavailable`.
+    return {
+      ...apiError(503, "unavailable", "the gate is busy reading mail"),
+      headers: { "retry-after": String(BUSY_RETRY_AFTER_SECONDS) },
+    }
   }
   return apiError(500, "unavailable", "Bridge could not answer")
 }

@@ -260,6 +260,24 @@ describe("Bridge failures", () => {
     })
   })
 
+  it("answers a busy refusal as 503 with Retry-After and an audit row", async () => {
+    const { mail } = stub({
+      fetchRaw: () => Promise.reject(new BridgeError("busy", "synthetic")),
+    })
+    const reply = await call(
+      get("/mail/proton/folders/INBOX/messages", "fromUid=1"),
+      mail
+    )
+    expect(reply).toEqual({
+      status: 503,
+      body: { code: "unavailable", message: "the gate is busy reading mail" },
+      headers: { "retry-after": "5" },
+    })
+    expect(lastAudit()).toMatchObject({
+      action: "mail.read.messages.failed.busy",
+    })
+  })
+
   it("returns any other failure as 500 without the library's message", async () => {
     const { mail } = stub({
       fetchRaw: () =>

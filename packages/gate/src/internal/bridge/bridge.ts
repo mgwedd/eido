@@ -29,6 +29,13 @@ export const MAX_MESSAGE_BYTES = 25 * 1024 * 1024
 /** Raw bytes one page may carry in all. */
 export const MAX_PAGE_BYTES = 32 * 1024 * 1024
 
+/**
+ * Mail reads (folder list, folder state, raw fetch) that may hold an IMAP session at once. A
+ * page buffers up to 32 MiB of raw mail and about 43 MiB more as base64, so the gate runs one
+ * read at a time and refuses the rest with `busy` (#219).
+ */
+export const DEFAULT_MAX_CONCURRENT_READS = 1
+
 const TIMEOUT_MS = 10_000
 
 export type FolderState = { uidValidity: string; uidNext: number }
@@ -186,12 +193,37 @@ function references(raw: Buffer): string | undefined {
   return value === undefined || value === "" ? undefined : value
 }
 
-export type BridgeOptions = { config: BridgeConfig; vault: Vault }
+export type BridgeOptions = {
+  config: BridgeConfig
+  vault: Vault
+  /** Reads that may run at once; the rest fail with `busy`. Defaults to one. */
+  maxConcurrentReads?: number
+}
 
 export function createProtonBridge({
   config,
   vault,
+  maxConcurrentReads = DEFAULT_MAX_CONCURRENT_READS,
 }: BridgeOptions): ProtonBridge {
+  let activeReads = 0
+
+  /**
+   * Runs a mail read, or refuses it at once with `busy` when the limit is reached: nothing is
+   * queued, so waiting requests hold no memory, and core backs off instead of retrying in a loop.
+   */
+  async function reading<T>(work: () => Promise<T>): Promise<T> {
+    // No await before the increment, so two callers cannot both pass the check.
+    if (activeReads >= maxConcurrentReads) {
+      throw new BridgeError("busy", "the gate is already reading mail")
+    }
+    activeReads += 1
+    try {
+      return await work()
+    } finally {
+      activeReads -= 1
+    }
+  }
+
   // A password Bridge refused is remembered by its hash, so the next call fails at once
   // instead of logging in again with it: no retry loop. A new password in the vault clears it.
   let refused: Buffer | undefined
@@ -354,72 +386,90 @@ export function createProtonBridge({
     identity: config.username,
 
     listFolders: () =>
-      withImap(async (client) =>
-        (await folders(client)).map((entry) => entry.path)
+      reading(() =>
+        withImap(async (client) =>
+          (await folders(client)).map((entry) => entry.path)
+        )
       ),
 
     folderState: (folder) =>
-      withImap(async (client) => {
-        if (!(await exists(client, folder))) return undefined
-        const status = await client.status(folder, {
-          uidValidity: true,
-          uidNext: true,
+      reading(() =>
+        withImap(async (client) => {
+          if (!(await exists(client, folder))) return undefined
+          const status = await client.status(folder, {
+            uidValidity: true,
+            uidNext: true,
+          })
+          if (
+            status === false ||
+            status.uidValidity === undefined ||
+            status.uidNext === undefined
+          ) {
+            throw new BridgeError(
+              "bridge_error",
+              "Bridge sent no folder status"
+            )
+          }
+          return {
+            uidValidity: String(status.uidValidity),
+            uidNext: status.uidNext,
+          }
         })
-        if (
-          status === false ||
-          status.uidValidity === undefined ||
-          status.uidNext === undefined
-        ) {
-          throw new BridgeError("bridge_error", "Bridge sent no folder status")
-        }
-        return {
-          uidValidity: String(status.uidValidity),
-          uidNext: status.uidNext,
-        }
-      }),
+      ),
 
     fetchRaw: (folder, fromUid, limit) =>
-      withImap(async (client) => {
-        if (!(await exists(client, folder))) return undefined
-        const lock = await client.getMailboxLock(folder, { readOnly: true })
-        try {
-          // Sizes first, so oversize messages are never downloaded.
-          const sized = (
-            await client.fetchAll(
-              `${fromUid}:*`,
-              { uid: true, size: true },
-              { uid: true }
+      reading(() =>
+        withImap(async (client) => {
+          if (!(await exists(client, folder))) return undefined
+          const lock = await client.getMailboxLock(folder, { readOnly: true })
+          try {
+            // Sizes first, so messages Bridge reports as oversize are never downloaded. A
+            // message with no reported size counts as 0 here; its real bytes are counted below.
+            const sized = (
+              await client.fetchAll(
+                `${fromUid}:*`,
+                { uid: true, size: true },
+                { uid: true }
+              )
             )
-          )
-            .filter((message) => message.uid >= fromUid)
-            .sort((a, b) => a.uid - b.uid)
-          const wanted: number[] = []
-          const skipped: number[] = []
-          let budget = MAX_PAGE_BYTES
-          for (const message of sized) {
-            if (wanted.length >= limit || skipped.length >= limit) break
-            const size = message.size ?? 0
-            if (size > MAX_MESSAGE_BYTES) {
-              skipped.push(message.uid)
-              continue
+              .filter((message) => message.uid >= fromUid)
+              .sort((a, b) => a.uid - b.uid)
+            const wanted: number[] = []
+            const skipped: number[] = []
+            let reported = MAX_PAGE_BYTES
+            for (const message of sized) {
+              if (wanted.length >= limit || skipped.length >= limit) break
+              const size = message.size ?? 0
+              if (size > MAX_MESSAGE_BYTES) {
+                skipped.push(message.uid)
+                continue
+              }
+              if (size > reported) break
+              reported -= size
+              wanted.push(message.uid)
             }
-            if (size > budget) break
-            budget -= size
-            wanted.push(message.uid)
+            // One message at a time, counting the bytes that arrive: the page never holds more
+            // than MAX_PAGE_BYTES plus the one message that ends it, whatever Bridge reported.
+            const messages: RawPage["messages"] = []
+            let budget = MAX_PAGE_BYTES
+            for (const uid of wanted) {
+              const [message] = await sources(client, folder, [uid])
+              const raw = message?.source
+              if (message === undefined || raw === undefined) continue
+              if (raw.length > MAX_MESSAGE_BYTES) {
+                skipped.push(uid)
+                continue
+              }
+              if (raw.length > budget) break
+              budget -= raw.length
+              messages.push({ uid: message.uid, raw })
+            }
+            return { messages, skipped: skipped.sort((a, b) => a - b) }
+          } finally {
+            lock.release()
           }
-          const fetched = await sources(client, folder, wanted)
-          const messages = fetched
-            .filter((message) => message.source !== undefined)
-            .map((message) => ({
-              uid: message.uid,
-              raw: message.source ?? Buffer.alloc(0),
-            }))
-            .sort((a, b) => a.uid - b.uid)
-          return { messages, skipped }
-        } finally {
-          lock.release()
-        }
-      }),
+        })
+      ),
 
     locate: (messageId) =>
       withImap(async (client) => (await candidates(client, messageId))[0]),

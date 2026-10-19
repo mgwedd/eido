@@ -29,6 +29,10 @@ export type FakeBridgeOptions = {
   capabilities?: readonly string[]
   /** Mailboxes by path; INBOX, Drafts and Trash exist when not given. */
   mailboxes?: Record<string, FakeMailbox>
+  /** Leave RFC822.SIZE out of FETCH answers, as a Bridge that does not report sizes. */
+  omitSize?: boolean
+  /** Delay every UID FETCH answer, so concurrent sessions overlap. */
+  fetchDelayMs?: number
 }
 
 /** What the fake records and serves; the servers share it with the returned FakeBridge. */
@@ -40,6 +44,7 @@ type FakeState = Pick<
   | "imapLines"
   | "smtpLines"
   | "sent"
+  | "imapSessions"
 >
 
 export type FakeBridge = {
@@ -54,6 +59,8 @@ export type FakeBridge = {
   imapLines: string[]
   smtpLines: string[]
   sent: SentMail[]
+  /** IMAP sessions open now and the most that were open at once. */
+  imapSessions: { open: number; peak: number }
   close: () => Promise<void>
 }
 
@@ -208,7 +215,7 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
       const parts = [`UID ${message.uid}`]
       if (items.includes("FLAGS"))
         parts.push(`FLAGS (${message.flags.join(" ")})`)
-      if (items.includes("RFC822.SIZE"))
+      if (items.includes("RFC822.SIZE") && options.omitSize !== true)
         parts.push(`RFC822.SIZE ${message.raw.length}`)
       if (items.includes("ENVELOPE"))
         parts.push(`ENVELOPE ${envelope(message.raw)}`)
@@ -359,7 +366,11 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
     if (name === "SELECT" || name === "EXAMINE") {
       return select(session, tag, args[0] ?? "", name === "EXAMINE")
     }
-    if (name === "UID FETCH") return fetch(session, tag, args)
+    if (name === "UID FETCH") {
+      if (options.fetchDelayMs === undefined) return fetch(session, tag, args)
+      setTimeout(() => fetch(session, tag, args), options.fetchDelayMs)
+      return
+    }
     if (name === "UID SEARCH") return search(session, tag, args)
     if (name === "UID MOVE") return move(session, tag, args)
     if (name === "APPEND") {
@@ -415,6 +426,14 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
       authenticated: false,
     }
     socket.on("error", () => undefined)
+    fake.imapSessions.open += 1
+    fake.imapSessions.peak = Math.max(
+      fake.imapSessions.peak,
+      fake.imapSessions.open
+    )
+    socket.on("close", () => {
+      fake.imapSessions.open -= 1
+    })
     socket.on("data", (chunk: Buffer) => {
       session.buffer = Buffer.concat([session.buffer, chunk])
       drain(session)
@@ -548,6 +567,7 @@ export async function startFakeBridge(
     imapLines: [],
     smtpLines: [],
     sent: [],
+    imapSessions: { open: 0, peak: 0 },
   }
   const sockets = new Set<Socket>()
   const track = (server: Server) => {
