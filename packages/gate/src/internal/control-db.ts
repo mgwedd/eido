@@ -89,6 +89,27 @@ const MIGRATIONS: readonly string[] = [
      issued_at TEXT NOT NULL,
      used_at   TEXT
    ) STRICT;`,
+  // Durable, single-attempt claims survive process restarts: an uncertain external outcome is
+  // never retried automatically. Successful results and inverses are bound to an audit row.
+  `CREATE TABLE execution_attempts (
+     intent_id TEXT NOT NULL REFERENCES intents(id),
+     direction TEXT NOT NULL CHECK(direction IN ('execute', 'undo')),
+     started_at TEXT NOT NULL,
+     PRIMARY KEY(intent_id, direction)
+   ) STRICT;
+   CREATE TABLE executions (
+     intent_id TEXT PRIMARY KEY REFERENCES intents(id),
+     upstream_ref TEXT,
+     result TEXT NOT NULL,
+     inverse_op TEXT,
+     audit_seq INTEGER NOT NULL UNIQUE REFERENCES audit_log(seq)
+   ) STRICT;
+   CREATE TABLE execution_undos (
+     intent_id TEXT PRIMARY KEY REFERENCES executions(intent_id),
+     upstream_ref TEXT,
+     result TEXT NOT NULL,
+     audit_seq INTEGER NOT NULL UNIQUE REFERENCES audit_log(seq)
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {
