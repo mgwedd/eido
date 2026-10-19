@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
 import type { ProtonConfig } from "./config"
-import { isTextMime, parseMessage, attachmentText } from "./parse"
+import { isTextMime, parseMessage, attachmentText } from "../mail/parse"
 import { callSource } from "./source"
 import type { ProtonMailSource } from "./source"
 

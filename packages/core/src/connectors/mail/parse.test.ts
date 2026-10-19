@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest"
 import { htmlToText, stripInvisible } from "./html-text"
-import { raw } from "./memory-source.test-support"
+import { raw } from "../proton/memory-source.test-support"
 import { attachmentText, isTextMime, parseMessage } from "./parse"
 
 const headers = [
