@@ -19,6 +19,7 @@
             "payload_too_large",
             "method_not_allowed",
             "misdirected_request",
+            "gate_unavailable",
             "internal"
           ]
         },
