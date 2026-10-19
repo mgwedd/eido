@@ -47,6 +47,7 @@ Work is issue-driven and worktree-driven. Read the rule file before you do the t
 - TypeScript: types from `@eido/schemas`, no `any`, no casts on external input, TypeScript only. `.claude/rules/typescript.md`
 - UI: use shadcn components first; hand-roll only when the registries are exhausted or the component would need warping. `.claude/rules/shadcn-first.md`
 - Tests: run only the affected tests while iterating, everything before the PR. `.claude/rules/testing.md`, `.claude/rules/affected-tests.md`
+- Tests must be able to fail: no assertions on the test data's own size, no self-comparisons, no padding to raise coverage. `.claude/rules/no-fake-tests.md`
 
 ## Invariants
 
