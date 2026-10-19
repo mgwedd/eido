@@ -9,7 +9,7 @@ import type {
 } from "@eido/schemas"
 import { openIndex } from "../index/schema"
 import { createProfileStore } from "../profile/index"
-import { createApiHandler, toFieldErrors } from "./handler"
+import { createApiHandler, routePath, toFieldErrors } from "./handler"
 import type { ApiHandler } from "./handler"
 
 const OWNER = {
@@ -32,7 +32,7 @@ let db: ReturnType<typeof openIndex>
 
 beforeEach(() => {
   db = openIndex(":memory:")
-  const profile = createProfileStore(db, { audit: () => undefined })
+  const profile = createProfileStore(db, { audit: () => Promise.resolve() })
   handle = createApiHandler({ profile, allowedHosts: ["core.test"] })
 })
 
@@ -347,7 +347,7 @@ describe("routing and failures", () => {
     const broken = createApiHandler({
       allowedHosts: ["core.test"],
       profile: {
-        ...createProfileStore(db, { audit: () => undefined }),
+        ...createProfileStore(db, { audit: () => Promise.resolve() }),
         getProfile: () => {
           throw new Error("secret detail owner@example.test")
         },
@@ -390,6 +390,43 @@ describe("host check", () => {
       })
     )
     expect(upper.status).toBe(200)
+  })
+})
+
+describe("base path", () => {
+  const under = (path: string, method = "GET") =>
+    createApiHandler({
+      profile: createProfileStore(db, { audit: () => Promise.resolve() }),
+      allowedHosts: ["core.test"],
+      basePath: "/api/core",
+    })(new Request(`http://core.test${path}`, { method }))
+
+  test.each([
+    ["/api/core/profile", 200],
+    ["/api/core/profile/", 200],
+    ["/api/core/entities", 200],
+    ["/profile", 404],
+    ["/api/core", 404],
+    ["/api/coreprofile", 404],
+    ["/api/profile", 404],
+  ])("with /api/core set, GET %s is %i", async (path, status) => {
+    expect((await under(path)).status).toBe(status)
+  })
+
+  test("without a base path the prefixed route is 404", async () => {
+    expect((await call("GET", "/api/core/profile")).status).toBe(404)
+  })
+
+  test("a method outside the prefix is 404, not 405", async () => {
+    expect((await under("/profile", "DELETE")).status).toBe(404)
+    expect((await under("/api/core/profile", "DELETE")).status).toBe(405)
+  })
+})
+
+describe("routePath", () => {
+  test("maps the base path itself to the root", () => {
+    expect(routePath("/api/core", "/api/core")).toBe("/")
+    expect(routePath("/x", "")).toBe("/x")
   })
 })
 

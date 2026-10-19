@@ -43,6 +43,8 @@ export type PlanePaths = {
 
 export type Planes = {
   paths: PlanePaths
+  /** Where the long-lived data plane's API listens: `http://127.0.0.1:<port>`. */
+  coreUrl: string
   /** The environment the data plane is started with: the parent's, plus its allowlist. */
   dataPlaneStartEnv: Readonly<Record<string, string>>
   /** Runs one probe command in a short-lived data-plane process; resolves its JSON result. */
@@ -61,6 +63,21 @@ export type SpawnPlanesOptions = {
   tmpDir: string
   /** Variables the data plane's parent holds; the data plane must not inherit them. */
   parentEnv?: Readonly<Record<string, string>>
+}
+
+/** The API port the data plane logged once it was listening, or null before that. */
+function listeningPort(path: string): number | null {
+  if (!existsSync(path)) return null
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (!line.includes('"event":"listening"')) continue
+    const entry: unknown = JSON.parse(line)
+    const port =
+      typeof entry === "object" && entry !== null && "port" in entry
+        ? Number(entry.port)
+        : NaN
+    if (Number.isInteger(port) && port > 0) return port
+  }
+  return null
 }
 
 function socketPath(tmpDir: string, name: string): string {
@@ -121,13 +138,6 @@ async function waitFor(
   throw new Error(`${what} did not start within ${String(READY_TIMEOUT_MS)} ms`)
 }
 
-function logged(path: string, event: string): boolean {
-  if (!existsSync(path)) return false
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .some((line) => line.includes(`"event":"${event}"`))
-}
-
 /** Starts the gate (seeded with a synthetic mail connector) and then the data plane. */
 export async function spawnPlanes(
   options: SpawnPlanesOptions
@@ -177,6 +187,8 @@ export async function spawnPlanes(
     ...options.parentEnv,
     EIDO_DATA_DIR: dataDir,
     EIDO_GATE_SOCKET: paths.gateSocket,
+    // A free port, so parallel test runs never collide.
+    EIDO_CORE_PORT: "0",
   }
   let dataPlane: ChildProcess | undefined
   try {
@@ -188,7 +200,7 @@ export async function spawnPlanes(
     )
     dataPlane = started
     await waitFor("the data plane", started, () =>
-      Promise.resolve(logged(paths.dataPlaneLog, "started"))
+      Promise.resolve(listeningPort(paths.dataPlaneLog) !== null)
     )
   } catch (error) {
     await Promise.all([gate, dataPlane].flatMap((c) => (c ? [stop(c)] : [])))
@@ -198,6 +210,7 @@ export async function spawnPlanes(
 
   return {
     paths,
+    coreUrl: `http://127.0.0.1:${String(listeningPort(paths.dataPlaneLog))}`,
     dataPlaneStartEnv,
     probe: (...args) =>
       runNode(CORE_HOOKS, PROBE, args, dataPlaneEnv(dataPlaneStartEnv)),

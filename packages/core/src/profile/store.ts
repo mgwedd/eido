@@ -33,18 +33,28 @@ export interface ProfileStoreOptions {
   now?: () => Date
 }
 
+/**
+ * Every method runs alone: calls are queued and run one at a time, so a read never sees the
+ * statements of a write whose audit call is still in flight, and a write's transaction never
+ * holds another request's statements.
+ */
 export interface ProfileStore {
-  getProfile(): Profile | null
-  updateProfile(input: unknown): Profile
-  listEntities(): Entity[]
-  createEntity(input: unknown): Entity
-  updateEntity(id: string, patch: unknown): Entity
-  deleteEntity(id: string): void
-  assignAccount(input: unknown): AccountAssignment
-  unassignAccount(connector: string, accountRef: string): boolean
-  listAssignments(): AccountAssignment[]
-  entityForAccount(connector: string, accountRef: string): Entity | null
-  entityByTag(tag: string): Entity | null
+  getProfile(): Promise<Profile | null>
+  updateProfile(input: unknown): Promise<Profile>
+  listEntities(): Promise<Entity[]>
+  createEntity(input: unknown): Promise<Entity>
+  updateEntity(id: string, patch: unknown): Promise<Entity>
+  deleteEntity(id: string): Promise<void>
+  assignAccount(input: unknown): Promise<AccountAssignment>
+  unassignAccount(connector: string, accountRef: string): Promise<boolean>
+  listAssignments(): Promise<AccountAssignment[]>
+  entityForAccount(
+    connector: string,
+    accountRef: string
+  ): Promise<Entity | null>
+  entityByTag(tag: string): Promise<Entity | null>
+  /** Resolves once every call queued so far, and any queued while waiting, has settled. */
+  drain(): Promise<void>
 }
 
 const sha256 = (value: unknown): string =>
@@ -80,14 +90,31 @@ export function createProfileStore(
     db.prepare(sql).run(...params)
   }
 
-  function transaction<T>(work: () => T): T {
+  // The tail of the queue of store calls. node:sqlite has one connection and the audit call is
+  // awaited inside the transaction, so without the queue a second request's statements would
+  // run inside the first one's open transaction. The audit client's timeout (2 s) bounds how
+  // long one call holds the queue.
+  let tail: Promise<unknown> = Promise.resolve()
+  function serialized<A extends unknown[], T>(
+    work: (...args: A) => T | Promise<T>
+  ): (...args: A) => Promise<T> {
+    return (...args) => {
+      const result = tail.then(() => work(...args))
+      tail = result.catch(() => undefined)
+      return result
+    }
+  }
+
+  async function transaction<T>(work: () => T | Promise<T>): Promise<T> {
     db.exec("BEGIN IMMEDIATE")
     try {
-      const result = work()
+      const result = await work()
       db.exec("COMMIT")
       return result
     } catch (error) {
-      db.exec("ROLLBACK")
+      // A failed COMMIT may already have ended the transaction; a second error here would hide
+      // the first.
+      if (db.isTransaction) db.exec("ROLLBACK")
       throw error
     }
   }
@@ -106,7 +133,7 @@ export function createProfileStore(
     subject: unknown,
     before: unknown,
     after: unknown
-  ): void =>
+  ): Promise<unknown> =>
     options.audit({
       action,
       subjectHash: sha256(subject),
@@ -132,7 +159,7 @@ export function createProfileStore(
     }
   }
 
-  function updateProfile(input: unknown): Profile {
+  async function updateProfile(input: unknown): Promise<Profile> {
     const patch = ensure(validateProfileUpdate(input))
     const current = getProfile()
     const issues: string[] = []
@@ -233,10 +260,10 @@ export function createProfileStore(
     return { name: cleanedName, tag: cleanedTag }
   }
 
-  function createEntity(input: unknown): Entity {
+  async function createEntity(input: unknown): Promise<Entity> {
     const value = ensure(validateProfileEntityInput(input))
     const { name, tag } = cleanNameAndTag(value.name, value.tag)
-    return transaction(() => {
+    return transaction(async () => {
       const entity: Entity = {
         id: randomUUID(),
         kind: value.kind,
@@ -254,14 +281,17 @@ export function createProfileStore(
         entity.createdAt
       )
       record("entity.create", null, entity)
-      audit("entity.create", entity.id, null, entity)
+      await audit("entity.create", entity.id, null, entity)
       return entity
     })
   }
 
-  function updateEntity(id: string, patchInput: unknown): Entity {
+  async function updateEntity(
+    id: string,
+    patchInput: unknown
+  ): Promise<Entity> {
     const patch = ensure(validateProfileEntityPatch(patchInput))
-    return transaction(() => {
+    return transaction(async () => {
       const before = entityById(id)
       if (!before) throw new ProfileError("not_found", "no such entity")
       const { name, tag } = cleanNameAndTag(
@@ -273,13 +303,13 @@ export function createProfileStore(
       if (name === before.name && tag === before.tag) return before
       run("UPDATE entities SET name = ?, tag = ? WHERE id = ?", name, tag, id)
       record("entity.update", before, after)
-      audit("entity.update", id, before, after)
+      await audit("entity.update", id, before, after)
       return after
     })
   }
 
-  function deleteEntity(id: string): void {
-    transaction(() => {
+  async function deleteEntity(id: string): Promise<void> {
+    await transaction(async () => {
       const before = entityById(id)
       if (!before) throw new ProfileError("not_found", "no such entity")
       const references = [
@@ -300,7 +330,7 @@ export function createProfileStore(
       }
       run("DELETE FROM entities WHERE id = ?", id)
       record("entity.delete", before, null)
-      audit("entity.delete", id, before, null)
+      await audit("entity.delete", id, before, null)
     })
   }
 
@@ -318,34 +348,44 @@ export function createProfileStore(
       : null
   }
 
-  function assignAccount(input: unknown): AccountAssignment {
+  async function assignAccount(input: unknown): Promise<AccountAssignment> {
     const value = ensure(validateProfileAccountAssignment(input))
-    return transaction(() => {
+    return transaction(async () => {
       if (!entityById(value.entityId)) {
         throw new ProfileError("not_found", "no such entity")
       }
-      const before = assignmentOf(value.connector, value.accountRef)
-      if (before?.entityId === value.entityId) return before
+      // Built field by field, in the order assignmentOf reads it back, so the hash of a stored
+      // assignment does not depend on the key order the client sent.
+      const after: AccountAssignment = {
+        connector: value.connector,
+        accountRef: value.accountRef,
+        entityId: value.entityId,
+      }
+      const before = assignmentOf(after.connector, after.accountRef)
+      if (before?.entityId === after.entityId) return before
       run(
         `INSERT INTO entity_assignments (connector, account_ref, entity_id) VALUES (?, ?, ?)
          ON CONFLICT(connector, account_ref) DO UPDATE SET entity_id = excluded.entity_id`,
-        value.connector,
-        value.accountRef,
-        value.entityId
+        after.connector,
+        after.accountRef,
+        after.entityId
       )
-      record("assignment", before, value)
-      audit(
+      record("assignment", before, after)
+      await audit(
         "account.assign",
-        [value.connector, value.accountRef],
+        [after.connector, after.accountRef],
         before,
-        value
+        after
       )
-      return value
+      return after
     })
   }
 
-  function unassignAccount(connector: string, accountRef: string): boolean {
-    return transaction(() => {
+  async function unassignAccount(
+    connector: string,
+    accountRef: string
+  ): Promise<boolean> {
+    return transaction(async () => {
       const before = assignmentOf(connector, accountRef)
       if (!before) return false
       run(
@@ -354,30 +394,32 @@ export function createProfileStore(
         accountRef
       )
       record("assignment", before, null)
-      audit("account.unassign", [connector, accountRef], before, null)
+      await audit("account.unassign", [connector, accountRef], before, null)
       return true
     })
   }
 
   return {
-    getProfile,
-    updateProfile,
-    listEntities: () =>
-      all("SELECT * FROM entities ORDER BY name COLLATE NOCASE").map(toEntity),
-    createEntity,
-    updateEntity,
-    deleteEntity,
-    assignAccount,
-    unassignAccount,
-    listAssignments: () =>
+    getProfile: serialized(getProfile),
+    updateProfile: serialized(updateProfile),
+    listEntities: serialized(() =>
+      all("SELECT * FROM entities ORDER BY name COLLATE NOCASE").map(toEntity)
+    ),
+    createEntity: serialized(createEntity),
+    updateEntity: serialized(updateEntity),
+    deleteEntity: serialized(deleteEntity),
+    assignAccount: serialized(assignAccount),
+    unassignAccount: serialized(unassignAccount),
+    listAssignments: serialized(() =>
       all(
         "SELECT connector, account_ref, entity_id FROM entity_assignments ORDER BY connector, account_ref"
       ).map((r) => ({
         connector: text(r, "connector"),
         accountRef: text(r, "account_ref"),
         entityId: text(r, "entity_id"),
-      })),
-    entityForAccount: (connector, accountRef) => {
+      }))
+    ),
+    entityForAccount: serialized((connector: string, accountRef: string) => {
       const row = one(
         `SELECT e.* FROM entities e JOIN entity_assignments a ON a.entity_id = e.id
          WHERE a.connector = ? AND a.account_ref = ?`,
@@ -385,10 +427,16 @@ export function createProfileStore(
         accountRef
       )
       return row ? toEntity(row) : null
-    },
-    entityByTag: (tag) => {
+    }),
+    entityByTag: serialized((tag: string) => {
       const row = one("SELECT * FROM entities WHERE tag = ?", tag)
       return row ? toEntity(row) : null
+    }),
+    drain: async () => {
+      for (let settled = tail; ; settled = tail) {
+        await settled
+        if (settled === tail) return
+      }
     },
   }
 }
