@@ -24,6 +24,7 @@ import {
   auditRows,
   sample,
   setup,
+  socketAddress,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
@@ -88,8 +89,8 @@ async function serve(handler: Handler, path: string): Promise<Server> {
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "eido-api-"))
-  dataSocket = join(dir, "gate.sock")
-  controlSocket = join(dir, "control.sock")
+  dataSocket = socketAddress(dir, "gate.sock")
+  controlSocket = socketAddress(dir, "control.sock")
   servers = []
   s = setup()
   startGate(s.db, s.options, WEBAUTHN)
@@ -546,7 +547,7 @@ describe("the control listener", () => {
 
 describe("the server wrapper", () => {
   it("answers 500 when a handler throws and keeps serving", async () => {
-    const path = join(dir, "broken.sock")
+    const path = socketAddress(dir, "broken.sock")
     let calls = 0
     await serve(() => {
       calls++
@@ -560,12 +561,22 @@ describe("the server wrapper", () => {
   })
 
   it("replaces a stale socket file and applies the socket mode", async () => {
-    const path = join(dir, "again.sock")
+    const path = socketAddress(dir, "again.sock")
     const first = await serve(() => ({ status: 200, body: {} }), path)
     first.close()
     first.unref()
     await serve(() => ({ status: 204, body: {} }), path)
     expect((await raw(path, "GET", "/")).status).toBe(204)
+  })
+
+  it("listens on and answers at the platform's socket address, a named pipe on Windows", async () => {
+    const address = socketAddress(dir, "addr.sock")
+    const server = await serve(
+      () => ({ status: 200, body: { ok: true } }),
+      address
+    )
+    expect(server.address()).toBe(address)
+    expect(await raw(address, "GET", "/")).toMatchObject({ status: 200 })
   })
 
   it("leaves a path that is not a socket alone", async () => {
@@ -576,7 +587,7 @@ describe("the server wrapper", () => {
   })
 
   it("does not unlink on Windows, where sockets are named pipes", async () => {
-    const path = join(dir, "pipe.sock")
+    const path = socketAddress(dir, "pipe.sock")
     const first = await serve(() => ({ status: 200, body: {} }), path)
     expect(first.listening).toBe(true)
     const second = createGateServer("test", () => NOT_A_REPLY, silent)
@@ -598,19 +609,23 @@ const NOT_A_REPLY = { status: 200, body: {} }
 
 describe("the client", () => {
   it("rejects every call with GateUnavailableError when no gate listens, within 2 s", async () => {
-    const offline = createIntentClient({ socketPath: join(dir, "none.sock") })
+    const offline = createIntentClient({
+      socketPath: socketAddress(dir, "none.sock"),
+    })
     const started = Date.now()
     const calls = [
       offline.propose(proposal),
       offline.status("i-1"),
       offline.history("i-1"),
       offline.listPending(),
-      createAuditClient({ socketPath: join(dir, "none.sock") }).record({
-        action: "entity.delete",
-        subjectHash: "ab".repeat(32),
-        beforeHash: "cd".repeat(32),
-        afterHash: null,
-      }),
+      createAuditClient({ socketPath: socketAddress(dir, "none.sock") }).record(
+        {
+          action: "entity.delete",
+          subjectHash: "ab".repeat(32),
+          beforeHash: "cd".repeat(32),
+          afterHash: null,
+        }
+      ),
     ]
     for (const call of calls) {
       await expect(call).rejects.toBeInstanceOf(GateUnavailableError)
@@ -620,7 +635,7 @@ describe("the client", () => {
   })
 
   it("gives up on a gate that does not answer", async () => {
-    const path = join(dir, "hung.sock")
+    const path = socketAddress(dir, "hung.sock")
     const hung = createServer(() => undefined)
     servers.push(hung)
     await listen(hung, path, 0o600)
@@ -635,7 +650,7 @@ describe("the client", () => {
     status: number,
     body: string
   ): Promise<IntentClient> {
-    const path = join(dir, `answer-${status}.sock`)
+    const path = socketAddress(dir, `answer-${status}.sock`)
     const server = createServer((_req, res) => {
       res.writeHead(status, { "content-type": "application/json" })
       res.end(body)
@@ -663,7 +678,9 @@ describe("the client", () => {
 
   it("refuses an audit answer outside the contract", async () => {
     await answering(201, JSON.stringify({ seq: 0 }))
-    const odd = createAuditClient({ socketPath: join(dir, "answer-201.sock") })
+    const odd = createAuditClient({
+      socketPath: socketAddress(dir, "answer-201.sock"),
+    })
     await expect(odd.record(created)).rejects.toMatchObject({
       code: "bad_response",
       message: "the gate's response is not a GateAuditRecordResult",

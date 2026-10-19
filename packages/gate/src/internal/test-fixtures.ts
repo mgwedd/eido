@@ -2,7 +2,7 @@ import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto"
 import type { KeyObject } from "node:crypto"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { validateIntent } from "@eido/schemas"
 import type {
@@ -440,4 +440,20 @@ export function registration(
     publicKey: auth.publicKey,
     publicKeyAlgorithm: options.algorithm ?? -7,
   }
+}
+
+/**
+ * A listen address for a gate socket named `name` for the temp dir `dir`: a file in `dir` on
+ * macOS and Linux, a named pipe on Windows, where a socket file path cannot be bound (ADR 0003).
+ * The pipe name comes from the dir's own random name, so each test gets its own and one name in
+ * one dir is one address.
+ */
+export function socketAddress(
+  dir: string,
+  name: string,
+  platform: NodeJS.Platform = process.platform
+): string {
+  return platform === "win32"
+    ? `\\\\.\\pipe\\eido-gate-${basename(dir)}-${name}`
+    : join(dir, name)
 }
