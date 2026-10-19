@@ -8,8 +8,12 @@ import {
   validateGateDecisionRequest,
   validateGateDecisionResult,
   validateGateIntentHistory,
+  validateGateIntentProposal,
+  validateGateIntentStatus,
   validateGatePendingIntentList,
   validateGatePrepareApproval,
+  validateGateProposeRefusal,
+  validateGateProposeResult,
 } from "./index"
 import type { ValidationResult } from "./index"
 
@@ -468,5 +472,129 @@ describe("connector health", () => {
         validateGateConnectorHealth({ connectors: [{ ...item, token: "x" }] })
       )
     ).toEqual(["$.connectors[0].token: unknown key"])
+  })
+})
+
+describe("intent proposal", () => {
+  const proposal = {
+    intent: { kind: "email.send", args: { anything: "the gate checks it" } },
+    origin: "reactive",
+  }
+
+  test("accepts a bare proposal and one with a task and sources", () => {
+    expect(validateGateIntentProposal(proposal).ok).toBe(true)
+    expect(
+      validateGateIntentProposal({
+        ...proposal,
+        taskId: "t-1",
+        sources: { contextPackId: "p-1", documentIds: ["d-1"] },
+      }).ok
+    ).toBe(true)
+  })
+
+  test("rejects a missing origin, an intent that is not an object and a caller hash", () => {
+    expect(
+      errorsOf(validateGateIntentProposal(without(proposal, "origin")))
+    ).toEqual(["$.origin: required"])
+    expect(
+      errorsOf(validateGateIntentProposal({ ...proposal, intent: "send it" }))
+    ).toEqual(["$.intent: expected object, got string"])
+    expect(
+      errorsOf(validateGateIntentProposal({ ...proposal, payloadHash: HASH }))
+    ).toEqual(["$.payloadHash: unknown key"])
+  })
+
+  test("rejects sources without document ids", () => {
+    expect(
+      errorsOf(
+        validateGateIntentProposal({
+          ...proposal,
+          sources: { contextPackId: "p-1" },
+        })
+      )
+    ).toEqual(["$.sources.documentIds: required"])
+  })
+})
+
+describe("intent status", () => {
+  const status = {
+    id: "i-1",
+    kind: "email.send",
+    tier: "approval",
+    state: "pending",
+    edited_from: null,
+  }
+
+  test("accepts edited_from as null or an id", () => {
+    expect(validateGateIntentStatus(status).ok).toBe(true)
+    expect(validateGateIntentStatus({ ...status, edited_from: "i-0" }).ok).toBe(
+      true
+    )
+  })
+
+  test("requires edited_from and refuses a payload, signature or nonce", () => {
+    expect(
+      errorsOf(validateGateIntentStatus(without(status, "edited_from")))
+    ).toEqual(["$.edited_from: required"])
+    expect(
+      errorsOf(
+        validateGateIntentStatus({
+          ...status,
+          payload_json: "{}",
+          signature: "s",
+          nonce: NONCE,
+        })
+      )
+    ).toEqual([
+      "$.payload_json: unknown key",
+      "$.signature: unknown key",
+      "$.nonce: unknown key",
+    ])
+  })
+})
+
+describe("propose result and refusal", () => {
+  test("accepts a stored result with or without a reason", () => {
+    expect(
+      validateGateProposeResult({ id: "i-1", tier: "auto", state: "approved" })
+        .ok
+    ).toBe(true)
+    expect(
+      validateGateProposeResult({
+        id: "i-1",
+        tier: "forbidden",
+        state: "rejected",
+        reason: "connector_disabled",
+      }).ok
+    ).toBe(true)
+  })
+
+  test("rejects an unknown tier", () => {
+    expect(
+      errorsOf(
+        validateGateProposeResult({
+          id: "i-1",
+          tier: "manual",
+          state: "pending",
+        })
+      )
+    ).toEqual(['$.tier: must be one of "auto", "approval", "forbidden"'])
+  })
+
+  test("a refusal needs at least one error and the invalid_payload code", () => {
+    expect(
+      validateGateProposeRefusal({
+        code: "invalid_payload",
+        errors: ["$.args.body: required"],
+      }).ok
+    ).toBe(true)
+    expect(
+      errorsOf(
+        validateGateProposeRefusal({ code: "invalid_payload", errors: [] })
+      )
+    ).toEqual(["$.errors: needs at least 1 items"])
+    expect(
+      errorsOf(validateGateProposeRefusal({ code: "forbidden", errors: ["x"] }))
+    ).toEqual(['$.code: must be "invalid_payload"'])
   })
 })

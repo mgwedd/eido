@@ -13,6 +13,17 @@ module.exports = {
       to: { path: GATE_INTERNALS },
     },
     {
+      name: "gate-imports-schemas-only",
+      comment:
+        "packages/gate calls nothing in the data plane (ADR 0003): it imports no workspace package but @eido/schemas, so never packages/core or an app.",
+      severity: "error",
+      from: { path: "(^|/)packages/gate/" },
+      to: {
+        path: "(^|/)(packages|apps)/",
+        pathNot: "(^|/)packages/(gate|schemas)/",
+      },
+    },
+    {
       name: "web-imports-schemas-and-ui-only",
       comment:
         "apps/web talks to the gate and core over HTTP. It may import @eido/schemas, plus @eido/ui (the shadcn component package, which imports no workspace package).",

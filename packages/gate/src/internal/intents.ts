@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { validateIntent } from "@eido/schemas"
-import type { Intent } from "@eido/schemas"
+import type { GateIntentStatus, Intent } from "@eido/schemas"
 import { append } from "./audit"
 import { canonicalize, hashCanonicalString, payloadHash } from "./canonical"
 import { issueCurrentNonce } from "./nonces"
@@ -36,10 +36,11 @@ export type ProposeResult =
       state: IntentState
       payloadHash: string
     }
+  | { ok: false; code: "invalid_payload"; errors: string[] }
   | {
       ok: false
-      code: "invalid_payload" | "forbidden" | "connector_disabled"
-      intentId?: string
+      code: "forbidden" | "connector_disabled"
+      intentId: string
       errors: string[]
     }
 
@@ -69,14 +70,14 @@ export type IntentHistoryEntry = {
   at: string
   from: IntentState | null
   to: IntentState
-  actor: string
+  actor: Actor
   reason?: string
 }
 
 export type PendingIntentSummary = {
   id: string
   kind: string
-  tier: Tier
+  tier: "approval"
   state: "pending"
   origin: IntentOrigin
   createdAt: string
@@ -109,6 +110,14 @@ const STATES: readonly IntentState[] = [
 ]
 const TIERS: readonly Tier[] = ["auto", "approval", "forbidden"]
 const ORIGINS: readonly IntentOrigin[] = ["reactive", "proactive", "task"]
+const ACTORS: readonly Actor[] = [
+  "data-plane",
+  "policy",
+  "approver",
+  "executor",
+  "system",
+]
+const PENDING_TIER: readonly "approval"[] = ["approval"]
 
 /** Narrows a stored column to one of `allowed`; anything else means the row was tampered with. */
 function member<T extends string>(
@@ -547,6 +556,26 @@ export function intentStatus(
     : { state: intent.state, tier: intent.tier }
 }
 
+/** One intent as the intent API shows it: kind, tier, state and edited_from; no payload. */
+export function intentSummary(
+  db: DatabaseSync,
+  intentId: string
+): GateIntentStatus | undefined {
+  const row = db
+    .prepare(
+      "SELECT id, kind, tier, state, edited_from FROM intents WHERE id = ?"
+    )
+    .get(intentId)
+  if (row === undefined) return undefined
+  return {
+    id: String(row["id"]),
+    kind: String(row["kind"]),
+    tier: toTier(row["tier"]),
+    state: toState(row["state"]),
+    edited_from: optionalText(row["edited_from"]),
+  }
+}
+
 /** The intent's transitions, oldest first, read from its audit_log rows. */
 export function intentHistory(
   db: DatabaseSync,
@@ -566,7 +595,7 @@ export function intentHistory(
         at: String(row["ts"]),
         from: from === null ? null : toState(from),
         to: toState(row["to_state"]),
-        actor: String(row["actor"]),
+        actor: member(row["actor"], ACTORS, "audit actor"),
       }
       return reason === null ? entry : { ...entry, reason }
     })
@@ -584,7 +613,7 @@ export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
       const summary: PendingIntentSummary = {
         id: String(row["id"]),
         kind: String(row["kind"]),
-        tier: toTier(row["tier"]),
+        tier: member(row["tier"], PENDING_TIER, "pending tier"),
         state: "pending",
         origin: toOrigin(row["origin"]),
         createdAt: String(row["created_at"]),

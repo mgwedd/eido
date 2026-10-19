@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateIntentStatus",
+  "description": "Response of GET /intents/:id (#42): one intent's kind, tier and state. No payload body, signature or nonce. edited_from is the id of the intent this one replaced, or null.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "tier": {
+      "$ref": "gate-tier.schema.json"
+    },
+    "state": {
+      "$ref": "gate-intent-state.schema.json"
+    },
+    "edited_from": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": ["id", "kind", "tier", "state", "edited_from"],
+  "additionalProperties": false
+}
