@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmailArchiveIntent",
+  "description": "Archive messages.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "email.archive"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "messageIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "description": "Message ids"
+        }
+      },
+      "required": ["messageIds"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

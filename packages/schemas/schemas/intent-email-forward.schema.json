@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmailForwardIntent",
+  "description": "Forward a message.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "email.forward"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Message id to forward"
+        },
+        "to": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 320
+          },
+          "description": "Recipients"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000,
+          "description": "Note placed above the forwarded message"
+        }
+      },
+      "required": ["messageId", "to"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

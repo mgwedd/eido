@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileMoveIntent",
+  "description": "Move a file inside an allowed folder.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "file.move"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Allowed-folder id from local config"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Path relative to the root"
+        },
+        "toPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Destination path relative to the root"
+        }
+      },
+      "required": ["root", "path", "toPath"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}
