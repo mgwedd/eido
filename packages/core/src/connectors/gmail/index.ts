@@ -1,4 +1,4 @@
-// Gmail connector: read client, facade and manifest. Writes are performed by the gate's
+// Gmail connector: read client, sync, facade and manifest. Writes are performed by the gate's
 // executor (packages/gate/src/internal/gmail-writers.ts), never from here.
 
 export { createGmailClient } from "./client"
@@ -30,6 +30,8 @@ export {
   gmailPolicyFor,
 } from "./manifest"
 export { GMAIL_CONNECTOR, GMAIL_HOST } from "./routes"
+export { syncGmail, syncGmailLabel } from "./sync"
+export type { LabelSyncResult as GmailLabelSyncResult } from "./sync"
 export { createEgressTransport as createGmailEgressTransport } from "./transport"
 export type {
   EgressTransportOptions as GmailEgressTransportOptions,

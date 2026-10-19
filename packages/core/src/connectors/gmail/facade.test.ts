@@ -84,6 +84,12 @@ beforeEach(() => {
         headers: { attachmentOf: "gm-1" },
       }),
       gmailDoc({
+        sourceRef: "gm-1#2",
+        title: "empty.txt",
+        mime: "text/plain",
+        headers: { attachmentOf: "gm-1" },
+      }),
+      gmailDoc({
         sourceRef: "pm-1",
         source: "proton",
         title: "Quarterly",
@@ -103,8 +109,18 @@ const draft = { to: ["ada@example.com"], subject: "Lorem", body: "Ipsum" }
 const label = { messageIds: ["gm-1"], add: ["Label_1"] }
 const ids = { messageIds: ["gm-1"] }
 const markRead = { messageIds: ["gm-1"], read: true }
-const reply = { messageId: "gm-1", replyAll: false, body: "Ipsum" }
-const forward = { messageId: "gm-1", to: ["bob@example.com"] }
+const reply = {
+  messageId: "gm-1",
+  messageSha256: sha("gm-1"),
+  replyAll: false,
+  to: ["ada@example.com"],
+  body: "Ipsum",
+}
+const forward = {
+  messageId: "gm-1",
+  messageSha256: sha("gm-1"),
+  to: ["bob@example.com"],
+}
 const WRITES: Case[] = [
   ["draft_create", "email.draft", draft, (f) => f.draft_create(draft)],
   ["label", "email.label", label, (f) => f.label(label)],
@@ -170,6 +186,7 @@ describe("read verbs", () => {
   test("mail_get returns the body by Gmail id, flagged untrusted", () => {
     expect(facade.mail_get({ messageId: "gm-1" })).toEqual({
       messageId: "gm-1",
+      sha256: sha("gm-1"),
       headerMessageId: "m1@mail.example.com",
       threadId: "th-1",
       subject: "Quarterly lorem",
@@ -216,6 +233,12 @@ describe("read verbs", () => {
       text: null,
       untrusted: true,
     })
+  })
+
+  test("attachment_text gives an empty text attachment empty text, not null", () => {
+    expect(
+      facade.attachment_text({ messageId: "gm-1", attachmentIndex: 2 }).text
+    ).toBe("")
   })
 
   test("attachment_text on a missing attachment is not_found", () => {

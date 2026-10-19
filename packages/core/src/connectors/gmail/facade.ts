@@ -12,6 +12,7 @@ import type {
   GateIntentOrigin,
 } from "@eido/schemas"
 import { search } from "../../index/index"
+import { isTextMime } from "../mail/parse"
 import type { SearchHit } from "../../index/index"
 import { GmailError } from "./errors"
 import { GMAIL_SOURCE } from "./routes"
@@ -27,6 +28,8 @@ export type Untrusted<T> = T & { untrusted: true }
 export type GmailMessage = Untrusted<{
   /** Gmail's message id: the id write verbs take. */
   messageId: string
+  /** SHA-256 of the raw message: reply and forward bind to it, so a planted look-alike is never the target. */
+  sha256: string
   /** The RFC 5322 Message-ID header, when the message has one. */
   headerMessageId?: string
   threadId?: string
@@ -50,7 +53,7 @@ export type GmailFacadeDeps = {
 
 const FROM = `FROM document_text t JOIN documents d ON d.sha256 = t.sha256
   WHERE d.source = '${GMAIL_SOURCE}' AND t.attachment_of IS NULL`
-const COLUMNS = `d.source_ref, t.message_id, t.title, t.body, t.occurred_at, t.thread_id`
+const COLUMNS = `d.sha256, d.source_ref, t.message_id, t.title, t.body, t.occurred_at, t.thread_id`
 
 function messages(
   db: DatabaseSync,
@@ -70,6 +73,7 @@ function messages(
       const occurredAt = text("occurred_at")
       return {
         messageId: String(row["source_ref"]),
+        sha256: String(row["sha256"]),
         ...(headerMessageId === undefined ? {} : { headerMessageId }),
         ...(threadId === undefined ? {} : { threadId }),
         subject: text("title") ?? "",
@@ -129,11 +133,11 @@ export function createGmailFacade(deps: GmailFacadeDeps) {
         .get(args.messageId, `${args.messageId}#${args.attachmentIndex}`)
       if (row === undefined)
         throw new GmailError("not_found", "the message has no such attachment")
-      const hasText = row["body"] !== ""
+      const mime = String(row["mime"])
       return {
         filename: String(row["title"]),
-        mime: String(row["mime"]),
-        text: hasText ? String(row["body"]) : null,
+        mime,
+        text: isTextMime(mime) ? String(row["body"]) : null,
         untrusted: true,
       }
     },
