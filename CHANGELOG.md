@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Eido are recorded here. Sections are generated from Conventional Commit subjects by `scripts/apply-release.sh` when a release is cut; do not edit by hand in PRs.
+All notable changes to Eido are recorded here. Releases are no longer automated; this file is the record up to v0.0.1.
 
 ## [0.0.1] - 2026-10-18
 
