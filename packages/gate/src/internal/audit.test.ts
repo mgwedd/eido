@@ -9,14 +9,19 @@ import { openControlDb } from "./control-db"
 
 const EMPTY = createHash("sha256").update("").digest("hex")
 const dirs: string[] = []
+const open: DatabaseSync[] = []
 afterEach(() => {
+  // Windows cannot remove a file SQLite still holds open, so close every handle first.
+  for (const db of open.splice(0)) db.close()
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 function fileDb(): { db: DatabaseSync; path: string } {
   const dir = mkdtempSync(join(tmpdir(), "eido-audit-"))
   dirs.push(dir)
   const path = join(dir, "eido-control.db")
-  return { db: openControlDb(path), path }
+  const db = openControlDb(path)
+  open.push(db)
+  return { db, path }
 }
 function add(db: DatabaseSync, n: number) {
   let last = { seq: 0, rowHash: "" }

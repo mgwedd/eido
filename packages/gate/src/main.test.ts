@@ -30,6 +30,7 @@ import { runningGate } from "./internal/runtime"
 import {
   assertion,
   loggedText,
+  socketAddress,
   testAuthenticator,
   WEBAUTHN,
 } from "./internal/test-fixtures"
@@ -50,8 +51,8 @@ afterEach(() => {
 function config(): GateConfig {
   return {
     dataDir: join(dir, "gate"),
-    socketPath: join(dir, "gate.sock"),
-    controlSocketPath: join(dir, "control.sock"),
+    socketPath: socketAddress(dir, "gate.sock"),
+    controlSocketPath: socketAddress(dir, "control.sock"),
     webAuthn: WEBAUTHN,
   }
 }
