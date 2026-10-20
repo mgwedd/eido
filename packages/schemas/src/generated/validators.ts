@@ -1241,7 +1241,7 @@ export function validateConnectorManifest(value: unknown): ValidationResult<Conn
 export const GATE_API_ERROR_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateApiError",
-  "description": "Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. Statuses: not_found 404, already_decided 409, verification_failed 403, invalid_request 400 (413 over 1 MiB, 422 for an edited intent the schemas or the original's kind refuse), unauthenticated 401 (no valid session cookie on a gated phone route), misdirected_request 421 (a Host header the listener does not serve), unsupported_media_type 415 (a phone-listener POST whose Content-Type is not application/json), tier_changed 409 and forbidden 403 (an edit refused by policy), unavailable 500, handshake_failed 502 (Proton Bridge refused the connection or the TLS handshake) and auth_failed 502 (Bridge refused the username or password).",
+  "description": "Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. Statuses: not_found 404, already_decided 409, verification_failed 403, invalid_request 400 (413 over 1 MiB, 422 for an edited intent the schemas or the original's kind refuse), unauthenticated 401 (no valid session cookie on a gated phone route), misdirected_request 421 (a Host header the listener does not serve), unsupported_media_type 415 (a phone-listener POST whose Content-Type is not application/json), tier_changed 409 and forbidden 403 (an edit refused by policy), unavailable 500, busy 503 (the gate refused a mail read at its concurrent-read limit, with a Retry-After header), handshake_failed 502 (Proton Bridge refused the connection or the TLS handshake) and auth_failed 502 (Bridge refused the username or password).",
   "type": "object",
   "properties": {
     "code": {
@@ -1257,6 +1257,7 @@ export const GATE_API_ERROR_JSON_SCHEMA: JsonSchema = {
         "tier_changed",
         "forbidden",
         "unavailable",
+        "busy",
         "handshake_failed",
         "auth_failed"
       ],

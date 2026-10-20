@@ -2,6 +2,7 @@ export { DEFAULTS, resolveConfig } from "./config"
 export type { ProtonConfig } from "./config"
 export {
   AuthFailedError,
+  BusyError,
   GateUnavailableMailError,
   HandshakeFailedError,
   ProtonError,

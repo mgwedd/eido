@@ -3,7 +3,12 @@ import { GateUnavailableError } from "@eido/gate"
 import { beforeEach, describe, expect, test } from "vitest"
 import { getCursor, openIndex } from "../../index/index"
 import { resolveConfig } from "./config"
-import { AuthFailedError, HandshakeFailedError, ProtonError } from "./errors"
+import {
+  AuthFailedError,
+  BusyError,
+  HandshakeFailedError,
+  ProtonError,
+} from "./errors"
 import { MemorySource, plainMessage, raw } from "./memory-source.test-support"
 import { syncFolder, syncProton } from "./sync"
 
@@ -363,6 +368,21 @@ describe("typed failures", () => {
     const error = await syncProton(db, source, config).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(AuthFailedError)
     expect(error).toMatchObject({ code: "auth_failed" })
+    expect(source.calls).toEqual(["folderState INBOX"])
+  })
+
+  test("busy surfaces as BusyError, and the run stops with no further gate calls", async () => {
+    source.addFolder("INBOX", "1", five)
+    source.addFolder("Work", "1", five)
+    source.failAll = Object.assign(new Error("the gate is busy reading mail"), {
+      code: "busy",
+    })
+    const error = await syncProton(db, source, config).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(BusyError)
+    expect(error).toMatchObject({
+      code: "busy",
+      message: "the gate is busy reading mail",
+    })
     expect(source.calls).toEqual(["folderState INBOX"])
   })
 

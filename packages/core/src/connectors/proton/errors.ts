@@ -6,6 +6,7 @@ export type ProtonErrorCode =
   | "handshake_failed"
   | "auth_failed"
   | "gate_unavailable"
+  | "busy"
   | "not_found"
   | "no_recipients"
 
@@ -44,8 +45,19 @@ export class GateUnavailableMailError extends ProtonError {
 }
 
 /**
+ * The gate refused a mail read at its concurrent-read limit (503 `busy`, #219). Health (#24)
+ * counts it; the sync run stops without retrying and tries again on its next scheduled run.
+ */
+export class BusyError extends ProtonError {
+  override readonly name = "BusyError"
+  constructor(message: string) {
+    super("busy", message)
+  }
+}
+
+/**
  * Maps what a `ProtonMailSource` throws onto the connector's typed errors. The gate client (#195)
- * reports `handshake_failed` and `auth_failed` as a string `code`, plus `GateUnavailableError`.
+ * reports `handshake_failed`, `auth_failed` and `busy` as a string `code`, plus `GateUnavailableError`.
  * Anything else is not a known upstream failure and passes through unchanged.
  */
 export function toProtonError(error: unknown): unknown {
@@ -57,6 +69,7 @@ export function toProtonError(error: unknown): unknown {
     if (code === "handshake_failed")
       return new HandshakeFailedError(error.message)
     if (code === "auth_failed") return new AuthFailedError(error.message)
+    if (code === "busy") return new BusyError(error.message)
   }
   return error
 }
