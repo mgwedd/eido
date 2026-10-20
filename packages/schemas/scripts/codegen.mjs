@@ -210,7 +210,15 @@ function promptText(verbSchemas) {
       const note = field.description ? `: ${field.description}` : ""
       return `  - ${name} (${fieldType(field)}, ${need})${note}`
     })
-    return [`${kind}: ${verb.description}`, ...fields].join("\n")
+    const selector = verb.properties.connector
+    const selectorLine = selector
+      ? [
+          `  - connector (${fieldType(selector)}, optional): ${selector.description}`,
+        ]
+      : []
+    return [`${kind}: ${verb.description}`, ...selectorLine, ...fields].join(
+      "\n"
+    )
   })
   return ["Intent kinds and their args:", ...blocks].join("\n\n")
 }

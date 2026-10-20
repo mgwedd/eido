@@ -43,6 +43,7 @@ const KINDS = Object.keys(BRIDGE_DESTINATIONS).filter(isBridgeKind)
 function writer(kind: BridgeKind): UpstreamWriter {
   return {
     kind,
+    connector: PROTON_CONNECTOR,
     channel: "bridge",
     buildRequest: (intent) => ({
       method: "POST",

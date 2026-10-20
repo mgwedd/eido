@@ -511,11 +511,11 @@ describe("Bridge writers through the executor", () => {
     const id = w.propose(sample("email.draft"))
     expect(await w.run(id)).toEqual({
       ok: false,
-      code: "connector_misconfigured",
+      code: "unknown_writer",
     })
     expect(w.fake.imapCommands).toEqual([])
     expect(auditRows(w.db).at(-1)?.action).toBe(
-      "execute.refused.connector_misconfigured"
+      "execute.refused.unknown_writer"
     )
   })
 

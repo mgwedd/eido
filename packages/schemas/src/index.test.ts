@@ -95,6 +95,20 @@ test("schemas package loads", () => {
 })
 
 describe("verbs", () => {
+  test("email connector selectors are validated and described in the generated prompt", () => {
+    const intent = {
+      kind: "email.send",
+      connector: "gmail",
+      args: VALID["email.send"],
+    }
+    expect(validateIntent(intent)).toMatchObject({ ok: true, value: intent })
+    expect(validateIntent({ ...intent, connector: "" }).ok).toBe(false)
+    expect(INTENT_PROMPT_TEXT).toContain("email.send:")
+    expect(INTENT_PROMPT_TEXT).toContain(
+      "connector (string (1-100 chars), optional)"
+    )
+  })
+
   test("INTENT_KINDS is exactly the specified verb list", () => {
     expect([...INTENT_KINDS].sort()).toEqual([...EXPECTED_KINDS].sort())
   })

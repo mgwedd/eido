@@ -27,9 +27,15 @@ export type UpstreamResult = { upstreamRef: string | null; result: unknown }
 /** Gate-trusted adapters, registered at startup; never loaded from connector/model output. */
 export interface UpstreamWriter {
   kind: Intent["kind"]
+  /** Gate-owned adapter identity; never selected by kind alone. */
+  connector: string
   buildRequest(this: void, intent: Intent): UpstreamRequest
   /** Reconstruct all intent semantics from the exact method, URL and canonical body. */
-  intentFromRequest(this: void, request: Readonly<UpstreamRequest>): unknown
+  intentFromRequest(
+    this: void,
+    request: Readonly<UpstreamRequest>,
+    connector?: string
+  ): unknown
   inverse(this: void, intent: Intent, result: unknown): unknown
   /**
    * "bridge": the request goes to Proton Bridge through the gate's own IMAP and SMTP adapter
@@ -203,11 +209,16 @@ function writeDestination(
       })
       .map((route) => ({ operation, route }))
   )
-  const selected = matching.length === 1 ? matching[0] : undefined
+  // Several write operations may share one route: Gmail's batchModify carries mark read, label,
+  // archive and trash, and the writer's strict decoder tells them apart. The intent's own
+  // operation must pin the route exactly once, and a read operation sharing it is refused.
+  const own = matching.filter(
+    (candidate) => candidate.operation.name === operationName
+  )
+  const selected = own.length === 1 ? own[0] : undefined
   if (
     selected === undefined ||
-    selected.operation.name !== operationName ||
-    selected.operation.effect !== "write"
+    !matching.every((candidate) => candidate.operation.effect === "write")
   )
     throw new Error("unpinned write route")
   const safePath = selected.route.pathPattern
@@ -263,9 +274,11 @@ export function createExecutor(
   undo(id: string): Promise<ExecutionResult>
 } {
   const registry = new Map<string, UpstreamWriter>()
+  const writerKey = (kind: string, connector: string) => `${connector}:${kind}`
   for (const writer of writers) {
-    if (registry.has(writer.kind)) throw new Error("duplicate writer kind")
-    registry.set(writer.kind, writer)
+    const key = writerKey(writer.kind, writer.connector)
+    if (registry.has(key)) throw new Error("duplicate writer kind")
+    registry.set(key, writer)
   }
 
   const refuse = (
@@ -371,14 +384,25 @@ export function createExecutor(
       if (!inverse.ok) return refuse(id, direction, "invalid_inverse")
       if (/\.(send|forward|reply|trash|delete)$/i.test(inverse.value.kind))
         return refuse(id, direction, "unsafe_inverse")
+      if (
+        "connector" in intent &&
+        (!("connector" in inverse.value) ||
+          inverse.value.connector !== intent.connector)
+      )
+        return refuse(id, direction, "invalid_inverse")
       intent = inverse.value
     }
-    const writer = registry.get(intent.kind)
-    if (writer === undefined) return refuse(id, direction, "unknown_writer")
+    // Stored pre-binding email intents have no authenticated destination; refuse rather than
+    // redirect them after another connector is pinned or the original is disabled.
+    if (intent.kind.startsWith("email.") && !("connector" in intent))
+      return refuse(id, direction, "connector_unavailable")
     let connector: string
     let operation: string
     try {
-      const bindings = intentBindings(db, intent.kind)
+      const bindings = intentBindings(db, intent.kind).filter(
+        (binding) =>
+          !("connector" in intent) || binding.connector === intent.connector
+      )
       const binding = bindings.length === 1 ? bindings[0] : undefined
       const pinned =
         binding === undefined
@@ -396,16 +420,15 @@ export function createExecutor(
         health === "open"
       )
         return refuse(id, direction, "connector_unavailable")
-      if (
-        writer.channel === "bridge" &&
-        !bridgeConfigured(db, binding.connector)
-      )
-        return refuse(id, direction, "connector_misconfigured")
       connector = binding.connector
       operation = binding.operation
     } catch {
       return refuse(id, direction, "connector_unavailable")
     }
+    const writer = registry.get(writerKey(intent.kind, connector))
+    if (writer === undefined) return refuse(id, direction, "unknown_writer")
+    if (writer.channel === "bridge" && !bridgeConfigured(db, connector))
+      return refuse(id, direction, "connector_misconfigured")
     let request: WriteRequest
     try {
       const expectedHash =
@@ -423,7 +446,8 @@ export function createExecutor(
           : writeDestination(db, connector, operation, snapshot)
       if (destination !== snapshot.url) throw new Error("noncanonical target")
       const decoded = writer.intentFromRequest(
-        Object.freeze({ ...snapshot, body: parse(snapshot.body) })
+        Object.freeze({ ...snapshot, body: parse(snapshot.body) }),
+        connector
       )
       checkedIntent(decoded, expectedHash)
       request = Object.freeze({

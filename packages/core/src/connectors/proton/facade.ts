@@ -14,6 +14,7 @@ import { ProtonError } from "./errors"
 import { isTextMime } from "../mail/parse"
 import { replyRecipients, storedAddresses } from "../reply-target"
 import { CONNECTOR } from "./sync"
+import { CONNECTOR_NAME } from "./manifest"
 
 export type IntentReceipt = { intentId: string }
 
@@ -106,7 +107,10 @@ export function createProtonFacade(deps: ProtonFacadeDeps) {
     kind: string
     args: object
   }): Promise<IntentReceipt> => {
-    const result = await intents.propose({ intent, origin })
+    const result = await intents.propose({
+      intent: { ...intent, connector: CONNECTOR_NAME },
+      origin,
+    })
     return { intentId: result.id }
   }
   return {
