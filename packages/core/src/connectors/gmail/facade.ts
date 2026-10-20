@@ -14,6 +14,8 @@ import type {
 import { search } from "../../index/index"
 import { isTextMime } from "../mail/parse"
 import type { SearchHit } from "../../index/index"
+import { rationaleField } from "../proposal-rationale"
+import type { ProposalNote } from "../proposal-rationale"
 import { replyRecipients, storedAddresses } from "../reply-target"
 import { GmailError } from "./errors"
 import { GMAIL_SOURCE } from "./routes"
@@ -119,11 +121,15 @@ export function createGmailFacade(deps: GmailFacadeDeps) {
     const sha256 = String(row["sha256"])
     return { sha256, addresses: storedAddresses(db, sha256) }
   }
-  const propose = async (intent: {
-    kind: string
-    args: object
-  }): Promise<GmailIntentReceipt> => {
-    const result = await intents.propose({ intent, origin })
+  const propose = async (
+    intent: { kind: string; args: object },
+    note?: ProposalNote
+  ): Promise<GmailIntentReceipt> => {
+    const result = await intents.propose({
+      intent: { ...intent, connector: GMAIL_SOURCE },
+      origin,
+      ...rationaleField(note),
+    })
     return { intentId: result.id }
   }
   return {
@@ -169,17 +175,17 @@ export function createGmailFacade(deps: GmailFacadeDeps) {
       }
     },
 
-    draft_create: (args: EmailDraftIntent["args"]) =>
-      propose({ kind: "email.draft", args }),
-    label: (args: EmailLabelIntent["args"]) =>
-      propose({ kind: "email.label", args }),
-    archive: (args: EmailArchiveIntent["args"]) =>
-      propose({ kind: "email.archive", args }),
-    mark_read: (args: EmailMarkReadIntent["args"]) =>
-      propose({ kind: "email.markRead", args }),
-    send: (args: EmailSendIntent["args"]) =>
-      propose({ kind: "email.send", args }),
-    reply: (args: GmailReplyRequest) => {
+    draft_create: (args: EmailDraftIntent["args"], note?: ProposalNote) =>
+      propose({ kind: "email.draft", args }, note),
+    label: (args: EmailLabelIntent["args"], note?: ProposalNote) =>
+      propose({ kind: "email.label", args }, note),
+    archive: (args: EmailArchiveIntent["args"], note?: ProposalNote) =>
+      propose({ kind: "email.archive", args }, note),
+    mark_read: (args: EmailMarkReadIntent["args"], note?: ProposalNote) =>
+      propose({ kind: "email.markRead", args }, note),
+    send: (args: EmailSendIntent["args"], note?: ProposalNote) =>
+      propose({ kind: "email.send", args }, note),
+    reply: (args: GmailReplyRequest, note?: ProposalNote) => {
       // Only the named fields pass: a hash or recipients in model output are dropped, not trusted.
       const { sha256, addresses } = target(args.messageId)
       const { to, cc } = replyRecipients(addresses, args.replyAll, identity)
@@ -188,30 +194,36 @@ export function createGmailFacade(deps: GmailFacadeDeps) {
           "no_recipients",
           "the message yields no recipient to reply to"
         )
-      return propose({
-        kind: "email.reply",
-        args: {
-          messageId: args.messageId,
-          messageSha256: sha256,
-          replyAll: args.replyAll,
-          to,
-          ...(cc.length === 0 ? {} : { cc }),
-          body: args.body,
-        } satisfies EmailReplyIntent["args"],
-      })
+      return propose(
+        {
+          kind: "email.reply",
+          args: {
+            messageId: args.messageId,
+            messageSha256: sha256,
+            replyAll: args.replyAll,
+            to,
+            ...(cc.length === 0 ? {} : { cc }),
+            body: args.body,
+          } satisfies EmailReplyIntent["args"],
+        },
+        note
+      )
     },
-    forward: (args: GmailForwardRequest) =>
-      propose({
-        kind: "email.forward",
-        args: {
-          messageId: args.messageId,
-          messageSha256: target(args.messageId).sha256,
-          to: args.to,
-          ...(args.note === undefined ? {} : { note: args.note }),
-        } satisfies EmailForwardIntent["args"],
-      }),
-    trash: (args: EmailTrashIntent["args"]) =>
-      propose({ kind: "email.trash", args }),
+    forward: (args: GmailForwardRequest, note?: ProposalNote) =>
+      propose(
+        {
+          kind: "email.forward",
+          args: {
+            messageId: args.messageId,
+            messageSha256: target(args.messageId).sha256,
+            to: args.to,
+            ...(args.note === undefined ? {} : { note: args.note }),
+          } satisfies EmailForwardIntent["args"],
+        },
+        note
+      ),
+    trash: (args: EmailTrashIntent["args"], note?: ProposalNote) =>
+      propose({ kind: "email.trash", args }, note),
   }
 }
 

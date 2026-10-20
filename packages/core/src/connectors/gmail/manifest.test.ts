@@ -164,18 +164,34 @@ describe("manifest", () => {
     ).toEqual([])
   })
 
-  // The gate's mark read writer (packages/gate/src/internal/gmail-writers.ts) posts to this same
-  // literal; the executor refuses a request whose route the manifest does not pin.
-  test("pins mark read to Gmail's batchModify, the route the gate's writer uses", () => {
+  test("pins batchModify for each implemented label write and messages.get for prior labels", () => {
+    const route = {
+      host: "gmail.googleapis.com",
+      method: "POST",
+      pathPattern: "/gmail/v1/users/me/messages/batchModify",
+    }
+    for (const name of ["mark_read", "label", "archive", "trash"])
+      expect(
+        manifest.operations.find((op) => op.name === name)?.routes
+      ).toEqual([route])
     expect(
-      manifest.operations.find((op) => op.name === "mark_read")?.routes
+      manifest.operations.find((op) => op.name === "mail_get")?.routes
     ).toEqual([
       {
         host: "gmail.googleapis.com",
-        method: "POST",
-        pathPattern: "/gmail/v1/users/me/messages/batchModify",
+        method: "GET",
+        pathPattern: "/gmail/v1/users/me/messages/{id}",
       },
     ])
+  })
+
+  test("does not pin any permanent delete route", () => {
+    const paths = manifest.operations.flatMap((op) =>
+      (op.routes ?? []).map((route) => `${route.method} ${route.pathPattern}`)
+    )
+    expect(paths.join("\n")).not.toMatch(
+      /messages\.delete|batchDelete|DELETE /i
+    )
   })
 
   test("egress names the Gmail API and the OAuth token host only", () => {

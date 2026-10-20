@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtractedFields",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "object",
+      "properties": {
+        "raw": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "span": { "$ref": "source-span.schema.json" }
+      },
+      "required": ["raw", "span"],
+      "additionalProperties": false
+    },
+    "party": {
+      "type": "object",
+      "properties": {
+        "raw": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "span": { "$ref": "source-span.schema.json" }
+      },
+      "required": ["raw", "span"],
+      "additionalProperties": false
+    },
+    "reference_number": {
+      "type": "object",
+      "properties": {
+        "raw": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "span": { "$ref": "source-span.schema.json" }
+      },
+      "required": ["raw", "span"],
+      "additionalProperties": false
+    },
+    "amount": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "raw": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "span": { "$ref": "source-span.schema.json" },
+            "status": { "const": "parsed" },
+            "value": {
+              "type": "object",
+              "properties": {
+                "amount_minor": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "currency": {
+                  "type": "string",
+                  "minLength": 3,
+                  "maxLength": 3,
+                  "pattern": "^[A-Z]{3}$"
+                }
+              },
+              "required": ["amount_minor", "currency"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["raw", "span", "status", "value"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "raw": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "span": { "$ref": "source-span.schema.json" },
+            "status": { "const": "parse_failed" },
+            "value": { "type": "null" }
+          },
+          "required": ["raw", "span", "status", "value"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "due_date": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "raw": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "span": { "$ref": "source-span.schema.json" },
+            "status": { "const": "parsed" },
+            "value": {
+              "type": "string",
+              "minLength": 10,
+              "maxLength": 10,
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            }
+          },
+          "required": ["raw", "span", "status", "value"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "raw": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "span": { "$ref": "source-span.schema.json" },
+            "status": { "const": "parse_failed" },
+            "value": { "type": "null" }
+          },
+          "required": ["raw", "span", "status", "value"],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "required": ["action"],
+  "additionalProperties": false
+}

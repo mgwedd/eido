@@ -5,7 +5,7 @@ import type { JsonSchema } from "../validate"
 
 export const INTENT_KINDS = ["email.draft","email.label","email.archive","email.markRead","email.send","email.reply","email.forward","email.trash","calendar.create","calendar.edit","calendar.delete","reminder.create","file.create","file.rename","file.move","file.delete"] as const
 
-export const INTENT_PROMPT_TEXT = "Intent kinds and their args:\n\nemail.draft: Save an email draft. Nothing is sent.\n  - to (array of string (3-320 chars) (max 50 items), required): Recipients\n  - cc (array of string (3-320 chars) (max 50 items), optional): Cc recipients\n  - bcc (array of string (3-320 chars) (max 50 items), optional): Bcc recipients\n  - subject (string (up to 200 chars), required): Subject\n  - body (string (1-20000 chars), required): Plain-text body\n  - inReplyToMessageId (string (1-256 chars), optional): Message id this draft replies to\n\nemail.label: Add or remove labels on messages.\n  - messageIds (array of string (1-256 chars) (min 1, max 50 items), required): Message ids\n  - add (array of string (1-100 chars) (max 50 items), optional): Labels to add\n  - remove (array of string (1-100 chars) (max 50 items), optional): Labels to remove\n\nemail.archive: Archive messages.\n  - messageIds (array of string (1-256 chars) (min 1, max 50 items), required): Message ids\n\nemail.markRead: Change the read flag only. The message stays in the index and in triage; read false marks it unread again.\n  - messageIds (array of string (1-256 chars) (min 1, max 50 items), required): Message ids\n  - read (boolean, required): True marks read, false marks unread\n\nemail.send: Send an email, optionally from an existing draft.\n  - to (array of string (3-320 chars) (max 50 items), required): Recipients\n  - cc (array of string (3-320 chars) (max 50 items), optional): Cc recipients\n  - bcc (array of string (3-320 chars) (max 50 items), optional): Bcc recipients\n  - subject (string (up to 200 chars), required): Subject\n  - body (string (1-20000 chars), required): Plain-text body\n  - draftId (string (1-256 chars), optional): Draft to send\n\nemail.reply: Reply to a message.\n  - messageId (string (1-256 chars), required): Message id to reply to\n  - messageSha256 (string (64-64 chars), required): SHA-256 (lowercase hex) of the raw message, so only that exact message is the target\n  - replyAll (boolean, required): True replies to all recipients\n  - to (array of string (3-320 chars) (min 1, max 50 items), required): Recipients the reply goes to, as approved\n  - cc (array of string (3-320 chars) (max 50 items), optional): Cc recipients, as approved\n  - body (string (1-20000 chars), required): Plain-text body\n\nemail.forward: Forward a message.\n  - messageId (string (1-256 chars), required): Message id to forward\n  - messageSha256 (string (64-64 chars), required): SHA-256 (lowercase hex) of the raw message, so only that exact message is the target\n  - to (array of string (3-320 chars) (max 50 items), required): Recipients\n  - note (string (1-20000 chars), optional): Note placed above the forwarded message\n\nemail.trash: Move messages to the trash. Never a permanent delete.\n  - messageIds (array of string (1-256 chars) (min 1, max 50 items), required): Message ids\n\ncalendar.create: Send an iCalendar invitation (METHOD:REQUEST) from the assistant identity. The gate assigns the event UID.\n  - entity (string (1-256 chars), required): Entity id from local config, for example a company or personal\n  - category (string (1-100 chars), optional): Category from local config\n  - title (string (1-200 chars), required): Event title\n  - start (RFC 3339 date-time string, required): Start, RFC 3339\n  - end (RFC 3339 date-time string, required): End, RFC 3339\n  - allDay (boolean, required): True for an all-day event\n  - location (string (1-500 chars), optional): Location\n  - description (string (1-20000 chars), optional): Event description\n  - guests (array of string (3-320 chars) (max 50 items), optional): Guest email addresses; empty means the owner is the only attendee\n\ncalendar.edit: Change an event by sending a REQUEST with an incremented SEQUENCE. Only the listed changes apply.\n  - eventUid (string (1-256 chars), required): UID of the event to change\n  - entity (string (1-256 chars), optional): Entity id from local config, for example a company or personal\n  - category (string (1-100 chars), optional): Category from local config\n  - title (string (1-200 chars), optional): Event title\n  - start (RFC 3339 date-time string, optional): Start, RFC 3339\n  - end (RFC 3339 date-time string, optional): End, RFC 3339\n  - allDay (boolean, optional): True for an all-day event\n  - location (string (1-500 chars), optional): Location\n  - description (string (1-20000 chars), optional): Event description\n  - guests (array of string (3-320 chars) (max 50 items), optional): Guest email addresses; empty means the owner is the only attendee\n\ncalendar.delete: Cancel an event by sending METHOD:CANCEL.\n  - eventUid (string (1-256 chars), required): UID of the event to cancel\n\nreminder.create: Create a reminder.\n  - list (string (1-200 chars), required): Reminder list name\n  - title (string (1-200 chars), required): Title\n  - due (RFC 3339 date-time string, optional): Due, RFC 3339\n  - notes (string (1-20000 chars), optional): Notes\n\nfile.create: Create a file inside an allowed folder.\n  - root (string (1-256 chars), required): Allowed-folder id from local config\n  - path (string (1-1024 chars), required): Path relative to the root\n  - content (string (up to 20000 chars), required): File content\n\nfile.rename: Rename a file inside an allowed folder.\n  - root (string (1-256 chars), required): Allowed-folder id from local config\n  - path (string (1-1024 chars), required): Path relative to the root\n  - newName (string (1-255 chars), required): New file name\n\nfile.move: Move a file inside an allowed folder.\n  - root (string (1-256 chars), required): Allowed-folder id from local config\n  - path (string (1-1024 chars), required): Path relative to the root\n  - toPath (string (1-1024 chars), required): Destination path relative to the root\n\nfile.delete: Move a file to the Eido trash folder. Never a permanent delete.\n  - root (string (1-256 chars), required): Allowed-folder id from local config\n  - path (string (1-1024 chars), required): Path relative to the root"
+export const INTENT_PROMPT_TEXT = "Intent kinds and their args:\n\nemail.draft: Save an email draft. Nothing is sent.\n  - connector (string (1-100 chars), optional): Pinned connector to run this email write (for example gmail or proton-mail)\n  - to (array of string (3-320 chars) (max 50 items), required): Recipients\n  - cc (array of string (3-320 chars) (max 50 items), optional): Cc recipients\n  - bcc (array of string (3-320 chars) (max 50 items), optional): Bcc recipients\n  - subject (string (up to 200 chars), required): Subject\n  - body (string (1-20000 chars), required): Plain-text body\n  - inReplyToMessageId (string (1-256 chars), optional): Message id this draft replies to\n\nemail.label: Add or remove labels on messages.\n  - connector (string (1-100 chars), optional): Pinned connector to run this email write (for example gmail or proton-mail)\n  - messageIds (array of string (1-256 chars) (min 1, max 50 items), required): Message ids\n  - add (array of string (1-100 chars) (max 50 items), optional): Labels to add\n  - remove (array of string (1-100 chars) (max 50 items), optional): Labels to remove\n\nemail.archive: Archive messages.\n  - connector (string (1-100 chars), optional): Pinned connector to run this email write (for example gmail or proton-mail)\n  - messageIds (array of string (1-256 chars) (min 1, max 50 items), required): Message ids\n\nemail.markRead: Change the read flag only. The message stays in the index and in triage; read false marks it unread again.\n  - connector (string (1-100 chars), optional): Pinned connector to run this email write (for example gmail or proton-mail)\n  - messageIds (array of string (1-256 chars) (min 1, max 50 items), required): Message ids\n  - read (boolean, required): True marks read, false marks unread\n\nemail.send: Send an email, optionally from an existing draft.\n  - connector (string (1-100 chars), optional): Pinned connector to run this email write (for example gmail or proton-mail)\n  - to (array of string (3-320 chars) (max 50 items), required): Recipients\n  - cc (array of string (3-320 chars) (max 50 items), optional): Cc recipients\n  - bcc (array of string (3-320 chars) (max 50 items), optional): Bcc recipients\n  - subject (string (up to 200 chars), required): Subject\n  - body (string (1-20000 chars), required): Plain-text body\n  - draftId (string (1-256 chars), optional): Draft to send\n\nemail.reply: Reply to a message.\n  - connector (string (1-100 chars), optional): Pinned connector to run this email write (for example gmail or proton-mail)\n  - messageId (string (1-256 chars), required): Message id to reply to\n  - messageSha256 (string (64-64 chars), required): SHA-256 (lowercase hex) of the raw message, so only that exact message is the target\n  - replyAll (boolean, required): True replies to all recipients\n  - to (array of string (3-320 chars) (min 1, max 50 items), required): Recipients the reply goes to, as approved\n  - cc (array of string (3-320 chars) (max 50 items), optional): Cc recipients, as approved\n  - body (string (1-20000 chars), required): Plain-text body\n\nemail.forward: Forward a message.\n  - connector (string (1-100 chars), optional): Pinned connector to run this email write (for example gmail or proton-mail)\n  - messageId (string (1-256 chars), required): Message id to forward\n  - messageSha256 (string (64-64 chars), required): SHA-256 (lowercase hex) of the raw message, so only that exact message is the target\n  - to (array of string (3-320 chars) (max 50 items), required): Recipients\n  - note (string (1-20000 chars), optional): Note placed above the forwarded message\n\nemail.trash: Move messages to the trash. Never a permanent delete.\n  - connector (string (1-100 chars), optional): Pinned connector to run this email write (for example gmail or proton-mail)\n  - messageIds (array of string (1-256 chars) (min 1, max 50 items), required): Message ids\n\ncalendar.create: Send an iCalendar invitation (METHOD:REQUEST) from the assistant identity. The gate assigns the event UID.\n  - entity (string (1-256 chars), required): Entity id from local config, for example a company or personal\n  - category (string (1-100 chars), optional): Category from local config\n  - title (string (1-200 chars), required): Event title\n  - start (RFC 3339 date-time string, required): Start, RFC 3339\n  - end (RFC 3339 date-time string, required): End, RFC 3339\n  - allDay (boolean, required): True for an all-day event\n  - location (string (1-500 chars), optional): Location\n  - description (string (1-20000 chars), optional): Event description\n  - guests (array of string (3-320 chars) (max 50 items), optional): Guest email addresses; empty means the owner is the only attendee\n\ncalendar.edit: Change an event by sending a REQUEST with an incremented SEQUENCE. Only the listed changes apply.\n  - eventUid (string (1-256 chars), required): UID of the event to change\n  - entity (string (1-256 chars), optional): Entity id from local config, for example a company or personal\n  - category (string (1-100 chars), optional): Category from local config\n  - title (string (1-200 chars), optional): Event title\n  - start (RFC 3339 date-time string, optional): Start, RFC 3339\n  - end (RFC 3339 date-time string, optional): End, RFC 3339\n  - allDay (boolean, optional): True for an all-day event\n  - location (string (1-500 chars), optional): Location\n  - description (string (1-20000 chars), optional): Event description\n  - guests (array of string (3-320 chars) (max 50 items), optional): Guest email addresses; empty means the owner is the only attendee\n\ncalendar.delete: Cancel an event by sending METHOD:CANCEL.\n  - eventUid (string (1-256 chars), required): UID of the event to cancel\n\nreminder.create: Create a reminder.\n  - list (string (1-200 chars), required): Reminder list name\n  - title (string (1-200 chars), required): Title\n  - due (RFC 3339 date-time string, optional): Due, RFC 3339\n  - notes (string (1-20000 chars), optional): Notes\n\nfile.create: Create a file inside an allowed folder.\n  - root (string (1-256 chars), required): Allowed-folder id from local config\n  - path (string (1-1024 chars), required): Path relative to the root\n  - content (string (up to 20000 chars), required): File content\n\nfile.rename: Rename a file inside an allowed folder.\n  - root (string (1-256 chars), required): Allowed-folder id from local config\n  - path (string (1-1024 chars), required): Path relative to the root\n  - newName (string (1-255 chars), required): New file name\n\nfile.move: Move a file inside an allowed folder.\n  - root (string (1-256 chars), required): Allowed-folder id from local config\n  - path (string (1-1024 chars), required): Path relative to the root\n  - toPath (string (1-1024 chars), required): Destination path relative to the root\n\nfile.delete: Move a file to the Eido trash folder. Never a permanent delete.\n  - root (string (1-256 chars), required): Allowed-folder id from local config\n  - path (string (1-1024 chars), required): Path relative to the root"
 
 // The exact object to pass as json_schema to llama-server.
 export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
@@ -35,6 +35,12 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
                 "properties": {
                   "kind": {
                     "const": "email.draft"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
                   },
                   "args": {
                     "type": "object",
@@ -111,6 +117,12 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
                   "kind": {
                     "const": "email.label"
                   },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
                   "args": {
                     "type": "object",
                     "properties": {
@@ -167,6 +179,12 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
                   "kind": {
                     "const": "email.archive"
                   },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
                   "args": {
                     "type": "object",
                     "properties": {
@@ -202,6 +220,12 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
                 "properties": {
                   "kind": {
                     "const": "email.markRead"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
                   },
                   "args": {
                     "type": "object",
@@ -243,6 +267,12 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
                 "properties": {
                   "kind": {
                     "const": "email.send"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
                   },
                   "args": {
                     "type": "object",
@@ -319,6 +349,12 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
                   "kind": {
                     "const": "email.reply"
                   },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
                   "args": {
                     "type": "object",
                     "properties": {
@@ -392,6 +428,12 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
                   "kind": {
                     "const": "email.forward"
                   },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
                   "args": {
                     "type": "object",
                     "properties": {
@@ -447,6 +489,12 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
                 "properties": {
                   "kind": {
                     "const": "email.trash"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
                   },
                   "args": {
                     "type": "object",
@@ -935,4 +983,104 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
       "additionalProperties": false
     }
   ]
+}
+
+// The same schema is used for the extraction prompt and llama-server grammar.
+export const extractionCandidatesJsonSchema: JsonSchema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtractionCandidates",
+  "type": "object",
+  "properties": {
+    "nothing_found": {
+      "type": "boolean"
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "object",
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "quote"
+            ],
+            "additionalProperties": false
+          },
+          "party": {
+            "type": "object",
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "quote"
+            ],
+            "additionalProperties": false
+          },
+          "due_date": {
+            "type": "object",
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "quote"
+            ],
+            "additionalProperties": false
+          },
+          "amount": {
+            "type": "object",
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "quote"
+            ],
+            "additionalProperties": false
+          },
+          "reference_number": {
+            "type": "object",
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "nothing_found",
+    "items"
+  ],
+  "additionalProperties": false
 }

@@ -12,8 +12,11 @@ import { search } from "../../index/index"
 import type { SearchHit } from "../../index/index"
 import { ProtonError } from "./errors"
 import { isTextMime } from "../mail/parse"
+import { rationaleField } from "../proposal-rationale"
+import type { ProposalNote } from "../proposal-rationale"
 import { replyRecipients, storedAddresses } from "../reply-target"
 import { CONNECTOR } from "./sync"
+import { CONNECTOR_NAME } from "./manifest"
 
 export type IntentReceipt = { intentId: string }
 
@@ -102,11 +105,15 @@ export function createProtonFacade(deps: ProtonFacadeDeps) {
     const sha256 = String(row["sha256"])
     return { sha256, addresses: storedAddresses(db, sha256) }
   }
-  const propose = async (intent: {
-    kind: string
-    args: object
-  }): Promise<IntentReceipt> => {
-    const result = await intents.propose({ intent, origin })
+  const propose = async (
+    intent: { kind: string; args: object },
+    note?: ProposalNote
+  ): Promise<IntentReceipt> => {
+    const result = await intents.propose({
+      intent: { ...intent, connector: CONNECTOR_NAME },
+      origin,
+      ...rationaleField(note),
+    })
     return { intentId: result.id }
   }
   return {
@@ -158,11 +165,11 @@ export function createProtonFacade(deps: ProtonFacadeDeps) {
       }
     },
 
-    draft_create: (args: EmailDraftIntent["args"]) =>
-      propose({ kind: "email.draft", args }),
-    send: (args: EmailSendIntent["args"]) =>
-      propose({ kind: "email.send", args }),
-    reply: (args: ReplyRequest) => {
+    draft_create: (args: EmailDraftIntent["args"], note?: ProposalNote) =>
+      propose({ kind: "email.draft", args }, note),
+    send: (args: EmailSendIntent["args"], note?: ProposalNote) =>
+      propose({ kind: "email.send", args }, note),
+    reply: (args: ReplyRequest, note?: ProposalNote) => {
       // Only the named fields pass: a hash or recipients in model output are dropped, not trusted.
       const { sha256, addresses } = target(args.messageId)
       const { to, cc } = replyRecipients(addresses, args.replyAll, identity)
@@ -171,30 +178,36 @@ export function createProtonFacade(deps: ProtonFacadeDeps) {
           "no_recipients",
           "the message yields no recipient to reply to"
         )
-      return propose({
-        kind: "email.reply",
-        args: {
-          messageId: args.messageId,
-          messageSha256: sha256,
-          replyAll: args.replyAll,
-          to,
-          ...(cc.length === 0 ? {} : { cc }),
-          body: args.body,
-        } satisfies EmailReplyIntent["args"],
-      })
+      return propose(
+        {
+          kind: "email.reply",
+          args: {
+            messageId: args.messageId,
+            messageSha256: sha256,
+            replyAll: args.replyAll,
+            to,
+            ...(cc.length === 0 ? {} : { cc }),
+            body: args.body,
+          } satisfies EmailReplyIntent["args"],
+        },
+        note
+      )
     },
-    forward: (args: ForwardRequest) =>
-      propose({
-        kind: "email.forward",
-        args: {
-          messageId: args.messageId,
-          messageSha256: target(args.messageId).sha256,
-          to: args.to,
-          ...(args.note === undefined ? {} : { note: args.note }),
-        } satisfies EmailForwardIntent["args"],
-      }),
-    trash: (args: EmailTrashIntent["args"]) =>
-      propose({ kind: "email.trash", args }),
+    forward: (args: ForwardRequest, note?: ProposalNote) =>
+      propose(
+        {
+          kind: "email.forward",
+          args: {
+            messageId: args.messageId,
+            messageSha256: target(args.messageId).sha256,
+            to: args.to,
+            ...(args.note === undefined ? {} : { note: args.note }),
+          } satisfies EmailForwardIntent["args"],
+        },
+        note
+      ),
+    trash: (args: EmailTrashIntent["args"], note?: ProposalNote) =>
+      propose({ kind: "email.trash", args }, note),
   }
 }
 

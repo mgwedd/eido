@@ -54,6 +54,12 @@ const write = (
   ...(routes === undefined ? {} : { routes }),
 })
 
+const batchModify: Route = {
+  host: GMAIL_HOST,
+  method: "POST",
+  pathPattern: WRITE_PATHS.batchModify,
+}
+
 // Sync's reads are pinned under the read verb they serve, so the proxy allows only these paths.
 const OPERATIONS: readonly Op[] = [
   read("mail_search", [
@@ -66,15 +72,13 @@ const OPERATIONS: readonly Op[] = [
   // Attachments arrive inside the raw message, so this verb has no route of its own.
   read("attachment_text", []),
   write("draft_create", "email.draft", "reversible", "auto"),
-  write("label", "email.label", "reversible", "auto"),
-  write("archive", "email.archive", "reversible", "auto"),
-  write("mark_read", "email.markRead", "reversible", "auto", [
-    { host: GMAIL_HOST, method: "POST", pathPattern: WRITE_PATHS.markRead },
-  ]),
+  write("label", "email.label", "reversible", "auto", [batchModify]),
+  write("archive", "email.archive", "reversible", "auto", [batchModify]),
+  write("mark_read", "email.markRead", "reversible", "auto", [batchModify]),
   write("send", "email.send", "irreversible", "approval"),
   write("reply", "email.reply", "irreversible", "approval"),
   write("forward", "email.forward", "irreversible", "approval"),
-  write("trash", "email.trash", "reversible", "approval"),
+  write("trash", "email.trash", "reversible", "approval", [batchModify]),
 ]
 
 export function gmailManifest(config: GmailConfig): ConnectorManifest {

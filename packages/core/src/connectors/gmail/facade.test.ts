@@ -156,7 +156,7 @@ describe("write verbs", () => {
       vi.stubGlobal("fetch", fetch)
       expect(await call(facade)).toEqual({ intentId: "int-1" })
       expect(intents.proposals).toEqual([
-        { intent: { kind, args }, origin: "reactive" },
+        { intent: { kind, connector: "gmail", args }, origin: "reactive" },
       ])
       expect(validateIntent(intents.proposals[0]?.intent).ok).toBe(true)
       expect(fetch).not.toHaveBeenCalled()
@@ -182,6 +182,49 @@ describe("write verbs", () => {
   })
 })
 
+describe("rationale", () => {
+  const note = {
+    rationale: "Lorem ipsum: the reply asks for the quarterly figures.",
+  }
+  const WITH_NOTE: [string, (f: GmailFacade) => Promise<unknown>][] = [
+    ["draft_create", (f) => f.draft_create(draft, note)],
+    ["label", (f) => f.label(label, note)],
+    ["archive", (f) => f.archive(ids, note)],
+    ["mark_read", (f) => f.mark_read(markRead, note)],
+    ["send", (f) => f.send(draft, note)],
+    ["reply", (f) => f.reply(replyRequest, note)],
+    ["forward", (f) => f.forward(forwardRequest, note)],
+    ["trash", (f) => f.trash(ids, note)],
+  ]
+
+  test.each(WITH_NOTE)(
+    "%s sends the caller's rationale unchanged",
+    async (_verb, call) => {
+      await call(facade)
+      expect(intents.proposals[0]?.rationale).toBe(note.rationale)
+    }
+  )
+
+  test("covers every write verb in the manifest", () => {
+    const writes = gmailManifest(resolveGmailConfig())
+      .operations.filter((op) => op.effect === "write")
+      .map((op) => op.name)
+    expect(WITH_NOTE.map(([verb]) => verb).sort()).toEqual(writes.sort())
+  })
+
+  test("the rationale is not part of the intent", async () => {
+    await facade.send(draft, note)
+    expect(JSON.stringify(intents.proposals[0]?.intent)).not.toContain(
+      note.rationale
+    )
+  })
+
+  test("a blank rationale is left out, not sent empty", async () => {
+    await facade.send(draft, { rationale: "  \n " })
+    expect(intents.proposals[0]).not.toHaveProperty("rationale")
+  })
+})
+
 describe("reply and forward fill what the model cannot", () => {
   const lastIntent = () =>
     intents.proposals[intents.proposals.length - 1]?.intent
@@ -197,6 +240,7 @@ describe("reply and forward fill what the model cannot", () => {
     await facade.reply(fromModel)
     expect(lastIntent()).toEqual({
       kind: "email.reply",
+      connector: "gmail",
       args: {
         ...replyRequest,
         messageSha256: sha("gm-1"),
@@ -209,6 +253,7 @@ describe("reply and forward fill what the model cannot", () => {
     } as typeof forwardRequest)
     expect(lastIntent()).toEqual({
       kind: "email.forward",
+      connector: "gmail",
       args: { ...forwardRequest, messageSha256: sha("gm-1") },
     })
   })
@@ -217,6 +262,7 @@ describe("reply and forward fill what the model cannot", () => {
     await facade.reply({ ...replyRequest, replyAll: true })
     expect(lastIntent()).toEqual({
       kind: "email.reply",
+      connector: "gmail",
       args: {
         ...replyRequest,
         replyAll: true,

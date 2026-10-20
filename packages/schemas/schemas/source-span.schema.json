@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SourceSpan",
+  "type": "object",
+  "properties": {
+    "start": { "type": "integer", "minimum": 0 },
+    "end": { "type": "integer", "minimum": 1 },
+    "message_id": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "page": { "type": "integer", "minimum": 1 },
+    "line": { "type": "integer", "minimum": 1 }
+  },
+  "required": ["start", "end"],
+  "additionalProperties": false
+}

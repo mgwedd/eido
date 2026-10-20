@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
-import { GMAIL_HOST, gmailMarkReadWriter } from "./gmail-writers"
+import { GMAIL_HOST, GMAIL_WRITERS } from "./gmail-writers"
 import { getPinnedManifest } from "./connectors"
 import type { UpstreamResult, WriteRequest, WriteTransport } from "./executor"
 import { authorizedCall } from "./vault/authorized-call"
@@ -9,8 +9,9 @@ import type { RefreshResult } from "./vault/authorized-call"
 import type { Vault } from "./vault/vault"
 
 // The gate's Gmail write transport. It sends the executor's already-validated writes with the
-// compose client's (gmail.modify) credential, and for mark read it first reports each message's
-// prior unread state, which batchModify's empty answer cannot give (#223).
+// compose client's (gmail.modify) credential. Before a reversible label change (mark read, label,
+// archive) it reads each message's labels, which batchModify's empty answer cannot give (#223),
+// and reports them in the result so the writer can build the undo.
 
 /** Pinned shape of the one read this transport makes: users.messages.get, labels only. */
 const MESSAGE_PATH_PATTERN = "/gmail/v1/users/me/messages/{id}"
@@ -167,66 +168,81 @@ async function refresh(
   return { ok: true, accessToken: value["access_token"] }
 }
 
-async function unreadBefore(
+/** Each message's labels before the write, read through the pinned messages.get route. */
+async function labelsBefore(
   options: Options,
-  db: DatabaseSync,
   connector: string,
   messageIds: readonly string[]
-): Promise<string[]> {
-  const unread: string[] = []
+): Promise<Record<string, string[]>> {
+  const prior: Record<string, string[]> = {}
   for (const id of messageIds) {
     const response = await call(
       options,
-      messageReadUrl(db, connector, id),
+      messageReadUrl(options.db, connector, id),
       connector,
-      {
-        method: "GET",
-      }
+      { method: "GET" }
     )
     const message: unknown = await response.json()
     const labels = isRecord(message) ? message["labelIds"] : undefined
     // A message with no labels has no labelIds field; anything else must be a label list.
-    if (labels === undefined) continue
     if (
-      !Array.isArray(labels) ||
-      !labels.every((label) => typeof label === "string")
+      labels !== undefined &&
+      (!Array.isArray(labels) ||
+        !labels.every((label) => typeof label === "string"))
     )
       throw new Error("unreadable message labels")
-    if (labels.includes(UNREAD)) unread.push(id)
+    prior[id] = labels ?? []
   }
-  return unread
+  return prior
+}
+
+/** The message ids of a Gmail write, re-derived from the exact request the executor approved. */
+function requestedIds(request: WriteRequest): string[] {
+  const writer = GMAIL_WRITERS.find(
+    (candidate) => candidate.kind === request.intentKind
+  )
+  if (writer === undefined)
+    throw new Error("no Gmail write adapter for this intent kind")
+  const intent = writer.intentFromRequest(
+    {
+      method: request.method,
+      url: request.url,
+      body: JSON.parse(request.body),
+    },
+    request.connector
+  )
+  const args = isRecord(intent) ? intent["args"] : undefined
+  const ids = isRecord(args) ? args["messageIds"] : undefined
+  if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string"))
+    throw new Error("not a Gmail batchModify request")
+  return ids
 }
 
 export function gmailWriteTransport(options: Options): WriteTransport {
-  const { db } = options
   return async (request: WriteRequest): Promise<UpstreamResult> => {
-    const body: unknown = JSON.parse(request.body)
-    if (request.intentKind !== "email.markRead")
-      throw new Error("no Gmail write adapter for this intent kind")
-    // Re-derive the ids from the exact request the executor approved, then read their labels
-    // through the pinned read route before changing them.
-    const intent = gmailMarkReadWriter.intentFromRequest({
-      method: request.method,
-      url: request.url,
-      body,
-    })
-    if (
-      !isRecord(intent) ||
-      !isRecord(intent["args"]) ||
-      !Array.isArray(intent["args"]["messageIds"])
-    )
-      throw new Error("not a Gmail mark read request")
-    const ids = intent["args"]["messageIds"].map(String)
-    const previouslyUnread = await unreadBefore(
-      options,
-      db,
-      request.connector,
-      ids
-    )
-    await call(options, request.url, request.connector, {
-      method: request.method,
-      body: request.body,
-    })
-    return { upstreamRef: null, result: { previouslyUnread } }
+    const ids = requestedIds(request)
+    const write = () =>
+      call(options, request.url, request.connector, {
+        method: request.method,
+        body: request.body,
+      })
+    switch (request.intentKind) {
+      case "email.markRead": {
+        const prior = await labelsBefore(options, request.connector, ids)
+        await write()
+        const previouslyUnread = ids.filter((id) => prior[id]?.includes(UNREAD))
+        return { upstreamRef: null, result: { previouslyUnread } }
+      }
+      case "email.label":
+      case "email.archive": {
+        const priorLabels = await labelsBefore(options, request.connector, ids)
+        await write()
+        return { upstreamRef: null, result: { priorLabels } }
+      }
+      default:
+        // Trash: approval tier, so no undo is recorded and no prior state is read.
+        await write()
+        return { upstreamRef: null, result: {} }
+    }
   }
 }

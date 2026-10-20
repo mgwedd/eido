@@ -1,15 +1,32 @@
 import { readFileSync } from "node:fs"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Intent } from "@eido/schemas"
+import { issueNonce, verifyApproval } from "./approvals"
+import { beginRegistration, registerCredential } from "./credentials"
 import { createExecutor } from "./executor"
 import type { WriteRequest } from "./executor"
 import {
   GMAIL_BATCH_MODIFY_PATH,
   GMAIL_HOST,
+  GMAIL_WRITERS,
+  gmailArchiveWriter,
+  gmailLabelWriter,
   gmailMarkReadWriter,
+  gmailTrashWriter,
 } from "./gmail-writers"
 import { intentHistory, intentSummary, propose } from "./intents"
-import { MAIL_OPS, auditRows, manifest, sample, setup } from "./test-fixtures"
+import {
+  MAIL_OPS,
+  WEBAUTHN,
+  assertion,
+  auditRows,
+  deviceChallenge,
+  manifest,
+  registration,
+  sample,
+  setup,
+  testAuthenticator,
+} from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
 let s: Setup | undefined
@@ -21,23 +38,50 @@ afterEach(() => {
 const URL_ =
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify"
 
-/** A pinned Gmail connector whose mark read operation names the batchModify route. */
+/** A pinned Gmail connector with the manifest's shared batchModify and message read routes. */
 function pinnedGmail(): Setup {
   const gmail = manifest("gmail", MAIL_OPS)
+  gmail.auth.scopes.push("read")
   gmail.egress.hosts = [
     {
       host: GMAIL_HOST,
-      methods: ["POST"],
+      methods: ["GET", "POST"],
       pathPrefixes: ["/gmail/v1/users/me"],
     },
   ]
-  const markRead = gmail.operations.find(
-    (op) => op.intentKind === "email.markRead"
-  )
-  if (markRead === undefined) throw new Error("fixture lacks mark read")
-  markRead.routes = [
-    { host: GMAIL_HOST, method: "POST", pathPattern: GMAIL_BATCH_MODIFY_PATH },
-  ]
+  for (const kind of [
+    "email.markRead",
+    "email.label",
+    "email.archive",
+    "email.trash",
+  ]) {
+    const operation = gmail.operations.find((op) => op.intentKind === kind)
+    if (operation === undefined) throw new Error(`fixture lacks ${kind}`)
+    if (kind === "email.label") operation.name = "label"
+    operation.routes = [
+      {
+        host: GMAIL_HOST,
+        method: "POST",
+        pathPattern: GMAIL_BATCH_MODIFY_PATH,
+      },
+    ]
+  }
+  gmail.operations.push({
+    name: "mail_get",
+    effect: "read",
+    reversibility: "reversible",
+    sensitivity: "sensitive",
+    untrustedOutput: true,
+    defaultTier: "auto",
+    authScopes: ["read"],
+    routes: [
+      {
+        host: GMAIL_HOST,
+        method: "GET",
+        pathPattern: "/gmail/v1/users/me/messages/{id}",
+      },
+    ],
+  })
   const setUp = setup([gmail])
   s = setUp
   return setUp
@@ -88,6 +132,15 @@ describe("Gmail mark read through the executor", () => {
     expect(proposed).toMatchObject({ tier: "auto", state: "approved" })
 
     const executor = createExecutor(db, [gmailMarkReadWriter], gmail.transport)
+    expect(
+      JSON.parse(
+        String(
+          db
+            .prepare("SELECT payload_json FROM intents WHERE id=?")
+            .get(proposed.intentId)?.["payload_json"]
+        )
+      )
+    ).toMatchObject({ connector: "gmail" })
     expect(await executor.execute(proposed.intentId)).toEqual({
       ok: true,
       upstreamRef: null,
@@ -99,7 +152,7 @@ describe("Gmail mark read through the executor", () => {
         .prepare("SELECT inverse_op FROM executions WHERE intent_id=?")
         .get(proposed.intentId)?.["inverse_op"]
     ).toBe(
-      '{"args":{"messageIds":["18c2f0a1b2c3d4e5"],"read":false},"kind":"email.markRead"}'
+      '{"args":{"messageIds":["18c2f0a1b2c3d4e5"],"read":false},"connector":"gmail","kind":"email.markRead"}'
     )
 
     expect((await executor.undo(proposed.intentId)).ok).toBe(true)
@@ -143,7 +196,7 @@ describe("Gmail mark read through the executor", () => {
         .prepare("SELECT inverse_op FROM executions WHERE intent_id=?")
         .get(proposed.intentId)?.["inverse_op"]
     ).toBe(
-      '{"args":{"messageIds":["unreadMsg"],"read":false},"kind":"email.markRead"}'
+      '{"args":{"messageIds":["unreadMsg"],"read":false},"connector":"gmail","kind":"email.markRead"}'
     )
     expect((await executor.undo(proposed.intentId)).ok).toBe(true)
     expect(gmail.unread("unreadMsg")).toBe(true)
@@ -178,6 +231,95 @@ describe("Gmail mark read through the executor", () => {
     // The audit log holds hashes only, never the message ids it acted on.
     expect(JSON.stringify(auditRows(db))).not.toContain("18c2f0a1b2c3d4e5")
   })
+})
+
+it("executes label, archive and signed trash through the pinned shared route", async () => {
+  const { db, policy } = pinnedGmail()
+  const mailbox = new Map<string, Set<string>>([
+    ["label-1", new Set(["INBOX"])],
+    ["archive-1", new Set(["INBOX", "UNREAD"])],
+    ["trash-1", new Set(["INBOX"])],
+  ])
+  const transport = vi.fn((request: WriteRequest) => {
+    expect(request.url).toBe(URL_)
+    const body: unknown = JSON.parse(request.body)
+    if (typeof body !== "object" || body === null || !("ids" in body))
+      throw new Error("bad request body")
+    const ids = body.ids
+    if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string"))
+      throw new Error("bad message ids")
+    const add = "addLabelIds" in body ? body.addLabelIds : []
+    const remove = "removeLabelIds" in body ? body.removeLabelIds : []
+    if (!Array.isArray(add) || !Array.isArray(remove))
+      throw new Error("bad label change")
+    const priorLabels: Record<string, string[]> = {}
+    for (const id of ids) {
+      const labels = mailbox.get(id)
+      if (labels === undefined) throw new Error("unknown message")
+      priorLabels[id] = [...labels]
+      for (const label of add) labels.add(String(label))
+      for (const label of remove) labels.delete(String(label))
+    }
+    return Promise.resolve({ upstreamRef: null, result: { priorLabels } })
+  })
+  const executor = createExecutor(db, GMAIL_WRITERS, transport)
+  for (const [kind, args, expected] of [
+    [
+      "email.label",
+      { messageIds: ["label-1"], add: ["STARRED"] },
+      ["INBOX", "STARRED"],
+    ],
+    ["email.archive", { messageIds: ["archive-1"] }, ["UNREAD"]],
+    ["email.trash", { messageIds: ["trash-1"] }, ["INBOX", "TRASH"]],
+  ] as const) {
+    const result = propose(db, policy, {
+      intent: { kind, connector: "gmail", args },
+      origin: "task",
+    })
+    if (!result.ok) throw new Error(result.code)
+    if (kind === "email.trash") {
+      expect(result.state).toBe("pending")
+      const auth = testAuthenticator()
+      const begun = beginRegistration(db, "admin")
+      if (!begun.ok) throw new Error("registration refused")
+      const registered = registerCredential(
+        db,
+        WEBAUTHN,
+        "admin",
+        registration(auth, begun.challenge)
+      )
+      if (!registered.ok) throw new Error("credential refused")
+      const prepared = issueNonce(db, result.intentId)
+      if (!prepared.ok) throw new Error("prepare refused")
+      expect(
+        verifyApproval(db, WEBAUTHN, {
+          intentId: result.intentId,
+          nonce: prepared.nonce,
+          assertion: assertion(
+            auth,
+            deviceChallenge(
+              prepared.payloadHash,
+              result.intentId,
+              prepared.nonce
+            )
+          ),
+        }).ok
+      ).toBe(true)
+    } else {
+      expect(result.state).toBe("approved")
+    }
+    expect((await executor.execute(result.intentId)).ok).toBe(true)
+    expect([...(mailbox.get(args.messageIds[0]) ?? [])].sort()).toEqual(
+      [...expected].sort()
+    )
+    expect(transport.mock.lastCall?.[0].operation).toBe(
+      kind === "email.label"
+        ? "label"
+        : kind === "email.archive"
+          ? "archive"
+          : "trash"
+    )
+  }
 })
 
 describe("gmailMarkReadWriter", () => {
@@ -275,12 +417,269 @@ describe("gmailMarkReadWriter", () => {
     )
     expect(gmailMarkReadWriter.inverse(label, {})).toBeNull()
   })
+})
 
-  it("names no permanent delete or empty-trash endpoint", () => {
-    const source = readFileSync(
-      new URL("./gmail-writers.ts", import.meta.url),
-      "utf8"
-    )
-    expect(source).not.toMatch(/batchDelete|emptyTrash|["'`]DELETE["'`]/i)
+const BATCH = { method: "POST", url: URL_ }
+
+describe("gmailLabelWriter", () => {
+  const label: Intent = {
+    kind: "email.label",
+    connector: "gmail",
+    args: { messageIds: ["a", "b"], add: ["Label_1"], remove: ["INBOX"] },
+  }
+
+  it("builds one batchModify call and decodes it back to the intent", () => {
+    const request = gmailLabelWriter.buildRequest(label)
+    expect(request).toEqual({
+      ...BATCH,
+      body: {
+        ids: ["a", "b"],
+        addLabelIds: ["Label_1"],
+        removeLabelIds: ["INBOX"],
+      },
+    })
+    expect(gmailLabelWriter.intentFromRequest(request, "gmail")).toEqual(label)
   })
+
+  it("leaves out a direction the intent does not name, both ways", () => {
+    const addOnly: Intent = {
+      kind: "email.label",
+      args: { messageIds: ["a"], add: ["Label_1"] },
+    }
+    const request = gmailLabelWriter.buildRequest(addOnly)
+    expect(request.body).toEqual({ ids: ["a"], addLabelIds: ["Label_1"] })
+    expect(gmailLabelWriter.intentFromRequest(request)).toEqual(addOnly)
+  })
+
+  it.each(["TRASH", "spam"])(
+    "refuses to add %s, which only the approval-tier trash may do",
+    (forbidden) => {
+      const intent: Intent = {
+        kind: "email.label",
+        args: { messageIds: ["a"], add: [forbidden] },
+      }
+      expect(() => gmailLabelWriter.buildRequest(intent)).toThrow(
+        "may not move mail to Trash or Spam"
+      )
+      expect(() =>
+        gmailLabelWriter.intentFromRequest({
+          ...BATCH,
+          body: { ids: ["a"], addLabelIds: [forbidden] },
+        })
+      ).toThrow("not a Gmail label request")
+    }
+  )
+
+  it.each([
+    ["another URL", { url: `https://${GMAIL_HOST}/gmail/v1/users/me/labels` }],
+    ["another method", { method: "PUT" }],
+    ["an extra field", { body: { ids: ["a"], addLabelIds: ["x"], q: "y" } }],
+    ["ids that are not strings", { body: { ids: [1], addLabelIds: ["x"] } }],
+    ["labels that are not a list", { body: { ids: ["a"], addLabelIds: "x" } }],
+  ])("refuses a request with %s", (_name, change) => {
+    expect(() =>
+      gmailLabelWriter.intentFromRequest({
+        ...gmailLabelWriter.buildRequest(label),
+        ...change,
+      })
+    ).toThrow("not a Gmail label request")
+  })
+
+  describe("inverse", () => {
+    it("takes off only what was added and puts back only what was removed", () => {
+      expect(
+        gmailLabelWriter.inverse(label, {
+          priorLabels: { a: ["INBOX"], b: ["INBOX", "UNREAD"] },
+        })
+      ).toEqual({
+        kind: "email.label",
+        connector: "gmail",
+        args: { messageIds: ["a", "b"], add: ["INBOX"], remove: ["Label_1"] },
+      })
+    })
+
+    it("skips messages the write did not change", () => {
+      expect(
+        gmailLabelWriter.inverse(label, {
+          priorLabels: { a: ["Label_1"], b: ["INBOX"] },
+        })
+      ).toEqual({
+        kind: "email.label",
+        connector: "gmail",
+        args: { messageIds: ["b"], add: ["INBOX"], remove: ["Label_1"] },
+      })
+    })
+
+    it("gives no undo when nothing changed", () => {
+      expect(
+        gmailLabelWriter.inverse(label, {
+          priorLabels: { a: ["Label_1"], b: ["Label_1"] },
+        })
+      ).toBeNull()
+    })
+
+    it("gives no undo when the messages changed differently", () => {
+      expect(
+        gmailLabelWriter.inverse(label, {
+          priorLabels: { a: ["INBOX"], b: [] },
+        })
+      ).toBeNull()
+    })
+
+    it.each([
+      ["no report", {}],
+      ["a message missing from the report", { priorLabels: { a: ["INBOX"] } }],
+      ["a malformed report", { priorLabels: { a: "INBOX", b: [] } }],
+    ])("gives no undo, not a guess, with %s", (_name, result) => {
+      expect(gmailLabelWriter.inverse(label, result)).toBeNull()
+    })
+
+    it("gives no undo when one label is both added and removed", () => {
+      const both: Intent = {
+        kind: "email.label",
+        args: { messageIds: ["a"], add: ["Label_1"], remove: ["Label_1"] },
+      }
+      expect(
+        gmailLabelWriter.inverse(both, { priorLabels: { a: [] } })
+      ).toBeNull()
+    })
+
+    it("gives no undo that would put mail back in Trash", () => {
+      const untrash: Intent = {
+        kind: "email.label",
+        args: { messageIds: ["a"], remove: ["TRASH"] },
+      }
+      expect(
+        gmailLabelWriter.inverse(untrash, { priorLabels: { a: ["TRASH"] } })
+      ).toBeNull()
+    })
+  })
+})
+
+describe("gmailArchiveWriter", () => {
+  const archive: Intent = {
+    kind: "email.archive",
+    connector: "gmail",
+    args: { messageIds: ["a", "b"] },
+  }
+
+  it("takes INBOX off in one call and decodes it back to the intent", () => {
+    const request = gmailArchiveWriter.buildRequest(archive)
+    expect(request).toEqual({
+      ...BATCH,
+      body: { ids: ["a", "b"], removeLabelIds: ["INBOX"] },
+    })
+    expect(gmailArchiveWriter.intentFromRequest(request, "gmail")).toEqual(
+      archive
+    )
+  })
+
+  it.each([
+    ["another label", { ids: ["a"], removeLabelIds: ["UNREAD"] }],
+    ["an extra label", { ids: ["a"], removeLabelIds: ["INBOX", "UNREAD"] }],
+    [
+      "an added label",
+      { ids: ["a"], removeLabelIds: ["INBOX"], addLabelIds: ["TRASH"] },
+    ],
+  ])("refuses a request with %s", (_name, body) => {
+    expect(() =>
+      gmailArchiveWriter.intentFromRequest({ ...BATCH, body })
+    ).toThrow("not a Gmail archive request")
+  })
+
+  it("is undone by putting INBOX back on the messages that had it", () => {
+    expect(
+      gmailArchiveWriter.inverse(archive, {
+        priorLabels: { a: ["INBOX", "UNREAD"], b: ["Label_1"] },
+      })
+    ).toEqual({
+      kind: "email.label",
+      connector: "gmail",
+      args: { messageIds: ["a"], add: ["INBOX"] },
+    })
+  })
+
+  it("gives no undo when no message was in the inbox or the report is missing", () => {
+    expect(
+      gmailArchiveWriter.inverse(archive, { priorLabels: { a: [], b: [] } })
+    ).toBeNull()
+    expect(gmailArchiveWriter.inverse(archive, {})).toBeNull()
+  })
+})
+
+describe("gmailTrashWriter", () => {
+  const trash: Intent = {
+    kind: "email.trash",
+    connector: "gmail",
+    args: { messageIds: ["a"] },
+  }
+
+  it("adds the TRASH label in one call and decodes it back to the intent", () => {
+    const request = gmailTrashWriter.buildRequest(trash)
+    expect(request).toEqual({
+      ...BATCH,
+      body: { ids: ["a"], addLabelIds: ["TRASH"] },
+    })
+    expect(gmailTrashWriter.intentFromRequest(request, "gmail")).toEqual(trash)
+  })
+
+  it.each([
+    ["another label", { ids: ["a"], addLabelIds: ["SPAM"] }],
+    [
+      "a removed label",
+      { ids: ["a"], addLabelIds: ["TRASH"], removeLabelIds: ["INBOX"] },
+    ],
+  ])("refuses a request with %s", (_name, body) => {
+    expect(() =>
+      gmailTrashWriter.intentFromRequest({ ...BATCH, body })
+    ).toThrow("not a Gmail trash request")
+  })
+
+  it("records no inverse", () => {
+    expect(
+      gmailTrashWriter.inverse(trash, { priorLabels: { a: [] } })
+    ).toBeNull()
+  })
+})
+
+describe("the Gmail writers", () => {
+  it.each([
+    ["mark read", gmailMarkReadWriter, sample("email.label")],
+    ["label", gmailLabelWriter, sample("email.archive")],
+    ["archive", gmailArchiveWriter, sample("email.trash")],
+    ["trash", gmailTrashWriter, sample("email.archive")],
+  ])("%s builds its own kind only", (_name, writer, other) => {
+    expect(() => writer.buildRequest(other)).toThrow("wrong intent kind")
+    expect(writer.inverse(other, { priorLabels: {} })).toBeNull()
+  })
+
+  it("decode only their own kind, though they share one route", () => {
+    const archive = gmailArchiveWriter.buildRequest(sample("email.archive"))
+    const trash = gmailTrashWriter.buildRequest(sample("email.trash"))
+    expect(() => gmailTrashWriter.intentFromRequest(archive)).toThrow()
+    expect(() => gmailArchiveWriter.intentFromRequest(trash)).toThrow()
+    expect(() => gmailMarkReadWriter.intentFromRequest(trash)).toThrow()
+    expect(() => gmailLabelWriter.intentFromRequest(trash)).toThrow()
+  })
+
+  it("are all registered for the gmail connector, one per kind", () => {
+    expect(
+      GMAIL_WRITERS.map((writer) => `${writer.connector}:${writer.kind}`)
+    ).toEqual([
+      "gmail:email.markRead",
+      "gmail:email.label",
+      "gmail:email.archive",
+      "gmail:email.trash",
+    ])
+  })
+
+  it.each(["./gmail-writers.ts", "./gmail-transport.ts"])(
+    "%s names no permanent delete or empty-trash endpoint",
+    (file) => {
+      const source = readFileSync(new URL(file, import.meta.url), "utf8")
+      expect(source).not.toMatch(
+        /batchDelete|emptyTrash|messages\.delete|\/delete\b|["'`]DELETE["'`]/i
+      )
+    }
+  )
 })
