@@ -936,3 +936,103 @@ export const INTENT_RESULT_JSON_SCHEMA: JsonSchema = {
     }
   ]
 }
+
+// The same schema is used for the extraction prompt and llama-server grammar.
+export const extractionCandidatesJsonSchema: JsonSchema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtractionCandidates",
+  "type": "object",
+  "properties": {
+    "nothing_found": {
+      "type": "boolean"
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "object",
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "quote"
+            ],
+            "additionalProperties": false
+          },
+          "party": {
+            "type": "object",
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "quote"
+            ],
+            "additionalProperties": false
+          },
+          "due_date": {
+            "type": "object",
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "quote"
+            ],
+            "additionalProperties": false
+          },
+          "amount": {
+            "type": "object",
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "quote"
+            ],
+            "additionalProperties": false
+          },
+          "reference_number": {
+            "type": "object",
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "nothing_found",
+    "items"
+  ],
+  "additionalProperties": false
+}

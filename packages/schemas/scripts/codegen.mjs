@@ -251,6 +251,14 @@ const resolvedResult = resolveSchema(
   resultSchema,
   "intent-result.schema.json"
 )
+const extractionSchema = schemas.get("extraction-candidates.schema.json")
+if (!extractionSchema)
+  throw new Error("extraction-candidates.schema.json is required")
+const resolvedExtraction = resolveSchema(
+  schemas,
+  extractionSchema,
+  "extraction-candidates.schema.json"
+)
 
 const typesOutput = [
   ...header,
@@ -269,6 +277,8 @@ const promptOutput = [
   "",
   "// The exact object to pass as json_schema to llama-server.",
   tsConst("INTENT_RESULT_JSON_SCHEMA", resolvedResult, "JsonSchema"),
+  "// The same schema is used for the extraction prompt and llama-server grammar.",
+  tsConst("extractionCandidatesJsonSchema", resolvedExtraction, "JsonSchema"),
 ].join("\n")
 
 // Non-intent schemas that get a validator: every profile-*.schema.json (core validates its
@@ -279,16 +289,22 @@ const profileFiles = [...schemas.keys()].filter(
   (file) =>
     file.startsWith("profile-") ||
     file.startsWith("gate-") ||
+    file === "extraction-candidates.schema.json" ||
+    file === "extracted-fields.schema.json" ||
     file === "connector-manifest.schema.json"
 )
 const constName = (name) =>
   `${name.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()}_JSON_SCHEMA`
 const profileValidators = profileFiles.flatMap((file) => {
   const name = schemaName(schemas, file)
+  const validatorName =
+    name === "ExtractedFields"
+      ? "validateExtractedFieldsShape"
+      : `validate${name}`
   const resolved = resolveSchema(schemas, schemas.get(file), file)
   return [
     tsConst(constName(name), resolved, "JsonSchema"),
-    `export function validate${name}(value: unknown): ValidationResult<${name}> {`,
+    `export function ${validatorName}(value: unknown): ValidationResult<${name}> {`,
     `  const errors = validate(${constName(name)}, value)`,
     "  // The schema check above is what makes this narrowing sound.",
     `  return errors.length === 0 ? { ok: true, value: value as ${name} } : { ok: false, errors }`,
