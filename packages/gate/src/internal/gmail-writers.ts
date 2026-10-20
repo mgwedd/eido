@@ -6,6 +6,7 @@ import type { UpstreamRequest, UpstreamWriter } from "./executor"
 // kinds need a gate change first (see the executor's one-route-per-operation rule).
 
 export const GMAIL_HOST = "gmail.googleapis.com"
+export const GMAIL_CONNECTOR = "gmail"
 export const GMAIL_BATCH_MODIFY_PATH = "/gmail/v1/users/me/messages/batchModify"
 const BATCH_MODIFY_URL = `https://${GMAIL_HOST}${GMAIL_BATCH_MODIFY_PATH}`
 const UNREAD = "UNREAD"

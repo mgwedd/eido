@@ -3,9 +3,11 @@ import type { Server } from "node:http"
 import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { createProtonBridge } from "./internal/bridge/bridge"
-import { bridgeConfig } from "./internal/bridge/config"
+import { PROTON_CONNECTOR, bridgeConfig } from "./internal/bridge/config"
 import type { BridgeConfig } from "./internal/bridge/config"
 import { BRIDGE_WRITERS, bridgeTransport } from "./internal/bridge/writers"
+import { gmailWriteTransport } from "./internal/gmail-transport"
+import { GMAIL_CONNECTOR, gmailMarkReadWriter } from "./internal/gmail-writers"
 import { openControlDb } from "./internal/control-db"
 import { createExecutor } from "./internal/executor"
 import {
@@ -59,6 +61,8 @@ export type GateConfig = {
   phone?: PhoneListenerConfig
   /** Absent when EIDO_BRIDGE_HOST is not set: the gate then serves no mail routes (#195). */
   bridge?: BridgeListenerConfig
+  /** Gmail compose client: refresh/access tokens and the OAuth client secret live in this vault. */
+  gmail?: { vaultPath: string; devVault: boolean; clientId: string }
 }
 
 export type BridgeListenerConfig = {
@@ -98,10 +102,23 @@ export function gateConfig(
   }
   const port = env["EIDO_GATE_PHONE_PORT"] ?? ""
   const bridge = bridgeConfig(env)
+  const gmailClientId = env["EIDO_GMAIL_CLIENT_ID"] ?? ""
+  const gmailVaultPath = env["EIDO_GATE_VAULT_FILE"] ?? ""
+  if (gmailClientId !== "" && gmailVaultPath === "")
+    throw new Error("Gmail needs EIDO_GATE_VAULT_FILE")
   return {
     ...config,
     ...(port === "" ? {} : { phone: phoneConfig(env, port) }),
     ...(bridge === undefined ? {} : { bridge: bridgeVault(env, bridge) }),
+    ...(gmailClientId === ""
+      ? {}
+      : {
+          gmail: {
+            vaultPath: gmailVaultPath,
+            devVault: devFlagFromEnv({ ...env }),
+            clientId: gmailClientId,
+          },
+        }),
   }
 }
 
@@ -181,11 +198,33 @@ export async function runGate(
           })
     // Register only gate-owned adapters. A missing Bridge still takes a Proton intent through
     // the executor, where the attempted write is claimed and its failure is recorded.
-    const transport =
+    const protonTransport =
       mail === undefined
         ? () => Promise.reject(new Error("Bridge is not configured"))
         : bridgeTransport(mail)
-    const executor = createExecutor(db, BRIDGE_WRITERS, transport)
+    const gmail =
+      config.gmail === undefined
+        ? undefined
+        : gmailWriteTransport({
+            db,
+            vault: new FileVault({
+              path: config.gmail.vaultPath,
+              devFlag: config.gmail.devVault,
+            }),
+            clientId: config.gmail.clientId,
+          })
+    const executor = createExecutor(
+      db,
+      [...BRIDGE_WRITERS, gmailMarkReadWriter],
+      (request) =>
+        request.connector === GMAIL_CONNECTOR
+          ? gmail === undefined
+            ? Promise.reject(new Error("Gmail is not configured"))
+            : gmail(request)
+          : request.connector === PROTON_CONNECTOR
+            ? protonTransport(request)
+            : Promise.reject(new Error("no write transport for connector"))
+    )
     const execute = (id: string) => executor.execute(id)
     const dataPlane = createGateServer(
       "data-plane",

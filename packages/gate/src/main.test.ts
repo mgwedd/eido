@@ -16,6 +16,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest"
 import {
   BRIDGE_PASSWORD_KEY,
@@ -56,6 +57,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -379,6 +381,122 @@ describe("gateConfig with Bridge", () => {
 
   it("has no Bridge when its host is not set", () => {
     expect(gateConfig({ ...BASE, EIDO_BRIDGE_HOST: "" }).bridge).toBeUndefined()
+  })
+})
+
+describe("gateConfig with Gmail", () => {
+  const BASE = {
+    EIDO_GATE_DATA_DIR: "/d",
+    EIDO_GATE_SOCKET: "/d/gate.sock",
+    EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+    EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+    EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+  }
+
+  it("enables the Gmail transport with a public client ID and vault path", () => {
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_GMAIL_CLIENT_ID: "test-client-id",
+        EIDO_GATE_VAULT_FILE: "/vault/dev.json",
+        EIDO_DEV_VAULT: "1",
+      }).gmail
+    ).toEqual({
+      clientId: "test-client-id",
+      vaultPath: "/vault/dev.json",
+      devVault: true,
+    })
+  })
+
+  it("requires a vault file when Gmail is enabled", () => {
+    expect(() =>
+      gateConfig({ ...BASE, EIDO_GMAIL_CLIENT_ID: "test-client-id" })
+    ).toThrow("Gmail needs EIDO_GATE_VAULT_FILE")
+  })
+})
+
+describe("runGate with Gmail", () => {
+  it("routes an auto mark read through the pinned Gmail connector and stores its inverse", async () => {
+    const c = {
+      ...config(),
+      gmail: {
+        vaultPath: join(dir, "vault", "dev.json"),
+        devVault: true,
+        clientId: "test-client-id",
+      },
+    }
+    await new FileVault({ path: c.gmail.vaultPath, devFlag: true }).set(
+      { connector: "gmail", kind: "access_token", client: "write" },
+      "test-access-token"
+    )
+    const calls: string[] = []
+    vi.stubGlobal("fetch", (input: string, init: RequestInit) => {
+      expect(new Headers(init.headers).get("authorization")).toBe(
+        "Bearer test-access-token"
+      )
+      calls.push(`${init.method} ${input}`)
+      return Promise.resolve(
+        init.method === "GET"
+          ? Response.json({ labelIds: ["INBOX", "UNREAD"] })
+          : new Response(null, { status: 204 })
+      )
+    })
+    const gate = await runGate(c)
+    try {
+      const gmail = manifest("gmail", [MAIL_OPS[3]!])
+      gmail.egress.hosts = [
+        {
+          host: "gmail.googleapis.com",
+          methods: ["GET", "POST"],
+          pathPrefixes: ["/gmail/v1/users/me"],
+        },
+      ]
+      gmail.operations[0]!.routes = [
+        {
+          host: "gmail.googleapis.com",
+          method: "POST",
+          pathPattern: "/gmail/v1/users/me/messages/batchModify",
+        },
+      ]
+      gmail.operations.push({
+        name: "get_message",
+        effect: "read",
+        reversibility: "reversible",
+        defaultTier: "auto",
+        sensitivity: "normal",
+        untrustedOutput: true,
+        authScopes: ["write"],
+        routes: [
+          {
+            host: "gmail.googleapis.com",
+            method: "GET",
+            pathPattern: "/gmail/v1/users/me/messages/{id}",
+          },
+        ],
+      })
+      signedPin(runningGate().db, gmail)
+      reloadPolicy()
+      const proposal = await createIntentClient({
+        socketPath: c.socketPath,
+      }).propose({
+        intent: sample("email.markRead"),
+        origin: "reactive",
+      })
+      expect(proposal).toMatchObject({ tier: "auto", state: "executed" })
+      expect(calls).toEqual([
+        "GET https://gmail.googleapis.com/gmail/v1/users/me/messages/msg-1?format=minimal",
+        "POST https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",
+      ])
+      expect(
+        runningGate()
+          .db.prepare("SELECT inverse_op FROM executions WHERE intent_id=?")
+          .get(proposal.id)?.["inverse_op"]
+      ).toBe(
+        '{"args":{"messageIds":["msg-1"],"read":false},"kind":"email.markRead"}'
+      )
+    } finally {
+      await gate.close()
+    }
   })
 })
 
