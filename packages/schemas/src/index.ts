@@ -7,6 +7,7 @@ export {
   INTENT_KINDS,
   INTENT_PROMPT_TEXT,
   INTENT_RESULT_JSON_SCHEMA,
+  extractionCandidatesJsonSchema,
 } from "./generated/prompt"
 export {
   INTENT_JSON_SCHEMA,
@@ -38,10 +39,19 @@ export {
   validateGateWebAuthnAssertion,
   validateIntent,
   validateIntentResult,
+  validateExtractionCandidates,
   validateProfileAccountAssignment,
   validateProfileEntityInput,
   validateProfileEntityPatch,
   validateProfileUpdate,
 } from "./generated/validators"
 export { validateConnectorManifest } from "./manifest"
+export {
+  parseMoney,
+  parseDate,
+  parseAmountField,
+  parseDueDateField,
+} from "./extraction/parse"
+export type { ParsedMoney, ParsedDate } from "./extraction/parse"
+export { validateExtractedFields } from "./extraction/validate"
 export type { JsonSchema, ValidationResult } from "./validate"
