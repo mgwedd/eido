@@ -492,7 +492,7 @@ describe("runGate with Gmail", () => {
           .db.prepare("SELECT inverse_op FROM executions WHERE intent_id=?")
           .get(proposal.id)?.["inverse_op"]
       ).toBe(
-        '{"args":{"messageIds":["msg-1"],"read":false},"kind":"email.markRead"}'
+        '{"args":{"messageIds":["msg-1"],"read":false},"connector":"gmail","kind":"email.markRead"}'
       )
     } finally {
       await gate.close()

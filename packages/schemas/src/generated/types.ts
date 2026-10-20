@@ -110,6 +110,67 @@ export interface CoreApiProfile {
   updatedAt: string
 }
 
+export interface ExtractedFields {
+  action: {
+    raw: string
+    span: SourceSpan
+  }
+  party?: {
+    raw: string
+    span: SourceSpan
+  }
+  reference_number?: {
+    raw: string
+    span: SourceSpan
+  }
+  amount?: {
+    raw: string
+    span: SourceSpan
+    status: "parsed"
+    value: {
+      amount_minor: number
+      currency: string
+    }
+  } | {
+    raw: string
+    span: SourceSpan
+    status: "parse_failed"
+    value: null
+  }
+  due_date?: {
+    raw: string
+    span: SourceSpan
+    status: "parsed"
+    value: string
+  } | {
+    raw: string
+    span: SourceSpan
+    status: "parse_failed"
+    value: null
+  }
+}
+
+export interface ExtractionCandidates {
+  nothing_found: boolean
+  items: Array<{
+    action: {
+      quote: string
+    }
+    party?: {
+      quote: string
+    }
+    due_date?: {
+      quote: string
+    }
+    amount?: {
+      quote: string
+    }
+    reference_number?: {
+      quote: string
+    }
+  }>
+}
+
 /** Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. Statuses: not_found 404, already_decided 409, verification_failed 403, invalid_request 400 (413 over 1 MiB, 422 for an edited intent the schemas or the original's kind refuse), unauthenticated 401 (no valid session cookie on a gated phone route), misdirected_request 421 (a Host header the listener does not serve), unsupported_media_type 415 (a phone-listener POST whose Content-Type is not application/json), tier_changed 409 and forbidden 403 (an edit refused by policy), unavailable 500, handshake_failed 502 (Proton Bridge refused the connection or the TLS handshake) and auth_failed 502 (Bridge refused the username or password). */
 export interface GateApiError {
   code: "not_found" | "already_decided" | "verification_failed" | "invalid_request" | "unauthenticated" | "misdirected_request" | "unsupported_media_type" | "tier_changed" | "forbidden" | "unavailable" | "handshake_failed" | "auth_failed"
@@ -378,6 +439,7 @@ export interface CalendarEditIntent {
 /** Archive messages. */
 export interface EmailArchiveIntent {
   kind: "email.archive"
+  connector?: string
   args: {
     messageIds: Array<string>
   }
@@ -386,6 +448,7 @@ export interface EmailArchiveIntent {
 /** Save an email draft. Nothing is sent. */
 export interface EmailDraftIntent {
   kind: "email.draft"
+  connector?: string
   args: {
     to: Array<string>
     cc?: Array<string>
@@ -399,6 +462,7 @@ export interface EmailDraftIntent {
 /** Forward a message. */
 export interface EmailForwardIntent {
   kind: "email.forward"
+  connector?: string
   args: {
     messageId: string
     messageSha256: string
@@ -410,6 +474,7 @@ export interface EmailForwardIntent {
 /** Add or remove labels on messages. */
 export interface EmailLabelIntent {
   kind: "email.label"
+  connector?: string
   args: {
     messageIds: Array<string>
     add?: Array<string>
@@ -420,6 +485,7 @@ export interface EmailLabelIntent {
 /** Change the read flag only. The message stays in the index and in triage; read false marks it unread again. */
 export interface EmailMarkReadIntent {
   kind: "email.markRead"
+  connector?: string
   args: {
     messageIds: Array<string>
     read: boolean
@@ -429,6 +495,7 @@ export interface EmailMarkReadIntent {
 /** Reply to a message. */
 export interface EmailReplyIntent {
   kind: "email.reply"
+  connector?: string
   args: {
     messageId: string
     messageSha256: string
@@ -442,6 +509,7 @@ export interface EmailReplyIntent {
 /** Send an email, optionally from an existing draft. */
 export interface EmailSendIntent {
   kind: "email.send"
+  connector?: string
   args: {
     to: Array<string>
     cc?: Array<string>
@@ -455,6 +523,7 @@ export interface EmailSendIntent {
 /** Move messages to the trash. Never a permanent delete. */
 export interface EmailTrashIntent {
   kind: "email.trash"
+  connector?: string
   args: {
     messageIds: Array<string>
   }
@@ -572,4 +641,12 @@ export interface ProfileWorkingHours {
   fri?: ProfileDayHours
   sat?: ProfileDayHours
   sun?: ProfileDayHours
+}
+
+export interface SourceSpan {
+  start: number
+  end: number
+  message_id?: string
+  page?: number
+  line?: number
 }

@@ -126,7 +126,7 @@ export function createGmailFacade(deps: GmailFacadeDeps) {
     note?: ProposalNote
   ): Promise<GmailIntentReceipt> => {
     const result = await intents.propose({
-      intent,
+      intent: { ...intent, connector: GMAIL_SOURCE },
       origin,
       ...rationaleField(note),
     })

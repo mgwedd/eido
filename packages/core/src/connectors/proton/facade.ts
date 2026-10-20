@@ -16,6 +16,7 @@ import { rationaleField } from "../proposal-rationale"
 import type { ProposalNote } from "../proposal-rationale"
 import { replyRecipients, storedAddresses } from "../reply-target"
 import { CONNECTOR } from "./sync"
+import { CONNECTOR_NAME } from "./manifest"
 
 export type IntentReceipt = { intentId: string }
 
@@ -109,7 +110,7 @@ export function createProtonFacade(deps: ProtonFacadeDeps) {
     note?: ProposalNote
   ): Promise<IntentReceipt> => {
     const result = await intents.propose({
-      intent,
+      intent: { ...intent, connector: CONNECTOR_NAME },
       origin,
       ...rationaleField(note),
     })

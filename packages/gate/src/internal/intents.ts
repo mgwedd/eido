@@ -6,6 +6,7 @@ import { append } from "./audit"
 import { canonicalize, hashCanonicalString, payloadHash } from "./canonical"
 import { issueCurrentNonce } from "./nonces"
 import { intentTier } from "./policy"
+import { intentBindings } from "./connectors"
 import type { Policy, Tier, TierDecision } from "./policy"
 import { atomically } from "./transaction"
 
@@ -334,6 +335,20 @@ function check(value: unknown): Checked {
   }
 }
 
+/** Resolve an omitted email connector before hashing so legacy callers sign a fixed target. */
+function bindConnector(
+  db: DatabaseSync,
+  checked: Extract<Checked, { ok: true }>
+): Extract<Checked, { ok: true }> {
+  const intent = checked.intent
+  if (!intent.kind.startsWith("email.") || "connector" in intent) return checked
+  const bindings = intentBindings(db, intent.kind)
+  if (bindings.length !== 1) return checked
+  const bound = check({ ...intent, connector: bindings[0]?.connector })
+  if (!bound.ok) throw new Error("failed to bind validated email intent")
+  return bound
+}
+
 type NewIntent = {
   checked: Extract<Checked, { ok: true }>
   tier: Tier
@@ -389,7 +404,8 @@ export function propose(
 ): ProposeResult {
   const contextPackId = input.contextPackId ?? null
   const documentIds = input.documentIds ?? []
-  const checked = check(input.intent)
+  const validated = check(input.intent)
+  const checked = validated.ok ? bindConnector(db, validated) : validated
   if (!checked.ok) {
     append(db, {
       actor: "data-plane",
@@ -473,7 +489,8 @@ export function editIntent(
   actor: Actor
 ): EditResult {
   const original = stored(db, originalId)
-  const checked = check(newIntent)
+  const validated = check(newIntent)
+  const checked = validated.ok ? bindConnector(db, validated) : validated
   const newHash = checked.ok ? checked.hash : null
   const refuse = (
     code: Extract<EditResult, { ok: false }>["code"],

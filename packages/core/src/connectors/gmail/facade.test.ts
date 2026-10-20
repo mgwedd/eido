@@ -156,7 +156,7 @@ describe("write verbs", () => {
       vi.stubGlobal("fetch", fetch)
       expect(await call(facade)).toEqual({ intentId: "int-1" })
       expect(intents.proposals).toEqual([
-        { intent: { kind, args }, origin: "reactive" },
+        { intent: { kind, connector: "gmail", args }, origin: "reactive" },
       ])
       expect(validateIntent(intents.proposals[0]?.intent).ok).toBe(true)
       expect(fetch).not.toHaveBeenCalled()
@@ -240,6 +240,7 @@ describe("reply and forward fill what the model cannot", () => {
     await facade.reply(fromModel)
     expect(lastIntent()).toEqual({
       kind: "email.reply",
+      connector: "gmail",
       args: {
         ...replyRequest,
         messageSha256: sha("gm-1"),
@@ -252,6 +253,7 @@ describe("reply and forward fill what the model cannot", () => {
     } as typeof forwardRequest)
     expect(lastIntent()).toEqual({
       kind: "email.forward",
+      connector: "gmail",
       args: { ...forwardRequest, messageSha256: sha("gm-1") },
     })
   })
@@ -260,6 +262,7 @@ describe("reply and forward fill what the model cannot", () => {
     await facade.reply({ ...replyRequest, replyAll: true })
     expect(lastIntent()).toEqual({
       kind: "email.reply",
+      connector: "gmail",
       args: {
         ...replyRequest,
         replyAll: true,

@@ -141,7 +141,7 @@ describe("POST /intents", () => {
         from: null,
         to: "proposed",
         reason: null,
-        payload_hash: payloadHash(send),
+        payload_hash: payloadHash({ ...send, connector: "mail" }),
         origin: "proactive",
         context_pack_id: "pack-1",
         document_ids: ["doc-1", "doc-2"],
