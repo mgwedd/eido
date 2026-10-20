@@ -20,6 +20,7 @@ export type ParsedMessage = {
   subject: string
   date?: string
   from: Mailbox[]
+  replyTo: Mailbox[]
   to: Mailbox[]
   cc: Mailbox[]
   /** The text part when there is one, otherwise the HTML part reduced to text. */
@@ -53,6 +54,7 @@ export async function parseMessage(raw: Uint8Array): Promise<ParsedMessage> {
     subject: stripInvisible(email.subject ?? ""),
     ...(email.date === undefined ? {} : { date: email.date }),
     from: mailboxes(email.from),
+    replyTo: mailboxes(email.replyTo),
     to: mailboxes(email.to),
     cc: mailboxes(email.cc),
     text: stripInvisible(text).trim(),

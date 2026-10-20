@@ -5,6 +5,7 @@ import { attachmentText, isTextMime, parseMessage } from "./parse"
 
 const headers = [
   "From: Ada Example <ada@example.com>",
+  "Reply-To: Help Desk <desk@example.com>, Team: cy@example.com, di@example.com;",
   "To: Bo Example <bo@example.com>, Team: cy@example.com, di@example.com;",
   "Cc: <ed@example.com>",
   "Subject: Lunch",
@@ -45,6 +46,11 @@ describe("parseMessage", () => {
     expect(parsed.date).toBe("2026-10-05T10:00:00.000Z")
     expect(parsed.from).toEqual([
       { name: "Ada Example", address: "ada@example.com" },
+    ])
+    expect(parsed.replyTo).toEqual([
+      { name: "Help Desk", address: "desk@example.com" },
+      { address: "cy@example.com" },
+      { address: "di@example.com" },
     ])
     expect(parsed.to).toEqual([
       { name: "Bo Example", address: "bo@example.com" },
@@ -108,6 +114,7 @@ describe("parseMessage", () => {
     expect(parsed.text).toBe("see attached")
     expect(parsed.messageId).toBeUndefined()
     expect(parsed.from).toEqual([])
+    expect(parsed.replyTo).toEqual([])
     const [png] = parsed.attachments
     expect(png).toMatchObject({ filename: "attachment-1", mime: "image/png" })
     expect(png?.content).toEqual(
