@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import type { ConnectorManifest } from "@eido/schemas"
+import type { ConnectorManifest, Intent } from "@eido/schemas"
+import { PROTON_CONNECTOR } from "./bridge/config"
 import { createExecutor } from "./executor"
+import type { WriteTransport } from "./executor"
 import { gmailWriteTransport } from "./gmail-transport"
+import { BRIDGE_WRITERS } from "./bridge/writers"
 import {
   GMAIL_BATCH_MODIFY_PATH,
   GMAIL_HOST,
+  GMAIL_WRITERS,
   gmailMarkReadWriter,
 } from "./gmail-writers"
 import { propose } from "./intents"
-import { MAIL_OPS, manifest, setup } from "./test-fixtures"
+import { MAIL_OPS, manifest, setup, signedPin } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 import { InMemoryVault } from "./vault/vault"
 
@@ -31,13 +35,23 @@ function pinnedGmail(withRead: boolean): Setup {
       pathPrefixes: ["/gmail/v1/users/me"],
     },
   ]
-  const markRead = gmail.operations.find(
-    (op) => op.intentKind === "email.markRead"
-  )
-  if (markRead === undefined) throw new Error("fixture lacks mark read")
-  markRead.routes = [
-    { host: GMAIL_HOST, method: "POST", pathPattern: GMAIL_BATCH_MODIFY_PATH },
-  ]
+  // Mark read, label, archive and trash all write through the one batchModify route.
+  for (const kind of [
+    "email.markRead",
+    "email.label",
+    "email.archive",
+    "email.trash",
+  ]) {
+    const operation = gmail.operations.find((op) => op.intentKind === kind)
+    if (operation === undefined) throw new Error(`fixture lacks ${kind}`)
+    operation.routes = [
+      {
+        host: GMAIL_HOST,
+        method: "POST",
+        pathPattern: GMAIL_BATCH_MODIFY_PATH,
+      },
+    ]
+  }
   if (withRead) {
     gmail.operations.push({
       name: "get_message",
@@ -114,6 +128,7 @@ function fakeGmailApi(labels: Record<string, string[]>) {
     send,
     calls,
     unread: (id: string) => mailbox.get(id)?.has("UNREAD") ?? false,
+    labels: (id: string) => [...(mailbox.get(id) ?? [])].sort(),
   }
 }
 
@@ -406,4 +421,235 @@ describe("Gmail write transport: mark read", () => {
     expect(gmail.calls.every((call) => call.method === "GET")).toBe(true)
     expect(gmail.unread("known")).toBe(true)
   })
+})
+
+/** Records a consumed signed approval for an approval-tier intent, as the approval flow would. */
+function approve({ db }: Setup, id: string): void {
+  db.exec(
+    "INSERT INTO credentials(credential_id,public_key,sign_count,created_at) VALUES ('credential','synthetic-public-key',0,'now')"
+  )
+  db.prepare(
+    "INSERT INTO approval_nonces(nonce,intent_id,issued_at,used_at) VALUES ('nonce',?,'then','now')"
+  ).run(id)
+  db.prepare(
+    "INSERT INTO approvals(intent_id,bundle_hash,decision,signature,credential_id,sign_count,nonce,decided_at) SELECT id,payload_hash,'approved','synthetic-signature','credential',0,'nonce','now' FROM intents WHERE id=?"
+  ).run(id)
+  db.prepare("UPDATE intents SET state='approved' WHERE id=?").run(id)
+}
+
+function proposeIntent({ db, policy }: Setup, intent: Intent) {
+  const proposed = propose(db, policy, { intent, origin: "task" })
+  if (!proposed.ok) throw new Error(proposed.code)
+  return proposed
+}
+
+async function gmailExecutor(
+  setUp: Setup,
+  gmail: ReturnType<typeof fakeGmailApi>
+) {
+  return createExecutor(
+    setUp.db,
+    GMAIL_WRITERS,
+    gmailWriteTransport({
+      db: setUp.db,
+      vault: await vaultWithToken(),
+      fetch: gmail.send,
+    })
+  )
+}
+
+describe("Gmail write transport: label, archive and trash against a fake Gmail", () => {
+  it("labels, records what changed, and undo restores each message's prior labels", async () => {
+    const setUp = pinnedGmail(true)
+    const gmail = fakeGmailApi({
+      a: ["INBOX", "UNREAD"],
+      b: ["INBOX"],
+    })
+    const executor = await gmailExecutor(setUp, gmail)
+    const { intentId, tier } = proposeIntent(setUp, {
+      kind: "email.label",
+      connector: "gmail",
+      args: { messageIds: ["a", "b"], add: ["Label_7"], remove: ["INBOX"] },
+    })
+    expect(tier).toBe("auto")
+    expect(await executor.execute(intentId)).toEqual({
+      ok: true,
+      upstreamRef: null,
+      result: { priorLabels: { a: ["INBOX", "UNREAD"], b: ["INBOX"] } },
+    })
+    expect(gmail.labels("a")).toEqual(["Label_7", "UNREAD"])
+    expect(gmail.labels("b")).toEqual(["Label_7"])
+    expect(inverseOp(setUp, intentId)).toBe(
+      '{"args":{"add":["INBOX"],"messageIds":["a","b"],"remove":["Label_7"]},"connector":"gmail","kind":"email.label"}'
+    )
+    expect((await executor.undo(intentId)).ok).toBe(true)
+    expect(gmail.labels("a")).toEqual(["INBOX", "UNREAD"])
+    expect(gmail.labels("b")).toEqual(["INBOX"])
+  })
+
+  it("archives, and undo puts INBOX back only where it was", async () => {
+    const setUp = pinnedGmail(true)
+    const gmail = fakeGmailApi({ inInbox: ["INBOX"], elsewhere: ["Label_7"] })
+    const executor = await gmailExecutor(setUp, gmail)
+    const { intentId, tier } = proposeIntent(setUp, {
+      kind: "email.archive",
+      connector: "gmail",
+      args: { messageIds: ["inInbox", "elsewhere"] },
+    })
+    expect(tier).toBe("auto")
+    expect((await executor.execute(intentId)).ok).toBe(true)
+    expect(gmail.labels("inInbox")).toEqual([])
+    expect(gmail.calls.at(-1)).toMatchObject({
+      method: "POST",
+      url: `https://${GMAIL_HOST}${GMAIL_BATCH_MODIFY_PATH}`,
+    })
+    expect(inverseOp(setUp, intentId)).toBe(
+      '{"args":{"add":["INBOX"],"messageIds":["inInbox"]},"connector":"gmail","kind":"email.label"}'
+    )
+    expect((await executor.undo(intentId)).ok).toBe(true)
+    expect(gmail.labels("inInbox")).toEqual(["INBOX"])
+    expect(gmail.labels("elsewhere")).toEqual(["Label_7"])
+  })
+
+  it("trashes only with a signed approval, by the TRASH label, and records no undo", async () => {
+    const setUp = pinnedGmail(true)
+    const gmail = fakeGmailApi({ m: ["INBOX"] })
+    const executor = await gmailExecutor(setUp, gmail)
+    const { intentId, tier } = proposeIntent(setUp, {
+      kind: "email.trash",
+      connector: "gmail",
+      args: { messageIds: ["m"] },
+    })
+    expect(tier).toBe("approval")
+    setUp.db
+      .prepare("UPDATE intents SET state='approved' WHERE id=?")
+      .run(intentId)
+    expect(await executor.execute(intentId)).toEqual({
+      ok: false,
+      code: "missing_approval",
+    })
+    expect(gmail.calls).toEqual([])
+    approve(setUp, intentId)
+    expect(await executor.execute(intentId)).toEqual({
+      ok: true,
+      upstreamRef: null,
+      result: {},
+    })
+    expect(gmail.labels("m")).toEqual(["INBOX", "TRASH"])
+    // Trash reads nothing first: the one call is the write.
+    expect(gmail.calls.map((call) => call.method)).toEqual(["POST"])
+    expect(inverseOp(setUp, intentId)).toBeNull()
+    expect(await executor.undo(intentId)).toEqual({
+      ok: false,
+      code: "undo_not_allowed",
+    })
+  })
+
+  it("sends no DELETE and calls no delete endpoint across every write and undo", async () => {
+    const setUp = pinnedGmail(true)
+    const gmail = fakeGmailApi({ m: ["INBOX", "UNREAD"] })
+    const executor = await gmailExecutor(setUp, gmail)
+    const intents: Intent[] = [
+      {
+        kind: "email.markRead",
+        connector: "gmail",
+        args: { messageIds: ["m"], read: true },
+      },
+      {
+        kind: "email.label",
+        connector: "gmail",
+        args: { messageIds: ["m"], add: ["Label_7"] },
+      },
+      {
+        kind: "email.archive",
+        connector: "gmail",
+        args: { messageIds: ["m"] },
+      },
+    ]
+    for (const intent of intents) {
+      const { intentId } = proposeIntent(setUp, intent)
+      expect((await executor.execute(intentId)).ok).toBe(true)
+      expect((await executor.undo(intentId)).ok).toBe(true)
+    }
+    const trash = proposeIntent(setUp, {
+      kind: "email.trash",
+      connector: "gmail",
+      args: { messageIds: ["m"] },
+    })
+    approve(setUp, trash.intentId)
+    expect((await executor.execute(trash.intentId)).ok).toBe(true)
+    expect(gmail.calls.length).toBeGreaterThan(0)
+    for (const call of gmail.calls) {
+      expect(call.method).not.toBe("DELETE")
+      expect(new URL(call.url).pathname).not.toMatch(/delete|emptyTrash/i)
+    }
+  })
+})
+
+describe("Gmail and Proton pinned together", () => {
+  function pinProton(setUp: Setup): void {
+    const operations = MAIL_OPS.filter((op) =>
+      [
+        "email.draft",
+        "email.send",
+        "email.reply",
+        "email.forward",
+        "email.trash",
+      ].includes(op.intentKind ?? "")
+    )
+    signedPin(setUp.db, {
+      ...manifest(PROTON_CONNECTOR, operations),
+      auth: { type: "password", scopes: ["write"] },
+      egress: { hosts: [] },
+    })
+  }
+
+  it.each([
+    ["gmail", 1, 0],
+    [PROTON_CONNECTOR, 0, 1],
+  ] as const)(
+    "a trash proposed for %s reaches that connector's writer only",
+    async (connector, gmailWrites, protonWrites) => {
+      const setUp = pinnedGmail(true)
+      pinProton(setUp)
+      const gmail = fakeGmailApi({ m: ["INBOX"] })
+      const viaGmail = gmailWriteTransport({
+        db: setUp.db,
+        vault: await vaultWithToken(),
+        fetch: gmail.send,
+      })
+      const proton = vi.fn<WriteTransport>(() =>
+        Promise.resolve({ upstreamRef: null, result: {} })
+      )
+      const executor = createExecutor(
+        setUp.db,
+        [...BRIDGE_WRITERS, ...GMAIL_WRITERS],
+        (request) =>
+          request.connector === "gmail" ? viaGmail(request) : proton(request)
+      )
+      // Without a connector the kind is ambiguous between the two.
+      expect(
+        propose(setUp.db, setUp.policy, {
+          intent: { kind: "email.trash", args: { messageIds: ["m"] } },
+          origin: "task",
+        })
+      ).toMatchObject({ ok: false })
+      const { intentId } = proposeIntent(setUp, {
+        kind: "email.trash",
+        connector,
+        args: { messageIds: ["m"] },
+      })
+      approve(setUp, intentId)
+      expect((await executor.execute(intentId)).ok).toBe(true)
+      expect(gmail.calls.filter((call) => call.method === "POST")).toHaveLength(
+        gmailWrites
+      )
+      expect(proton).toHaveBeenCalledTimes(protonWrites)
+      if (protonWrites === 1)
+        expect(proton.mock.calls[0]?.[0]).toMatchObject({
+          connector: PROTON_CONNECTOR,
+          url: "bridge:imap/move-to-trash",
+        })
+    }
+  )
 })

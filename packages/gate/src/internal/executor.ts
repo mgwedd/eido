@@ -209,11 +209,16 @@ function writeDestination(
       })
       .map((route) => ({ operation, route }))
   )
-  const selected = matching.length === 1 ? matching[0] : undefined
+  // Several write operations may share one route: Gmail's batchModify carries mark read, label,
+  // archive and trash, and the writer's strict decoder tells them apart. The intent's own
+  // operation must pin the route exactly once, and a read operation sharing it is refused.
+  const own = matching.filter(
+    (candidate) => candidate.operation.name === operationName
+  )
+  const selected = own.length === 1 ? own[0] : undefined
   if (
     selected === undefined ||
-    selected.operation.name !== operationName ||
-    selected.operation.effect !== "write"
+    !matching.every((candidate) => candidate.operation.effect === "write")
   )
     throw new Error("unpinned write route")
   const safePath = selected.route.pathPattern

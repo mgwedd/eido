@@ -7,7 +7,7 @@ import { PROTON_CONNECTOR, bridgeConfig } from "./internal/bridge/config"
 import type { BridgeConfig } from "./internal/bridge/config"
 import { BRIDGE_WRITERS, bridgeTransport } from "./internal/bridge/writers"
 import { gmailWriteTransport } from "./internal/gmail-transport"
-import { GMAIL_CONNECTOR, gmailMarkReadWriter } from "./internal/gmail-writers"
+import { GMAIL_CONNECTOR, GMAIL_WRITERS } from "./internal/gmail-writers"
 import { openControlDb } from "./internal/control-db"
 import { createExecutor } from "./internal/executor"
 import {
@@ -215,7 +215,7 @@ export async function runGate(
           })
     const executor = createExecutor(
       db,
-      [...BRIDGE_WRITERS, gmailMarkReadWriter],
+      [...BRIDGE_WRITERS, ...GMAIL_WRITERS],
       (request) =>
         request.connector === GMAIL_CONNECTOR
           ? gmail === undefined
