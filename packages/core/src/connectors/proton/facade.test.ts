@@ -115,6 +115,38 @@ describe("write verbs", () => {
     })
   })
 
+  test("each write verb sends the caller's rationale unchanged", async () => {
+    source.addFolder("INBOX", "1", [{ uid: 1, raw: plainMessage("a") }])
+    await syncFolder(db, source, "INBOX", 10)
+    const { facade, proposals } = setup()
+    const note = { rationale: "Lorem ipsum: the sender asked for a reply." }
+    const to = ["a@example.com"]
+    const messageId = "<a@example.com>"
+    await facade.draft_create({ to, subject: "s", body: "b" }, note)
+    await facade.send({ to, subject: "s", body: "b" }, note)
+    await facade.reply({ messageId, replyAll: false, body: "b" }, note)
+    await facade.forward({ messageId, to }, note)
+    await facade.trash({ messageIds: [messageId] }, note)
+    expect(
+      proposals.map((p) => [
+        p.intent.kind,
+        (p as { rationale?: string }).rationale,
+      ])
+    ).toEqual([
+      ["email.draft", note.rationale],
+      ["email.send", note.rationale],
+      ["email.reply", note.rationale],
+      ["email.forward", note.rationale],
+      ["email.trash", note.rationale],
+    ])
+  })
+
+  test("a blank rationale is left out, not sent empty", async () => {
+    const { facade, proposals } = setup()
+    await facade.trash({ messageIds: ["<a@example.com>"] }, { rationale: " " })
+    expect(proposals[0]).not.toHaveProperty("rationale")
+  })
+
   test("an explicit origin is passed through", async () => {
     const proposals: unknown[] = []
     const facade = createProtonFacade({
