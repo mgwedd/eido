@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import type { Intent } from "@eido/schemas"
+import type { ConnectorManifest, Intent } from "@eido/schemas"
 import { getPinnedManifest } from "./connectors"
 import { verifyChain } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
@@ -798,6 +798,49 @@ describe("executor", () => {
         code: "hash_mismatch",
       })
       expect(f.transport).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each([
+    ["another write operation", "write", true],
+    ["a read operation", "read", false],
+  ] as const)(
+    "with %s pinned on the same route, executes only when every sharer writes",
+    async (_name, effect, executes) => {
+      const f = fixture()
+      const mail = getPinnedManifest(s.db, "mail")
+      if (mail === undefined) throw new Error("missing manifest")
+      mail.version++
+      const shared = [
+        { host: "mail.example.com", method: "POST", pathPattern: "/v1/labels" },
+      ] satisfies ConnectorManifest["operations"][number]["routes"]
+      if (effect === "write") {
+        const archive = mail.operations.find(
+          (op) => op.intentKind === "email.archive"
+        )
+        if (archive === undefined) throw new Error("missing archive")
+        archive.routes = shared
+      } else {
+        mail.operations.push({
+          name: "list_labels",
+          effect: "read",
+          reversibility: "reversible",
+          defaultTier: "auto",
+          sensitivity: "normal",
+          untrustedOutput: true,
+          authScopes: ["write"],
+          routes: shared,
+        })
+      }
+      signedPin(s.db, mail, "system")
+      const result = await f.executor.execute(f.id)
+      expect(result.ok).toBe(executes)
+      expect(f.transport).toHaveBeenCalledTimes(executes ? 1 : 0)
+      if (executes)
+        expect(f.transport.mock.calls[0]?.[0]).toMatchObject({
+          operation: "set_labels",
+          url,
+        })
     }
   )
 
