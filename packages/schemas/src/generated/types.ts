@@ -378,6 +378,7 @@ export interface CalendarEditIntent {
 /** Archive messages. */
 export interface EmailArchiveIntent {
   kind: "email.archive"
+  connector?: string
   args: {
     messageIds: Array<string>
   }
@@ -386,6 +387,7 @@ export interface EmailArchiveIntent {
 /** Save an email draft. Nothing is sent. */
 export interface EmailDraftIntent {
   kind: "email.draft"
+  connector?: string
   args: {
     to: Array<string>
     cc?: Array<string>
@@ -399,6 +401,7 @@ export interface EmailDraftIntent {
 /** Forward a message. */
 export interface EmailForwardIntent {
   kind: "email.forward"
+  connector?: string
   args: {
     messageId: string
     messageSha256: string
@@ -410,6 +413,7 @@ export interface EmailForwardIntent {
 /** Add or remove labels on messages. */
 export interface EmailLabelIntent {
   kind: "email.label"
+  connector?: string
   args: {
     messageIds: Array<string>
     add?: Array<string>
@@ -420,6 +424,7 @@ export interface EmailLabelIntent {
 /** Change the read flag only. The message stays in the index and in triage; read false marks it unread again. */
 export interface EmailMarkReadIntent {
   kind: "email.markRead"
+  connector?: string
   args: {
     messageIds: Array<string>
     read: boolean
@@ -429,6 +434,7 @@ export interface EmailMarkReadIntent {
 /** Reply to a message. */
 export interface EmailReplyIntent {
   kind: "email.reply"
+  connector?: string
   args: {
     messageId: string
     messageSha256: string
@@ -442,6 +448,7 @@ export interface EmailReplyIntent {
 /** Send an email, optionally from an existing draft. */
 export interface EmailSendIntent {
   kind: "email.send"
+  connector?: string
   args: {
     to: Array<string>
     cc?: Array<string>
@@ -455,6 +462,7 @@ export interface EmailSendIntent {
 /** Move messages to the trash. Never a permanent delete. */
 export interface EmailTrashIntent {
   kind: "email.trash"
+  connector?: string
   args: {
     messageIds: Array<string>
   }

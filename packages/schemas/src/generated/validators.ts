@@ -20,6 +20,12 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
         "kind": {
           "const": "email.draft"
         },
+        "connector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+        },
         "args": {
           "type": "object",
           "properties": {
@@ -95,6 +101,12 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
         "kind": {
           "const": "email.label"
         },
+        "connector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+        },
         "args": {
           "type": "object",
           "properties": {
@@ -151,6 +163,12 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
         "kind": {
           "const": "email.archive"
         },
+        "connector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+        },
         "args": {
           "type": "object",
           "properties": {
@@ -186,6 +204,12 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
       "properties": {
         "kind": {
           "const": "email.markRead"
+        },
+        "connector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
         },
         "args": {
           "type": "object",
@@ -227,6 +251,12 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
       "properties": {
         "kind": {
           "const": "email.send"
+        },
+        "connector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
         },
         "args": {
           "type": "object",
@@ -303,6 +333,12 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
         "kind": {
           "const": "email.reply"
         },
+        "connector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+        },
         "args": {
           "type": "object",
           "properties": {
@@ -376,6 +412,12 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
         "kind": {
           "const": "email.forward"
         },
+        "connector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+        },
         "args": {
           "type": "object",
           "properties": {
@@ -431,6 +473,12 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
       "properties": {
         "kind": {
           "const": "email.trash"
+        },
+        "connector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
         },
         "args": {
           "type": "object",

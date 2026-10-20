@@ -51,11 +51,12 @@ function fixture() {
   const labels = new Set<string>()
   const writer: UpstreamWriter = {
     kind: "email.label",
+    connector: "mail",
     buildRequest(intent) {
       if (intent.kind !== "email.label") throw new Error("wrong kind")
       return { method: "POST", url, body: { provider_arguments: intent.args } }
     },
-    intentFromRequest(request) {
+    intentFromRequest(request, connector) {
       if (
         request.url !== url ||
         request.method !== "POST" ||
@@ -64,9 +65,16 @@ function fixture() {
         !("provider_arguments" in request.body)
       )
         throw new Error("wrong provider route")
-      return { kind: "email.label", args: request.body.provider_arguments }
+      return {
+        kind: "email.label",
+        ...(connector === undefined ? {} : { connector }),
+        args: request.body.provider_arguments,
+      }
     },
-    inverse: () => inverse,
+    inverse: (intent) => ({
+      ...inverse,
+      ...("connector" in intent ? { connector: intent.connector } : {}),
+    }),
   }
   const transport = vi.fn((request: WriteRequest) => {
     const data: unknown = JSON.parse(request.body)
@@ -116,7 +124,124 @@ function approved(id: string) {
     .run(id)
 }
 
+function dualConnectorFixture() {
+  const names = ["gmail", "proton-mail"] as const
+  const manifests = names.map((name) => {
+    const pinned = manifest(name, MAIL_OPS)
+    const operation = pinned.operations.find(
+      (op) => op.intentKind === "email.label"
+    )
+    if (operation === undefined) throw new Error("missing label operation")
+    operation.routes = [
+      {
+        host: `${name}.example.com`,
+        method: "POST",
+        pathPattern: "/v1/labels",
+      },
+    ]
+    if (name === "proton-mail") {
+      operation.reversibility = "irreversible"
+      operation.defaultTier = "approval"
+    }
+    return pinned
+  })
+  s = setup(manifests)
+  const writers: UpstreamWriter[] = names.map((connector) => ({
+    kind: "email.label",
+    connector,
+    buildRequest: (intent) => ({
+      method: "POST",
+      url: `https://${connector}.example.com/v1/labels`,
+      body: intent,
+    }),
+    intentFromRequest: (request) => request.body,
+    inverse: () => null,
+  }))
+  const transport = vi.fn((request: WriteRequest) =>
+    Promise.resolve({ upstreamRef: request.connector, result: {} })
+  )
+  const executor = createExecutor(s.db, writers, transport)
+  const proposeFor = (connector?: string) =>
+    propose(s.db, s.policy, {
+      intent: connector === undefined ? label : { ...label, connector },
+      origin: "task",
+    })
+  return { executor, transport, proposeFor }
+}
+
 describe("executor", () => {
+  it("tiers and dispatches the same kind through each selected pinned connector", async () => {
+    const f = dualConnectorFixture()
+    const gmail = f.proposeFor("gmail")
+    const proton = f.proposeFor("proton-mail")
+    if (!gmail.ok || !proton.ok) throw new Error("proposal refused")
+    expect(gmail.tier).toBe("auto")
+    expect(proton.tier).toBe("approval")
+    approved(proton.intentId)
+    s.db
+      .prepare("UPDATE intents SET state='approved' WHERE id=?")
+      .run(proton.intentId)
+    expect((await f.executor.execute(gmail.intentId)).ok).toBe(true)
+    expect((await f.executor.execute(proton.intentId)).ok).toBe(true)
+    expect(
+      f.transport.mock.calls.map(([request]) => request.connector)
+    ).toEqual(["gmail", "proton-mail"])
+    expect(f.transport.mock.calls.map(([request]) => request.url)).toEqual([
+      "https://gmail.example.com/v1/labels",
+      "https://proton-mail.example.com/v1/labels",
+    ])
+  })
+
+  it("rejects an ambiguous or mismatched selector and never redirects a disabled selection", async () => {
+    const f = dualConnectorFixture()
+    const ambiguous = f.proposeFor()
+    expect(ambiguous).toMatchObject({
+      ok: false,
+      code: "forbidden",
+      errors: ["ambiguous_operation"],
+    })
+    const mismatched = f.proposeFor("other")
+    expect(mismatched).toMatchObject({
+      ok: false,
+      code: "forbidden",
+      errors: ["no_operation"],
+    })
+    const gmail = f.proposeFor("gmail")
+    if (!gmail.ok) throw new Error("gmail proposal refused")
+    s.db.exec("UPDATE connectors SET enabled=0 WHERE name='gmail'")
+    expect(await f.executor.execute(gmail.intentId)).toEqual({
+      ok: false,
+      code: "connector_unavailable",
+    })
+    expect(f.transport).not.toHaveBeenCalled()
+  })
+
+  it("detects a changed selector after approval and fails closed for pre-binding stored intents", async () => {
+    const f = dualConnectorFixture()
+    const proton = f.proposeFor("proton-mail")
+    if (!proton.ok) throw new Error("proton proposal refused")
+    approved(proton.intentId)
+    s.db
+      .prepare("UPDATE intents SET state='approved', payload_json=? WHERE id=?")
+      .run(canonicalize({ ...label, connector: "gmail" }), proton.intentId)
+    expect(await f.executor.execute(proton.intentId)).toEqual({
+      ok: false,
+      code: "hash_mismatch",
+    })
+    const gmail = f.proposeFor("gmail")
+    if (!gmail.ok) throw new Error("gmail proposal refused")
+    // Simulate a row written before connector binding existed. Even after its old connector
+    // disappears and another remains, it cannot acquire a different destination at execution.
+    s.db
+      .prepare("UPDATE intents SET payload_json=?, payload_hash=? WHERE id=?")
+      .run(canonicalize(label), payloadHash(label), gmail.intentId)
+    s.db.exec("UPDATE connectors SET enabled=0 WHERE name='gmail'")
+    expect(await f.executor.execute(gmail.intentId)).toEqual({
+      ok: false,
+      code: "connector_unavailable",
+    })
+    expect(f.transport).not.toHaveBeenCalled()
+  })
   it("executes an auto intent with no approval, records the result and inverse, and restores upstream state on undo", async () => {
     const f = fixture()
     const result = await f.executor.execute(f.id)
@@ -139,7 +264,7 @@ describe("executor", () => {
       upstream_ref: "provider-ref-1",
       result: '{"labels":["work"]}',
       inverse_op:
-        '{"args":{"messageIds":["msg-1"],"remove":["work"]},"kind":"email.label"}',
+        '{"args":{"messageIds":["msg-1"],"remove":["work"]},"connector":"mail","kind":"email.label"}',
     })
     expect(await f.executor.undo(f.id)).toEqual({
       ok: true,
@@ -165,12 +290,12 @@ describe("executor", () => {
       payloadHash({
         upstream_ref: "provider-ref-1",
         result: { labels: ["work"] },
-        inverse,
+        inverse: { ...inverse, connector: "mail" },
       }),
       payloadHash({
         upstream_ref: "provider-ref-1",
         result: { labels: [] },
-        inverse,
+        inverse: { ...inverse, connector: "mail" },
       }),
     ])
     expect(verifyChain(s.db).ok).toBe(true)
@@ -242,9 +367,9 @@ describe("executor", () => {
       return built
     }
     const decode = f.writer.intentFromRequest
-    f.writer.intentFromRequest = (request) => {
+    f.writer.intentFromRequest = (request, connector) => {
       if (built !== undefined) built.url = "https://attacker.example.com"
-      return decode(request)
+      return decode(request, connector)
     }
     await f.executor.execute(f.id)
     expect(f.transport.mock.calls[0]?.[0]).toMatchObject({
@@ -518,6 +643,17 @@ describe("executor", () => {
     }
   )
 
+  it("refuses an inverse that selects another connector", async () => {
+    const f = fixture()
+    f.writer.inverse = () => ({ ...inverse, connector: "other" })
+    expect((await f.executor.execute(f.id)).ok).toBe(true)
+    expect(await f.executor.undo(f.id)).toEqual({
+      ok: false,
+      code: "invalid_inverse",
+    })
+    expect(f.transport).toHaveBeenCalledTimes(1)
+  })
+
   it("refuses a malformed or inconsistent stored intent", async () => {
     const f = fixture()
     s.db.prepare("UPDATE intents SET payload_json='{' WHERE id=?").run(f.id)
@@ -611,7 +747,7 @@ describe("executor", () => {
       const f = fixture()
       const build = f.writer.buildRequest
       f.writer.buildRequest = (intent) => ({ ...build(intent), url: target })
-      f.writer.intentFromRequest = () => label
+      f.writer.intentFromRequest = () => ({ ...label, connector: "mail" })
       expect(await f.executor.execute(f.id)).toEqual({
         ok: false,
         code: "hash_mismatch",
@@ -687,7 +823,7 @@ describe("executor", () => {
       ...build(intent),
       url: "https://mail.example.com/v1/labels/msg-1?tag=work&format=json",
     })
-    f.writer.intentFromRequest = () => label
+    f.writer.intentFromRequest = () => ({ ...label, connector: "mail" })
     expect((await f.executor.execute(f.id)).ok).toBe(true)
     expect(f.transport.mock.calls[0]?.[0]).toMatchObject({
       connector: "mail",

@@ -123,7 +123,10 @@ export function createGmailFacade(deps: GmailFacadeDeps) {
     kind: string
     args: object
   }): Promise<GmailIntentReceipt> => {
-    const result = await intents.propose({ intent, origin })
+    const result = await intents.propose({
+      intent: { ...intent, connector: GMAIL_SOURCE },
+      origin,
+    })
     return { intentId: result.id }
   }
   return {

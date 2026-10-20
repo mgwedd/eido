@@ -88,6 +88,15 @@ describe("Gmail mark read through the executor", () => {
     expect(proposed).toMatchObject({ tier: "auto", state: "approved" })
 
     const executor = createExecutor(db, [gmailMarkReadWriter], gmail.transport)
+    expect(
+      JSON.parse(
+        String(
+          db
+            .prepare("SELECT payload_json FROM intents WHERE id=?")
+            .get(proposed.intentId)?.["payload_json"]
+        )
+      )
+    ).toMatchObject({ connector: "gmail" })
     expect(await executor.execute(proposed.intentId)).toEqual({
       ok: true,
       upstreamRef: null,
@@ -99,7 +108,7 @@ describe("Gmail mark read through the executor", () => {
         .prepare("SELECT inverse_op FROM executions WHERE intent_id=?")
         .get(proposed.intentId)?.["inverse_op"]
     ).toBe(
-      '{"args":{"messageIds":["18c2f0a1b2c3d4e5"],"read":false},"kind":"email.markRead"}'
+      '{"args":{"messageIds":["18c2f0a1b2c3d4e5"],"read":false},"connector":"gmail","kind":"email.markRead"}'
     )
 
     expect((await executor.undo(proposed.intentId)).ok).toBe(true)
@@ -143,7 +152,7 @@ describe("Gmail mark read through the executor", () => {
         .prepare("SELECT inverse_op FROM executions WHERE intent_id=?")
         .get(proposed.intentId)?.["inverse_op"]
     ).toBe(
-      '{"args":{"messageIds":["unreadMsg"],"read":false},"kind":"email.markRead"}'
+      '{"args":{"messageIds":["unreadMsg"],"read":false},"connector":"gmail","kind":"email.markRead"}'
     )
     expect((await executor.undo(proposed.intentId)).ok).toBe(true)
     expect(gmail.unread("unreadMsg")).toBe(true)

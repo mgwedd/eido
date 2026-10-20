@@ -17,6 +17,7 @@ import type {
 } from "./control-approvals"
 import {
   hasDisabledIntentBinding,
+  getConnectorState,
   intentBindings,
   pinnedOperation,
 } from "./connectors"
@@ -90,12 +91,28 @@ type OperationLookup =
   | { status: "ok"; operation: ConnectorOperation }
   | { status: "none" | "ambiguous" | "disabled" }
 
-function lookupOperation(db: DatabaseSync, kind: string): OperationLookup {
-  const bindings = intentBindings(db, kind)
+function lookupOperation(
+  db: DatabaseSync,
+  kind: string,
+  connector?: string
+): OperationLookup {
+  const bindings = intentBindings(db, kind).filter(
+    (binding) => connector === undefined || binding.connector === connector
+  )
   const [binding, ...others] = bindings
   if (binding === undefined)
     return {
-      status: hasDisabledIntentBinding(db, kind) ? "disabled" : "none",
+      status:
+        connector === undefined
+          ? hasDisabledIntentBinding(db, kind)
+            ? "disabled"
+            : "none"
+          : getConnectorState(db, connector)?.enabled === false &&
+              getConnectorState(db, connector)?.manifest.operations.some(
+                (op) => op.intentKind === kind
+              )
+            ? "disabled"
+            : "none",
     }
   // Two connectors claiming one kind leave the target unclear: refuse rather than guess.
   if (others.length > 0) return { status: "ambiguous" }
@@ -109,10 +126,11 @@ function lookupOperation(db: DatabaseSync, kind: string): OperationLookup {
 export function kindTier(
   db: DatabaseSync,
   policy: Policy,
-  kind: string
+  kind: string,
+  connector?: string
 ): TierDecision {
   if (!isIntentKind(kind)) return forbidden("unknown_kind")
-  const lookup = lookupOperation(db, kind)
+  const lookup = lookupOperation(db, kind, connector)
   switch (lookup.status) {
     case "none":
       return forbidden("no_operation")
@@ -156,7 +174,12 @@ export function intentTier(
   policy: Policy,
   intent: Intent
 ): TierDecision {
-  const decision = kindTier(db, policy, intent.kind)
+  const decision = kindTier(
+    db,
+    policy,
+    intent.kind,
+    "connector" in intent ? intent.connector : undefined
+  )
   if (decision.tier === "forbidden") return decision
   switch (intent.kind) {
     case "file.create":

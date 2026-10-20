@@ -109,6 +109,7 @@ describe("write verbs", () => {
     expect(proposals[0]).toEqual({
       intent: {
         kind: "email.trash",
+        connector: "proton-mail",
         args: { messageIds: ["<a@example.com>"] },
       },
       origin: "reactive",
@@ -180,6 +181,7 @@ describe("reply and forward fill what the model cannot", () => {
     })
     expect(lastIntent(proposals)).toEqual({
       kind: "email.reply",
+      connector: "proton-mail",
       args: {
         messageId: "<full@example.com>",
         messageSha256: sha(full),
@@ -196,6 +198,7 @@ describe("reply and forward fill what the model cannot", () => {
     })
     expect(lastIntent(proposals)).toEqual({
       kind: "email.forward",
+      connector: "proton-mail",
       args: {
         messageId: "<full@example.com>",
         messageSha256: sha(full),

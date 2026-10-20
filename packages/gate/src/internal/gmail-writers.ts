@@ -15,7 +15,10 @@ const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === "string")
 
 /** The read flag is Gmail's UNREAD label: marking read removes it, marking unread adds it. */
-function markReadIntent(request: Readonly<UpstreamRequest>): Intent {
+function markReadIntent(
+  request: Readonly<UpstreamRequest>,
+  connector?: string
+): Intent {
   const { body } = request
   if (
     request.method !== "POST" ||
@@ -38,18 +41,27 @@ function markReadIntent(request: Readonly<UpstreamRequest>): Intent {
     isStringArray(removed) &&
     removed.join() === UNREAD
   )
-    return { kind: "email.markRead", args: { messageIds: ids, read: true } }
+    return {
+      kind: "email.markRead",
+      ...(connector === undefined ? {} : { connector }),
+      args: { messageIds: ids, read: true },
+    }
   if (
     keys.join() === "addLabelIds,ids" &&
     isStringArray(added) &&
     added.join() === UNREAD
   )
-    return { kind: "email.markRead", args: { messageIds: ids, read: false } }
+    return {
+      kind: "email.markRead",
+      ...(connector === undefined ? {} : { connector }),
+      args: { messageIds: ids, read: false },
+    }
   throw new Error("not a Gmail mark read request")
 }
 
 export const gmailMarkReadWriter: UpstreamWriter = {
   kind: "email.markRead",
+  connector: GMAIL_CONNECTOR,
   buildRequest(intent) {
     if (intent.kind !== "email.markRead") throw new Error("wrong intent kind")
     const { messageIds, read } = intent.args
@@ -78,6 +90,7 @@ export const gmailMarkReadWriter: UpstreamWriter = {
     if (affected.length === 0) return null
     return {
       kind: "email.markRead",
+      ...("connector" in intent ? { connector: intent.connector } : {}),
       args: { messageIds: affected, read: !read },
     }
   },

@@ -209,7 +209,7 @@ describe("Gmail write transport: mark read", () => {
       expect(calls).toContain(`${method}:Bearer test-new-token`)
       expect(gmail.unread("m")).toBe(false)
       expect(inverseOp(setUp, id)).toBe(
-        '{"args":{"messageIds":["m"],"read":false},"kind":"email.markRead"}'
+        '{"args":{"messageIds":["m"],"read":false},"connector":"gmail","kind":"email.markRead"}'
       )
       expect(
         await vault.get({
@@ -312,7 +312,7 @@ describe("Gmail write transport: mark read", () => {
     })
     expect(gmail.unread("wasUnread")).toBe(false)
     expect(inverseOp(setUp, id)).toBe(
-      '{"args":{"messageIds":["wasUnread"],"read":false},"kind":"email.markRead"}'
+      '{"args":{"messageIds":["wasUnread"],"read":false},"connector":"gmail","kind":"email.markRead"}'
     )
 
     expect((await executor.undo(id)).ok).toBe(true)

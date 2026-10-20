@@ -98,12 +98,19 @@ describe("proposing", () => {
     const s = fresh()
     const intent = sample("email.send")
     const result = ok(proposeKind(s, intent))
-    expect(result.payloadHash).toBe(payloadHash(intent))
+    expect(result.payloadHash).toBe(
+      payloadHash({ ...intent, connector: "mail" })
+    )
     const row = s.db
       .prepare("SELECT payload_json, payload_hash FROM intents WHERE id = ?")
       .get(result.intentId)
-    expect(row?.["payload_hash"]).toBe(payloadHash(intent))
-    expect(JSON.parse(String(row?.["payload_json"]))).toEqual(intent)
+    expect(row?.["payload_hash"]).toBe(
+      payloadHash({ ...intent, connector: "mail" })
+    )
+    expect(JSON.parse(String(row?.["payload_json"]))).toEqual({
+      ...intent,
+      connector: "mail",
+    })
   })
 
   it("a forbidden intent is stored rejected with its reason and audited", () => {
@@ -324,7 +331,7 @@ describe("editing", () => {
       intentId: anyString,
       tier: "approval",
       state: "pending",
-      payloadHash: payloadHash(edited),
+      payloadHash: payloadHash({ ...edited, connector: "mail" }),
     })
     const id = result.ok ? result.intentId : ""
     expect(intentStatus(s.db, original)).toEqual({
@@ -434,7 +441,7 @@ describe("editing", () => {
           from: "pending",
           to: "pending",
           reason: "kind_changed",
-          payload_hash: payloadHash(newIntent),
+          payload_hash: payloadHash({ ...newIntent, connector: "mail" }),
         }),
       })
     )
@@ -613,7 +620,7 @@ describe("the audit trail", () => {
         from: "pending",
         to: "rejected",
         reason: "not now",
-        payload_hash: payloadHash(intent),
+        payload_hash: payloadHash({ ...intent, connector: "mail" }),
       })
     )
     expect(
