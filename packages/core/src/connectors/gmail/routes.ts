@@ -24,11 +24,11 @@ export const READ_PATHS = {
 } as const
 
 /**
- * Write endpoints the gate's executor may call, one per operation (the executor refuses a route
- * two operations share). Only mark read has a gate writer so far; see the manifest.
+ * Write endpoints the gate's executor may call. These operations share the same batchModify
+ * route; their validated request bodies distinguish the approved intent.
  */
 export const WRITE_PATHS = {
-  markRead: `${USER}/messages/batchModify`,
+  batchModify: `${USER}/messages/batchModify`,
 } as const
 
 export const GMAIL_PATH_PREFIX = USER

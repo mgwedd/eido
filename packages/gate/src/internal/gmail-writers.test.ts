@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Intent } from "@eido/schemas"
+import { issueNonce, verifyApproval } from "./approvals"
+import { beginRegistration, registerCredential } from "./credentials"
 import { createExecutor } from "./executor"
 import type { WriteRequest } from "./executor"
 import {
@@ -13,7 +15,18 @@ import {
   gmailTrashWriter,
 } from "./gmail-writers"
 import { intentHistory, intentSummary, propose } from "./intents"
-import { MAIL_OPS, auditRows, manifest, sample, setup } from "./test-fixtures"
+import {
+  MAIL_OPS,
+  WEBAUTHN,
+  assertion,
+  auditRows,
+  deviceChallenge,
+  manifest,
+  registration,
+  sample,
+  setup,
+  testAuthenticator,
+} from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
 let s: Setup | undefined
@@ -25,23 +38,50 @@ afterEach(() => {
 const URL_ =
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify"
 
-/** A pinned Gmail connector whose mark read operation names the batchModify route. */
+/** A pinned Gmail connector with the manifest's shared batchModify and message read routes. */
 function pinnedGmail(): Setup {
   const gmail = manifest("gmail", MAIL_OPS)
+  gmail.auth.scopes.push("read")
   gmail.egress.hosts = [
     {
       host: GMAIL_HOST,
-      methods: ["POST"],
+      methods: ["GET", "POST"],
       pathPrefixes: ["/gmail/v1/users/me"],
     },
   ]
-  const markRead = gmail.operations.find(
-    (op) => op.intentKind === "email.markRead"
-  )
-  if (markRead === undefined) throw new Error("fixture lacks mark read")
-  markRead.routes = [
-    { host: GMAIL_HOST, method: "POST", pathPattern: GMAIL_BATCH_MODIFY_PATH },
-  ]
+  for (const kind of [
+    "email.markRead",
+    "email.label",
+    "email.archive",
+    "email.trash",
+  ]) {
+    const operation = gmail.operations.find((op) => op.intentKind === kind)
+    if (operation === undefined) throw new Error(`fixture lacks ${kind}`)
+    if (kind === "email.label") operation.name = "label"
+    operation.routes = [
+      {
+        host: GMAIL_HOST,
+        method: "POST",
+        pathPattern: GMAIL_BATCH_MODIFY_PATH,
+      },
+    ]
+  }
+  gmail.operations.push({
+    name: "mail_get",
+    effect: "read",
+    reversibility: "reversible",
+    sensitivity: "sensitive",
+    untrustedOutput: true,
+    defaultTier: "auto",
+    authScopes: ["read"],
+    routes: [
+      {
+        host: GMAIL_HOST,
+        method: "GET",
+        pathPattern: "/gmail/v1/users/me/messages/{id}",
+      },
+    ],
+  })
   const setUp = setup([gmail])
   s = setUp
   return setUp
@@ -191,6 +231,95 @@ describe("Gmail mark read through the executor", () => {
     // The audit log holds hashes only, never the message ids it acted on.
     expect(JSON.stringify(auditRows(db))).not.toContain("18c2f0a1b2c3d4e5")
   })
+})
+
+it("executes label, archive and signed trash through the pinned shared route", async () => {
+  const { db, policy } = pinnedGmail()
+  const mailbox = new Map<string, Set<string>>([
+    ["label-1", new Set(["INBOX"])],
+    ["archive-1", new Set(["INBOX", "UNREAD"])],
+    ["trash-1", new Set(["INBOX"])],
+  ])
+  const transport = vi.fn((request: WriteRequest) => {
+    expect(request.url).toBe(URL_)
+    const body: unknown = JSON.parse(request.body)
+    if (typeof body !== "object" || body === null || !("ids" in body))
+      throw new Error("bad request body")
+    const ids = body.ids
+    if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string"))
+      throw new Error("bad message ids")
+    const add = "addLabelIds" in body ? body.addLabelIds : []
+    const remove = "removeLabelIds" in body ? body.removeLabelIds : []
+    if (!Array.isArray(add) || !Array.isArray(remove))
+      throw new Error("bad label change")
+    const priorLabels: Record<string, string[]> = {}
+    for (const id of ids) {
+      const labels = mailbox.get(id)
+      if (labels === undefined) throw new Error("unknown message")
+      priorLabels[id] = [...labels]
+      for (const label of add) labels.add(String(label))
+      for (const label of remove) labels.delete(String(label))
+    }
+    return Promise.resolve({ upstreamRef: null, result: { priorLabels } })
+  })
+  const executor = createExecutor(db, GMAIL_WRITERS, transport)
+  for (const [kind, args, expected] of [
+    [
+      "email.label",
+      { messageIds: ["label-1"], add: ["STARRED"] },
+      ["INBOX", "STARRED"],
+    ],
+    ["email.archive", { messageIds: ["archive-1"] }, ["UNREAD"]],
+    ["email.trash", { messageIds: ["trash-1"] }, ["INBOX", "TRASH"]],
+  ] as const) {
+    const result = propose(db, policy, {
+      intent: { kind, connector: "gmail", args },
+      origin: "task",
+    })
+    if (!result.ok) throw new Error(result.code)
+    if (kind === "email.trash") {
+      expect(result.state).toBe("pending")
+      const auth = testAuthenticator()
+      const begun = beginRegistration(db, "admin")
+      if (!begun.ok) throw new Error("registration refused")
+      const registered = registerCredential(
+        db,
+        WEBAUTHN,
+        "admin",
+        registration(auth, begun.challenge)
+      )
+      if (!registered.ok) throw new Error("credential refused")
+      const prepared = issueNonce(db, result.intentId)
+      if (!prepared.ok) throw new Error("prepare refused")
+      expect(
+        verifyApproval(db, WEBAUTHN, {
+          intentId: result.intentId,
+          nonce: prepared.nonce,
+          assertion: assertion(
+            auth,
+            deviceChallenge(
+              prepared.payloadHash,
+              result.intentId,
+              prepared.nonce
+            )
+          ),
+        }).ok
+      ).toBe(true)
+    } else {
+      expect(result.state).toBe("approved")
+    }
+    expect((await executor.execute(result.intentId)).ok).toBe(true)
+    expect([...(mailbox.get(args.messageIds[0]) ?? [])].sort()).toEqual(
+      [...expected].sort()
+    )
+    expect(transport.mock.lastCall?.[0].operation).toBe(
+      kind === "email.label"
+        ? "label"
+        : kind === "email.archive"
+          ? "archive"
+          : "trash"
+    )
+  }
 })
 
 describe("gmailMarkReadWriter", () => {
