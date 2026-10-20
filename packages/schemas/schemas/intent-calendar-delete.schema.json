@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CalendarDeleteIntent",
+  "description": "Cancel an event by sending METHOD:CANCEL.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "calendar.delete"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "eventUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "UID of the event to cancel"
+        }
+      },
+      "required": ["eventUid"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

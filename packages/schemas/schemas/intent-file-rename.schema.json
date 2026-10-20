@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileRenameIntent",
+  "description": "Rename a file inside an allowed folder.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "file.rename"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Allowed-folder id from local config"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Path relative to the root"
+        },
+        "newName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "New file name"
+        }
+      },
+      "required": ["root", "path", "newName"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

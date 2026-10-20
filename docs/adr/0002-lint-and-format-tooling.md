@@ -14,7 +14,7 @@ Issue #1 preferred Biome for linting and formatting. The Next.js and shadcn/ui s
 
 ## Consequences
 
-- Two tools instead of one. Each has its own config, and both run in CI and locally through `pnpm check`.
+- Two tools instead of one. Each has its own config, and both run in CI and locally through `pnpm verify`.
 - The Next.js and shadcn/ui rules keep working without custom glue.
 - This choice departs from the preference in issue #1, so it is recorded here rather than left implicit.
 

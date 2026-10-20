@@ -13,12 +13,34 @@ module.exports = {
       to: { path: GATE_INTERNALS },
     },
     {
+      name: "gate-imports-schemas-only",
+      comment:
+        "packages/gate calls nothing in the data plane (ADR 0003): it imports no workspace package but @eido/schemas, so never packages/core or an app.",
+      severity: "error",
+      from: { path: "(^|/)packages/gate/" },
+      to: {
+        path: "(^|/)(packages|apps)/",
+        pathNot: "(^|/)packages/(gate|schemas)/",
+      },
+    },
+    {
       name: "web-imports-schemas-and-ui-only",
       comment:
         "apps/web talks to the gate and core over HTTP. It may import @eido/schemas, plus @eido/ui (the shadcn component package, which imports no workspace package).",
       severity: "error",
       from: { path: "(^|/)apps/web/" },
       to: { path: "(^|/)packages/(?!schemas/|ui/)" },
+    },
+    {
+      name: "web-test-fixtures-are-test-only",
+      comment:
+        'apps/web/test/fixtures holds synthetic UI-state data. Only test files and other files under apps/web/test may import it (.claude/rules/no-placeholders.md). The second path catches the "@/" alias form, which the root tsconfig does not resolve (see not-to-unresolvable).',
+      severity: "error",
+      from: {
+        path: "(^|/)apps/web/",
+        pathNot: "(^|/)apps/web/(test/|.*\\.test\\.tsx?$)",
+      },
+      to: { path: ["(^|/)apps/web/test/fixtures/", "^@/test/fixtures/"] },
     },
     {
       name: "schemas-import-nothing",

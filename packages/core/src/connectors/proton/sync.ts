@@ -1,0 +1,185 @@
+import { createHash } from "node:crypto"
+import type { DatabaseSync } from "node:sqlite"
+import { getCursor, ingestBatch } from "../../index/index"
+import type { IndexedDocument } from "../../index/index"
+import type { ProtonConfig } from "./config"
+import { isTextMime, parseMessage, attachmentText } from "../mail/parse"
+import { extractAddresses } from "../reply-target"
+import { callSource } from "./source"
+import type { ProtonMailSource } from "./source"
+
+export const CONNECTOR = "proton"
+
+export type FolderSyncResult = {
+  folder: string
+  inserted: number
+  skipped: number
+  /** True when UIDVALIDITY changed and the folder was read again from the start. */
+  resynced: boolean
+}
+
+const sha256 = (data: string | Uint8Array): string =>
+  createHash("sha256").update(data).digest("hex")
+
+async function toDocuments(
+  raw: Uint8Array,
+  folder: string,
+  uidValidity: string,
+  uid: number
+): Promise<IndexedDocument[]> {
+  const parsed = await parseMessage(raw)
+  const contentHash = sha256(raw)
+  // The Message-ID is the stable identity; a UID is only unique within one UIDVALIDITY epoch.
+  const key = parsed.messageId ?? `proton:${folder}:${uidValidity}:${uid}`
+  const thread = parsed.references[0] ?? parsed.inReplyTo ?? key
+  const message: IndexedDocument = {
+    sha256: contentHash,
+    source: CONNECTOR,
+    sourceRef: key,
+    mime: "message/rfc822",
+    body: parsed.text,
+    title: parsed.subject,
+    ...(parsed.date === undefined ? {} : { occurredAt: parsed.date }),
+    headers: {
+      ...(parsed.messageId === undefined
+        ? {}
+        : { messageId: parsed.messageId }),
+      ...(parsed.inReplyTo === undefined
+        ? {}
+        : { inReplyTo: parsed.inReplyTo }),
+      references: parsed.references,
+      threadId: thread,
+    },
+    names: [
+      ...parsed.from.map((a) => ({
+        role: "from" as const,
+        name: a.name ?? a.address,
+      })),
+      ...parsed.to.map((a) => ({
+        role: "to" as const,
+        name: a.name ?? a.address,
+      })),
+      ...parsed.cc.map((a) => ({
+        role: "cc" as const,
+        name: a.name ?? a.address,
+      })),
+    ],
+    addresses: await extractAddresses(raw),
+    content: raw,
+  }
+  // One document per attachment, keyed off the message's hash so the same file attached to two
+  // different messages stays reachable from both. Non-text attachments are recorded with no text.
+  const attachments = parsed.attachments.map(
+    (attachment, index): IndexedDocument => ({
+      sha256: sha256(`${contentHash}:${index}`),
+      source: CONNECTOR,
+      sourceRef: `${key}#${index}`,
+      mime: attachment.mime,
+      title: attachment.filename,
+      body: isTextMime(attachment.mime)
+        ? (attachmentText(attachment) ?? "")
+        : "",
+      headers: { attachmentOf: key },
+    })
+  )
+  return [message, ...attachments]
+}
+
+/**
+ * Brings one folder up to date in bounded UID batches. The cursor (last UID processed) and the
+ * batch's documents commit together, so a sync stopped anywhere resumes from the stored cursor.
+ * Dedupe is by content hash (the index) and by Message-ID (here), so a message that appears in two
+ * folders, or again after a UIDVALIDITY reset, is stored once.
+ */
+export async function syncFolder(
+  db: DatabaseSync,
+  source: ProtonMailSource,
+  folder: string,
+  batchSize: number
+): Promise<FolderSyncResult> {
+  const state = await callSource(() => source.folderState(folder))
+  const stored = getCursor(db, CONNECTOR, folder)
+  const resynced =
+    stored?.uidvalidity !== undefined &&
+    stored.uidvalidity !== state.uidValidity
+  if (resynced) {
+    // The server renumbered the folder: the old UID cursor means nothing. Start again from UID 1.
+    db.prepare("DELETE FROM cursors WHERE connector = ? AND stream = ?").run(
+      CONNECTOR,
+      folder
+    )
+  }
+  let covered = resynced || stored === null ? 0 : Number(stored.cursor)
+  const known = db.prepare(
+    "SELECT 1 FROM document_text WHERE message_id = ? LIMIT 1"
+  )
+  let inserted = 0
+  let skipped = 0
+  while (covered + 1 < state.uidNext) {
+    const from = covered + 1
+    const fetched = (
+      await callSource(() => source.fetchRaw(folder, from, batchSize))
+    ).filter((m) => m.uid >= from)
+    if (fetched.length === 0) {
+      covered = state.uidNext - 1
+      break
+    }
+    const seen = new Set<string>()
+    const documents: IndexedDocument[] = []
+    let duplicates = 0
+    for (const message of fetched) {
+      const docs = await toDocuments(
+        message.raw,
+        folder,
+        state.uidValidity,
+        message.uid
+      )
+      const id = docs[0]?.headers?.messageId
+      if (id !== undefined && (seen.has(id) || known.get(id) !== undefined)) {
+        duplicates++
+        continue
+      }
+      if (id !== undefined) seen.add(id)
+      documents.push(...docs)
+    }
+    const last = fetched[fetched.length - 1]?.uid ?? from
+    const result = ingestBatch(db, {
+      connector: CONNECTOR,
+      stream: folder,
+      documents,
+      nextCursor: String(last),
+      uidvalidity: state.uidValidity,
+    })
+    inserted += result.inserted
+    skipped += result.skipped + duplicates
+    covered = last
+  }
+  // Records the position reached with an empty tail, and the UIDVALIDITY of a folder with no
+  // mail, so a later change is detected.
+  if (stored === null || resynced || covered !== Number(stored.cursor)) {
+    ingestBatch(db, {
+      connector: CONNECTOR,
+      stream: folder,
+      documents: [],
+      nextCursor: String(covered),
+      uidvalidity: state.uidValidity,
+    })
+  }
+  return { folder, inserted, skipped, resynced }
+}
+
+/**
+ * Syncs every configured folder in order. The first typed failure (`auth_failed`,
+ * `handshake_failed`, gate unavailable) stops the run: the same bad credentials are not retried per
+ * folder or in a loop. Health (#24) decides when to try again.
+ */
+export async function syncProton(
+  db: DatabaseSync,
+  source: ProtonMailSource,
+  config: ProtonConfig
+): Promise<FolderSyncResult[]> {
+  const results: FolderSyncResult[] = []
+  for (const folder of config.folders)
+    results.push(await syncFolder(db, source, folder, config.batchSize))
+  return results
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProfileEntityInput",
+  "description": "Create an entity: a personal context, a property or a company, with a short tag.",
+  "type": "object",
+  "properties": {
+    "kind": { "enum": ["personal", "property", "company"] },
+    "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "tag": { "type": "string", "minLength": 1, "maxLength": 24 }
+  },
+  "required": ["kind", "name", "tag"],
+  "additionalProperties": false
+}

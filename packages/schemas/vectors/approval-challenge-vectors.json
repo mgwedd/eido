@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "vectors": [
+    {
+      "id": "basic",
+      "payloadHash": "14ac090f2cde0f0c5d9f73e700cca33b75ca288fd69f3b20a654b74de6d7dac3",
+      "intentId": "3f2c9a4e-5b1d-4c7a-9e8f-0a1b2c3d4e5f",
+      "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "message": "[\"14ac090f2cde0f0c5d9f73e700cca33b75ca288fd69f3b20a654b74de6d7dac3\",\"3f2c9a4e-5b1d-4c7a-9e8f-0a1b2c3d4e5f\",\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\"]",
+      "challenge": "YPGm_S1lC5340ITCfl_RrnPohAMuZKfHkCF0mjn1V14",
+      "challengeHex": "60f1a6fd2d650b9df8d084c27e5fd1ae73e884032e64a7c79021749a39f5575e"
+    },
+    {
+      "id": "all-zero-nonce",
+      "payloadHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "intentId": "00000000-0000-4000-8000-000000000000",
+      "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "message": "[\"0000000000000000000000000000000000000000000000000000000000000000\",\"00000000-0000-4000-8000-000000000000\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"]",
+      "challenge": "x_xybHAU8FEuYYN_OLrLP5ALfG79yoVXv_NG8E7CaAw",
+      "challengeHex": "c7fc726c7014f0512e61837f38bacb3f900b7c6efdca8557bff346f04ec2680c"
+    },
+    {
+      "id": "nonce-with-dash-and-underscore",
+      "payloadHash": "2dbb70abfff81948a54087830f726a7f6c98bb7f2846a00e7547f8e8e03154a2",
+      "intentId": "c0ffee00-1234-4abc-8def-9876543210ab",
+      "nonce": "-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-__v8",
+      "message": "[\"2dbb70abfff81948a54087830f726a7f6c98bb7f2846a00e7547f8e8e03154a2\",\"c0ffee00-1234-4abc-8def-9876543210ab\",\"-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-_-__v8\"]",
+      "challenge": "q24Hvgkv4vV8quFsWljqUiFJYQhod49hUyq2r2OlVDg",
+      "challengeHex": "ab6e07be092fe2f57caae16c5a58ea522149610868778f61532ab6af63a55438"
+    }
+  ]
+}

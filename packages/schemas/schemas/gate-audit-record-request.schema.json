@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateAuditRecordRequest",
+  "description": "Body of POST /audit on the data-plane listener (#181): one profile change for the gate to append to its audit log as an audit.profile.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector or account reference is sent in clear. The gate also checks that beforeHash and afterHash are null or set as the action requires.",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "entity.create",
+        "entity.update",
+        "entity.delete",
+        "account.assign",
+        "account.unassign"
+      ],
+      "maxLength": 32
+    },
+    "subjectHash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "beforeHash": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        { "type": "null" }
+      ]
+    },
+    "afterHash": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        { "type": "null" }
+      ]
+    }
+  },
+  "required": ["action", "subjectHash", "beforeHash", "afterHash"],
+  "additionalProperties": false
+}

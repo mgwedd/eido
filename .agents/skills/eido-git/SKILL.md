@@ -20,7 +20,7 @@ Repo is `mgwedd/eido`. Main checkout: `<root>/eido`. Worktrees: sibling `<root>/
 
 ## 2. Save and submit
 
-1. `pnpm check`. Fix failures before committing, unless the user only wants a draft.
+1. `pnpm verify`. Fix failures before committing, unless the user only wants a draft.
 2. Commit with a conventional message (`scope: imperative summary`). Stage specific files, never secrets. No AI attribution or model names.
 3. `git fetch -q origin main`, then `git merge --no-edit origin/main`. Conflicts: resolve the obvious ones yourself; for a real choice, explain both sides in plain words and ask.
 4. Push: `git push -u origin HEAD`. If SSH fails, use `git -c credential.helper= -c "credential.helper=!gh auth git-credential" push -q https://github.com/mgwedd/eido.git HEAD:<branch>`.
@@ -32,7 +32,7 @@ Stop only when CI is green, not when the PR opens.
 
 1. `gh pr checks --watch` (or poll `gh pr checks`) until finished.
 2. On a failure: `gh run view <run-id> --log-failed`, find the cause, fix it in the worktree, run the same check locally, commit, push. Repeat.
-3. Common causes: `pnpm format:check` (run `pnpm exec prettier --write .`), lint, typecheck, a dependency boundary or gate-allowlist failure (never weaken a boundary or the allowlist to pass; fix the import or say so in the PR), a non-exact version (`pnpm check:versions`).
+3. Common causes: `pnpm format:check` (run `pnpm exec prettier --write .`), lint, typecheck, a dependency boundary or gate-allowlist failure (never weaken a boundary or the allowlist to pass; fix the import or say so in the PR), a non-exact version (`pnpm turbo run //#check:versions`).
 4. If the same check fails after three honest attempts, stop and tell the user what you tried and what you think is wrong.
 5. When green, say so and give the PR link. Stop. The user or Michael merges; do not merge.
 

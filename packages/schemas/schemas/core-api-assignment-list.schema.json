@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiAssignmentList",
+  "description": "Response of GET /entity-assignments: which entity each connector account is assigned to.",
+  "type": "object",
+  "properties": {
+    "assignments": {
+      "type": "array",
+      "items": { "$ref": "profile-account-assignment.schema.json" }
+    }
+  },
+  "required": ["assignments"],
+  "additionalProperties": false
+}

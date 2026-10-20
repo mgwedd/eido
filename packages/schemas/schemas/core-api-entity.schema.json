@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiEntity",
+  "description": "An entity as core serves it: a personal context, a property or a company.",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "minLength": 36, "maxLength": 36 },
+    "kind": { "enum": ["personal", "property", "company"] },
+    "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "tag": { "type": "string", "minLength": 1, "maxLength": 24 },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "required": ["id", "kind", "name", "tag", "createdAt"],
+  "additionalProperties": false
+}

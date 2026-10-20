@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateProposeRefusal",
+  "description": "Response 422 of POST /intents (#42): the intent does not match the intent schemas and nothing was stored. Each error names a field path and a reason, for example \"$.args.body: required\", and never a payload value.",
+  "type": "object",
+  "properties": {
+    "code": {
+      "const": "invalid_payload"
+    },
+    "errors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      }
+    }
+  },
+  "required": ["code", "errors"],
+  "additionalProperties": false
+}

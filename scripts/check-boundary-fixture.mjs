@@ -35,6 +35,27 @@ const cases = [
     pattern:
       /error\s+(?:not-to-unresolvable|gate-internals-are-private):\s+\S*packages\/core\/src\/bad-workspace\.ts\b/,
   },
+  {
+    label: "relative import of the token vault (bad-vault.ts)",
+    pattern:
+      /error\s+gate-internals-are-private:\s+\S*packages\/core\/src\/bad-vault\.ts\b/,
+  },
+  {
+    label: "the gate importing the data plane (bad-core-import.ts)",
+    pattern:
+      /error\s+gate-imports-schemas-only:\s+\S*packages\/gate\/src\/bad-core-import\.ts\b/,
+  },
+  {
+    label: "app code importing a web test fixture (bad-fixture-import.ts)",
+    pattern:
+      /error\s+web-test-fixtures-are-test-only:\s+\S*apps\/web\/app\/bad-fixture-import\.ts\b/,
+  },
+  {
+    label:
+      "app code importing a web test fixture through the @/ alias (bad-fixture-alias-import.ts)",
+    pattern:
+      /error\s+web-test-fixtures-are-test-only:\s+\S*apps\/web\/app\/bad-fixture-alias-import\.ts\b/,
+  },
 ]
 
 const missing = cases.filter((c) => !c.pattern.test(output))

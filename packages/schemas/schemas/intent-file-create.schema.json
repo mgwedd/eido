@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FileCreateIntent",
+  "description": "Create a file inside an allowed folder.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "file.create"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Allowed-folder id from local config"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Path relative to the root"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20000,
+          "description": "File content"
+        }
+      },
+      "required": ["root", "path", "content"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

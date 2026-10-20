@@ -1,6 +1,12 @@
-import { expect, test } from "vitest"
-import { GATE_API_VERSION } from "./index"
+import { expect, it } from "vitest"
+import * as gate from "./index"
 
-test("gate package loads", () => {
-  expect(GATE_API_VERSION).toBe(0)
+it("exports only the intent API, audit and Proton mail clients", () => {
+  expect(Object.keys(gate).sort()).toEqual([
+    "GateRequestError",
+    "GateUnavailableError",
+    "createAuditClient",
+    "createIntentClient",
+    "createProtonMailClient",
+  ])
 })

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IntentResult",
+  "description": "Either a list of proposed intents or an explicit none with a reason.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "result": {
+          "const": "intents"
+        },
+        "intents": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "intent.schema.json"
+          }
+        }
+      },
+      "required": ["result", "intents"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "result": {
+          "const": "none"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      },
+      "required": ["result", "reason"],
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmailSendIntent",
+  "description": "Send an email, optionally from an existing draft.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "email.send"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 320
+          },
+          "description": "Recipients"
+        },
+        "cc": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 320
+          },
+          "description": "Cc recipients"
+        },
+        "bcc": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 320
+          },
+          "description": "Bcc recipients"
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200,
+          "description": "Subject"
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000,
+          "description": "Plain-text body"
+        },
+        "draftId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Draft to send"
+        }
+      },
+      "required": ["to", "subject", "body"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

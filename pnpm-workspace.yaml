@@ -9,8 +9,11 @@ onlyBuiltDependencies:
   - sharp
 minimumReleaseAge: 10080
 # Already pinned in the lockfile before the 7-day rule; remove once they age out (2026-10-23).
+# vitest and the @vitest/* packages (incl. coverage-v8, which must equal vitest) (5.0.5, published 2026-10-15); remove both from here on 2026-10-22.
 minimumReleaseAgeExclude:
   - turbo
   - "@turbo/*"
   - eslint-plugin-turbo
+  - "@vitest/*"
+  - vitest
 strictDepBuilds: true

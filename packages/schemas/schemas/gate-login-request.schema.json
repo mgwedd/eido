@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateLoginRequest",
+  "description": "Body of POST /auth/login on the phone listener: an assertion over the challenge from the latest login options.",
+  "type": "object",
+  "properties": {
+    "assertion": {
+      "$ref": "gate-webauthn-assertion.schema.json"
+    }
+  },
+  "required": ["assertion"],
+  "additionalProperties": false
+}

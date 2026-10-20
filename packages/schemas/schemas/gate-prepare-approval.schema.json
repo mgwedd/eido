@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePrepareApproval",
+  "description": "Response of POST /approvals/:id/nonce on the phone listener (#15 issueNonce, consumed by #32 prepareApproval), and of POST /approvals/:id/edit for the new intent. Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce as decided in #85 (vectors/approval-challenge-vectors.json), so a compromised core cannot hand the device a challenge for a different payload.",
+  "type": "object",
+  "properties": {
+    "intentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "origin": {
+      "$ref": "gate-intent-origin.schema.json"
+    },
+    "state": {
+      "const": "pending"
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 200000,
+      "description": "The stored canonical payload as RFC 8785 JSON text. The card is rendered from it, and payloadHash is the SHA-256 of its UTF-8 bytes."
+    },
+    "payloadHash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256 the gate computed over the stored canonical payload."
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "description": "Single-use nonce: 32 random bytes as unpadded base64url."
+    },
+    "contextPackId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "documentIds": {
+      "type": "array",
+      "maxItems": 200,
+      "description": "The documents the intent was built from, as proposed. The gate holds ids only; the PWA reads their names from core.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "editedFrom": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "The agent's note on why it proposed the intent. Display-only: it is not part of the payload or its hash. Absent when the proposal had none."
+    }
+  },
+  "required": [
+    "intentId",
+    "kind",
+    "origin",
+    "state",
+    "payload",
+    "payloadHash",
+    "nonce",
+    "documentIds"
+  ],
+  "additionalProperties": false
+}

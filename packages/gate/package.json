@@ -7,16 +7,21 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/main.ts",
     "lint": "eslint",
     "typecheck": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run --coverage",
+    "test:watch": "vitest --watch"
   },
   "dependencies": {
-    "@eido/schemas": "workspace:*"
+    "@eido/schemas": "workspace:*",
+    "imapflow": "2.4.0",
+    "nodemailer": "10.1.0"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
     "@eido/typescript-config": "workspace:*",
+    "@vitest/coverage-v8": "5.0.5",
     "eslint": "10.12.0",
     "typescript": "5.9.3",
     "vitest": "5.0.5"

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateAuditChainStatus",
+  "description": "Result of the gate's verifyChain() (#9). When the gate cannot run the check, the endpoint returns GateApiError instead.",
+  "oneOf": [
+    {
+      "title": "GateAuditChainOk",
+      "description": "Chain verified.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["ok", "rows"],
+      "additionalProperties": false
+    },
+    {
+      "title": "GateAuditChainBroken",
+      "description": "Chain failed verification.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "brokenAtSeq": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "seq of the row where verification failed, as verifyChain returns it. It is 0 for head_mismatch on an empty log, and a tampered log can hold seq values below 1."
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "prev_hash_mismatch",
+            "seq_gap",
+            "bad_genesis",
+            "head_mismatch"
+          ],
+          "maxLength": 32
+        }
+      },
+      "required": ["ok", "brokenAtSeq", "reason"],
+      "additionalProperties": false
+    }
+  ]
+}

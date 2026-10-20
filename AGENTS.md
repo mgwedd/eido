@@ -26,14 +26,12 @@ scripts/               repo checks (gate allowlist, secret scan, boundary fixtur
 pnpm install --frozen-lockfile
 pnpm build                           # turbo build
 pnpm turbo run typecheck lint test   # typecheck, lint and tests
-pnpm boundaries                      # package boundary checks (turbo)
-pnpm check:deps                      # dependency-cruiser boundaries (blocking)
-pnpm check:deps-fixture              # must show the violation fixture failing
-pnpm check:gate-deps                 # gate dependency allowlist
-pnpm check:secrets                   # secret scan
-pnpm check:versions                  # exact-version pinning check
-pnpm format:check                    # prettier --check
-pnpm check                           # all of the above, including format:check
+pnpm verify                          # every check CI runs, as one turbo run; tasks limited to changed packages locally
+pnpm verify --full                   # the exact CI run: every package
+pnpm turbo run //#check:deps         # one repo check alone; also //#check:deps-fixture, //#check:gate-deps,
+                                     # //#check:lint-coverage, //#check:no-js, //#check:no-js-fixture,
+                                     # //#check:secrets, //#check:versions, //#format:check
+pnpm format:check                    # prettier --check (uncached; verify runs it as the cached //#format:check task)
 ```
 
 ## Working rules
@@ -43,8 +41,13 @@ Work is issue-driven and worktree-driven. Read the rule file before you do the t
 - Git: every task in its own worktree cut from `origin/main`; the `sync-main` hook keeps `main` current. `.claude/rules/git-workflow.md`
 - Issues: every feature, bug and open question is an issue with acceptance criteria; claim it (assign yourself) before starting. `.claude/rules/github-issues.md`
 - No placeholders, fake features or dead ends: leave unfinished work out and open an issue for it. `.claude/rules/no-placeholders.md`
+- Design and plan: every UI issue links its design page and plan section; the live artifact wins over exported images. `.claude/rules/design-and-plan-traceability.md`
+- Subagents: do small issues directly, use a subagent per independent piece for medium and large ones. `.claude/rules/subagent-development.md`, agent `.claude/agents/issue-implementer.md`
 - Commits and PR titles: Conventional Commits. `.claude/rules/conventional-commits.md`
+- TypeScript: types from `@eido/schemas`, no `any`, no casts on external input, TypeScript only. `.claude/rules/typescript.md`
+- UI: use shadcn components first; hand-roll only when the registries are exhausted or the component would need warping. `.claude/rules/shadcn-first.md`
 - Tests: run only the affected tests while iterating, everything before the PR. `.claude/rules/testing.md`, `.claude/rules/affected-tests.md`
+- Tests must be able to fail: no assertions on the test data's own size, no self-comparisons, no padding to raise coverage. `.claude/rules/no-fake-tests.md`
 
 ## Invariants
 

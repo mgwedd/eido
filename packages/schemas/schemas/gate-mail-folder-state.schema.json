@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateMailFolderState",
+  "description": "Response of GET /mail/proton/folders/:folder/state (#195): the folder's UIDVALIDITY, as a decimal string, and its UIDNEXT.",
+  "type": "object",
+  "properties": {
+    "uidValidity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 10
+    },
+    "uidNext": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967296
+    }
+  },
+  "required": ["uidValidity", "uidNext"],
+  "additionalProperties": false
+}

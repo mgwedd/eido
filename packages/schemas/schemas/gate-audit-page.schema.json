@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateAuditPage",
+  "description": "One page of audit_log rows, newest first. Rows hold hashes and identifiers, not payload bodies or tokens (#9). nextBefore is the cursor for the next page and is absent on the last page.",
+  "type": "object",
+  "properties": {
+    "entries": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "title": "GateAuditEntry",
+        "description": "One audit_log row.",
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 20,
+            "maxLength": 40
+          },
+          "actor": {
+            "$ref": "gate-audit-actor.schema.json"
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "detailHash": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Lowercase hex SHA-256 of the entry detail."
+          }
+        },
+        "required": ["seq", "ts", "actor", "action", "target", "detailHash"],
+        "additionalProperties": false
+      }
+    },
+    "nextBefore": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": ["entries"],
+  "additionalProperties": false
+}

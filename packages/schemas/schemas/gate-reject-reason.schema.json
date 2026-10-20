@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateRejectReason",
+  "description": "Why the owner rejected an intent; feeds the eval set (decided in #85, was #147). wrong_recipient: the right action addressed to the wrong person or place. wrong_content: what the intent says or does is wrong. wrong_tone: the content is right but the wording is not how the owner would put it. wrong_time: the action is right but not now, or scheduled for the wrong time. not_needed: nothing should have been proposed. other: none of these.",
+  "type": "string",
+  "enum": [
+    "wrong_recipient",
+    "wrong_content",
+    "wrong_tone",
+    "wrong_time",
+    "not_needed",
+    "other"
+  ],
+  "maxLength": 32
+}

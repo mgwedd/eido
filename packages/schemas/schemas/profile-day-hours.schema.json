@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProfileDayHours",
+  "description": "Working hours for one weekday, local time, 24-hour HH:MM.",
+  "type": "object",
+  "properties": {
+    "start": { "type": "string", "minLength": 5, "maxLength": 5 },
+    "end": { "type": "string", "minLength": 5, "maxLength": 5 }
+  },
+  "required": ["start", "end"],
+  "additionalProperties": false
+}

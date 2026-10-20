@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateEditRequest",
+  "description": "Body of POST /approvals/:id/edit (decided in #85, was #146). Unsigned: it creates a new pending intent with editedFrom set and marks the original rejected (edited). The response is a GatePrepareApproval for the new intent, which the device then signs, so one Face ID prompt covers the edit. An edit that changes the tier is refused with tier_changed, one policy forbids with forbidden.",
+  "type": "object",
+  "properties": {
+    "intent": {
+      "type": "object",
+      "description": "The whole edited intent ({ kind, args }), of the same kind as the original. The gate validates it against the intent schemas."
+    }
+  },
+  "required": ["intent"],
+  "additionalProperties": false
+}

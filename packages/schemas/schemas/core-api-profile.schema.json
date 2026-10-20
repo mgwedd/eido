@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiProfile",
+  "description": "The owner profile as core serves it. Response of GET and PATCH /profile.",
+  "type": "object",
+  "properties": {
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "timezone": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "workingHours": { "$ref": "profile-working-hours.schema.json" },
+    "signature": { "type": "string", "maxLength": 2000 },
+    "addresses": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "properties": {
+          "address": { "type": "string", "minLength": 3, "maxLength": 254 },
+          "label": { "type": "string", "maxLength": 100 }
+        },
+        "required": ["address", "label"],
+        "additionalProperties": false
+      }
+    },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "required": [
+    "displayName",
+    "timezone",
+    "workingHours",
+    "signature",
+    "addresses",
+    "updatedAt"
+  ],
+  "additionalProperties": false
+}

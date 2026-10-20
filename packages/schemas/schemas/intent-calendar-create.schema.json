@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CalendarCreateIntent",
+  "description": "Send an iCalendar invitation (METHOD:REQUEST) from the assistant identity. The gate assigns the event UID.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "calendar.create"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "entity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Entity id from local config, for example a company or personal"
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Category from local config"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Event title"
+        },
+        "start": {
+          "type": "string",
+          "format": "date-time",
+          "minLength": 20,
+          "maxLength": 40,
+          "description": "Start, RFC 3339"
+        },
+        "end": {
+          "type": "string",
+          "format": "date-time",
+          "minLength": 20,
+          "maxLength": 40,
+          "description": "End, RFC 3339"
+        },
+        "allDay": {
+          "type": "boolean",
+          "description": "True for an all-day event"
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "Location"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000,
+          "description": "Event description"
+        },
+        "guests": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 320
+          },
+          "description": "Guest email addresses; empty means the owner is the only attendee"
+        }
+      },
+      "required": ["entity", "title", "start", "end", "allDay"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

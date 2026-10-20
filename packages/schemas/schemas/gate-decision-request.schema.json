@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateDecisionRequest",
+  "description": "Body of POST /approvals/:id/decision on the phone listener: a signed approval, or a reject. intentId must equal the id in the path. An edit is POST /approvals/:id/edit (GateEditRequest), whose new intent is then approved here.",
+  "oneOf": [
+    {
+      "title": "GateApproveRequest",
+      "description": "Approve with a WebAuthn assertion over the challenge built from payloadHash, intentId and the nonce from the latest prepare (see vectors/approval-challenge-vectors.json).",
+      "type": "object",
+      "properties": {
+        "intentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "decision": {
+          "const": "approved"
+        },
+        "nonce": {
+          "type": "string",
+          "minLength": 43,
+          "maxLength": 43,
+          "pattern": "^[A-Za-z0-9_-]{43}$",
+          "description": "The nonce the assertion was signed over, as returned by prepare."
+        },
+        "assertion": {
+          "$ref": "gate-webauthn-assertion.schema.json"
+        }
+      },
+      "required": ["intentId", "decision", "nonce", "assertion"],
+      "additionalProperties": false
+    },
+    {
+      "title": "GateRejectRequest",
+      "description": "Reject a pending intent, with an optional reason code.",
+      "type": "object",
+      "properties": {
+        "intentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "decision": {
+          "const": "rejected"
+        },
+        "reasonCode": {
+          "$ref": "gate-reject-reason.schema.json"
+        }
+      },
+      "required": ["intentId", "decision"],
+      "additionalProperties": false
+    }
+  ]
+}
