@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest"
+import { parseMessage } from "./mail/parse"
 import { extractAddresses, replyRecipients } from "./reply-target"
 import type { StoredAddress } from "./reply-target"
 
@@ -7,16 +8,18 @@ const bytes = (lines: string[]) =>
 
 describe("extractAddresses", () => {
   test("reads From, Reply-To, To and Cc in header order, flattening groups", async () => {
-    const found = await extractAddresses(
-      bytes([
-        "From: Ada <ada@example.com>",
-        "Reply-To: desk@example.com",
-        "To: team: bob@example.com, carol@example.com;, dan@example.com",
-        "Cc: eve@example.com",
-        "Subject: x",
-        "",
-        "body",
-      ])
+    const found = extractAddresses(
+      await parseMessage(
+        bytes([
+          "From: Ada <ada@example.com>",
+          "Reply-To: desk@example.com",
+          "To: team: bob@example.com, carol@example.com;, dan@example.com",
+          "Cc: eve@example.com",
+          "Subject: x",
+          "",
+          "body",
+        ])
+      )
     )
     expect(found).toEqual([
       { role: "from", address: "ada@example.com" },
@@ -29,9 +32,9 @@ describe("extractAddresses", () => {
   })
 
   test("a message with no address headers yields none", async () => {
-    expect(await extractAddresses(bytes(["Subject: x", "", "body"]))).toEqual(
-      []
-    )
+    expect(
+      extractAddresses(await parseMessage(bytes(["Subject: x", "", "body"])))
+    ).toEqual([])
   })
 })
 

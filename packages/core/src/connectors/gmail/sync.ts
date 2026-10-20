@@ -90,7 +90,7 @@ async function toDocuments(message: RawMessage): Promise<IndexedDocument[]> {
         name: a.name ?? a.address,
       })),
     ],
-    addresses: await extractAddresses(message.raw),
+    addresses: extractAddresses(parsed),
     content: message.raw,
   }
   const attachments = parsed.attachments.map(

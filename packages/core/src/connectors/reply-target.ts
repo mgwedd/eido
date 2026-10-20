@@ -1,7 +1,6 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
-import PostalMime from "postal-mime"
-import type { Address } from "postal-mime"
 import type { MailAddressRole } from "../index/index"
+import type { ParsedMessage } from "./mail/parse"
 
 // What a reply or forward binds to. The model never supplies the message hash or the reply's
 // recipients: core reads them from what it indexed, so a model cannot name a message it was not
@@ -9,23 +8,8 @@ import type { MailAddressRole } from "../index/index"
 
 export type StoredAddress = { role: MailAddressRole; address: string }
 
-function flatten(list: Address[] | Address | undefined): string[] {
-  return [list ?? []]
-    .flat()
-    .flatMap((entry) =>
-      entry.group !== undefined
-        ? flatten(entry.group)
-        : entry.address === ""
-          ? []
-          : [entry.address]
-    )
-}
-
-/** The header addresses of a raw message, stored beside it at ingest. */
-export async function extractAddresses(
-  raw: Uint8Array
-): Promise<StoredAddress[]> {
-  const email = await PostalMime.parse(raw)
+/** The header addresses of an already-parsed message, stored beside it at ingest. */
+export function extractAddresses(email: ParsedMessage): StoredAddress[] {
   const roles = [
     ["from", email.from],
     ["reply_to", email.replyTo],
@@ -33,7 +17,9 @@ export async function extractAddresses(
     ["cc", email.cc],
   ] as const
   return roles.flatMap(([role, list]) =>
-    flatten(list).map((address) => ({ role, address }))
+    list
+      .filter((mailbox) => mailbox.address !== "")
+      .map(({ address }) => ({ role, address }))
   )
 }
 
