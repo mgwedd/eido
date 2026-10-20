@@ -57,7 +57,7 @@ async function start(
 
 function box(
   uidValidity: number,
-  messages: { uid: number; raw: Buffer }[]
+  messages: { uid: number; raw: Buffer; reportedSize?: number }[]
 ): FakeMailbox {
   const last = messages.at(-1)?.uid ?? 0
   return {
@@ -337,6 +337,31 @@ describe("reads against the fake Bridge", () => {
     expect(page?.messages.map((message) => message.uid)).toEqual([1])
     const next = await bridge.fetchRaw("INBOX", 2, 10)
     expect(next?.messages.map((message) => message.uid)).toEqual([2])
+  })
+
+  it("does not report a later skipped UID past a message stopped by the real-byte budget", async () => {
+    const half = Buffer.concat([first, Buffer.alloc(17 * 1024 * 1024, 0x62)])
+    const big = Buffer.concat([
+      first,
+      Buffer.alloc(MAX_MESSAGE_BYTES + 1 - first.length, 0x61),
+    ])
+    const { bridge } = await start({
+      mailboxes: {
+        INBOX: box(1700000001, [
+          { uid: 1, raw: half },
+          { uid: 2, raw: half, reportedSize: 0 },
+          { uid: 3, raw: big },
+        ]),
+        Drafts: box(1700000002, []),
+        Trash: box(1700000003, []),
+      },
+    })
+    const page = await bridge.fetchRaw("INBOX", 1, 10)
+    expect(page?.messages.map((message) => message.uid)).toEqual([1])
+    expect(page?.skipped).toEqual([])
+    const next = await bridge.fetchRaw("INBOX", 2, 10)
+    expect(next?.messages.map((message) => message.uid)).toEqual([2])
+    expect(next?.skipped).toEqual([3])
   })
 
   it("skips a message over the per-message cap whose size Bridge omits", async () => {

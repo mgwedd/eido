@@ -90,6 +90,66 @@ describe("syncFolder", () => {
     expect(messageIds()).toEqual(["<a@example.com>", "<b@example.com>"])
   })
 
+  test("records oversized UIDs as durable placeholders with the cursor", async () => {
+    source.addFolder("INBOX", "7", [
+      { uid: 1, raw: plainMessage("a") },
+      { uid: 3, raw: plainMessage("b") },
+    ])
+    source.skipUid("INBOX", 2)
+    source.skipUid("INBOX", 4)
+
+    expect(await syncFolder(db, source, "INBOX", 2)).toEqual({
+      folder: "INBOX",
+      inserted: 4,
+      skipped: 2,
+      resynced: false,
+    })
+    expect(source.calls.filter((c) => c.startsWith("fetchRaw"))).toEqual([
+      "fetchRaw INBOX 1 2",
+      "fetchRaw INBOX 3 2",
+    ])
+    expect(getCursor(db, "proton", "INBOX")).toEqual({
+      cursor: "4",
+      uidvalidity: "7",
+    })
+    expect(
+      db
+        .prepare(
+          "SELECT source_ref, mime FROM documents WHERE mime = 'application/x-eido-proton-skipped' ORDER BY source_ref"
+        )
+        .all()
+    ).toEqual([
+      {
+        source_ref: "proton:skipped:INBOX:7:2",
+        mime: "application/x-eido-proton-skipped",
+      },
+      {
+        source_ref: "proton:skipped:INBOX:7:4",
+        mime: "application/x-eido-proton-skipped",
+      },
+    ])
+    expect(messageIds()).toEqual(["<a@example.com>", "<b@example.com>"])
+    expect(await syncFolder(db, source, "INBOX", 2)).toMatchObject({
+      inserted: 0,
+      skipped: 0,
+    })
+    expect(count("SELECT count(*) FROM documents")).toBe(4)
+  })
+
+  test("a page containing only oversized UIDs records a placeholder", async () => {
+    source.addFolder("INBOX", "7")
+    source.skipUid("INBOX", 9)
+
+    expect(await syncFolder(db, source, "INBOX", 2)).toMatchObject({
+      inserted: 1,
+      skipped: 1,
+    })
+    expect(getCursor(db, "proton", "INBOX")?.cursor).toBe("9")
+    expect(
+      db.prepare("SELECT source_ref FROM documents").get()?.["source_ref"]
+    ).toBe("proton:skipped:INBOX:7:9")
+  })
+
   test("an empty folder still records its UIDVALIDITY", async () => {
     source.addFolder("Archive", "42")
     await syncFolder(db, source, "Archive", 5)

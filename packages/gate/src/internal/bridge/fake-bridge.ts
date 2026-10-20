@@ -10,7 +10,13 @@ import type { AddressInfo, Server, Socket } from "node:net"
 // EXPUNGE. It also keeps every line received, unredacted (`imapLines`, `smtpLines`), so a test
 // can check where a credential went on the wire. All mail and credentials in it are synthetic.
 
-export type FakeMessage = { uid: number; raw: Buffer; flags: string[] }
+export type FakeMessage = {
+  uid: number
+  raw: Buffer
+  flags: string[]
+  /** Override RFC822.SIZE to emulate a Bridge that underreports the actual bytes. */
+  reportedSize?: number
+}
 export type FakeMailbox = {
   uidValidity: number
   uidNext: number
@@ -228,7 +234,7 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
       if (items.includes("FLAGS"))
         parts.push(`FLAGS (${message.flags.join(" ")})`)
       if (items.includes("RFC822.SIZE") && options.omitSize !== true)
-        parts.push(`RFC822.SIZE ${message.raw.length}`)
+        parts.push(`RFC822.SIZE ${message.reportedSize ?? message.raw.length}`)
       if (items.includes("ENVELOPE"))
         parts.push(`ENVELOPE ${envelope(message.raw)}`)
       if (items.includes("BODY.PEEK[]")) {

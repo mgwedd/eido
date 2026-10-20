@@ -7,12 +7,15 @@ import { toProtonError } from "./errors"
 export type ProtonMailSource = {
   listFolders(): Promise<string[]>
   folderState(folder: string): Promise<{ uidValidity: string; uidNext: number }>
-  /** Raw RFC 5322 bytes per message, UID ascending, at most `limit` messages from `fromUid`. */
+  /** Raw messages and UIDs skipped for size, from `fromUid` in ascending UID order. */
   fetchRaw(
     folder: string,
     fromUid: number,
     limit: number
-  ): Promise<{ uid: number; raw: Uint8Array }[]>
+  ): Promise<{
+    messages: { uid: number; raw: Uint8Array }[]
+    skipped: number[]
+  }>
 }
 
 /** Runs one source call and surfaces its failures as typed connector errors. */
