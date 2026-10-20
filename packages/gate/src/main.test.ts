@@ -17,7 +17,10 @@ import {
   expect,
   it,
 } from "vitest"
-import { BRIDGE_PASSWORD_KEY } from "./internal/bridge/bridge"
+import {
+  BRIDGE_PASSWORD_KEY,
+  MAX_MESSAGE_BYTES,
+} from "./internal/bridge/bridge"
 import { PROTON_CONNECTOR } from "./internal/bridge/config"
 import { rawMessage, startFakeBridge } from "./internal/bridge/fake-bridge"
 import { createTestCertificate } from "./internal/bridge/test-certificate"
@@ -413,7 +416,8 @@ describe("runGate with Bridge", () => {
 
   async function bridged(
     vaultEntry: string,
-    devVault = true
+    devVault = true,
+    oversize = false
   ): Promise<GateConfig> {
     fake = await startFakeBridge({
       username: USER,
@@ -421,8 +425,19 @@ describe("runGate with Bridge", () => {
       mailboxes: {
         INBOX: {
           uidValidity: 1700000001,
-          uidNext: 5,
-          messages: [{ uid: 4, raw: message, flags: [] }],
+          uidNext: oversize ? 6 : 5,
+          messages: [
+            { uid: 4, raw: message, flags: [] },
+            ...(oversize
+              ? [
+                  {
+                    uid: 5,
+                    raw: Buffer.alloc(MAX_MESSAGE_BYTES + 1, 0x61),
+                    flags: [],
+                  },
+                ]
+              : []),
+          ],
         },
         Drafts: { uidValidity: 1700000002, uidNext: 1, messages: [] },
         Trash: { uidValidity: 1700000003, uidNext: 1, messages: [] },
@@ -465,12 +480,28 @@ describe("runGate with Bridge", () => {
         uidNext: 5,
       })
       const page = await mail.fetchRaw("INBOX", 1, 10)
-      expect(page.map((entry) => entry.uid)).toEqual([4])
-      expect(Buffer.from(page[0]?.raw ?? []).equals(message)).toBe(true)
+      expect(page.messages.map((entry) => entry.uid)).toEqual([4])
+      expect(page.skipped).toEqual([])
+      expect(Buffer.from(page.messages[0]?.raw ?? []).equals(message)).toBe(
+        true
+      )
       await expect(mail.folderState("Nope")).rejects.toMatchObject({
         status: 404,
         code: "not_found",
       })
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("passes an oversized UID through the client without returning its bytes", async () => {
+    const c = await bridged(BRIDGE_SECRET, true, true)
+    const gate = await runGate(c)
+    try {
+      const mail = createProtonMailClient({ socketPath: c.socketPath })
+      const page = await mail.fetchRaw("INBOX", 1, 10)
+      expect(page.messages.map((entry) => entry.uid)).toEqual([4])
+      expect(page.skipped).toEqual([5])
     } finally {
       await gate.close()
     }

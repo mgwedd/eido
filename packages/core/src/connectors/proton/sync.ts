@@ -21,6 +21,22 @@ export type FolderSyncResult = {
 const sha256 = (data: string | Uint8Array): string =>
   createHash("sha256").update(data).digest("hex")
 
+function skippedDocument(
+  folder: string,
+  uidValidity: string,
+  uid: number
+): IndexedDocument {
+  const sourceRef = `proton:skipped:${folder}:${uidValidity}:${uid}`
+  return {
+    sha256: sha256(sourceRef),
+    source: CONNECTOR,
+    sourceRef,
+    mime: "application/x-eido-proton-skipped",
+    title: "Oversized Proton message",
+    body: "This message exceeds the Proton Bridge 25 MiB size limit and was not indexed.",
+  }
+}
+
 async function toDocuments(
   raw: Uint8Array,
   folder: string,
@@ -117,10 +133,12 @@ export async function syncFolder(
   let skipped = 0
   while (covered + 1 < state.uidNext) {
     const from = covered + 1
-    const fetched = (
-      await callSource(() => source.fetchRaw(folder, from, batchSize))
-    ).filter((m) => m.uid >= from)
-    if (fetched.length === 0) {
+    const page = await callSource(() =>
+      source.fetchRaw(folder, from, batchSize)
+    )
+    const fetched = page.messages.filter((m) => m.uid >= from)
+    const skippedUids = page.skipped.filter((uid) => uid >= from)
+    if (fetched.length === 0 && skippedUids.length === 0) {
       covered = state.uidNext - 1
       break
     }
@@ -142,7 +160,12 @@ export async function syncFolder(
       if (id !== undefined) seen.add(id)
       documents.push(...docs)
     }
-    const last = fetched[fetched.length - 1]?.uid ?? from
+    for (const uid of skippedUids)
+      documents.push(skippedDocument(folder, state.uidValidity, uid))
+    const last = Math.max(
+      fetched[fetched.length - 1]?.uid ?? from - 1,
+      skippedUids[skippedUids.length - 1] ?? from - 1
+    )
     const result = ingestBatch(db, {
       connector: CONNECTOR,
       stream: folder,
@@ -151,7 +174,7 @@ export async function syncFolder(
       uidvalidity: state.uidValidity,
     })
     inserted += result.inserted
-    skipped += result.skipped + duplicates
+    skipped += result.skipped + duplicates + skippedUids.length
     covered = last
   }
   // Records the position reached with an empty tail, and the UIDVALIDITY of a folder with no
