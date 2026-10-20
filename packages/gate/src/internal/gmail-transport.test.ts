@@ -146,6 +146,147 @@ function inverseOp(setUp: Setup, intentId: string): unknown {
 }
 
 describe("Gmail write transport: mark read", () => {
+  it.each(["GET", "POST"])(
+    "refreshes once after a %s 401 and uses the new write token",
+    async (method) => {
+      const setUp = pinnedGmail(true)
+      const gmail = fakeGmailApi({ m: ["UNREAD"] })
+      const vault = await vaultWithToken()
+      await vault.set(
+        { connector: "gmail", kind: "refresh_token", client: "write" },
+        "test-refresh-token"
+      )
+      await vault.set(
+        { connector: "gmail", kind: "api_key", client: "write" },
+        "test-client-secret"
+      )
+      const calls: string[] = []
+      let challenged = false
+      const send = vi.fn(
+        (input: string | URL | Request, init?: RequestInit) => {
+          const url =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url
+          const currentMethod = init?.method ?? "GET"
+          if (url === "https://oauth2.googleapis.com/token") {
+            const body =
+              init?.body instanceof URLSearchParams
+                ? init.body
+                : new URLSearchParams()
+            expect(body.get("client_secret")).toBe("test-client-secret")
+            expect(body.get("refresh_token")).toBe("test-refresh-token")
+            calls.push("refresh")
+            return Promise.resolve(
+              Response.json({ access_token: "test-new-token" })
+            )
+          }
+          const authorization =
+            new Headers(init?.headers).get("authorization") ?? ""
+          calls.push(`${currentMethod}:${authorization}`)
+          if (currentMethod === method && !challenged) {
+            challenged = true
+            return Promise.resolve(new Response(null, { status: 401 }))
+          }
+          return gmail.send(input, init)
+        }
+      )
+      const executor = createExecutor(
+        setUp.db,
+        [gmailMarkReadWriter],
+        gmailWriteTransport({
+          db: setUp.db,
+          vault,
+          fetch: send,
+          clientId: "test-client-id",
+        })
+      )
+      const id = proposeMarkRead(setUp, ["m"])
+      expect((await executor.execute(id)).ok).toBe(true)
+      expect(calls.filter((call) => call === "refresh")).toHaveLength(1)
+      expect(calls).toContain(`${method}:Bearer test-new-token`)
+      expect(gmail.unread("m")).toBe(false)
+      expect(inverseOp(setUp, id)).toBe(
+        '{"args":{"messageIds":["m"],"read":false},"kind":"email.markRead"}'
+      )
+      expect(
+        await vault.get({
+          connector: "gmail",
+          kind: "access_token",
+          client: "write",
+        })
+      ).toBe("test-new-token")
+    }
+  )
+
+  it("disables and audits a revoked Gmail grant without a second write", async () => {
+    const setUp = pinnedGmail(true)
+    const gmail = fakeGmailApi({ m: ["UNREAD"] })
+    const vault = await vaultWithToken()
+    await vault.set(
+      { connector: "gmail", kind: "refresh_token", client: "write" },
+      "test-refresh-token"
+    )
+    await vault.set(
+      { connector: "gmail", kind: "api_key", client: "write" },
+      "test-client-secret"
+    )
+    const calls: string[] = []
+    const send = vi.fn((input: string | URL | Request) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url
+      calls.push(url)
+      if (url === "https://oauth2.googleapis.com/token")
+        return Promise.resolve(
+          Response.json({ error: "invalid_grant" }, { status: 400 })
+        )
+      return Promise.resolve(new Response(null, { status: 401 }))
+    })
+    const executor = createExecutor(
+      setUp.db,
+      [gmailMarkReadWriter],
+      gmailWriteTransport({
+        db: setUp.db,
+        vault,
+        fetch: send,
+        clientId: "test-client-id",
+      })
+    )
+    expect(await executor.execute(proposeMarkRead(setUp, ["m"]))).toEqual({
+      ok: false,
+      code: "upstream_error",
+    })
+    expect(calls).toEqual([
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages/m?format=minimal",
+      "https://oauth2.googleapis.com/token",
+    ])
+    expect(
+      setUp.db
+        .prepare("SELECT enabled,health FROM connectors WHERE name='gmail'")
+        .get()
+    ).toMatchObject({ enabled: 0, health: "open" })
+    expect(
+      setUp.db
+        .prepare("SELECT action FROM audit_log WHERE target='gmail'")
+        .all()
+        .map((row) => row["action"])
+    ).toContain("grant_revoked")
+    expect(
+      await vault.get({
+        connector: "gmail",
+        kind: "access_token",
+        client: "write",
+      })
+    ).toBeUndefined()
+    expect(gmail.unread("m")).toBe(true)
+  })
+
   it("stores an inverse_op naming only the messages that were unread, and undo restores just those", async () => {
     const setUp = pinnedGmail(true)
     const gmail = fakeGmailApi({
