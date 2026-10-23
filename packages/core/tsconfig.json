@@ -5,7 +5,11 @@
     "emitDeclarationOnly": true,
     "outDir": "dist/types"
   },
-  "include": ["src", "vitest.config.ts"],
+  "include": [
+    "src",
+    "scripts",
+    "vitest.config.ts"
+  ],
   "references": [
     {
       "path": "../gate"
