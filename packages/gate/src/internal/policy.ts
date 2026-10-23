@@ -27,8 +27,9 @@ import {
 // else the pinned operation's defaultTier. Guards that no config can lift: auto needs an
 // operation the pinned manifest marks reversible, a kind with no pinned operation is forbidden,
 // guests other than the owner force approval, and a file root outside the allowed list is
-// forbidden. Operations are read only through pinnedOperation, so a disabled connector exposes
-// nothing.
+// forbidden. For an edit or a delete, the guests are the event's stored attendees together with
+// the proposed ones; attendees that cannot be read force approval. Operations are read only
+// through pinnedOperation, so a disabled connector exposes nothing.
 
 export type IntentKind = Intent["kind"]
 export type Tier = ConnectorTier
@@ -38,6 +39,13 @@ export type PermissionTable = {
   tiers: Partial<Record<IntentKind, ConfigTier>>
 }
 
+/** An event's current attendees, or `ok: false` when they cannot be read. */
+export type AttendeeRead =
+  { ok: true; attendees: readonly string[] } | { ok: false }
+
+/** Reads the stored attendees of an event from the calendar connector's record (#21). */
+export type StoredAttendees = (eventUid: string) => AttendeeRead
+
 export type PolicyOptions = {
   /** The gate's data dir; the overlay is `permissions.json` in it. */
   dataDir: string
@@ -45,6 +53,8 @@ export type PolicyOptions = {
   ownerAddresses: readonly string[]
   /** Allowed-folder ids a file intent's `root` may name. */
   allowedRoots: readonly string[]
+  /** The calendar's stored attendees; without it every calendar edit and delete needs approval. */
+  storedAttendees?: StoredAttendees
   /** The shipped default table; tests point this at a fixture. */
   shippedPath?: string | URL
 }
@@ -54,6 +64,7 @@ export type Policy = {
   overlay: PermissionTable | undefined
   ownerAddresses: readonly string[]
   allowedRoots: readonly string[]
+  storedAttendees: StoredAttendees | undefined
 }
 
 export type ForbiddenReason =
@@ -168,6 +179,34 @@ function hasOtherGuest(
   return (guests ?? []).some((guest) => !own.has(normalizeAddress(guest)))
 }
 
+/** The event's stored attendees, or undefined when there is no reader or the read fails. */
+function readAttendees(
+  policy: Policy,
+  eventUid: string
+): readonly string[] | undefined {
+  if (policy.storedAttendees === undefined) return undefined
+  try {
+    const read = policy.storedAttendees(eventUid)
+    return read.ok ? read.attendees : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Approval when the event's stored or proposed guests include anyone but the owner. */
+function changesEventWithGuests(
+  policy: Policy,
+  eventUid: string,
+  proposed: readonly string[] | undefined,
+  decision: TierDecision
+): TierDecision {
+  const stored = readAttendees(policy, eventUid)
+  if (stored === undefined) return { tier: "approval" }
+  return hasOtherGuest([...stored, ...(proposed ?? [])], policy.ownerAddresses)
+    ? { tier: "approval" }
+    : decision
+}
+
 /** The tier of one validated intent: the kind's tier, then the payload rules in code. */
 export function intentTier(
   db: DatabaseSync,
@@ -190,10 +229,23 @@ export function intentTier(
         ? decision
         : forbidden("root_not_allowed")
     case "calendar.create":
-    case "calendar.edit":
       return hasOtherGuest(intent.args.guests, policy.ownerAddresses)
         ? { tier: "approval" }
         : decision
+    case "calendar.edit":
+      return changesEventWithGuests(
+        policy,
+        intent.args.eventUid,
+        intent.args.guests,
+        decision
+      )
+    case "calendar.delete":
+      return changesEventWithGuests(
+        policy,
+        intent.args.eventUid,
+        undefined,
+        decision
+      )
     default:
       return decision
   }
@@ -453,6 +505,7 @@ export function loadPolicy(
     overlay,
     ownerAddresses: [...options.ownerAddresses],
     allowedRoots: [...options.allowedRoots],
+    storedAttendees: options.storedAttendees,
   }
   const path = join(options.dataDir, OVERLAY_FILE)
   const read = readOverlay(db, path)

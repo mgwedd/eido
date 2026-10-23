@@ -18,6 +18,7 @@ import {
   FILE_OPS,
   MAIL_OPS,
   OWNER,
+  attendeeRecord,
   auditRows,
   loggedText,
   manifest,
@@ -351,6 +352,19 @@ describe("editing", () => {
       context_pack_id: "pack-1",
     })
     expect(pendingIntents(s.db).map((p) => p.id)).toEqual([id])
+  })
+
+  it("a calendar delete of an event with a stored guest waits for approval; an unreadable event does too", () => {
+    const s = fresh(
+      undefined,
+      attendeeRecord({ "evt-1": [OWNER, "guest@example.com"] })
+    )
+    const withGuest = ok(proposeKind(s, sample("calendar.delete")))
+    expect([withGuest.tier, withGuest.state]).toEqual(["approval", "pending"])
+    const unknown = ok(
+      proposeKind(s, sample("calendar.delete", { eventUid: "evt-9" }))
+    )
+    expect([unknown.tier, unknown.state]).toEqual(["approval", "pending"])
   })
 
   it("re-runs policy: an edit that drops the only other guest would make it auto, so it is refused", () => {

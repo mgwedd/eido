@@ -19,6 +19,7 @@ import {
   FILE_OPS,
   MAIL_OPS,
   OWNER,
+  attendeeRecord,
   auditRows,
   manifest,
   sample,
@@ -89,6 +90,87 @@ describe("the default tier table", () => {
     expect(intentTier(db, policy, sample("calendar.edit", withGuest))).toEqual({
       tier: "approval",
     })
+  })
+
+  it("calendar.edit without guests on an event with a non-owner attendee is approval", () => {
+    const { db, policy } = fresh(
+      undefined,
+      attendeeRecord({ "evt-1": [OWNER, "guest@example.com"] })
+    )
+    expect(
+      intentTier(db, policy, sample("calendar.edit", { title: "Moved" }))
+    ).toEqual({ tier: "approval" })
+  })
+
+  it("calendar.edit adding a guest to an owner-only event is approval, keeping it owner-only stays auto", () => {
+    const { db, policy } = fresh()
+    expect(
+      intentTier(
+        db,
+        policy,
+        sample("calendar.edit", { guests: ["guest@example.com"] })
+      )
+    ).toEqual({ tier: "approval" })
+    expect(
+      intentTier(db, policy, sample("calendar.edit", { guests: [OWNER] }))
+    ).toEqual({ tier: "auto" })
+  })
+
+  it("calendar.delete of an event with a non-owner attendee is approval, of an owner-only event auto", () => {
+    const { db, policy } = fresh(
+      undefined,
+      attendeeRecord({
+        "evt-1": [" Owner@Example.com "],
+        "evt-2": [OWNER, "guest@example.com"],
+      })
+    )
+    expect(
+      intentTier(db, policy, sample("calendar.delete", { eventUid: "evt-1" }))
+    ).toEqual({ tier: "auto" })
+    expect(
+      intentTier(db, policy, sample("calendar.delete", { eventUid: "evt-2" }))
+    ).toEqual({ tier: "approval" })
+  })
+
+  it("calendar edit and delete are approval when the stored attendees cannot be read", () => {
+    const unreadable = [
+      ["unknown event", attendeeRecord({})],
+      [
+        "reader throws",
+        () => {
+          throw new Error("ledger unavailable")
+        },
+      ],
+    ] as const
+    for (const [label, reader] of unreadable) {
+      const s = setup(undefined, reader)
+      try {
+        for (const kind of ["calendar.edit", "calendar.delete"] as const) {
+          expect(
+            intentTier(s.db, s.policy, sample(kind)),
+            `${label} ${kind}`
+          ).toEqual({
+            tier: "approval",
+          })
+        }
+      } finally {
+        s.cleanup()
+      }
+    }
+  })
+
+  it("calendar edit and delete are approval when no stored-attendee reader is configured", () => {
+    const s = fresh()
+    const { policy } = loadPolicy(s.db, {
+      dataDir: s.dataDir,
+      ownerAddresses: [OWNER],
+      allowedRoots: [],
+    })
+    for (const kind of ["calendar.edit", "calendar.delete"] as const) {
+      expect(intentTier(s.db, policy, sample(kind)), kind).toEqual({
+        tier: "approval",
+      })
+    }
   })
 
   it("a file op on an unlisted root is forbidden", () => {
