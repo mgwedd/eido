@@ -23,3 +23,11 @@ export type {
   ModelServerConfig,
   ToolDef,
 } from "./types"
+export { createInferenceQueue, splitIntoBatches } from "./queue"
+export type {
+  BatchedResult,
+  BatchPlan,
+  InferenceQueue,
+  Lane,
+  RunOptions,
+} from "./queue"
