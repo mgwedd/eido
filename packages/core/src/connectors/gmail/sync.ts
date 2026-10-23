@@ -4,7 +4,9 @@ import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
 import { ingestEntityId } from "../ingest-entity"
 import type { IngestAccount } from "../ingest-entity"
-import { attachmentText, parseMessage } from "../mail/parse"
+import { isPdfMime, attachmentText, parseMessage } from "../mail/parse"
+import { pdfAttachmentText } from "../mail/pdf-text"
+import type { Parser } from "../../parsers/index"
 import { extractAddresses } from "../reply-target"
 import type { GmailClient, RawMessage } from "./client"
 import type { GmailConfig } from "./config"
@@ -53,7 +55,8 @@ function readCursor(db: DatabaseSync, label: string): StreamCursor | undefined {
 
 async function toDocuments(
   message: RawMessage,
-  entityId: string
+  entityId: string,
+  parser: Parser | undefined
 ): Promise<IndexedDocument[]> {
   const parsed = await parseMessage(message.raw)
   const contentHash = sha256(message.raw)
@@ -99,19 +102,30 @@ async function toDocuments(
     addresses: extractAddresses(parsed),
     content: message.raw,
   }
-  const attachments = parsed.attachments.map(
-    (attachment, index): IndexedDocument => ({
+  const attachments: IndexedDocument[] = []
+  for (const [index, attachment] of parsed.attachments.entries()) {
+    // A PDF's text comes from the sandboxed parser; one it cannot read is indexed with no text.
+    const body =
+      parser !== undefined && isPdfMime(attachment.mime)
+        ? await pdfAttachmentText(parser, attachment)
+        : attachmentText(attachment)
+    attachments.push({
       sha256: sha256(`${contentHash}:${index}`),
       source: GMAIL_SOURCE,
       sourceRef: `${message.id}#${index}`,
       mime: attachment.mime,
       entityId,
       title: attachment.filename,
-      body: attachmentText(attachment) ?? "",
+      body: body ?? "",
       headers: { attachmentOf: message.id },
     })
-  )
+  }
   return [mail, ...attachments]
+}
+
+export type SyncOptions = {
+  /** Reads PDF attachments. Without it a PDF is indexed with no text. */
+  parser?: Parser
 }
 
 type Totals = { inserted: number; skipped: number }
@@ -124,6 +138,7 @@ type LabelRun = {
   config: GmailConfig
   entityId: string
   totals: Totals
+  parser: Parser | undefined
 }
 
 /**
@@ -132,7 +147,7 @@ type LabelRun = {
  * duplicate document; a message deleted since it was listed is skipped too.
  */
 async function commitBatch(
-  { db, client, label, entityId, totals }: LabelRun,
+  { db, client, label, entityId, totals, parser }: LabelRun,
   ids: readonly string[],
   nextCursor: StreamCursor
 ): Promise<void> {
@@ -152,7 +167,7 @@ async function commitBatch(
       if (error instanceof GmailError && error.code === "not_found") continue
       throw error
     }
-    documents.push(...(await toDocuments(message, entityId)))
+    documents.push(...(await toDocuments(message, entityId, parser)))
   }
   const result = ingestBatch(db, {
     connector: GMAIL_CONNECTOR,
@@ -235,11 +250,20 @@ export async function syncGmailLabel(
   client: GmailClient,
   label: string,
   config: GmailConfig,
-  account: IngestAccount
+  account: IngestAccount,
+  options: SyncOptions = {}
 ): Promise<LabelSyncResult> {
   const entityId = await ingestEntityId(GMAIL_CONNECTOR, account)
   const totals: Totals = { inserted: 0, skipped: 0 }
-  const run: LabelRun = { db, client, label, config, entityId, totals }
+  const run: LabelRun = {
+    db,
+    client,
+    label,
+    config,
+    entityId,
+    totals,
+    parser: options.parser,
+  }
   const cursor = readCursor(db, label)
   if (cursor === undefined) {
     await fullSync(run, undefined)
@@ -276,10 +300,13 @@ export async function syncGmail(
   db: DatabaseSync,
   client: GmailClient,
   config: GmailConfig,
-  account: IngestAccount
+  account: IngestAccount,
+  options: SyncOptions = {}
 ): Promise<LabelSyncResult[]> {
   const results: LabelSyncResult[] = []
   for (const label of config.labels)
-    results.push(await syncGmailLabel(db, client, label, config, account))
+    results.push(
+      await syncGmailLabel(db, client, label, config, account, options)
+    )
   return results
 }

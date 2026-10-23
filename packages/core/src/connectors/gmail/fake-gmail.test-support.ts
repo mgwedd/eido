@@ -32,7 +32,11 @@ export function rfc822(fields: {
   from?: string
   to?: string
   date?: string
-  attachment?: { filename: string; mime: string; content: string }
+  attachment?: {
+    filename: string
+    mime: string
+    content: string | Uint8Array
+  }
 }): string {
   const head = [
     `From: ${fields.from ?? "Ada Sender <ada@example.com>"}`,
