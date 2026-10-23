@@ -31,6 +31,10 @@ jobs:
       - name: Enable pnpm (version pinned by packageManager)
         run: corepack enable
       - run: pnpm install --frozen-lockfile
+      - name: Install Tesseract (parser OCR test, #261)
+        run: |
+          sudo apt-get update
+          apt-cache policy tesseract-ocr tesseract-ocr-eng
       # The checks are one turbo run, defined by scripts/verify.mjs and turbo.json: edit those to change CI and
       # `pnpm verify` together. Pull requests that only touch docs or images run the light steps;
       # every push to main runs everything.
