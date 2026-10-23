@@ -17,3 +17,7 @@ minimumReleaseAgeExclude:
   - "@vitest/*"
   - vitest
 strictDepBuilds: true
+# pdfjs-dist (core's PDF parser, #43) lists a native canvas as optional; the parsers only read text
+# and raw image pixels, so the native module is never installed.
+ignoredOptionalDependencies:
+  - "@napi-rs/canvas"

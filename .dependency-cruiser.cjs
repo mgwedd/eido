@@ -24,6 +24,20 @@ module.exports = {
       },
     },
     {
+      name: "gate-has-no-parsers",
+      comment:
+        "packages/gate never parses documents (#43): it imports none of the parser libraries core's sandboxed parsers use, by package name or through node_modules.",
+      severity: "error",
+      from: { path: "(^|/)packages/gate/" },
+      to: {
+        path: [
+          "^(pdfjs-dist|postal-mime|html-to-text|htmlparser2|dom-serializer|domhandler|domutils)(/|$)",
+          "(^|/)node_modules/(pdfjs-dist|postal-mime|html-to-text|htmlparser2|dom-serializer|domhandler|domutils)/",
+          "(^|/)node_modules/\\.pnpm/(pdfjs-dist|postal-mime|html-to-text|htmlparser2|dom-serializer|domhandler|domutils)@",
+        ],
+      },
+    },
+    {
       name: "web-imports-schemas-and-ui-only",
       comment:
         "apps/web talks to the gate and core over HTTP. It may import @eido/schemas, plus @eido/ui (the shadcn component package, which imports no workspace package).",

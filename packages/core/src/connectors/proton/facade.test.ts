@@ -2,7 +2,9 @@ import { createHash } from "node:crypto"
 import type { IntentClient } from "@eido/gate"
 import { validateIntent } from "@eido/schemas"
 import { beforeEach, describe, expect, test, vi } from "vitest"
-import { openIndex } from "../../index/index"
+import { openDataDb } from "../../ledger/db"
+import { createProfileStore } from "../../profile/store"
+import type { IngestAccount } from "../ingest-entity"
 import { createProtonFacade } from "./facade"
 import { policyFor, protonManifest } from "./manifest"
 import { resolveConfig } from "./config"
@@ -13,9 +15,26 @@ import type { DatabaseSync } from "node:sqlite"
 let db: DatabaseSync
 let source: MemorySource
 
-beforeEach(() => {
-  db = openIndex(":memory:")
+let account: IngestAccount
+
+const ACCOUNT = "assistant@example.com"
+
+beforeEach(async () => {
+  // The ledger schema refuses a document without a known entity.
+  db = openDataDb(":memory:")
   source = new MemorySource()
+  const profile = createProfileStore(db, { audit: () => Promise.resolve() })
+  const assigned = await profile.createEntity({
+    kind: "personal",
+    name: "Test Personal",
+    tag: "ME",
+  })
+  await profile.assignAccount({
+    connector: "proton",
+    accountRef: ACCOUNT,
+    entityId: assigned.id,
+  })
+  account = { accountRef: ACCOUNT, entities: profile }
 })
 
 function setup() {
@@ -71,7 +90,7 @@ describe("write verbs", () => {
     const { facade } = setup()
     // The facade is not given the source, so a source call is impossible by construction; syncing
     // first proves the source is live and that the verbs add no calls to it.
-    await syncFolder(db, source, "INBOX", 10)
+    await syncFolder(db, source, "INBOX", 10, account)
     const before = [...source.calls]
     expect(await callAll(facade)).toEqual([
       { intentId: "intent-1" },
@@ -85,7 +104,7 @@ describe("write verbs", () => {
 
   test("draft creation yields an auto intent; send, reply, forward and trash yield approval intents", async () => {
     source.addFolder("INBOX", "1", [{ uid: 1, raw: plainMessage("a") }])
-    await syncFolder(db, source, "INBOX", 10)
+    await syncFolder(db, source, "INBOX", 10, account)
     const { facade, proposals } = setup()
     await callAll(facade)
     const tiers = proposals.map((p) => [
@@ -118,7 +137,7 @@ describe("write verbs", () => {
 
   test("each write verb sends the caller's rationale unchanged", async () => {
     source.addFolder("INBOX", "1", [{ uid: 1, raw: plainMessage("a") }])
-    await syncFolder(db, source, "INBOX", 10)
+    await syncFolder(db, source, "INBOX", 10, account)
     const { facade, proposals } = setup()
     const note = { rationale: "Lorem ipsum: the sender asked for a reply." }
     const to = ["a@example.com"]
@@ -198,7 +217,7 @@ describe("reply and forward fill what the model cannot", () => {
         ]),
       },
     ])
-    await syncFolder(db, source, "INBOX", 10)
+    await syncFolder(db, source, "INBOX", 10, account)
     return setup()
   }
 
@@ -350,7 +369,7 @@ describe("read verbs answer from the index", () => {
       },
       { uid: 4, raw: withAttachments },
     ])
-    await syncFolder(db, source, "INBOX", 10)
+    await syncFolder(db, source, "INBOX", 10, account)
     source.calls.length = 0
     return setup().facade
   }

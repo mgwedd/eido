@@ -47,3 +47,14 @@ BEGIN SELECT RAISE(ABORT, 'profile history is append-only'); END;
 CREATE TRIGGER profile_history_no_delete BEFORE DELETE ON profile_history
 BEGIN SELECT RAISE(ABORT, 'profile history is append-only'); END;
 `
+
+/**
+ * Schema v4 of eido-data.db: the default entity, given to a document whose connector account has
+ * no assignment. One row or none; the foreign key keeps the entity from being deleted under it.
+ */
+export const DEFAULT_ENTITY_MIGRATION_SQL = `
+CREATE TABLE default_entity (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  entity_id TEXT NOT NULL REFERENCES entities(id)
+);
+`
