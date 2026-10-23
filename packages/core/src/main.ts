@@ -7,7 +7,9 @@ import type { IntentClient } from "@eido/gate"
 import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
 import { openIndex } from "./index/schema"
-import { createProfileStore } from "./profile/store"
+import { openDataDb } from "./ledger/db"
+import { LedgerError } from "./ledger/errors"
+import { createProfileStore, readDefaultEntityId } from "./profile/store"
 import type { ProfileStore } from "./profile/store"
 
 // The data-plane process (ADR 0003). It owns eido-data.db, serves core's API on loopback, and
@@ -138,6 +140,37 @@ export type DataPlane = {
 }
 
 /**
+ * Opens eido-data.db with the ledger schema (`openDataDb`), passing the default entity stored in
+ * the file so documents stored before the ledger get it. When such documents exist and no default
+ * entity is set, the ledger cannot be applied yet: the file is opened at the index schema alone and
+ * `ledger_pending` is logged, so the profile API still serves and the next start applies the
+ * ledger once a default entity is set.
+ */
+export function openDataPlaneDb(
+  path: string,
+  log: DataPlane["log"]
+): DatabaseSync {
+  const index = openIndex(path)
+  let defaultEntityId: string | null
+  try {
+    defaultEntityId = readDefaultEntityId(index)
+  } finally {
+    index.close()
+  }
+  try {
+    return openDataDb(path, defaultEntityId === null ? {} : { defaultEntityId })
+  } catch (error) {
+    if (
+      !(error instanceof LedgerError) ||
+      error.code !== "default_entity_required"
+    )
+      throw error
+    log("ledger_pending", { reason: error.code })
+    return openIndex(path)
+  }
+}
+
+/**
  * Opens eido-data.db, the gate clients and the profile store, whose audit sink is the gate's
  * POST /audit, and logs the configuration and variable names.
  */
@@ -150,7 +183,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       { mode: 0o600 }
     )
   }
-  const db = openIndex(config.dbPath)
+  const db = openDataPlaneDb(config.dbPath, log)
   const gate = createIntentClient({ socketPath: config.gateSocket })
   const audit = createAuditClient({ socketPath: config.gateSocket })
   const profile = createProfileStore(db, { audit: audit.record })

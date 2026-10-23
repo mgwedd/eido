@@ -1,5 +1,5 @@
 import PostalMime from "postal-mime"
-import type { Address } from "postal-mime"
+import type { Address, PostalMimeOptions } from "postal-mime"
 import { htmlToText, stripInvisible } from "./html-text"
 
 // Raw bytes from the gate are untrusted mail. postal-mime does the MIME work (multipart, transfer
@@ -43,8 +43,12 @@ function bytes(content: ArrayBuffer | Uint8Array | string): Uint8Array {
     : new Uint8Array(content)
 }
 
-export async function parseMessage(raw: Uint8Array): Promise<ParsedMessage> {
-  const email = await PostalMime.parse(raw)
+/** `options` are postal-mime's own limits (nesting depth, part count); its defaults apply without them. */
+export async function parseMessage(
+  raw: Uint8Array,
+  options?: PostalMimeOptions
+): Promise<ParsedMessage> {
+  const email = await PostalMime.parse(raw, options)
   const text =
     email.text ?? (email.html === undefined ? "" : htmlToText(email.html))
   return {

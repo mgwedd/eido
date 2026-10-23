@@ -20,6 +20,7 @@
     "domhandler": "5.0.3",
     "html-to-text": "9.0.5",
     "htmlparser2": "8.0.2",
+    "pdfjs-dist": "6.4.299",
     "postal-mime": "4.0.5"
   },
   "devDependencies": {
