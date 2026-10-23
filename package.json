@@ -32,5 +32,11 @@
   "packageManager": "pnpm@10.34.7",
   "engines": {
     "node": ">=24"
+  },
+  "pnpm": {
+    "overrides": {
+      "brace-expansion": "5.0.12",
+      "baseline-browser-mapping": "2.11.29"
+    }
   }
 }
