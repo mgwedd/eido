@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs"
 import {
   createServer as createHttpServer,
   request as httpRequest,
@@ -13,6 +19,10 @@ import { GateUnavailableError } from "@eido/gate"
 import { DatabaseSync } from "node:sqlite"
 import { afterEach, beforeEach, describe, expect, it, test } from "vitest"
 import type { CoreApi } from "./api/index"
+import { ingestBatch } from "./index/ingest"
+import { openIndex } from "./index/schema"
+import { openDataDb } from "./ledger/db"
+import { createProfileStore } from "./profile/store"
 import {
   DATA_DB_FILE,
   DATA_PLANE_LOG_FILE,
@@ -144,6 +154,7 @@ describe("runDataPlane", () => {
       .all()
       .map((row) => String(row["name"]))
     expect(tables).toContain("documents")
+    expect(tables).toContain("obligations")
     await expect(plane.gate.listPending()).rejects.toBeInstanceOf(
       GateUnavailableError
     )
@@ -166,6 +177,95 @@ describe("runDataPlane", () => {
       },
       { event: "stopped" },
     ])
+  })
+})
+
+describe("eido-data.db at startup", () => {
+  const env = (): { EIDO_DATA_DIR: string; EIDO_GATE_SOCKET: string } => ({
+    EIDO_DATA_DIR: join(dir, "data"),
+    EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+  })
+  const quietAudit = { audit: () => Promise.resolve() }
+
+  /** A file at the index schema holding one document stored before the ledger, with no entity. */
+  async function fileWithUnassignedDocument(
+    setDefault: boolean
+  ): Promise<string> {
+    const config = dataPlaneConfig(env())
+    mkdirSync(config.dataDir, { recursive: true })
+    const db = openIndex(config.dbPath)
+    const profile = createProfileStore(db, quietAudit)
+    const entity = await profile.createEntity({
+      kind: "personal",
+      name: "Test Personal",
+      tag: "ME",
+    })
+    if (setDefault) await profile.setDefaultEntityId(entity.id)
+    ingestBatch(db, {
+      connector: "gmail",
+      stream: "INBOX",
+      documents: [
+        {
+          sha256: "a".repeat(64),
+          source: "gmail",
+          sourceRef: "gm-1",
+          mime: "message/rfc822",
+          body: "lorem",
+        },
+      ],
+      nextCursor: "{}",
+    })
+    db.close()
+    return entity.id
+  }
+
+  const entityOfDocument = (db: DatabaseSync): unknown =>
+    db.prepare("SELECT entity_id FROM documents").get()?.["entity_id"]
+  const hasLedger = (db: DatabaseSync): boolean =>
+    db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_schema'"
+      )
+      .get() !== undefined
+
+  it("backfills documents stored without an entity with the default entity", async () => {
+    const entityId = await fileWithUnassignedDocument(true)
+    const plane = runDataPlane(dataPlaneConfig(env()), env())
+    expect(hasLedger(plane.db)).toBe(true)
+    expect(entityOfDocument(plane.db)).toBe(entityId)
+    await plane.close()
+  })
+
+  it("with no default entity it keeps the index schema, logs ledger_pending, and applies the ledger on the next start once a default is set", async () => {
+    const entityId = await fileWithUnassignedDocument(false)
+    const first = runDataPlane(dataPlaneConfig(env()), env())
+    expect(hasLedger(first.db)).toBe(false)
+    expect(entityOfDocument(first.db)).toBeNull()
+    await first.close()
+    const log = readFileSync(
+      join(env().EIDO_DATA_DIR, DATA_PLANE_LOG_FILE),
+      "utf8"
+    )
+    expect(log).toContain(
+      '"event":"ledger_pending","reason":"default_entity_required"'
+    )
+
+    const db = openIndex(dataPlaneConfig(env()).dbPath)
+    await createProfileStore(db, quietAudit).setDefaultEntityId(entityId)
+    db.close()
+    const second = runDataPlane(dataPlaneConfig(env()), env())
+    expect(hasLedger(second.db)).toBe(true)
+    expect(entityOfDocument(second.db)).toBe(entityId)
+    await second.close()
+  })
+  it("does not swallow other ledger failures", async () => {
+    const defaultEntityId = await fileWithUnassignedDocument(true)
+    const db = openDataDb(dataPlaneConfig(env()).dbPath, { defaultEntityId })
+    db.prepare("UPDATE ledger_schema SET version = 99").run()
+    db.close()
+    expect(() => runDataPlane(dataPlaneConfig(env()), env())).toThrow(
+      "ledger schema version 99 is newer than supported"
+    )
   })
 })
 
