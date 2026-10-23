@@ -11,7 +11,7 @@ import {
 } from "@eido/gate"
 import { beforeEach, describe, expect, test } from "vitest"
 import { MIGRATIONS, SCHEMA_VERSION, openIndex } from "../index/schema"
-import { ProfileError, createProfileStore } from "./index"
+import { ProfileError, createProfileStore, readDefaultEntityId } from "./index"
 import type { ProfileAuditEntry, ProfileStore } from "./index"
 import { isIanaTimezone, normalizeAddress } from "./validate"
 
@@ -332,6 +332,72 @@ describe("deleteEntity references", () => {
     })
     await store.deleteEntity(free.id)
     expect(await store.listEntities()).toHaveLength(1)
+  })
+})
+
+describe("default entity", () => {
+  test("is null until set; set saves and returns it, null clears it", async () => {
+    const e = await store.createEntity({
+      kind: "personal",
+      name: "Me",
+      tag: "ME",
+    })
+    expect(await store.getDefaultEntityId()).toBeNull()
+    expect(await store.setDefaultEntityId(e.id)).toBe(e.id)
+    expect(await store.getDefaultEntityId()).toBe(e.id)
+    expect(readDefaultEntityId(db)).toBe(e.id)
+    expect(await store.setDefaultEntityId(null)).toBeNull()
+    expect(await store.getDefaultEntityId()).toBeNull()
+  })
+
+  test("moving the default replaces it and records each change in profile_history", async () => {
+    const a = await store.createEntity({ kind: "company", name: "A", tag: "a" })
+    const b = await store.createEntity({ kind: "company", name: "B", tag: "b" })
+    await store.setDefaultEntityId(a.id)
+    await store.setDefaultEntityId(a.id)
+    await store.setDefaultEntityId(b.id)
+    expect(await store.getDefaultEntityId()).toBe(b.id)
+    expect(
+      db
+        .prepare(
+          "SELECT old_json, new_json FROM profile_history WHERE field = 'profile.defaultEntityId' ORDER BY id"
+        )
+        .all()
+        .map((r) => [r["old_json"], r["new_json"]])
+    ).toEqual([
+      [null, JSON.stringify(a.id)],
+      [JSON.stringify(a.id), JSON.stringify(b.id)],
+    ])
+  })
+
+  test("an unknown entity is refused and the default stays", async () => {
+    const e = await store.createEntity({ kind: "company", name: "A", tag: "a" })
+    await store.setDefaultEntityId(e.id)
+    expect(await codeOf(() => store.setDefaultEntityId("missing"))).toBe(
+      "not_found"
+    )
+    expect(await store.getDefaultEntityId()).toBe(e.id)
+  })
+
+  test("deleting the default entity is refused until the default moves", async () => {
+    const e = await store.createEntity({ kind: "company", name: "A", tag: "a" })
+    await store.setDefaultEntityId(e.id)
+    let blocked: unknown
+    try {
+      await store.deleteEntity(e.id)
+    } catch (error) {
+      blocked = error
+    }
+    expect(blocked).toMatchObject({
+      code: "entity_in_use",
+      details: ["default_entity"],
+    })
+    expect(() =>
+      db.prepare("DELETE FROM entities WHERE id = ?").run(e.id)
+    ).toThrow("FOREIGN KEY constraint failed")
+    await store.setDefaultEntityId(null)
+    await store.deleteEntity(e.id)
+    expect(await store.listEntities()).toEqual([])
   })
 })
 
