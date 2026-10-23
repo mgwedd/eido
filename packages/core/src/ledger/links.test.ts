@@ -99,6 +99,7 @@ describe("deriveHeaderLinks", () => {
     ])
   })
 
+  // Fails if derivation keeps state between calls (a shared seen-set would empty the second run).
   test("running it twice yields identical rows in identical order", () => {
     expect(derive()).toEqual(derive())
   })

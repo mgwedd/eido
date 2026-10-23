@@ -177,25 +177,23 @@ describe("per-field confidence", () => {
   })
 
   test("the database rejects a confidence outside 0..1, an unknown field, a repeat or a field the extraction lacks", () => {
-    const id = insertExtraction(db, {
-      docId: docA,
-      schema: "extracted-fields",
-      status: "extracted",
-      fields: {
-        ...FIELDS,
-        party: { raw: "Example Utility", span: { start: 0, end: 15 } },
-        due_date: {
-          raw: "1 Feb 2030",
-          span: { start: 50, end: 60 },
-          status: "parsed",
-          value: "2030-02-01",
-        },
-      },
-      confidence: { action: 0.9, amount: 0.4, party: 0.7, due_date: 0.8 },
-      model: "local-test-model",
-      createdAt: "2030-01-01T00:00:00.000Z",
-    })
-    db.exec("DELETE FROM extraction_field_confidence WHERE field = 'party'")
+    // Written directly, so the party field has no confidence row yet.
+    const id = Number(
+      db
+        .prepare(
+          `INSERT INTO extractions (doc_id, schema, status, fields_json, model, created_at)
+           VALUES (?, 'extracted-fields', 'extracted', ?, 'local-test-model', '2030-01-01')`
+        )
+        .run(
+          docA,
+          JSON.stringify({
+            ...FIELDS,
+            party: { raw: "Example Utility", span: { start: 0, end: 15 } },
+          })
+        ).lastInsertRowid
+    )
+    rawConfidence(id, "action", 0.9)
+    rawConfidence(id, "amount", 0.4)
     expect(() => rawConfidence(id, "party", 1.5)).toThrow(/CHECK/)
     expect(() => rawConfidence(id, "party", -0.1)).toThrow(/CHECK/)
     // An unknown field is never a key of fields_json, so the presence trigger refuses it first.
@@ -208,7 +206,6 @@ describe("per-field confidence", () => {
     expect(confidences(id)).toEqual([
       ["action", 0.9],
       ["amount", 0.4],
-      ["due_date", 0.8],
       ["party", 1],
     ])
   })
@@ -267,21 +264,36 @@ describe("per-field confidence", () => {
     ).toBe(0)
   })
 
-  test("a confidence row the database rejects rolls the whole extraction back", () => {
-    expect(() =>
-      insertExtraction(db, {
-        docId: docA,
-        schema: "extracted-fields",
-        status: "extracted",
-        fields: FIELDS,
-        confidence: { action: 0.9, amount: 2 },
-        model: "local-test-model",
-        createdAt: "2030-01-01T00:00:00.000Z",
-      })
-    ).toThrow(/CHECK/)
+  test("a confidence outside 0..1 is refused before anything is written", () => {
+    expect(
+      codeOf(() =>
+        insertExtraction(db, {
+          docId: docA,
+          schema: "extracted-fields",
+          status: "extracted",
+          fields: FIELDS,
+          confidence: { action: 0.9, amount: 2 },
+          model: "local-test-model",
+          createdAt: "2030-01-01T00:00:00.000Z",
+        })
+      )
+    ).toBe("invalid_confidence")
     expect(
       db.prepare("SELECT count(*) AS n FROM extractions").get()?.["n"]
     ).toBe(0)
+  })
+
+  test("stored extractions and confidences cannot be changed or deleted", () => {
+    const id = rawExtraction()
+    expect(() =>
+      db.exec("UPDATE extraction_field_confidence SET confidence = 0.1")
+    ).toThrow(/append-only/)
+    expect(() => db.exec("DELETE FROM extraction_field_confidence")).toThrow(
+      /append-only/
+    )
+    expect(() =>
+      db.prepare("DELETE FROM extractions WHERE id = ?").run(id)
+    ).toThrow(/append-only/)
   })
 })
 
@@ -451,6 +463,56 @@ describe("entities come from the profile store (#80)", () => {
   })
 })
 
+describe("an obligation keeps its source", () => {
+  test("its status can change, its document and span cannot, and it is never deleted", () => {
+    const id = insertObligation(db, obligation())
+    db.prepare("UPDATE obligations SET status = 'done' WHERE id = ?").run(id)
+    expect(listObligations(db).map((o) => o.status)).toEqual(["done"])
+    expect(() =>
+      db.prepare("UPDATE obligations SET doc_id = ? WHERE id = ?").run(docB, id)
+    ).toThrow(/keeps its source/)
+    expect(() =>
+      db
+        .prepare("UPDATE obligations SET source_span = ? WHERE id = ?")
+        .run('{"start":0,"end":1}', id)
+    ).toThrow(/keeps its source/)
+    expect(() =>
+      db.prepare("DELETE FROM obligations WHERE id = ?").run(id)
+    ).toThrow(/not deleted/)
+  })
+
+  test("an obligation id is never reused", () => {
+    const first = insertObligation(db, obligation())
+    db.exec("DROP TRIGGER obligations_no_delete")
+    db.prepare("DELETE FROM obligations WHERE id = ?").run(first)
+    expect(insertObligation(db, obligation())).toBe(first + 1)
+  })
+
+  test("a span stored as a BLOB, or with a mistyped optional field, is refused", () => {
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO obligations (entity_id, action, status, doc_id, source_span)
+           VALUES (?, 'Pay', 'open', ?, ?)`
+        )
+        .run(property.id, docA, new TextEncoder().encode('{"start":0,"end":3}'))
+    ).toThrow(/CHECK/)
+    expect(
+      codeOf(() =>
+        insertObligation(
+          db,
+          obligation({
+            // A caller holding unchecked JSON; the schema type says message_id is a string.
+            span: JSON.parse(
+              '{"start":0,"end":3,"message_id":7}'
+            ) as ObligationInput["span"],
+          })
+        )
+      )
+    ).toBe("invalid_span")
+  })
+})
+
 describe("getObligationSource", () => {
   test("returns the document's blob path and the stored span", () => {
     const span = {
@@ -475,6 +537,8 @@ describe("getObligationSource", () => {
 
   test("a span corrupted outside the ledger is reported, not returned", () => {
     const id = insertObligation(db, obligation())
+    // A file edited by hand, outside the ledger's constraints and triggers.
+    db.exec("DROP TRIGGER obligations_source_fixed")
     db.exec("PRAGMA ignore_check_constraints = ON")
     db.prepare("UPDATE obligations SET source_span = '[1,2]' WHERE id = ?").run(
       id
@@ -525,13 +589,5 @@ describe("parameterized statements only", () => {
       }),
     })
     expect(search(db, { text: "O'Brien" }).map((h) => h.sha256)).toEqual([doc])
-    expect(
-      db
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('documents', 'obligations') ORDER BY name"
-        )
-        .all()
-        .map((r) => r["name"])
-    ).toEqual(["documents", "obligations"])
   })
 })

@@ -195,6 +195,12 @@ describe("every document has exactly one entity", () => {
       0
     )
     expect(ingest(property.id).inserted).toBe(1)
+    // A repeat of the stored document is skipped, with or without an entity.
+    expect(ingest()).toEqual({
+      inserted: 0,
+      skipped: 1,
+      uidvalidityChanged: false,
+    })
     expect(
       db.prepare("SELECT entity_id FROM documents").get()?.["entity_id"]
     ).toBe(property.id)

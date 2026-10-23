@@ -62,7 +62,14 @@ function isSpan(value: unknown): value is SourceSpan {
   if (typeof value !== "object" || value === null) return false
   const start: unknown = Reflect.get(value, "start")
   const end: unknown = Reflect.get(value, "end")
+  const optional = (key: string, type: "string" | "number"): boolean => {
+    const field: unknown = Reflect.get(value, key)
+    return field === undefined || typeof field === type
+  }
   return (
+    optional("message_id", "string") &&
+    optional("page", "number") &&
+    optional("line", "number") &&
     typeof start === "number" &&
     typeof end === "number" &&
     Number.isInteger(start) &&
@@ -96,7 +103,14 @@ export function insertExtraction(
           `field ${field}: a confidence is required exactly when the field is present`
         )
       }
-      if (confidence !== undefined) confidences.push([field, confidence])
+      if (confidence === undefined) continue
+      if (!(confidence >= 0 && confidence <= 1)) {
+        throw new LedgerError(
+          "invalid_confidence",
+          `field ${field}: confidence must be between 0 and 1`
+        )
+      }
+      confidences.push([field, confidence])
     }
   }
   const fieldsJson =
