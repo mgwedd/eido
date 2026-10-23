@@ -8,6 +8,10 @@
  * it runs after the ledger migration and on a fresh one before it.
  *
  * v1: every document has an entity, plus extractions, per-field confidence, obligations and links.
+ * v2: due dates must be real calendar dates, `ent:` link endpoints must exist, and an obligation
+ *     carries the same entity as its source document (#259). The checks are triggers, since a
+ *     column CHECK cannot be changed in place; they apply to writes from now on and leave rows
+ *     stored under v1 as they are.
  */
 export const LEDGER_MIGRATIONS: readonly string[] = [
   `
@@ -128,6 +132,37 @@ CREATE TRIGGER entities_no_delete_referenced BEFORE DELETE ON entities
 WHEN EXISTS (SELECT 1 FROM documents WHERE entity_id = OLD.id)
   OR EXISTS (SELECT 1 FROM obligations WHERE entity_id = OLD.id)
 BEGIN SELECT RAISE(ABORT, 'entity is still referenced'); END;
+`,
+  `
+-- date() returns NULL for an impossible date such as 2030-02-30 and normalises none, so a value
+-- that survives the round trip is a real YYYY-MM-DD (the v1 GLOB already fixes the shape).
+CREATE TRIGGER obligations_due_at_real_date_on_insert BEFORE INSERT ON obligations
+WHEN NEW.due_at IS NOT NULL AND date(NEW.due_at) IS NOT NEW.due_at
+BEGIN SELECT RAISE(ABORT, 'due_at is not a real date'); END;
+CREATE TRIGGER obligations_due_at_real_date_on_update BEFORE UPDATE OF due_at ON obligations
+WHEN NEW.due_at IS NOT NULL AND date(NEW.due_at) IS NOT NEW.due_at
+BEGIN SELECT RAISE(ABORT, 'due_at is not a real date'); END;
+
+-- An obligation names its source document's entity (a shared bill is one obligation per entity,
+-- each with its own document). A missing document is left to the foreign key. Documents never change entity once set, so this holds for good.
+CREATE TRIGGER obligations_entity_matches_document_on_insert BEFORE INSERT ON obligations
+WHEN EXISTS (SELECT 1 FROM documents WHERE sha256 = NEW.doc_id AND entity_id IS NOT NEW.entity_id)
+BEGIN SELECT RAISE(ABORT, 'obligation entity differs from its document entity'); END;
+CREATE TRIGGER obligations_entity_matches_document_on_update BEFORE UPDATE OF entity_id ON obligations
+WHEN EXISTS (SELECT 1 FROM documents WHERE sha256 = NEW.doc_id AND entity_id IS NOT NEW.entity_id)
+BEGIN SELECT RAISE(ABORT, 'obligation entity differs from its document entity'); END;
+
+DROP TRIGGER links_endpoints_exist;
+CREATE TRIGGER links_endpoints_exist BEFORE INSERT ON links
+WHEN (NEW.src GLOB 'doc:*' AND NOT EXISTS (SELECT 1 FROM documents WHERE sha256 = substr(NEW.src, 5)))
+  OR (NEW.dst GLOB 'doc:*' AND NOT EXISTS (SELECT 1 FROM documents WHERE sha256 = substr(NEW.dst, 5)))
+  OR (NEW.src GLOB 'obl:*' AND NOT EXISTS (
+    SELECT 1 FROM obligations WHERE id = CAST(substr(NEW.src, 5) AS INTEGER) AND 'obl:' || id = NEW.src))
+  OR (NEW.dst GLOB 'obl:*' AND NOT EXISTS (
+    SELECT 1 FROM obligations WHERE id = CAST(substr(NEW.dst, 5) AS INTEGER) AND 'obl:' || id = NEW.dst))
+  OR (NEW.src GLOB 'ent:*' AND NOT EXISTS (SELECT 1 FROM entities WHERE id = substr(NEW.src, 5)))
+  OR (NEW.dst GLOB 'ent:*' AND NOT EXISTS (SELECT 1 FROM entities WHERE id = substr(NEW.dst, 5)))
+BEGIN SELECT RAISE(ABORT, 'link endpoint does not exist'); END;
 `,
 ]
 
