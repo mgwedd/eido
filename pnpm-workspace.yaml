@@ -16,8 +16,20 @@ minimumReleaseAgeExclude:
   - eslint-plugin-turbo
   - "@vitest/*"
   - vitest
+  # Security patches (#292), published 2026-10-17..22; remove once they age out on 2026-10-29.
+  - postal-mime
+  - nodemailer
+  - happy-dom
+  - body-parser
+  - fast-uri
 strictDepBuilds: true
 # pdfjs-dist (core's PDF parser, #43) lists a native canvas as optional; the parsers only read text
 # and raw image pixels, so the native module is never installed.
 ignoredOptionalDependencies:
   - "@napi-rs/canvas"
+# Patched versions of transitive dependencies with security advisories (#286, #292).
+overrides:
+  brace-expansion: 5.0.12
+  baseline-browser-mapping: 2.11.29
+  body-parser: 2.4.0
+  fast-uri: 3.1.9

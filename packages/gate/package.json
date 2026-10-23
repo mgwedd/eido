@@ -16,7 +16,7 @@
   "dependencies": {
     "@eido/schemas": "workspace:*",
     "imapflow": "2.4.0",
-    "nodemailer": "10.1.0"
+    "nodemailer": "10.1.4"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
