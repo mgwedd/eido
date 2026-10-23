@@ -51,7 +51,10 @@ export function loopbackBaseUrl(baseUrl: string): string {
       `inference is local: model server baseUrl must be 127.0.0.1, ::1 or localhost, not ${url.hostname}`
     )
   }
-  return baseUrl.replace(/\/+$/, "")
+  // A loop, not /\/+$/: that regex backtracks quadratically on a long run of slashes.
+  let end = baseUrl.length
+  while (baseUrl[end - 1] === "/") end -= 1
+  return baseUrl.slice(0, end)
 }
 
 function positive(name: string, value: number): number {
