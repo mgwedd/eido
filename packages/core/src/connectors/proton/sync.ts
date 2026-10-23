@@ -2,6 +2,8 @@ import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
+import { ingestEntityId } from "../ingest-entity"
+import type { IngestAccount, IngestEntities } from "../ingest-entity"
 import type { ProtonConfig } from "./config"
 import { isTextMime, parseMessage, attachmentText } from "../mail/parse"
 import { extractAddresses } from "../reply-target"
@@ -24,7 +26,8 @@ const sha256 = (data: string | Uint8Array): string =>
 function skippedDocument(
   folder: string,
   uidValidity: string,
-  uid: number
+  uid: number,
+  entityId: string
 ): IndexedDocument {
   const sourceRef = `proton:skipped:${folder}:${uidValidity}:${uid}`
   return {
@@ -32,6 +35,7 @@ function skippedDocument(
     source: CONNECTOR,
     sourceRef,
     mime: "application/x-eido-proton-skipped",
+    entityId,
     title: "Oversized Proton message",
     body: "This message exceeds the Proton Bridge 25 MiB size limit and was not indexed.",
   }
@@ -41,7 +45,8 @@ async function toDocuments(
   raw: Uint8Array,
   folder: string,
   uidValidity: string,
-  uid: number
+  uid: number,
+  entityId: string
 ): Promise<IndexedDocument[]> {
   const parsed = await parseMessage(raw)
   const contentHash = sha256(raw)
@@ -53,6 +58,7 @@ async function toDocuments(
     source: CONNECTOR,
     sourceRef: key,
     mime: "message/rfc822",
+    entityId,
     body: parsed.text,
     title: parsed.subject,
     ...(parsed.date === undefined ? {} : { occurredAt: parsed.date }),
@@ -91,6 +97,7 @@ async function toDocuments(
       source: CONNECTOR,
       sourceRef: `${key}#${index}`,
       mime: attachment.mime,
+      entityId,
       title: attachment.filename,
       body: isTextMime(attachment.mime)
         ? (attachmentText(attachment) ?? "")
@@ -106,13 +113,19 @@ async function toDocuments(
  * batch's documents commit together, so a sync stopped anywhere resumes from the stored cursor.
  * Dedupe is by content hash (the index) and by Message-ID (here), so a message that appears in two
  * folders, or again after a UIDVALIDITY reset, is stored once.
+ *
+ * Every document is stored with the account's entity (its assignment, else the default entity).
+ * With neither, it throws EntityRequiredError before reading the folder: nothing is stored and the
+ * cursor stays where it was.
  */
 export async function syncFolder(
   db: DatabaseSync,
   source: ProtonMailSource,
   folder: string,
-  batchSize: number
+  batchSize: number,
+  account: IngestAccount
 ): Promise<FolderSyncResult> {
+  const entityId = await ingestEntityId(CONNECTOR, account)
   const state = await callSource(() => source.folderState(folder))
   const stored = getCursor(db, CONNECTOR, folder)
   const resynced =
@@ -150,7 +163,8 @@ export async function syncFolder(
         message.raw,
         folder,
         state.uidValidity,
-        message.uid
+        message.uid,
+        entityId
       )
       const id = docs[0]?.headers?.messageId
       if (id !== undefined && (seen.has(id) || known.get(id) !== undefined)) {
@@ -161,7 +175,7 @@ export async function syncFolder(
       documents.push(...docs)
     }
     for (const uid of skippedUids)
-      documents.push(skippedDocument(folder, state.uidValidity, uid))
+      documents.push(skippedDocument(folder, state.uidValidity, uid, entityId))
     const last = Math.max(
       fetched[fetched.length - 1]?.uid ?? from - 1,
       skippedUids[skippedUids.length - 1] ?? from - 1
@@ -199,10 +213,14 @@ export async function syncFolder(
 export async function syncProton(
   db: DatabaseSync,
   source: ProtonMailSource,
-  config: ProtonConfig
+  config: ProtonConfig,
+  entities: IngestEntities
 ): Promise<FolderSyncResult[]> {
+  const account: IngestAccount = { accountRef: config.username, entities }
   const results: FolderSyncResult[] = []
   for (const folder of config.folders)
-    results.push(await syncFolder(db, source, folder, config.batchSize))
+    results.push(
+      await syncFolder(db, source, folder, config.batchSize, account)
+    )
   return results
 }

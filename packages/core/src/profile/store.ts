@@ -56,6 +56,10 @@ export interface ProfileStore {
     accountRef: string
   ): Promise<Entity | null>
   entityByTag(tag: string): Promise<Entity | null>
+  /** The entity given to a document whose connector account has no assignment, or null. */
+  getDefaultEntityId(): Promise<string | null>
+  /** Sets (an existing entity's id) or clears (null) the default entity; returns the new value. */
+  setDefaultEntityId(id: string | null): Promise<string | null>
   /** Resolves once every call queued so far, and any queued while waiting, has settled. */
   drain(): Promise<void>
 }
@@ -74,6 +78,17 @@ function toEntity(row: Row): Entity {
     tag: text(row, "tag"),
     createdAt: text(row, "created_at"),
   }
+}
+
+/**
+ * The default entity stored in `db`, or null. The data plane reads it before the profile store
+ * exists, to open eido-data.db with it (`openDataDb`'s `defaultEntityId`).
+ */
+export function readDefaultEntityId(db: DatabaseSync): string | null {
+  const row = db
+    .prepare("SELECT entity_id FROM default_entity WHERE id = 1")
+    .get()
+  return row === undefined ? null : String(row["entity_id"])
 }
 
 function invalid(issues: string[]): ProfileError {
@@ -333,6 +348,18 @@ export function createProfileStore(
           "entity_assignments",
           "SELECT 1 FROM entity_assignments WHERE entity_id = ? LIMIT 1",
         ],
+        ["default_entity", "SELECT 1 FROM default_entity WHERE entity_id = ?"],
+        // The obligations table exists once the ledger schema is applied (openDataDb).
+        ...(one(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'obligations'"
+        )
+          ? [
+              [
+                "obligations",
+                "SELECT 1 FROM obligations WHERE entity_id = ? LIMIT 1",
+              ],
+            ]
+          : []),
       ]
         .filter(([, sql]) => one(sql ?? "", id) !== undefined)
         .map(([table]) => table ?? "")
@@ -346,6 +373,26 @@ export function createProfileStore(
       run("DELETE FROM entities WHERE id = ?", id)
       record("entity.delete", before, null)
       await audit("entity.delete", id, before, null)
+    })
+  }
+
+  async function setDefaultEntityId(id: string | null): Promise<string | null> {
+    return transaction(() => {
+      const before = readDefaultEntityId(db)
+      if (id === before) return before
+      if (id === null) {
+        run("DELETE FROM default_entity WHERE id = 1")
+      } else {
+        if (!entityById(id))
+          throw new ProfileError("not_found", "no such entity")
+        run(
+          `INSERT INTO default_entity (id, entity_id) VALUES (1, ?)
+           ON CONFLICT(id) DO UPDATE SET entity_id = excluded.entity_id`,
+          id
+        )
+      }
+      record("profile.defaultEntityId", before, id)
+      return id
     })
   }
 
@@ -447,6 +494,8 @@ export function createProfileStore(
       const row = one("SELECT * FROM entities WHERE tag = ?", tag)
       return row ? toEntity(row) : null
     }),
+    getDefaultEntityId: serialized(() => readDefaultEntityId(db)),
+    setDefaultEntityId: serialized(setDefaultEntityId),
     drain: async () => {
       for (let settled = tail; ; settled = tail) {
         await settled

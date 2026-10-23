@@ -1,8 +1,11 @@
 import { DatabaseSync } from "node:sqlite"
-import { PROFILE_MIGRATION_SQL } from "../profile/migration"
+import {
+  DEFAULT_ENTITY_MIGRATION_SQL,
+  PROFILE_MIGRATION_SQL,
+} from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -76,6 +79,8 @@ BEGIN SELECT RAISE(ABORT, 'mail addresses are immutable'); END;
 CREATE TRIGGER mail_addresses_no_delete BEFORE DELETE ON mail_addresses
 BEGIN SELECT RAISE(ABORT, 'mail addresses are immutable'); END;
 `,
+  // v4: the default entity of documents whose account has no assignment
+  DEFAULT_ENTITY_MIGRATION_SQL,
 ]
 
 /** Open (or create) the index database and bring its schema to the current version. Idempotent. */

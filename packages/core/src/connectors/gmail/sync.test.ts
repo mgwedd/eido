@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { beforeEach, describe, expect, test } from "vitest"
-import { getCursor, openIndex, search } from "../../index/index"
+import { getCursor, search } from "../../index/index"
+import { openDataDb } from "../../ledger/db"
+import { createProfileStore } from "../../profile/store"
+import type { ProfileStore } from "../../profile/store"
+import type { Entity } from "../../profile/types"
+import { EntityRequiredError } from "../ingest-entity"
+import type { IngestAccount } from "../ingest-entity"
 import { createGmailClient } from "./client"
 import type { GmailClient } from "./client"
 import { resolveGmailConfig } from "./config"
@@ -12,12 +18,37 @@ import { syncGmail, syncGmailLabel } from "./sync"
 let db: DatabaseSync
 let gmail: FakeGmail
 let client: GmailClient
+let profile: ProfileStore
+let assigned: Entity
+let account: IngestAccount
 
-beforeEach(() => {
-  db = openIndex(":memory:")
+const ACCOUNT = "owner@example.invalid"
+
+beforeEach(async () => {
+  // The ledger schema refuses a document without a known entity.
+  db = openDataDb(":memory:")
   gmail = createFakeGmail()
   client = createGmailClient(gmail.transport)
+  profile = createProfileStore(db, { audit: () => Promise.resolve() })
+  assigned = await profile.createEntity({
+    kind: "personal",
+    name: "Test Personal",
+    tag: "ME",
+  })
+  await profile.assignAccount({
+    connector: "gmail",
+    accountRef: ACCOUNT,
+    entityId: assigned.id,
+  })
+  account = { accountRef: ACCOUNT, entities: profile }
 })
+
+/** The distinct entity ids of the stored documents. */
+const storedEntities = (): unknown[] =>
+  db
+    .prepare("SELECT DISTINCT entity_id FROM documents ORDER BY entity_id")
+    .all()
+    .map((row) => row["entity_id"])
 
 const config = resolveGmailConfig({ batchSize: 2, fullSyncLimit: 10 })
 
@@ -45,7 +76,7 @@ const pathsRequested = (): string[] =>
 describe("initial sync", () => {
   test("pages the label in bounded batches, stores each message once and the history id", async () => {
     seedInbox(gmail, 5)
-    expect(await syncGmailLabel(db, client, "INBOX", config)).toEqual({
+    expect(await syncGmailLabel(db, client, "INBOX", config, account)).toEqual({
       label: "INBOX",
       inserted: 5,
       skipped: 0,
@@ -71,7 +102,8 @@ describe("initial sync", () => {
       db,
       client,
       "INBOX",
-      resolveGmailConfig({ batchSize: 2, fullSyncLimit: 3 })
+      resolveGmailConfig({ batchSize: 2, fullSyncLimit: 3 }),
+      account
     )
     // Newest first: the three most recent.
     expect(storedIds()).toEqual(["gm-003", "gm-004", "gm-005"])
@@ -90,7 +122,7 @@ describe("initial sync", () => {
         from: "Ada Sender <ada@example.com>",
       }),
     })
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     expect(
       db
         .prepare(
@@ -125,7 +157,7 @@ describe("initial sync", () => {
         to: "owner@example.com",
       }),
     })
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     expect(
       db
         .prepare("SELECT role, address FROM mail_addresses ORDER BY role")
@@ -153,7 +185,7 @@ describe("initial sync", () => {
         },
       }),
     })
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     expect(
       db
         .prepare(
@@ -180,7 +212,7 @@ describe("initial sync", () => {
       () =>
         new Response(JSON.stringify({ error: { code: 404 } }), { status: 404 })
     )
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     expect(storedIds()).toEqual(["gm-001"])
   })
 })
@@ -210,7 +242,7 @@ describe("planted Message-ID", () => {
       labelIds: ["INBOX"],
       raw: planted,
     })
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     const hash = (s: string): string =>
       createHash("sha256").update(s).digest("hex")
     expect(
@@ -234,11 +266,13 @@ describe("planted Message-ID", () => {
 describe("incremental sync", () => {
   test("a second run starts from the stored history id and fetches only newer messages", async () => {
     seedInbox(gmail, 3)
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     seedInbox(gmail, 2, 4)
     gmail.requests.length = 0
 
-    expect(await syncGmailLabel(db, client, "INBOX", config)).toMatchObject({
+    expect(
+      await syncGmailLabel(db, client, "INBOX", config, account)
+    ).toMatchObject({
       inserted: 2,
       resynced: false,
     })
@@ -265,17 +299,19 @@ describe("incremental sync", () => {
         body: "x",
       }),
     })
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     gmail.addLabel("gm-s", "INBOX")
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     expect(storedIds()).toEqual(["gm-001", "gm-s"])
   })
 
   test("a run with nothing new makes no message fetch and keeps the cursor", async () => {
     seedInbox(gmail, 2)
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     gmail.requests.length = 0
-    expect(await syncGmailLabel(db, client, "INBOX", config)).toMatchObject({
+    expect(
+      await syncGmailLabel(db, client, "INBOX", config, account)
+    ).toMatchObject({
       inserted: 0,
     })
     expect(pathsRequested()).toEqual(["/history"])
@@ -284,7 +320,7 @@ describe("incremental sync", () => {
 
   test("pages history, and only the last page advances the stored history id", async () => {
     seedInbox(gmail, 1)
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     seedInbox(gmail, 5, 2)
     // The second history page fails: the first page's messages are committed, the cursor is not moved.
     gmail.failOnce(
@@ -294,14 +330,14 @@ describe("incremental sync", () => {
       () => new Response("{}", { status: 503 })
     )
     await expect(
-      syncGmailLabel(db, client, "INBOX", config)
+      syncGmailLabel(db, client, "INBOX", config, account)
     ).rejects.toMatchObject({
       code: "upstream_error",
     })
     expect(storedIds()).toEqual(["gm-001", "gm-002", "gm-003"])
     expect(cursor()).toEqual({ historyId: "1001" })
 
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     expect(storedIds()).toEqual([
       "gm-001",
       "gm-002",
@@ -323,14 +359,14 @@ describe("interrupt and resume", () => {
       () => new Response("{}", { status: 500 })
     )
     await expect(
-      syncGmailLabel(db, client, "INBOX", config)
+      syncGmailLabel(db, client, "INBOX", config, account)
     ).rejects.toMatchObject({
       code: "upstream_error",
     })
     expect(storedIds()).toEqual(["gm-004", "gm-005"])
     expect(cursor()).toEqual({ historyId: "1005", pageToken: "2", fetched: 2 })
 
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     expect(storedIds()).toEqual([
       "gm-001",
       "gm-002",
@@ -344,13 +380,15 @@ describe("interrupt and resume", () => {
 
   test("resuming skips ids already indexed without fetching them again", async () => {
     seedInbox(gmail, 3)
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     // A stale cursor pointing back at the first page, as after a crash between batches.
     db.prepare("UPDATE cursors SET cursor = ? WHERE connector = 'gmail'").run(
       JSON.stringify({ historyId: "1003", pageToken: "0", fetched: 0 })
     )
     gmail.requests.length = 0
-    expect(await syncGmailLabel(db, client, "INBOX", config)).toMatchObject({
+    expect(
+      await syncGmailLabel(db, client, "INBOX", config, account)
+    ).toMatchObject({
       inserted: 0,
       skipped: 3,
     })
@@ -366,7 +404,7 @@ describe("interrupt and resume", () => {
       db.prepare(
         "INSERT OR REPLACE INTO cursors (connector, stream, cursor, updated_at) VALUES ('gmail', 'INBOX', ?, '2026-10-19')"
       ).run(stored)
-      await syncGmailLabel(db, client, "INBOX", config)
+      await syncGmailLabel(db, client, "INBOX", config, account)
       expect(cursor()).toEqual({ historyId: "1001" })
     }
     expect(documentCount()).toBe(1)
@@ -384,7 +422,7 @@ describe("stale state", () => {
       () =>
         new Response(JSON.stringify({ error: { code: 400 } }), { status: 400 })
     )
-    expect(await syncGmailLabel(db, client, "INBOX", config)).toEqual({
+    expect(await syncGmailLabel(db, client, "INBOX", config, account)).toEqual({
       label: "INBOX",
       inserted: 3,
       skipped: 0,
@@ -405,7 +443,13 @@ describe("stale state", () => {
         new Response(JSON.stringify({ messages: [], nextPageToken: "again" }))
       )
     }
-    await syncGmailLabel(db, createGmailClient(transport), "INBOX", config)
+    await syncGmailLabel(
+      db,
+      createGmailClient(transport),
+      "INBOX",
+      config,
+      account
+    )
     expect(lists).toBe(1)
     expect(cursor()).toEqual({ historyId: "7" })
   })
@@ -423,11 +467,13 @@ describe("mark read", () => {
         body: "Lorem",
       }),
     })
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     gmail.removeLabel("gm-r", "UNREAD")
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     gmail.expireHistory()
-    expect(await syncGmailLabel(db, client, "INBOX", config)).toMatchObject({
+    expect(
+      await syncGmailLabel(db, client, "INBOX", config, account)
+    ).toMatchObject({
       resynced: true,
     })
     expect(storedIds()).toEqual(["gm-r"])
@@ -440,7 +486,7 @@ describe("mark read", () => {
 describe("expired history id", () => {
   test("a 404 from history falls back to a bounded resync without duplicates", async () => {
     seedInbox(gmail, 3)
-    await syncGmailLabel(db, client, "INBOX", config)
+    await syncGmailLabel(db, client, "INBOX", config, account)
     seedInbox(gmail, 2, 4)
     gmail.expireHistory()
     seedInbox(gmail, 1, 6)
@@ -451,7 +497,8 @@ describe("expired history id", () => {
         db,
         client,
         "INBOX",
-        resolveGmailConfig({ batchSize: 2, fullSyncLimit: 4 })
+        resolveGmailConfig({ batchSize: 2, fullSyncLimit: 4 }),
+        account
       )
     ).toEqual({
       label: "INBOX",
@@ -491,7 +538,8 @@ describe("revoked grant", () => {
     const run = syncGmail(
       db,
       client,
-      resolveGmailConfig({ labels: ["INBOX", "IMPORTANT"] })
+      resolveGmailConfig({ labels: ["INBOX", "IMPORTANT"] }),
+      account
     )
     await expect(run).rejects.toMatchObject({
       code: "grant_revoked",
@@ -519,12 +567,71 @@ describe("every label", () => {
     const results = await syncGmail(
       db,
       client,
-      resolveGmailConfig({ labels: ["INBOX", "IMPORTANT"] })
+      resolveGmailConfig({ labels: ["INBOX", "IMPORTANT"] }),
+      account
     )
     expect(results.map((r) => [r.label, r.inserted])).toEqual([
       ["INBOX", 1],
       ["IMPORTANT", 1],
     ])
     expect(cursor("IMPORTANT")).toEqual({ historyId: "1002" })
+  })
+})
+
+describe("entity at ingestion", () => {
+  const withAttachment = (): void => {
+    gmail.add({
+      id: "gm-a",
+      threadId: "th-a",
+      labelIds: ["INBOX"],
+      raw: rfc822({
+        messageId: "a@mail.example.com",
+        subject: "Lorem",
+        body: "Dolor.",
+        attachment: { filename: "a.txt", mime: "text/plain", content: "x" },
+      }),
+    })
+  }
+
+  test("stores the message and its attachment with the account's assigned entity", async () => {
+    withAttachment()
+    await syncGmailLabel(db, client, "INBOX", config, account)
+    expect(documentCount()).toBe(2)
+    expect(storedEntities()).toEqual([assigned.id])
+  })
+
+  test("uses the default entity when the account has no assignment", async () => {
+    const fallback = await profile.createEntity({
+      kind: "company",
+      name: "Test Company",
+      tag: "CO",
+    })
+    await profile.setDefaultEntityId(fallback.id)
+    withAttachment()
+    await syncGmailLabel(db, client, "INBOX", config, {
+      accountRef: "other@example.invalid",
+      entities: profile,
+    })
+    expect(documentCount()).toBe(2)
+    expect(storedEntities()).toEqual([fallback.id])
+  })
+
+  test("with no assignment and no default entity it fails typed, stores nothing and keeps the cursor", async () => {
+    seedInbox(gmail, 2)
+    await syncGmailLabel(db, client, "INBOX", config, account)
+    const before = cursor()
+    await profile.unassignAccount("gmail", ACCOUNT)
+    seedInbox(gmail, 2, 3)
+    gmail.requests.length = 0
+
+    const run = syncGmail(db, client, config, account)
+    await expect(run).rejects.toBeInstanceOf(EntityRequiredError)
+    await expect(run).rejects.toMatchObject({
+      code: "entity_required",
+      connector: "gmail",
+    })
+    expect(gmail.requests).toHaveLength(0)
+    expect(documentCount()).toBe(2)
+    expect(cursor()).toEqual(before)
   })
 })

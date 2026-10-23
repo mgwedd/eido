@@ -1,7 +1,13 @@
 import type { DatabaseSync } from "node:sqlite"
 import { GateUnavailableError } from "@eido/gate"
 import { beforeEach, describe, expect, test } from "vitest"
-import { getCursor, openIndex } from "../../index/index"
+import { getCursor } from "../../index/index"
+import { openDataDb } from "../../ledger/db"
+import { createProfileStore } from "../../profile/store"
+import type { ProfileStore } from "../../profile/store"
+import type { Entity } from "../../profile/types"
+import type { IngestAccount } from "../ingest-entity"
+import { EntityRequiredError } from "../ingest-entity"
 import { resolveConfig } from "./config"
 import {
   AuthFailedError,
@@ -15,9 +21,28 @@ import { syncFolder, syncProton } from "./sync"
 let db: DatabaseSync
 let source: MemorySource
 
-beforeEach(() => {
-  db = openIndex(":memory:")
+let profile: ProfileStore
+let assigned: Entity
+let account: IngestAccount
+
+const ACCOUNT = "assistant@example.com"
+
+beforeEach(async () => {
+  // The ledger schema refuses a document without a known entity.
+  db = openDataDb(":memory:")
   source = new MemorySource()
+  profile = createProfileStore(db, { audit: () => Promise.resolve() })
+  assigned = await profile.createEntity({
+    kind: "personal",
+    name: "Test Personal",
+    tag: "ME",
+  })
+  await profile.assignAccount({
+    connector: "proton",
+    accountRef: ACCOUNT,
+    entityId: assigned.id,
+  })
+  account = { accountRef: ACCOUNT, entities: profile }
 })
 
 const count = (sql: string): number =>
@@ -38,7 +63,7 @@ const five = [1, 2, 3, 4, 5].map((n) => ({
 describe("syncFolder", () => {
   test("reads in bounded UID batches and stores the cursor and UIDVALIDITY", async () => {
     source.addFolder("INBOX", "7", five)
-    const result = await syncFolder(db, source, "INBOX", 2)
+    const result = await syncFolder(db, source, "INBOX", 2, account)
     expect(result).toEqual({
       folder: "INBOX",
       inserted: 5,
@@ -65,9 +90,9 @@ describe("syncFolder", () => {
 
   test("a second sync with no new mail fetches nothing", async () => {
     source.addFolder("INBOX", "7", five)
-    await syncFolder(db, source, "INBOX", 2)
+    await syncFolder(db, source, "INBOX", 2, account)
     source.calls.length = 0
-    expect(await syncFolder(db, source, "INBOX", 2)).toMatchObject({
+    expect(await syncFolder(db, source, "INBOX", 2, account)).toMatchObject({
       inserted: 0,
       skipped: 0,
     })
@@ -76,10 +101,10 @@ describe("syncFolder", () => {
 
   test("new mail after the cursor is fetched from the next UID only", async () => {
     source.addFolder("INBOX", "7", five.slice(0, 3))
-    await syncFolder(db, source, "INBOX", 10)
+    await syncFolder(db, source, "INBOX", 10, account)
     source.addFolder("INBOX", "7", five)
     source.calls.length = 0
-    expect(await syncFolder(db, source, "INBOX", 10)).toMatchObject({
+    expect(await syncFolder(db, source, "INBOX", 10, account)).toMatchObject({
       inserted: 2,
     })
     expect(source.calls).toEqual(["folderState INBOX", "fetchRaw INBOX 4 10"])
@@ -90,7 +115,7 @@ describe("syncFolder", () => {
       { uid: 2, raw: plainMessage("a") },
       { uid: 9, raw: plainMessage("b") },
     ])
-    await syncFolder(db, source, "INBOX", 1)
+    await syncFolder(db, source, "INBOX", 1, account)
     expect(getCursor(db, "proton", "INBOX")?.cursor).toBe("9")
     expect(messageIds()).toEqual(["<a@example.com>", "<b@example.com>"])
   })
@@ -103,7 +128,7 @@ describe("syncFolder", () => {
     source.skipUid("INBOX", 2)
     source.skipUid("INBOX", 4)
 
-    expect(await syncFolder(db, source, "INBOX", 2)).toEqual({
+    expect(await syncFolder(db, source, "INBOX", 2, account)).toEqual({
       folder: "INBOX",
       inserted: 4,
       skipped: 2,
@@ -134,7 +159,7 @@ describe("syncFolder", () => {
       },
     ])
     expect(messageIds()).toEqual(["<a@example.com>", "<b@example.com>"])
-    expect(await syncFolder(db, source, "INBOX", 2)).toMatchObject({
+    expect(await syncFolder(db, source, "INBOX", 2, account)).toMatchObject({
       inserted: 0,
       skipped: 0,
     })
@@ -145,7 +170,7 @@ describe("syncFolder", () => {
     source.addFolder("INBOX", "7")
     source.skipUid("INBOX", 9)
 
-    expect(await syncFolder(db, source, "INBOX", 2)).toMatchObject({
+    expect(await syncFolder(db, source, "INBOX", 2, account)).toMatchObject({
       inserted: 1,
       skipped: 1,
     })
@@ -157,7 +182,7 @@ describe("syncFolder", () => {
 
   test("an empty folder still records its UIDVALIDITY", async () => {
     source.addFolder("Archive", "42")
-    await syncFolder(db, source, "Archive", 5)
+    await syncFolder(db, source, "Archive", 5, account)
     expect(getCursor(db, "proton", "Archive")).toEqual({
       cursor: "0",
       uidvalidity: "42",
@@ -166,11 +191,11 @@ describe("syncFolder", () => {
 
   test("a tail the source no longer holds moves the cursor to the end of the folder", async () => {
     source.addFolder("INBOX", "7", five.slice(0, 2))
-    await syncFolder(db, source, "INBOX", 5)
+    await syncFolder(db, source, "INBOX", 5, account)
     // UIDNEXT advanced (mail arrived and was expunged) but nothing is left to read.
     const folder = source.folders.get("INBOX")
     if (folder !== undefined) folder.uidNext = 9
-    await syncFolder(db, source, "INBOX", 5)
+    await syncFolder(db, source, "INBOX", 5, account)
     expect(getCursor(db, "proton", "INBOX")?.cursor).toBe("8")
   })
 
@@ -196,7 +221,7 @@ describe("syncFolder", () => {
       { uid: 1, raw: withFile("one") },
       { uid: 2, raw: withFile("two") },
     ])
-    await syncFolder(db, source, "INBOX", 10)
+    await syncFolder(db, source, "INBOX", 10, account)
     expect(
       count(
         "SELECT count(*) FROM document_text WHERE attachment_of IS NOT NULL"
@@ -208,13 +233,13 @@ describe("syncFolder", () => {
 describe("UIDVALIDITY change", () => {
   test("triggers a full folder resync and creates no duplicate documents", async () => {
     source.addFolder("INBOX", "7", five)
-    await syncFolder(db, source, "INBOX", 2)
+    await syncFolder(db, source, "INBOX", 2, account)
     const before = count("SELECT count(*) FROM documents")
     expect(before).toBe(5)
 
     source.renumber("INBOX", "8", 100)
     source.calls.length = 0
-    const result = await syncFolder(db, source, "INBOX", 2)
+    const result = await syncFolder(db, source, "INBOX", 2, account)
 
     expect(result).toEqual({
       folder: "INBOX",
@@ -237,12 +262,12 @@ describe("UIDVALIDITY change", () => {
 
   test("mail that arrived under the new UIDVALIDITY is added alongside the known mail", async () => {
     source.addFolder("INBOX", "7", five.slice(0, 2))
-    await syncFolder(db, source, "INBOX", 10)
+    await syncFolder(db, source, "INBOX", 10, account)
     source.renumber("INBOX", "8", 1)
     const folder = source.folders.get("INBOX")
     folder?.messages.push({ uid: 3, raw: plainMessage("new") })
     if (folder !== undefined) folder.uidNext = 4
-    const result = await syncFolder(db, source, "INBOX", 10)
+    const result = await syncFolder(db, source, "INBOX", 10, account)
     expect(result).toMatchObject({ inserted: 1, skipped: 2, resynced: true })
     expect(messageIds()).toEqual([
       "<m1@example.com>",
@@ -260,14 +285,16 @@ describe("resuming", () => {
       call: 3,
       error: new GateUnavailableError("gate went away"),
     }
-    await expect(syncFolder(db, source, "INBOX", 2)).rejects.toMatchObject({
+    await expect(
+      syncFolder(db, source, "INBOX", 2, account)
+    ).rejects.toMatchObject({
       code: "gate_unavailable",
     })
     expect(getCursor(db, "proton", "INBOX")?.cursor).toBe("4")
     expect(count("SELECT count(*) FROM documents")).toBe(4)
 
     source.calls.length = 0
-    const result = await syncFolder(db, source, "INBOX", 2)
+    const result = await syncFolder(db, source, "INBOX", 2, account)
     expect(source.calls).toEqual(["folderState INBOX", "fetchRaw INBOX 5 2"])
     expect(result).toMatchObject({ inserted: 1, skipped: 0 })
     expect(messageIds()).toHaveLength(5)
@@ -276,7 +303,7 @@ describe("resuming", () => {
 
   test("a batch that fails to parse leaves the cursor where it was", async () => {
     source.addFolder("INBOX", "7", five.slice(0, 2))
-    await syncFolder(db, source, "INBOX", 2)
+    await syncFolder(db, source, "INBOX", 2, account)
     const folder = source.folders.get("INBOX")
     folder?.messages.push({ uid: 3, raw: plainMessage("c") })
     if (folder !== undefined) folder.uidNext = 4
@@ -291,7 +318,7 @@ describe("resuming", () => {
           `Content-Type: multipart/mixed; boundary="b"\r\n\r\n${parts}--b--\r\n`
         ),
       }
-    await expect(syncFolder(db, source, "INBOX", 2)).rejects.toThrow()
+    await expect(syncFolder(db, source, "INBOX", 2, account)).rejects.toThrow()
     expect(getCursor(db, "proton", "INBOX")?.cursor).toBe("2")
   })
 })
@@ -310,7 +337,7 @@ describe("deduplication", () => {
       username: "assistant@example.com",
       folders: ["INBOX", "Work"],
     })
-    const results = await syncProton(db, source, config)
+    const results = await syncProton(db, source, config, profile)
     expect(results.map((r) => [r.folder, r.inserted, r.skipped])).toEqual([
       ["INBOX", 1, 0],
       ["Work", 0, 1],
@@ -323,8 +350,8 @@ describe("deduplication", () => {
     const shared = plainMessage("same")
     source.addFolder("INBOX", "1", [{ uid: 1, raw: shared }])
     source.addFolder("Work", "2", [{ uid: 4, raw: shared }])
-    await syncFolder(db, source, "INBOX", 10)
-    expect(await syncFolder(db, source, "Work", 10)).toMatchObject({
+    await syncFolder(db, source, "INBOX", 10, account)
+    expect(await syncFolder(db, source, "Work", 10, account)).toMatchObject({
       inserted: 0,
       skipped: 1,
     })
@@ -336,7 +363,7 @@ describe("deduplication", () => {
       { uid: 1, raw: plainMessage("dup") },
       { uid: 2, raw: plainMessage("dup", { extra: ["X-Copy: 2"] }) },
     ])
-    expect(await syncFolder(db, source, "INBOX", 10)).toMatchObject({
+    expect(await syncFolder(db, source, "INBOX", 10, account)).toMatchObject({
       inserted: 1,
       skipped: 1,
     })
@@ -346,7 +373,7 @@ describe("deduplication", () => {
     source.addFolder("INBOX", "9", [
       { uid: 3, raw: raw(["Subject: anonymous", "", "no id"]) },
     ])
-    await syncFolder(db, source, "INBOX", 10)
+    await syncFolder(db, source, "INBOX", 10, account)
     expect(
       db.prepare("SELECT source_ref FROM documents").get()?.["source_ref"]
     ).toBe("proton:INBOX:9:3")
@@ -365,7 +392,9 @@ describe("typed failures", () => {
     source.failAll = Object.assign(new Error("bad password"), {
       code: "auth_failed",
     })
-    const error = await syncProton(db, source, config).catch((e: unknown) => e)
+    const error = await syncProton(db, source, config, profile).catch(
+      (e: unknown) => e
+    )
     expect(error).toBeInstanceOf(AuthFailedError)
     expect(error).toMatchObject({ code: "auth_failed" })
     expect(source.calls).toEqual(["folderState INBOX"])
@@ -391,7 +420,7 @@ describe("typed failures", () => {
     source.failAll = Object.assign(new Error("tls"), {
       code: "handshake_failed",
     })
-    const error = await syncFolder(db, source, "INBOX", 2).catch(
+    const error = await syncFolder(db, source, "INBOX", 2, account).catch(
       (e: unknown) => e
     )
     expect(error).toBeInstanceOf(HandshakeFailedError)
@@ -401,7 +430,7 @@ describe("typed failures", () => {
   test("GateUnavailableError surfaces typed, counted as gate_unavailable", async () => {
     source.addFolder("INBOX", "1", five)
     source.failAll = new GateUnavailableError("no socket")
-    const error = await syncFolder(db, source, "INBOX", 2).catch(
+    const error = await syncFolder(db, source, "INBOX", 2, account).catch(
       (e: unknown) => e
     )
     expect(error).toBeInstanceOf(ProtonError)
@@ -415,6 +444,87 @@ describe("typed failures", () => {
     source.addFolder("INBOX", "1", five)
     const boom = Object.assign(new Error("boom"), { code: "other" })
     source.failAll = boom
-    await expect(syncFolder(db, source, "INBOX", 2)).rejects.toBe(boom)
+    await expect(syncFolder(db, source, "INBOX", 2, account)).rejects.toBe(boom)
+  })
+})
+
+describe("entity at ingestion", () => {
+  const storedEntities = (): unknown[] =>
+    db
+      .prepare("SELECT DISTINCT entity_id FROM documents ORDER BY entity_id")
+      .all()
+      .map((row) => row["entity_id"])
+  const withAttachment = raw([
+    "From: Ada Example <ada@example.com>",
+    "Subject: with attachment",
+    "Message-ID: <att@example.com>",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/mixed; boundary="b"',
+    "",
+    "--b",
+    "Content-Type: text/plain",
+    "",
+    "lorem",
+    "--b",
+    "Content-Type: text/plain",
+    'Content-Disposition: attachment; filename="a.txt"',
+    "",
+    "ipsum",
+    "--b--",
+  ])
+
+  test("stores messages, attachments and oversized placeholders with the assigned entity", async () => {
+    source.addFolder("INBOX", "7", [{ uid: 1, raw: withAttachment }])
+    source.skipUid("INBOX", 2)
+    await syncProton(
+      db,
+      source,
+      resolveConfig({ username: ACCOUNT, folders: ["INBOX"] }),
+      profile
+    )
+    expect(count("SELECT count(*) FROM documents")).toBe(3)
+    expect(storedEntities()).toEqual([assigned.id])
+  })
+
+  test("uses the default entity when the account has no assignment", async () => {
+    const fallback = await profile.createEntity({
+      kind: "company",
+      name: "Test Company",
+      tag: "CO",
+    })
+    await profile.setDefaultEntityId(fallback.id)
+    source.addFolder("INBOX", "7", five)
+    await syncFolder(db, source, "INBOX", 10, {
+      accountRef: "other@example.com",
+      entities: profile,
+    })
+    expect(count("SELECT count(*) FROM documents")).toBe(5)
+    expect(storedEntities()).toEqual([fallback.id])
+  })
+
+  test("with no assignment and no default entity it fails typed, stores nothing and keeps the cursor", async () => {
+    source.addFolder("INBOX", "7", five.slice(0, 2))
+    await syncFolder(db, source, "INBOX", 10, account)
+    await profile.unassignAccount("proton", ACCOUNT)
+    source.addFolder("INBOX", "7", five)
+    source.calls.length = 0
+
+    const run = syncProton(
+      db,
+      source,
+      resolveConfig({ username: ACCOUNT }),
+      profile
+    )
+    await expect(run).rejects.toBeInstanceOf(EntityRequiredError)
+    await expect(run).rejects.toMatchObject({
+      code: "entity_required",
+      connector: "proton",
+    })
+    expect(source.calls).toEqual([])
+    expect(count("SELECT count(*) FROM documents")).toBe(2)
+    expect(getCursor(db, "proton", "INBOX")).toEqual({
+      cursor: "2",
+      uidvalidity: "7",
+    })
   })
 })
