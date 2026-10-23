@@ -90,3 +90,7 @@ export function attachmentText(attachment: ParsedAttachment): string | null {
     ? htmlToText(text)
     : stripInvisible(text)
 }
+
+export function isPdfMime(mime: string): boolean {
+  return mime === "application/pdf"
+}
