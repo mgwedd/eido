@@ -4,7 +4,11 @@ import type {
   InferenceResult,
   ModelClient,
 } from "../inference/index"
-import { createInferenceQueue } from "../inference/index"
+import {
+  ESTIMATE_BOUNDARY,
+  createInferenceQueue,
+  plainContent,
+} from "../inference/index"
 import { createDigestService } from "./service"
 import type { DigestServiceOptions } from "./service"
 import type { DigestSubject, ThreadMessage } from "./types"
@@ -27,15 +31,27 @@ export interface FakeModelOptions {
   echoMerge?: boolean
 }
 
+/** The refs of the material blocks in the order they appear. */
 function refsOf(content: string): string[] {
-  return [...content.matchAll(/^\[([^\]\n]+)\]/gm)].map((m) => m[1] ?? "")
+  return [...content.matchAll(/^<material [^>\n]*\bref="([^"\n]+)"/gm)].map(
+    (m) => m[1] ?? ""
+  )
+}
+
+/** The body of each material block, as sent. */
+export function blockBodies(content: string): string[] {
+  return [
+    ...content.matchAll(/^<material [^\n]*>\n([\s\S]*?)\n<\/material id="/gm),
+  ].map((m) => m[1] ?? "")
 }
 
 function mergeLines(content: string): { text: string; refs: string[] }[] {
-  return content.split("\n").map((line) => {
-    const match = /^- (.*) \[([^\]]*)\]$/.exec(line)
-    return { text: match?.[1] ?? "", refs: (match?.[2] ?? "").split(", ") }
-  })
+  return blockBodies(content)
+    .flatMap((body) => body.split("\n"))
+    .map((line) => {
+      const match = /^- (.*) \[([^\]]*)\]$/.exec(line)
+      return { text: match?.[1] ?? "", refs: (match?.[2] ?? "").split(", ") }
+    })
 }
 
 /** A scripted ModelClient: deterministic summaries built from the references in its input. */
@@ -46,7 +62,9 @@ export function fakeModel(options: FakeModelOptions = {}): {
   const calls: RecordedCall[] = []
   const client: ModelClient = {
     async complete(req: InferenceRequest): Promise<InferenceResult> {
-      const content = req.messages.map((m) => m.content).join("\n")
+      const content = req.messages
+        .map((m) => plainContent(m.content, ESTIMATE_BOUNDARY))
+        .join("\n")
       const kind = req.system.startsWith("You merge") ? "merge" : "section"
       const call: RecordedCall = { kind, system: req.system, content }
       calls.push(call)

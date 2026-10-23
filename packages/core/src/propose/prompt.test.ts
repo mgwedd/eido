@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest"
 import { COMPACTION_LEGEND } from "../context/compact"
 import type { ContextPack } from "../context/pack-store"
+import { fence, plainContent, toMaterial } from "../inference/fence"
 import {
   buildProposalRequest,
   PROPOSE_SYSTEM_PROMPT,
@@ -9,8 +10,23 @@ import {
 
 const pack: ContextPack = {
   id: "cp_0123456789abcdef0123456789abcdef",
-  text: `${COMPACTION_LEGEND}\n\n[M1] gmail | untrusted\nLorem ipsum.`,
-  members: [{ tag: "[M1]", sha256: "a".repeat(64), edge: "seed", tokens: 5 }],
+  blocks: [
+    {
+      tag: "[M1]",
+      label: "gmail",
+      block: fence(toMaterial("Lorem ipsum.", { source: "mail" })),
+    },
+  ],
+  members: [
+    {
+      tag: "[M1]",
+      sha256: "a".repeat(64),
+      edge: "seed",
+      tokens: 5,
+      injectionSuspected: false,
+      injectionReasons: [],
+    },
+  ],
   tokenCount: 10,
   droppedMembers: 0,
   packHash: "0".repeat(64),
@@ -27,17 +43,40 @@ describe("buildProposalRequest", () => {
     expect(request.system).toBe(PROPOSE_SYSTEM_PROMPT)
     expect(request.system).not.toContain("Dolor sit")
     expect(request.system).not.toContain("Lorem ipsum.")
-    expect(request.messages).toEqual([
-      {
-        role: "user",
-        content: [
-          "Owner request:\nDolor sit",
-          "Intent kinds offered for this request: (none)",
-          "Messages you may refer to:\n(none)",
-          `<<<UNTRUSTED DATA ${pack.id}>>>\n[M1] gmail | untrusted\nLorem ipsum.\n<<<END UNTRUSTED DATA ${pack.id}>>>`,
-        ].join("\n\n"),
-      },
-    ])
+    expect(request.messages).toHaveLength(1)
+    expect(plainContent(request.messages[0]?.content ?? "", "B")).toBe(
+      [
+        "Messages you may refer to:\n(none)\n\nMessages:",
+        "",
+        "[M1] gmail",
+        '<material id="B" source="mail">',
+        "Lorem ipsum.",
+        '</material id="B">',
+        "",
+        "Intent kinds offered for this request: (none)",
+        "",
+        "Owner request:\nDolor sit",
+      ].join("\n")
+    )
+  })
+
+  test("the retry note comes last, after the owner request", () => {
+    const request = buildProposalRequest(
+      { request: "Dolor sit", pack, referable: [], kinds: ["mail.send"] },
+      [{ code: "schema_mismatch", path: "$.intents" }]
+    )
+    const text = plainContent(request.messages[0]?.content ?? "", "B")
+    expect(text.slice(text.lastIndexOf('</material id="B">'))).toBe(
+      [
+        '</material id="B">',
+        "",
+        "Intent kinds offered for this request: mail.send",
+        "",
+        "Owner request:\nDolor sit",
+        "",
+        "Your previous reply was refused. Fix these and reply again:\n- schema_mismatch at $.intents",
+      ].join("\n")
+    )
   })
 
   test("the system prefix carries the legend once and the pack block does not", () => {
@@ -48,7 +87,9 @@ describe("buildProposalRequest", () => {
       kinds: [],
     })
     expect(request.system).toContain(COMPACTION_LEGEND)
-    expect(request.messages[0]?.content).not.toContain(COMPACTION_LEGEND)
+    expect(plainContent(request.messages[0]?.content ?? "")).not.toContain(
+      COMPACTION_LEGEND
+    )
   })
 })
 

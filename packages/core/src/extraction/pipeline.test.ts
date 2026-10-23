@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest"
-import { estimateTokens } from "../inference/budget"
+import { estimateTokens, requiredTokens } from "../inference/budget"
+import { ESTIMATE_BOUNDARY, plainContent } from "../inference/fence"
 import { InferenceError } from "../inference/errors"
 import { listObligations } from "../ledger/store"
 import type { Section } from "../parsers/offsets"
@@ -160,6 +161,8 @@ describe("verbatim checks", () => {
         reason: "parse_failed",
         confidence: 0,
         threshold: 0.8,
+        injectionSuspected: false,
+        injectionReasons: [],
         span: {
           start: 22,
           end: 40,
@@ -419,7 +422,12 @@ describe("token budget: refuse or skip, never truncate", () => {
     })
     const sent = chatRequests(h.server)
     expect(sent).toHaveLength(1)
-    expect(sent[0]?.messages.at(-1)?.content).toBe(passageMessage(SHORT))
+    const boundary = /<material id="([0-9a-f]{32})"/.exec(
+      sent[0]?.messages.at(-1)?.content ?? ""
+    )?.[1]
+    expect(sent[0]?.messages.at(-1)?.content).toBe(
+      plainContent(passageMessage(SHORT), boundary)
+    )
     expect(JSON.stringify(sent)).not.toContain("Tenant may terminate")
     expect(events).toEqual([
       { event: "passage_skipped_over_budget", docId: h.docId, passage: 1 },
@@ -435,7 +443,10 @@ describe("token budget: refuse or skip, never truncate", () => {
 
   test("a corrective retry that does not fit the remaining budget rejects the output", async () => {
     const first =
-      estimateTokens(EXTRACTION_SYSTEM_PROMPT + passageMessage(SHORT)) + 1024
+      estimateTokens(
+        EXTRACTION_SYSTEM_PROMPT +
+          plainContent(passageMessage(SHORT), ESTIMATE_BOUNDARY)
+      ) + 1024
     const events: ExtractionLogEvent[] = []
     h = await harness(SHORT, [{ deltas: ["{oops"], promptTokens: 1_000_000 }], {
       config: { tokenBudget: first + 100 },
@@ -450,11 +461,19 @@ describe("token budget: refuse or skip, never truncate", () => {
   })
 
   test("a retry over the model context also rejects", async () => {
-    // The first request fits a 1500-token context; the retry adds the reply and the correction.
+    // The first request fits the context with 150 tokens to spare; the retry adds the 200-token
+    // reply (220 with the margin) and the correction.
+    const first = requiredTokens(
+      estimateTokens(
+        EXTRACTION_SYSTEM_PROMPT +
+          plainContent(passageMessage(SHORT), ESTIMATE_BOUNDARY)
+      ),
+      1024
+    )
     h = await harness(
       SHORT,
       [{ deltas: ["x".repeat(600)], promptTokens: 1_000_000 }],
-      { contextTokens: 1500 }
+      { contextTokens: first + 150 }
     )
     const result = await h.extractor.extractDocument(h.docId)
     expect(result.status).toBe("model_output_rejected")
@@ -510,10 +529,16 @@ describe("prompt injection", () => {
       expect(result.status).toBe("model_output_rejected")
       expect(h.counts()).toEqual(before)
       const urls = fetchSpy.mock.calls.map(([input]) => urlOf(input))
-      expect(urls).toEqual([
-        `${h.server.url}/v1/chat/completions`,
-        `${h.server.url}/v1/chat/completions`,
-      ])
+      const base = h.server.url
+      // Two completions: the reply and the corrective retry. Nothing else but their rendering.
+      expect(urls.filter((u) => u === `${base}/completion`)).toHaveLength(2)
+      expect(new Set(urls)).toEqual(
+        new Set(
+          ["/apply-template", "/tokenize", "/completion"].map(
+            (path) => `${base}${path}`
+          )
+        )
+      )
     }
   )
 
@@ -533,8 +558,13 @@ describe("prompt injection", () => {
       extraction_field_confidence: 1,
       obligations: 1,
     })
+    const base = h.server.url
     expect(new Set(fetchSpy.mock.calls.map(([input]) => urlOf(input)))).toEqual(
-      new Set([`${h.server.url}/v1/chat/completions`])
+      new Set(
+        ["/apply-template", "/tokenize", "/completion"].map(
+          (path) => `${base}${path}`
+        )
+      )
     )
     // The planner-facing result carries no passage text.
     expect(JSON.stringify(result)).not.toContain("ignore previous instructions")

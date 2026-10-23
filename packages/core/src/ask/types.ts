@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite"
+import type { InjectionReason } from "../inference/fence"
 import type { InferenceQueue } from "../inference/queue"
 
 /** What the model's first step asks code to run. Code runs it; the model never counts. */
@@ -20,6 +21,9 @@ export interface AskCitation {
   sourceRef: string
   title?: string
   occurredAt?: string
+  /** From `fence`: the cited text looked like an injection attempt. The answer still used it. */
+  injectionSuspected: boolean
+  injectionReasons: InjectionReason[]
 }
 
 export interface AskCoverage {

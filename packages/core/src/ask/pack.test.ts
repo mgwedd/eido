@@ -7,7 +7,7 @@ import {
   mail,
   sha,
 } from "../context/context.test-support"
-import { readContextPack } from "../context/pack-store"
+import { packText, readContextPack } from "../context/pack-store"
 import type { ContextPack } from "../context/pack-store"
 import type { ContextRefusal } from "../context/assemble"
 import { openIndex } from "../index/schema"
@@ -45,15 +45,16 @@ describe("buildAskPack", () => {
       ["[M4]", sha("solo-a")],
       ["[M5]", sha("solo-b")],
     ])
-    expect(pack.text).toContain("\n\n[M4] gmail | untrusted\n")
-    expect(pack.text).toContain("\n\n[M5] gmail | untrusted\n")
-    expect(pack.text.indexOf("Alpha note.")).toBeGreaterThan(
-      pack.text.indexOf("[M4] gmail")
+    const text = packText(pack)
+    expect(text).toContain('\n\n[M4] gmail\n<material id="pack" source="mail">\n')
+    expect(text).toContain('\n\n[M5] gmail\n<material id="pack" source="mail">\n')
+    expect(text.indexOf("Alpha note.")).toBeGreaterThan(
+      text.indexOf("[M4] gmail")
     )
-    expect(pack.text.indexOf("Beta note.")).toBeGreaterThan(
-      pack.text.indexOf("[M5] gmail")
+    expect(text.indexOf("Beta note.")).toBeGreaterThan(
+      text.indexOf("[M5] gmail")
     )
-    expect(pack.text.split("[M1] gmail").length).toBe(2)
+    expect(text.split("[M1] gmail").length).toBe(2)
     expect(readContextPack(db, pack.id)?.members).toEqual(pack.members)
   })
 
@@ -75,15 +76,15 @@ describe("buildAskPack", () => {
     const pack = expectPack(
       await buildAskPack(db, {
         hits: [sha("t-1-m2"), sha("solo-big"), sha("solo-a")],
-        budgetTokens: base.tokenCount + 60,
+        budgetTokens: base.tokenCount + 100,
       })
     )
     expect(pack.members.map((m) => m.sha256)).toEqual([
       ...[...THREAD].reverse(),
       sha("solo-a"),
     ])
-    expect(pack.text).not.toContain("Gamma note.")
-    expect(pack.tokenCount).toBeLessThanOrEqual(base.tokenCount + 60)
+    expect(packText(pack)).not.toContain("Gamma note.")
+    expect(pack.tokenCount).toBeLessThanOrEqual(base.tokenCount + 100)
   })
 
   test("with nothing to add, the pack is the seed's own pack", async () => {

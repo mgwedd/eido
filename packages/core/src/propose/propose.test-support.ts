@@ -89,16 +89,6 @@ export interface HarnessOptions {
   maxProposalsPerHour?: number
 }
 
-function isCompletion(
-  value: unknown
-): value is { messages: { role: string; content: string }[] } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Array.isArray(Reflect.get(value, "messages"))
-  )
-}
-
 /** A stub model server answering `replies` in order, an in-memory index and a fake gate. */
 export async function harness(options: HarnessOptions): Promise<Harness> {
   const db = openIndex(":memory:")
@@ -132,13 +122,7 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
       now: () => new Date("2030-03-01T12:00:00.000Z"),
     },
     completions: () =>
-      server.requests
-        .filter((r) => r.path === "/v1/chat/completions")
-        .map((r) => {
-          const body: unknown = JSON.parse(r.body)
-          if (!isCompletion(body)) throw new Error("not a chat completion body")
-          return body
-        }),
+      server.completions().map((c) => ({ messages: c.turns })),
     close: async () => {
       db.close()
       await server.close()

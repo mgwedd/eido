@@ -26,7 +26,7 @@ export function answerReply(
 export interface Scripted {
   server: StubModelServer
   queue: InferenceQueue
-  /** Chat completion requests the server received. */
+  /** Completion requests the server received. */
   completions(): number
 }
 
@@ -45,8 +45,7 @@ export async function scripted(
   return {
     server,
     queue: createInferenceQueue(client),
-    completions: () =>
-      server.requests.filter((r) => r.path === "/v1/chat/completions").length,
+    completions: () => server.completions().length,
   }
 }
 

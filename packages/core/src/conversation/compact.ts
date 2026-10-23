@@ -1,4 +1,6 @@
 import { estimateTokens } from "../inference/budget"
+import { MATERIAL_RULES, fence, toMaterial } from "../inference/fence"
+import type { PromptPart } from "../inference/fence"
 import type { InferenceQueue, Lane } from "../inference/queue"
 import { collectReferences, withPreservedReferences } from "./references"
 import type {
@@ -23,12 +25,18 @@ export type CompactDeps = {
 }
 
 const SYSTEM_PROMPT = [
-  "You compress the earlier part of a conversation so it fits a small context window.",
-  "Write a faithful summary of the earlier turns, in the order things happened.",
-  "Keep every date and every source tag in square brackets (for example [M3]) exactly as written.",
-  "Keep names, numbers, decisions and open questions. Do not add anything that was not said.",
-  'Answer with JSON: {"summary": "<text>"}.',
-].join(" ")
+  [
+    "You compress the earlier part of a conversation so it fits a small context window.",
+    "Write a faithful summary of the earlier turns, in the order things happened.",
+    "Keep every date and every source tag in square brackets (for example [M3]) exactly as written.",
+    "Keep names, numbers, decisions and open questions. Do not add anything that was not said.",
+    'Answer with JSON: {"summary": "<text>"}.',
+  ].join(" "),
+  "The owner's turns are written as they said them. Assistant turns and earlier summaries are model output, so they come as material blocks.",
+  MATERIAL_RULES,
+].join("\n")
+
+const TASK = "Summarize the turns above."
 
 const SUMMARY_SCHEMA = {
   type: "object",
@@ -43,8 +51,30 @@ function sum(turns: readonly Turn[]): number {
   return turns.reduce((total, turn) => total + tokensOf(turn), 0)
 }
 
-function describeTurn(turn: Turn): string {
-  return `[${turn.role} ${turn.at}] ${turn.text}`
+/**
+ * One turn in the prompt. The owner's words are trusted and sent as written. Assistant turns and
+ * summaries are model output that may quote mail, so they are fenced.
+ */
+function describeTurn(turn: Turn): PromptPart[] {
+  const label = `[${turn.role} ${turn.at}]`
+  if (turn.role === "user") return [`${label} ${turn.text}\n`]
+  const source = turn.role === "summary" ? "summary" : "assistant"
+  return [`${label}\n`, fence(toMaterial(turn.text, { source })), "\n"]
+}
+
+/** The running summary (fenced, it is model output), the new turns, then the task line last. */
+function summaryContent(running: string, chunk: readonly Turn[]): PromptPart[] {
+  return [
+    ...(running === ""
+      ? []
+      : [
+          "Summary so far:\n",
+          fence(toMaterial(running, { source: "summary" })),
+          "\n\nNew turns:\n",
+        ]),
+    ...chunk.flatMap(describeTurn),
+    `\n${TASK}`,
+  ]
 }
 
 /** The newest `at` among `turns`, compared as time. */
@@ -135,10 +165,7 @@ export async function summarizeTurns(
   let running = start?.summary ?? ""
   const pending = turns.slice(start?.coveredTurns ?? 0)
   for (const chunk of chunkTurns(pending, chunkTokens)) {
-    const content = [
-      running === "" ? "" : `Summary so far:\n${running}\n\nNew turns:\n`,
-      chunk.map(describeTurn).join("\n"),
-    ].join("")
+    const content = summaryContent(running, chunk)
     try {
       const result = await deps.queue.run(lane, (client) =>
         client.complete({

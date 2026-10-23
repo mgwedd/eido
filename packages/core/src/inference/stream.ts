@@ -1,19 +1,18 @@
 import { InferenceError } from "./errors"
 import type { FinishReason } from "./types"
 
-// llama-server streams `/v1/chat/completions` as server-sent events: one
-// `chat.completion.chunk` per content delta, a chunk carrying `finish_reason`, a chunk with
-// `usage` (stream_options.include_usage), then `data: [DONE]`.
+// llama-server streams `POST /completion` as server-sent events: one `data:` chunk per piece of
+// content with `stop: false`, then a final chunk with `stop: true`, `stop_type` and
+// `tokens_evaluated`. There is no `[DONE]` line on this route.
 
 export interface StreamState {
   text: string
-  finishReason: FinishReason | null
-  promptTokens: number | null
-  done: boolean
+  /** Set by the final chunk. */
+  final: { finishReason: FinishReason; promptTokens: number } | null
 }
 
 export function initialStreamState(): StreamState {
-  return { text: "", finishReason: null, promptTokens: null, done: false }
+  return { text: "", final: null }
 }
 
 /** Complete events in `buffer` (separated by a blank line), and the incomplete rest. */
@@ -39,6 +38,13 @@ function malformed(status: number, message: string): InferenceError {
   return new InferenceError("malformed", status, message)
 }
 
+// `limit` is the n_predict cap; `eos` and `word` (a stop string) end the reply normally.
+const FINISH: Record<string, FinishReason> = {
+  eos: "stop",
+  word: "stop",
+  limit: "length",
+}
+
 function applyChunk(state: StreamState, chunk: unknown, status: number): void {
   if (!isRecord(chunk)) throw malformed(status, "stream chunk is not an object")
   if ("error" in chunk) {
@@ -49,34 +55,30 @@ function applyChunk(state: StreamState, chunk: unknown, status: number): void {
         : "server reported an error in the stream"
     throw malformed(status, message)
   }
-  const { choices, usage } = chunk
-  if (choices === undefined && usage === undefined) {
-    throw malformed(status, "stream chunk has neither choices nor usage")
+  const { content, stop } = chunk
+  if (typeof stop !== "boolean") {
+    throw malformed(status, "stream chunk has no stop flag")
   }
-  if (usage !== undefined && usage !== null) {
-    if (!isRecord(usage) || typeof usage.prompt_tokens !== "number") {
-      throw malformed(status, "usage.prompt_tokens is missing or not a number")
+  if (content !== undefined) {
+    if (typeof content !== "string") {
+      throw malformed(status, "stream chunk content is not a string")
     }
-    state.promptTokens = usage.prompt_tokens
+    state.text += content
   }
-  if (choices === undefined) return
-  if (!Array.isArray(choices))
-    throw malformed(status, "choices is not an array")
-  const choice: unknown = choices[0]
-  if (choice === undefined) return
-  if (!isRecord(choice)) throw malformed(status, "choice is not an object")
-  const { delta, finish_reason: finishReason } = choice
-  if (isRecord(delta) && typeof delta.content === "string") {
-    state.text += delta.content
-  }
-  if (finishReason === "stop" || finishReason === "length") {
-    state.finishReason = finishReason
-  } else if (finishReason !== null && finishReason !== undefined) {
+  if (!stop) return
+  const stopType = chunk.stop_type
+  const finish = typeof stopType === "string" ? FINISH[stopType] : undefined
+  if (finish === undefined) {
     throw malformed(
       status,
-      `finish_reason ${JSON.stringify(finishReason)} is not handled`
+      `stop_type ${JSON.stringify(stopType ?? null)} is not handled`
     )
   }
+  const evaluated = chunk.tokens_evaluated
+  if (typeof evaluated !== "number") {
+    throw malformed(status, "tokens_evaluated is missing or not a number")
+  }
+  state.final = { finishReason: finish, promptTokens: evaluated }
 }
 
 /** Applies one server-sent event to `state`. */
@@ -88,11 +90,7 @@ export function applyEvent(
   for (const line of event.split(/\r?\n/)) {
     if (!line.startsWith("data:")) continue // comments, `event:` and `id:` lines
     const data = line.slice("data:".length).trimStart()
-    if (state.done) throw malformed(status, "data after [DONE]")
-    if (data === "[DONE]") {
-      state.done = true
-      continue
-    }
+    if (state.final !== null) throw malformed(status, "data after the final chunk")
     let chunk: unknown
     try {
       chunk = JSON.parse(data)
@@ -115,16 +113,7 @@ export function finishStream(
   state: StreamState,
   status: number
 ): { text: string; finishReason: FinishReason; promptTokens: number } {
-  if (!state.done) throw malformed(status, "stream ended before [DONE]")
-  if (state.finishReason === null) {
-    throw malformed(status, "stream carried no finish_reason")
-  }
-  if (state.promptTokens === null) {
-    throw malformed(status, "stream carried no usage.prompt_tokens")
-  }
-  return {
-    text: state.text,
-    finishReason: state.finishReason,
-    promptTokens: state.promptTokens,
-  }
+  if (state.final === null)
+    throw malformed(status, "stream ended before the final chunk")
+  return { text: state.text, ...state.final }
 }

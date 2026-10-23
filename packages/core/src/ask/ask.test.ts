@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import { ingest, mail, sha } from "../context/context.test-support"
+import { plainContent } from "../inference/fence"
 import { createInferenceQueue } from "../inference/queue"
 import type {
   InferenceRequest,
@@ -124,20 +125,16 @@ describe("code-computed facts", () => {
     expect(result.facts.matchCount).toBe(3)
     expect(result.coverage.searched).toBe(3)
     expect(result.answer).toBe("3 [M1]")
-    const step2 = model.server.requests.filter(
-      (r) => r.path === "/v1/chat/completions"
-    )[1]
-    const body: unknown = JSON.parse(step2?.body ?? "{}")
-    const text = JSON.stringify(body)
+    const [step1Turns, step2Turns] = model.server
+      .completions()
+      .map((c) => c.turns.map((t) => t.content).join("\n"))
+    const text = step2Turns ?? ""
     expect(text).toContain("matched: 3")
     expect(text).toContain("searched: 3")
     expect(text).toContain("readInFull: 3")
     expect(text).toContain("wants: count")
-    expect(text).toContain("[M1] gmail | untrusted")
-    const step1 = JSON.stringify(
-      JSON.parse(model.server.requests[0]?.body ?? "{}")
-    )
-    expect(step1).toContain("Today is 2030-06-01.")
+    expect(text).toMatch(/\n\[M1\] gmail\n<material id="[0-9a-f]{32}" source="mail">\n/)
+    expect(step1Turns).toContain("Today is 2030-06-01.")
   })
 })
 
@@ -309,7 +306,7 @@ describe("foreground lane", () => {
     })
     const client: ModelClient = {
       complete(req: InferenceRequest): Promise<InferenceResult> {
-        const label = req.messages[0]?.content ?? ""
+        const label = plainContent(req.messages[0]?.content ?? "")
         if (label.startsWith("bg")) {
           started.push(label)
           return new Promise((resolve) => {

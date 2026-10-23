@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { beforeEach, describe, expect, test } from "vitest"
 import { estimateTokens } from "../inference/budget"
+import { ESTIMATE_BOUNDARY, plainContent } from "../inference/fence"
 import { openIndex } from "../index/schema"
 import type { IndexedDocument } from "../index/ingest"
 import { assembleContext } from "./assemble"
@@ -15,10 +16,10 @@ import {
   sha,
 } from "./context.test-support"
 import type { ContextPack } from "./pack-store"
-import { readContextPack } from "./pack-store"
+import { packParts, packText, readContextPack } from "./pack-store"
 import type { ContextBudgets } from "./tools"
 
-const BUDGETS: ContextBudgets = { ask: 3000, propose: 2000 }
+const BUDGETS: ContextBudgets = { ask: 3800, propose: 2000 }
 
 let db: DatabaseSync
 beforeEach(() => {
@@ -51,12 +52,13 @@ function packRows(): number {
 
 /** The text of each member block, keyed by tag, split on the tag lines. */
 function memberBlocks(p: ContextPack): Map<string, string> {
+  const text = packText(p)
   const blocks = new Map<string, string>()
-  const starts = p.members.map((m) => p.text.indexOf(`\n\n${m.tag} `))
+  const starts = p.members.map((m) => text.indexOf(`\n\n${m.tag} `))
   p.members.forEach((m, i) => {
     const start = (starts[i] ?? -1) + 2
-    const end = starts[i + 1] ?? p.text.length
-    blocks.set(m.tag, p.text.slice(start, end))
+    const end = starts[i + 1] ?? text.length
+    blocks.set(m.tag, text.slice(start, end))
   })
   return blocks
 }
@@ -79,7 +81,9 @@ describe("assembleContext on a 200-message thread", () => {
     ingest(db, thread)
     const p = await pack(seedDoc.sha256)
     expect(p.tokenCount).toBeLessThanOrEqual(BUDGETS.ask)
-    expect(p.tokenCount).toBe(estimateTokens(p.text))
+    expect(p.tokenCount).toBe(
+      estimateTokens(plainContent(packParts(p), ESTIMATE_BOUNDARY))
+    )
     expect(p.droppedMembers).toBe(200 - p.members.length)
     expect(p.droppedMembers).toBeGreaterThan(0)
     expect(p.members.map((m) => m.sha256)).toContain(seedDoc.sha256)
@@ -107,7 +111,7 @@ describe("assembleContext on a 200-message thread", () => {
   test("members are whole compacted messages, never truncated", async () => {
     ingest(db, thread)
     const p = await pack(seedDoc.sha256)
-    expect(p.text.startsWith(`${COMPACTION_LEGEND}\n\n[M1] `)).toBe(true)
+    expect(packText(p).startsWith(`${COMPACTION_LEGEND}\n\n[M1] `)).toBe(true)
     for (const [tag, block] of memberBlocks(p)) {
       const member = p.members.find((m) => m.tag === tag)
       const d = docFor(thread, member?.sha256 ?? "")
@@ -118,11 +122,13 @@ describe("assembleContext on a 200-message thread", () => {
         subject: d.title ?? "",
         body: d.body,
       }).text
-      expect(block).toBe(`${tag} gmail | untrusted\n${expected}`)
+      expect(block).toBe(
+        `${tag} gmail\n<material id="pack" source="mail">\n${expected}\n</material id="pack">`
+      )
     }
   })
 
-  test("members are in date order, tagged [M1]..[Mn] with source and untrusted", async () => {
+  test("members are in date order, tagged [M1]..[Mn] with their source, each in a fenced block", async () => {
     ingest(db, thread)
     const p = await pack(seedDoc.sha256)
     expect(p.members.map((m) => m.tag)).toEqual(
@@ -133,7 +139,9 @@ describe("assembleContext on a 200-message thread", () => {
     )
     expect(dates).toEqual([...dates].sort())
     for (const m of p.members)
-      expect(p.text).toContain(`\n\n${m.tag} gmail | untrusted\n`)
+      expect(packText(p)).toContain(
+        `\n\n${m.tag} gmail\n<material id="pack" source="mail">\n`
+      )
   })
 
   test("the same inputs give the same hash; the pack is stored once and round-trips", async () => {
@@ -142,7 +150,7 @@ describe("assembleContext on a 200-message thread", () => {
     const second = await pack(seedDoc.sha256)
     expect(second.packHash).toBe(first.packHash)
     expect(first.packHash).toBe(
-      createHash("sha256").update(first.text).digest("hex")
+      createHash("sha256").update(packText(first)).digest("hex")
     )
     expect(packRows()).toBe(1)
     expect(readContextPack(db, first.id)).toEqual({
@@ -205,8 +213,8 @@ describe("assembleContext edges and refusal", () => {
       [parent.sha256, "reply"],
       [seed.sha256, "seed"],
     ])
-    expect(p.text).toContain(
-      "[M1] gmail attachment | untrusted\ninvoice.txt | \nInvoice 7, total due on receipt."
+    expect(packText(p)).toContain(
+      '[M1] gmail\n<material id="pack" source="attachment">\ninvoice.txt | \nInvoice 7, total due on receipt.\n</material id="pack">'
     )
     expect(p.droppedMembers).toBe(0)
   })
@@ -251,13 +259,13 @@ describe("assembleContext edges and refusal", () => {
       threadId: "t",
     })
     ingest(db, [seed, large, small])
-    const p = await pack(seed.sha256, 200)
+    const p = await pack(seed.sha256, 260)
     expect(p.members.map((m) => [m.sha256, m.edge])).toEqual([
       [small.sha256, "thread"],
       [seed.sha256, "seed"],
     ])
     expect(p.droppedMembers).toBe(1)
-    expect(p.text).not.toContain("yyy")
+    expect(packText(p)).not.toContain("yyy")
   })
 
   test("an attachment seed reaches its parent message", async () => {

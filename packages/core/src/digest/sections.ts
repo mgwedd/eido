@@ -1,30 +1,62 @@
-import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/index"
+import {
+  DEFAULT_CHARS_PER_TOKEN,
+  ESTIMATE_BOUNDARY,
+  fence,
+  normalizeMaterial,
+  plainContent,
+  toMaterial,
+} from "../inference/index"
+import type {
+  FencedBlock,
+  MaterialSource,
+  PromptPart,
+} from "../inference/index"
 import { DigestBuildError } from "./types"
 import type { DigestSubject } from "./types"
 
-// Splits a source into sections that fit the section budget. Cuts fall on message or page
-// boundaries; a reply stays with the message it answers when the pair fits. A message or page
-// that alone exceeds the budget is split at paragraph boundaries (at code points only for a
-// single paragraph that is itself too large), so every character reaches the model.
+// Splits a source into sections that fit the section budget. Each message or page is one material
+// block whose `ref` attribute the model cites back. Cuts fall on message or page boundaries; a
+// reply stays with the message it answers when the pair fits. A message or page that alone
+// exceeds the budget is split at paragraph boundaries (at code points only for a single paragraph
+// that is itself too large), so every character reaches the model.
 
 interface Segment {
-  /** The message id, or the page number as text. Models cite it back. */
-  ref: string
-  /** `[ref]` header plus body. */
-  text: string
+  block: FencedBlock
+  /** Code points of the block as the model reads it. */
   chars: number
 }
 
 export interface SectionPlan {
-  /** The text of each model input. */
-  sections: string[]
+  /** The content of each model input: material blocks, then the task line. */
+  sections: PromptPart[][]
   splitSegments: number
 }
 
+/** The last line of every section input, after the material. */
+export const SECTION_TASK = "Summarize the material blocks above."
+
+const SEPARATOR = "\n\n"
+
 const codePoints = (text: string): number => [...text].length
 
-// Reserves room for the longest part header so a split piece never overflows once labelled.
-const WIDEST_PART_SUFFIX = " (part 99999 of 99999)"
+const blockChars = (block: FencedBlock): number =>
+  codePoints(plainContent([block], ESTIMATE_BOUNDARY))
+
+const FRAME_CHARS = codePoints(`${SEPARATOR}${SECTION_TASK}`)
+
+/** A section's content: its blocks, then the task line. */
+function sectionContent(blocks: readonly FencedBlock[]): PromptPart[] {
+  const parts: PromptPart[] = []
+  for (const block of blocks) {
+    if (parts.length > 0) parts.push(SEPARATOR)
+    parts.push(block)
+  }
+  parts.push(`${SEPARATOR}${SECTION_TASK}`)
+  return parts
+}
+
+// Reserves room for the longest part label so a split piece never overflows once labelled.
+const WIDEST_PART = "99999 of 99999"
 
 function splitBody(body: string, room: number): string[] {
   const pieces: string[] = []
@@ -35,19 +67,18 @@ function splitBody(body: string, room: number): string[] {
   }
   for (const paragraph of body.split(/\n{2,}/)) {
     const joined = current === "" ? paragraph : `${current}\n\n${paragraph}`
-    if (estimateTokens(joined) <= room) {
+    if (codePoints(joined) <= room) {
       current = joined
       continue
     }
     flush()
-    if (estimateTokens(paragraph) <= room) {
+    if (codePoints(paragraph) <= room) {
       current = paragraph
       continue
     }
     const chars = [...paragraph]
-    const width = room * DEFAULT_CHARS_PER_TOKEN
-    for (let i = 0; i < chars.length; i += width) {
-      pieces.push(chars.slice(i, i + width).join(""))
+    for (let i = 0; i < chars.length; i += room) {
+      pieces.push(chars.slice(i, i + room).join(""))
     }
   }
   flush()
@@ -55,28 +86,40 @@ function splitBody(body: string, room: number): string[] {
 }
 
 function segmentsOf(
+  source: MaterialSource,
   ref: string,
-  body: string,
-  budget: number
+  raw: string,
+  maxChars: number
 ): { segments: Segment[]; split: boolean } {
-  const whole = `[${ref}]\n${body}`
-  if (estimateTokens(whole) <= budget) {
+  const whole = fence(toMaterial(raw, { source, ref }))
+  if (blockChars(whole) <= maxChars) {
     return {
-      segments: [{ ref, text: whole, chars: codePoints(whole) }],
+      segments: [{ block: whole, chars: blockChars(whole) }],
       split: false,
     }
   }
-  const room = budget - estimateTokens(`[${ref}]${WIDEST_PART_SUFFIX}\n`)
+  // Split the normalized text, so a piece never grows when it is normalized again.
+  const body = normalizeMaterial(raw)
+  const overhead = blockChars(
+    fence(toMaterial("", { source, ref, part: WIDEST_PART }))
+  )
+  const room = maxChars - overhead
   if (room < 1) {
     throw new DigestBuildError(
-      `section budget of ${String(budget)} tokens is too small for reference ${ref}`
+      `section budget is too small for reference ${ref}`
     )
   }
-  const parts = splitBody(body, room)
+  const pieces = splitBody(body, room)
   return {
-    segments: parts.map((part, i) => {
-      const text = `[${ref}] (part ${String(i + 1)} of ${String(parts.length)})\n${part}`
-      return { ref, text, chars: codePoints(text) }
+    segments: pieces.map((piece, i) => {
+      const block = fence(
+        toMaterial(piece, {
+          source,
+          ref,
+          part: `${String(i + 1)} of ${String(pieces.length)}`,
+        })
+      )
+      return { block, chars: blockChars(block) }
     }),
     split: true,
   }
@@ -85,13 +128,18 @@ function segmentsOf(
 /** Units that stay together: a reply with the message it answers, a page alone. */
 function unitsOf(
   subject: DigestSubject,
-  budget: number
+  maxChars: number
 ): { units: Segment[][]; splitSegments: number } {
   const units: Segment[][] = []
   let splitSegments = 0
   if (subject.kind === "document") {
     for (const { page, text } of subject.pages) {
-      const { segments, split } = segmentsOf(String(page), text, budget)
+      const { segments, split } = segmentsOf(
+        "document",
+        String(page),
+        text,
+        maxChars
+      )
       units.push(segments)
       if (split) splitSegments += 1
     }
@@ -100,7 +148,12 @@ function unitsOf(
   let lastId: string | undefined
   let lastUnitIsSingle = false
   for (const message of subject.messages) {
-    const { segments, split } = segmentsOf(message.id, message.body, budget)
+    const { segments, split } = segmentsOf(
+      "mail",
+      message.id,
+      message.body,
+      maxChars
+    )
     if (split) splitSegments += 1
     const answersLast =
       message.inReplyTo !== undefined &&
@@ -119,21 +172,23 @@ function unitsOf(
   return { units, splitSegments }
 }
 
-const SEPARATOR_CHARS = 2 // "\n\n"
+const SEPARATOR_CHARS = codePoints(SEPARATOR)
 
 export function planSections(
   subject: DigestSubject,
   budget: number
 ): SectionPlan {
-  const { units, splitSegments } = unitsOf(subject, budget)
-  const sections: string[] = []
+  // A section's blocks, with their separators, plus the task line fit the budget.
+  const maxChars = budget * DEFAULT_CHARS_PER_TOKEN - FRAME_CHARS
+  const { units, splitSegments } = unitsOf(subject, maxChars)
+  const sections: PromptPart[][] = []
   let current: Segment[] = []
   let currentChars = 0
-  const maxChars = budget * DEFAULT_CHARS_PER_TOKEN
 
   const flush = (): void => {
-    if (current.length > 0)
-      sections.push(current.map((s) => s.text).join("\n\n"))
+    if (current.length > 0) {
+      sections.push(sectionContent(current.map((s) => s.block)))
+    }
     current = []
     currentChars = 0
   }

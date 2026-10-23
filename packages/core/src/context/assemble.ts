@@ -1,12 +1,18 @@
 import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
+import { fence, plainContent, toMaterial } from "../inference/fence"
 import { COMPACTION_LEGEND, compactMessage } from "./compact"
 import {
   type ContextPack,
+  ESTIMATE_BOUNDARY,
   type MemberEdge,
+  type PackBlock,
   type PackMember,
+  blockParts,
   packIdFor,
+  packParts,
+  packText,
   storeContextPack,
 } from "./pack-store"
 import type { TaskType } from "./tools"
@@ -31,8 +37,6 @@ export interface AssembleOptions {
   charsPerToken?: number
 }
 
-/** Every indexed document came from a connector, so it was written by someone else. */
-const TRUST = "untrusted"
 const MAX_DEPTH = 2
 type NeighbourEdge = Exclude<MemberEdge, "seed">
 const EDGE_RANK: Record<NeighbourEdge, number> = {
@@ -58,7 +62,7 @@ interface Doc {
 interface Chosen {
   doc: Doc
   edge: MemberEdge
-  body: string
+  entry: PackBlock
   tokens: number
 }
 
@@ -176,7 +180,7 @@ function addresses(db: DatabaseSync, sha256: string, role: string): string[] {
     .map((r) => String(r["address"]))
 }
 
-/** The member's body as the model sees it, without its tag line. */
+/** The member's text as the model and the owner read it: compacted, then normalized. */
 function memberBody(db: DatabaseSync, doc: Doc): string {
   if (doc.attachmentOf !== undefined)
     return `${doc.title} | ${doc.occurredAt}\n${doc.body}`
@@ -189,10 +193,53 @@ function memberBody(db: DatabaseSync, doc: Doc): string {
   }).text
 }
 
-function tagLine(tag: string, doc: Doc): string {
-  const source =
-    doc.attachmentOf === undefined ? doc.source : `${doc.source} attachment`
-  return `${tag} ${source} | ${TRUST}`
+/** Every indexed document came from a connector, so it was written by someone else: fenced. */
+function entryFor(db: DatabaseSync, doc: Doc, tag: string): PackBlock {
+  const source = doc.attachmentOf === undefined ? "mail" : "attachment"
+  return {
+    tag,
+    label: doc.source,
+    block: fence(toMaterial(memberBody(db, doc), { source })),
+  }
+}
+
+const entryTokens = (entry: PackBlock, charsPerToken: number): number =>
+  estimateTokens(
+    plainContent(blockParts(entry), ESTIMATE_BOUNDARY),
+    charsPerToken
+  )
+
+function memberOf(
+  entry: PackBlock,
+  sha256: string,
+  edge: MemberEdge,
+  tokens: number
+): PackMember {
+  return {
+    tag: entry.tag,
+    sha256,
+    edge,
+    tokens,
+    injectionSuspected: entry.block.injectionSuspected,
+    injectionReasons: [...entry.block.reasons],
+  }
+}
+
+/**
+ * One indexed document as a pack entry under `tag`, with its estimated tokens: what `buildAskPack`
+ * adds for a search hit outside the seed's thread.
+ */
+export function packEntry(
+  db: DatabaseSync,
+  sha256: string,
+  tag: string,
+  charsPerToken: number
+): { entry: PackBlock; member: PackMember } {
+  const row = db.prepare(`${SELECT_DOC} WHERE d.sha256 = ?`).get(sha256)
+  if (row === undefined) throw new Error("a pack entry is not in the index")
+  const entry = entryFor(db, toDoc(row), tag)
+  const tokens = entryTokens(entry, charsPerToken)
+  return { entry, member: memberOf(entry, sha256, "seed", tokens) }
 }
 
 const byDateThenSha = (a: Doc, b: Doc): number =>
@@ -232,14 +279,10 @@ export function assembleContext(
   // Each block is estimated with the widest tag any member could get, so the real text never
   // estimates above the sum. The sum of rounded-up parts is never below the whole's estimate.
   const widestTag = `[M${neighbours.length + 1}]`
-  const legendTokens = estimateTokens(`${COMPACTION_LEGEND}\n\n`, charsPerToken)
+  const legendTokens = estimateTokens(COMPACTION_LEGEND, charsPerToken)
   const block = (doc: Doc, edge: MemberEdge): Chosen => {
-    const body = memberBody(db, doc)
-    const tokens = estimateTokens(
-      `${tagLine(widestTag, doc)}\n${body}\n\n`,
-      charsPerToken
-    )
-    return { doc, edge, body, tokens }
+    const entry = entryFor(db, doc, widestTag)
+    return { doc, edge, entry, tokens: entryTokens(entry, charsPerToken) }
   }
 
   const seedBlock = block(seed, "seed")
@@ -263,25 +306,22 @@ export function assembleContext(
   }
 
   chosen.sort((a, b) => byDateThenSha(a.doc, b.doc))
-  const members: PackMember[] = chosen.map(({ doc, edge, tokens }, i) => ({
-    tag: `[M${i + 1}]`,
-    sha256: doc.sha256,
-    edge,
-    tokens,
-  }))
-  const parts = [
-    COMPACTION_LEGEND,
-    ...chosen.map(
-      ({ doc, body }, i) => `${tagLine(`[M${i + 1}]`, doc)}\n${body}`
-    ),
-  ]
-  const text = parts.join("\n\n")
-  const packHash = createHash("sha256").update(text).digest("hex")
+  const blocks: PackBlock[] = []
+  const members: PackMember[] = []
+  for (const [i, { doc, edge, entry, tokens }] of chosen.entries()) {
+    const tagged = { ...entry, tag: `[M${i + 1}]` }
+    blocks.push(tagged)
+    members.push(memberOf(tagged, doc.sha256, edge, tokens))
+  }
+  const packHash = createHash("sha256").update(packText({ blocks })).digest("hex")
   const pack: ContextPack = {
     id: packIdFor(packHash),
-    text,
+    blocks,
     members,
-    tokenCount: estimateTokens(text, charsPerToken),
+    tokenCount: estimateTokens(
+      plainContent(packParts({ blocks }), ESTIMATE_BOUNDARY),
+      charsPerToken
+    ),
     droppedMembers: neighbours.length + 1 - chosen.length,
     packHash,
   }

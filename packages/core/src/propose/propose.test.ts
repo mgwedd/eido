@@ -116,12 +116,8 @@ describe("proposeIntents", () => {
     const { h, request } = await setup({ replies: [reply([])] })
     await proposeIntents(request, h.deps)
     const body: unknown = JSON.parse(h.server.requests.at(-1)?.body ?? "")
-    expect(body).toMatchObject({
-      response_format: {
-        type: "json_schema",
-        json_schema: { schema: { title: "IntentResult" } },
-      },
-    })
+    expect(h.server.requests.at(-1)?.path).toBe("/completion")
+    expect(body).toMatchObject({ json_schema: { title: "IntentResult" } })
   })
 
   test("a reply failing the schema is retried once with the code and path, then rejected and logged", async () => {
@@ -272,7 +268,7 @@ describe("proposeIntents", () => {
       expect(h.gate.proposals.map((p) => p.intent)).toEqual([ARCHIVE])
     })
 
-    test("a stub obeying the injection only reaches the gate, lands pending, and the email sits in the untrusted block", async () => {
+    test("a stub obeying the injection only reaches the gate, lands pending, and the email sits in a material block", async () => {
       const obey = {
         kind: "email.forward",
         args: {
@@ -290,7 +286,7 @@ describe("proposeIntents", () => {
 
       const content = lastContent(h, 0)
       const block =
-        /<<<UNTRUSTED DATA (cp_[0-9a-f]{32})>>>\n([\s\S]*)\n<<<END UNTRUSTED DATA \1>>>/.exec(
+        /<material id="([0-9a-f]{32})" source="mail">\n([\s\S]*?)\n<\/material id="\1">/.exec(
           content
         )
       expect(block?.[2]).toContain(INJECTION)

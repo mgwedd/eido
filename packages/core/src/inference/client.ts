@@ -5,8 +5,14 @@ import {
   estimateTokens,
   truncationSuspected,
 } from "./budget"
-import { InferenceError } from "./errors"
-import { buildChatBody, promptText } from "./request"
+import { InferenceError, UnsupportedModelServerError } from "./errors"
+import type { RequiredServerFeature } from "./errors"
+import { newBoundary } from "./fence"
+import {
+  buildCompletionBody,
+  buildTemplateBody,
+  promptText,
+} from "./request"
 import {
   applyEvent,
   finishStream,
@@ -141,7 +147,221 @@ async function readStream(
   }
 }
 
-/** A client for one loopback llama-server. It refuses oversized prompts and never retries. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+// A route llama-server does not have answers 404 (or 405/501 behind some proxies).
+const MISSING_ROUTE = new Set([404, 405, 501])
+
+const ENDPOINT: Record<Exclude<RequiredServerFeature, "parse_special">, string> =
+  {
+    "apply-template": "/apply-template",
+    tokenize: "/tokenize",
+  }
+
+async function postJson(
+  doFetch: typeof fetch,
+  baseUrl: string,
+  feature: "apply-template" | "tokenize",
+  body: string,
+  signal: AbortSignal | undefined
+): Promise<Record<string, unknown>> {
+  const path = ENDPOINT[feature]
+  const response = await post(doFetch, `${baseUrl}${path}`, body, signal)
+  if (!response.ok) {
+    await response.body?.cancel().catch(ignore)
+    if (MISSING_ROUTE.has(response.status)) {
+      throw new UnsupportedModelServerError(
+        feature,
+        `model server has no ${path} (answered ${String(response.status)}): inference needs it to keep material out of the special-token parser`
+      )
+    }
+    throw new InferenceError(
+      "http",
+      response.status,
+      `model server answered ${String(response.status)} on ${path}`
+    )
+  }
+  let parsed: unknown
+  try {
+    parsed = await response.json()
+  } catch (cause) {
+    if (signal?.aborted === true) throw abortedError(cause)
+    throw new InferenceError(
+      "malformed",
+      response.status,
+      `${path} answer is not JSON`,
+      { cause }
+    )
+  }
+  if (!isRecord(parsed)) {
+    throw new InferenceError(
+      "malformed",
+      response.status,
+      `${path} answer is not an object`
+    )
+  }
+  return parsed
+}
+
+/** The chat template rendered by the server, with placeholders where material goes. */
+async function applyTemplate(
+  doFetch: typeof fetch,
+  baseUrl: string,
+  body: string,
+  signal: AbortSignal | undefined
+): Promise<string> {
+  const answer = await postJson(
+    doFetch,
+    baseUrl,
+    "apply-template",
+    body,
+    signal
+  )
+  if (typeof answer.prompt !== "string") {
+    throw new InferenceError(
+      "malformed",
+      200,
+      "/apply-template answer has no prompt"
+    )
+  }
+  return answer.prompt
+}
+
+interface TokenizeArgs {
+  /** Prepend the model's BOS token. Only the first trusted piece sets it. */
+  addSpecial: boolean
+  /** Turn special-token text into control tokens. Never set for material. */
+  parseSpecial: boolean
+}
+
+async function tokenize(
+  doFetch: typeof fetch,
+  baseUrl: string,
+  content: string,
+  args: TokenizeArgs,
+  signal: AbortSignal | undefined
+): Promise<number[]> {
+  const answer = await postJson(
+    doFetch,
+    baseUrl,
+    "tokenize",
+    JSON.stringify({
+      content,
+      add_special: args.addSpecial,
+      parse_special: args.parseSpecial,
+    }),
+    signal
+  )
+  const tokens = answer.tokens
+  if (
+    !Array.isArray(tokens) ||
+    !tokens.every(
+      (t): t is number => typeof t === "number" && Number.isInteger(t) && t >= 0
+    )
+  ) {
+    throw new InferenceError(
+      "malformed",
+      200,
+      "/tokenize answer has no list of token ids"
+    )
+  }
+  return tokens
+}
+
+// A private-use character no template writes, around a per-request nonce.
+const MARK = "\u{F8FF}"
+
+/** What stands in for span `index` in the template body. */
+export function placeholder(nonce: string, index: number): string {
+  return `${MARK}eido:${nonce}:${String(index)}${MARK}`
+}
+
+/**
+ * The rendered prompt cut at its placeholders: trusted pieces around the spans, in order. Each
+ * placeholder must appear exactly once and in order, or the template changed something it must
+ * not have, and nothing is sent.
+ */
+export function splitRendered(
+  rendered: string,
+  nonce: string,
+  spanCount: number
+): string[] {
+  const pieces: string[] = []
+  let cursor = 0
+  let expected = 0
+  const marks = new RegExp(`${MARK}eido:${nonce}:(\\d+)${MARK}`, "gu")
+  for (const match of rendered.matchAll(marks)) {
+    if (match[1] !== String(expected)) {
+      throw new InferenceError(
+        "malformed",
+        200,
+        "the rendered template does not hold each material placeholder once, in order"
+      )
+    }
+    pieces.push(rendered.slice(cursor, match.index))
+    cursor = match.index + match[0].length
+    expected += 1
+  }
+  if (expected !== spanCount) {
+    throw new InferenceError(
+      "malformed",
+      200,
+      "the rendered template does not hold each material placeholder once, in order"
+    )
+  }
+  pieces.push(rendered.slice(cursor))
+  return pieces
+}
+
+/**
+ * The prompt as token ids. Trusted pieces (template, system prompt, owner words, block tags) are
+ * tokenized with special tokens on; every material span alone with `parse_special: false`, so
+ * no text inside material can become a control token. The first piece carries the BOS token,
+ * which the server strips from the rendered template.
+ */
+async function promptTokens(
+  doFetch: typeof fetch,
+  baseUrl: string,
+  pieces: readonly string[],
+  spans: readonly string[],
+  signal: AbortSignal | undefined
+): Promise<number[]> {
+  const ids: number[] = []
+  for (const [i, piece] of pieces.entries()) {
+    if (i === 0 || piece !== "") {
+      ids.push(
+        ...(await tokenize(
+          doFetch,
+          baseUrl,
+          piece,
+          { addSpecial: i === 0, parseSpecial: true },
+          signal
+        ))
+      )
+    }
+    const span = spans[i]
+    if (span === undefined || span === "") continue
+    ids.push(
+      ...(await tokenize(
+        doFetch,
+        baseUrl,
+        span,
+        { addSpecial: false, parseSpecial: false },
+        signal
+      ))
+    )
+  }
+  return ids
+}
+
+/**
+ * A client for one loopback llama-server. It refuses oversized prompts and never retries. Each
+ * request renders the chat template with `/apply-template`, tokenizes with `/tokenize` and sends
+ * token ids to `/completion`; a server without those routes fails with
+ * `UnsupportedModelServerError` before any prompt is sent. Use `connectModelClient` at startup.
+ */
 export function createModelClient(
   config: ModelServerConfig,
   deps: ModelClientDeps = {}
@@ -164,7 +384,6 @@ export function createModelClient(
   const tripwireMin =
     config.tripwireMinPromptTokens ?? DEFAULT_TRIPWIRE_MIN_PROMPT_TOKENS
   const doFetch = deps.fetch ?? fetch
-  const url = `${baseUrl}/v1/chat/completions`
 
   return {
     async complete(
@@ -172,17 +391,41 @@ export function createModelClient(
       opts: CompleteOptions = {}
     ): Promise<InferenceResult> {
       const maxTokens = req.maxTokens ?? maxReplyTokens
+      // A fresh boundary per request: no material can know another request's.
+      const boundary = newBoundary()
       const estimatedPromptTokens = estimateTokens(
-        promptText(req),
+        promptText(req, boundary),
         charsPerToken
       )
       // Refuse, don't truncate: nothing is sent, and the input is never shortened to fit.
       assertFits(estimatedPromptTokens, maxTokens, contextTokens, marginRatio)
 
+      const nonce = newBoundary()
+      const spans: string[] = []
+      const templateBody = buildTemplateBody(req, boundary, (span) => {
+        const mark = placeholder(nonce, spans.length)
+        spans.push(span)
+        return mark
+      })
+      const rendered = await applyTemplate(
+        doFetch,
+        baseUrl,
+        templateBody,
+        opts.signal
+      )
+      const pieces = splitRendered(rendered, nonce, spans.length)
+      const tokens = await promptTokens(
+        doFetch,
+        baseUrl,
+        pieces,
+        spans,
+        opts.signal
+      )
+
       const response = await post(
         doFetch,
-        url,
-        buildChatBody(req, maxTokens),
+        `${baseUrl}/completion`,
+        buildCompletionBody(req, tokens, maxTokens),
         opts.signal
       )
       if (!response.ok) {
@@ -217,9 +460,57 @@ export function createModelClient(
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
+const PROBE_TEXT = "probe"
+
+/**
+ * Checks the server at startup, then returns a client for it. It needs `/apply-template` and
+ * `/tokenize`, and `/tokenize` must honour `parse_special`: the rendered probe template must
+ * tokenize differently with special tokens off. Otherwise it throws
+ * `UnsupportedModelServerError` naming what is missing, and no prompt is ever sent.
+ */
+export async function connectModelClient(
+  config: ModelServerConfig,
+  deps: ModelClientDeps & { signal?: AbortSignal } = {}
+): Promise<ModelClient> {
+  const baseUrl = loopbackBaseUrl(config.baseUrl)
+  const doFetch = deps.fetch ?? fetch
+  const rendered = await applyTemplate(
+    doFetch,
+    baseUrl,
+    JSON.stringify({
+      messages: [
+        { role: "system", content: PROBE_TEXT },
+        { role: "user", content: PROBE_TEXT },
+      ],
+    }),
+    deps.signal
+  )
+  const special = await tokenize(
+    doFetch,
+    baseUrl,
+    rendered,
+    { addSpecial: false, parseSpecial: true },
+    deps.signal
+  )
+  const literal = await tokenize(
+    doFetch,
+    baseUrl,
+    rendered,
+    { addSpecial: false, parseSpecial: false },
+    deps.signal
+  )
+  if (
+    special.length === literal.length &&
+    special.every((id, i) => id === literal[i])
+  ) {
+    throw new UnsupportedModelServerError(
+      "parse_special",
+      "model server /tokenize ignores parse_special: the chat template's control tokens tokenize the same either way"
+    )
+  }
+  return createModelClient(config, deps)
 }
+
 
 /**
  * The context size llama-server reports in `GET /props` (`default_generation_settings.n_ctx`).
