@@ -2,7 +2,11 @@ import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
-import { attachmentText, parseMessage } from "../mail/parse"
+import { ingestEntityId } from "../ingest-entity"
+import type { IngestAccount } from "../ingest-entity"
+import { isPdfMime, attachmentText, parseMessage } from "../mail/parse"
+import { pdfAttachmentText } from "../mail/pdf-text"
+import type { Parser } from "../../parsers/index"
 import { extractAddresses } from "../reply-target"
 import type { GmailClient, RawMessage } from "./client"
 import type { GmailConfig } from "./config"
@@ -49,7 +53,11 @@ function readCursor(db: DatabaseSync, label: string): StreamCursor | undefined {
   }
 }
 
-async function toDocuments(message: RawMessage): Promise<IndexedDocument[]> {
+async function toDocuments(
+  message: RawMessage,
+  entityId: string,
+  parser: Parser | undefined
+): Promise<IndexedDocument[]> {
   const parsed = await parseMessage(message.raw)
   const contentHash = sha256(message.raw)
   const occurredAt =
@@ -63,6 +71,7 @@ async function toDocuments(message: RawMessage): Promise<IndexedDocument[]> {
     // Gmail's message id: stable for the life of the message, and what write verbs take.
     sourceRef: message.id,
     mime: "message/rfc822",
+    entityId,
     title: parsed.subject,
     body: parsed.text,
     ...(occurredAt === undefined ? {} : { occurredAt }),
@@ -93,21 +102,44 @@ async function toDocuments(message: RawMessage): Promise<IndexedDocument[]> {
     addresses: extractAddresses(parsed),
     content: message.raw,
   }
-  const attachments = parsed.attachments.map(
-    (attachment, index): IndexedDocument => ({
+  const attachments: IndexedDocument[] = []
+  for (const [index, attachment] of parsed.attachments.entries()) {
+    // A PDF's text comes from the sandboxed parser; one it cannot read is indexed with no text.
+    const body =
+      parser !== undefined && isPdfMime(attachment.mime)
+        ? await pdfAttachmentText(parser, attachment)
+        : attachmentText(attachment)
+    attachments.push({
       sha256: sha256(`${contentHash}:${index}`),
       source: GMAIL_SOURCE,
       sourceRef: `${message.id}#${index}`,
       mime: attachment.mime,
+      entityId,
       title: attachment.filename,
-      body: attachmentText(attachment) ?? "",
+      body: body ?? "",
       headers: { attachmentOf: message.id },
     })
-  )
+  }
   return [mail, ...attachments]
 }
 
+export type SyncOptions = {
+  /** Reads PDF attachments. Without it a PDF is indexed with no text. */
+  parser?: Parser
+}
+
 type Totals = { inserted: number; skipped: number }
+
+/** What one label's sync works with. Every document it stores gets `entityId`. */
+type LabelRun = {
+  db: DatabaseSync
+  client: GmailClient
+  label: string
+  config: GmailConfig
+  entityId: string
+  totals: Totals
+  parser: Parser | undefined
+}
 
 /**
  * Fetches and parses the messages not yet in the index, then commits them with `nextCursor` in one
@@ -115,12 +147,9 @@ type Totals = { inserted: number; skipped: number }
  * duplicate document; a message deleted since it was listed is skipped too.
  */
 async function commitBatch(
-  db: DatabaseSync,
-  client: GmailClient,
-  label: string,
+  { db, client, label, entityId, totals, parser }: LabelRun,
   ids: readonly string[],
-  nextCursor: StreamCursor,
-  totals: Totals
+  nextCursor: StreamCursor
 ): Promise<void> {
   const known = db.prepare(
     "SELECT 1 FROM documents WHERE source = ? AND source_ref = ? LIMIT 1"
@@ -138,7 +167,7 @@ async function commitBatch(
       if (error instanceof GmailError && error.code === "not_found") continue
       throw error
     }
-    documents.push(...(await toDocuments(message)))
+    documents.push(...(await toDocuments(message, entityId, parser)))
   }
   const result = ingestBatch(db, {
     connector: GMAIL_CONNECTOR,
@@ -155,13 +184,10 @@ async function commitBatch(
  * the first page, so whatever arrives during the sync is picked up by the next incremental run.
  */
 async function fullSync(
-  db: DatabaseSync,
-  client: GmailClient,
-  label: string,
-  config: GmailConfig,
-  resume: StreamCursor | undefined,
-  totals: Totals
+  run: LabelRun,
+  resume: StreamCursor | undefined
 ): Promise<void> {
+  const { client, label, config } = run
   const historyId = resume?.historyId ?? (await client.getProfile()).historyId
   let pageToken = resume?.pageToken
   let fetched = resume?.fetched ?? 0
@@ -180,12 +206,9 @@ async function fullSync(
       page.messages.length > 0 &&
       fetched < config.fullSyncLimit
     await commitBatch(
-      db,
-      client,
-      label,
+      run,
       page.messages.map((m) => m.id),
-      more ? { historyId, pageToken, fetched } : { historyId },
-      totals
+      more ? { historyId, pageToken, fetched } : { historyId }
     )
     if (!more) return
   }
@@ -193,13 +216,10 @@ async function fullSync(
 
 /** Replays history since the stored id. Only the last page moves the stored history id forward. */
 async function incrementalSync(
-  db: DatabaseSync,
-  client: GmailClient,
-  label: string,
-  config: GmailConfig,
-  historyId: string,
-  totals: Totals
+  run: LabelRun,
+  historyId: string
 ): Promise<void> {
+  const { client, label, config } = run
   let pageToken: string | undefined
   for (;;) {
     const page = await client.listHistory(historyId, {
@@ -208,14 +228,9 @@ async function incrementalSync(
       ...(pageToken === undefined ? {} : { pageToken }),
     })
     pageToken = page.nextPageToken
-    await commitBatch(
-      db,
-      client,
-      label,
-      page.messageIds,
-      { historyId: pageToken === undefined ? page.historyId : historyId },
-      totals
-    )
+    await commitBatch(run, page.messageIds, {
+      historyId: pageToken === undefined ? page.historyId : historyId,
+    })
     if (pageToken === undefined) return
   }
 }
@@ -225,38 +240,54 @@ async function incrementalSync(
  * resumes the bounded full sync; otherwise it replays history. An expired history id (404) falls
  * back to a bounded full resync, deduped on Gmail message id. Each batch and its cursor commit
  * together, so a sync stopped anywhere resumes without duplicates.
+ *
+ * Every document is stored with the account's entity (its assignment, else the default entity).
+ * With neither, it throws EntityRequiredError before reading Gmail: nothing is stored and the
+ * cursor stays where it was.
  */
 export async function syncGmailLabel(
   db: DatabaseSync,
   client: GmailClient,
   label: string,
-  config: GmailConfig
+  config: GmailConfig,
+  account: IngestAccount,
+  options: SyncOptions = {}
 ): Promise<LabelSyncResult> {
+  const entityId = await ingestEntityId(GMAIL_CONNECTOR, account)
   const totals: Totals = { inserted: 0, skipped: 0 }
+  const run: LabelRun = {
+    db,
+    client,
+    label,
+    config,
+    entityId,
+    totals,
+    parser: options.parser,
+  }
   const cursor = readCursor(db, label)
   if (cursor === undefined) {
-    await fullSync(db, client, label, config, undefined, totals)
+    await fullSync(run, undefined)
     return { label, ...totals, resynced: false }
   }
   if (cursor.pageToken !== undefined) {
     try {
-      await fullSync(db, client, label, config, cursor, totals)
+      await fullSync(run, cursor)
       return { label, ...totals, resynced: false }
     } catch (error) {
       // Gmail no longer accepts the stored page token: start the bounded full sync again.
       if (!(error instanceof GmailError) || error.status !== 400) throw error
     }
-    await fullSync(db, client, label, config, undefined, totals)
+    await fullSync(run, undefined)
     return { label, ...totals, resynced: true }
   }
   try {
-    await incrementalSync(db, client, label, config, cursor.historyId, totals)
+    await incrementalSync(run, cursor.historyId)
     return { label, ...totals, resynced: false }
   } catch (error) {
     if (!(error instanceof GmailError) || error.code !== "history_expired")
       throw error
   }
-  await fullSync(db, client, label, config, undefined, totals)
+  await fullSync(run, undefined)
   return { label, ...totals, resynced: true }
 }
 
@@ -268,10 +299,14 @@ export async function syncGmailLabel(
 export async function syncGmail(
   db: DatabaseSync,
   client: GmailClient,
-  config: GmailConfig
+  config: GmailConfig,
+  account: IngestAccount,
+  options: SyncOptions = {}
 ): Promise<LabelSyncResult[]> {
   const results: LabelSyncResult[] = []
   for (const label of config.labels)
-    results.push(await syncGmailLabel(db, client, label, config))
+    results.push(
+      await syncGmailLabel(db, client, label, config, account, options)
+    )
   return results
 }

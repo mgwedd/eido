@@ -1,6 +1,6 @@
 export { ProfileError } from "./errors"
 export type { ProfileErrorCode } from "./errors"
-export { createProfileStore } from "./store"
+export { createProfileStore, readDefaultEntityId } from "./store"
 export type { ProfileStore, ProfileStoreOptions } from "./store"
 export type {
   AccountAssignment,

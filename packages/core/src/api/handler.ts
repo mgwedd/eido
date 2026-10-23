@@ -8,6 +8,7 @@ import type {
   CoreApiProfileResponse,
   ProfileAccountAssignment,
 } from "@eido/schemas"
+import type { AskResult } from "../ask/types"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
 import type { ProfileStore } from "../profile/store"
@@ -26,6 +27,11 @@ export interface ApiDeps {
    * absent: routes are at the root.
    */
   basePath?: string
+  /**
+   * The ask pipeline (`ask` bound to its index, queue and budget). When absent, `/ask` is not
+   * served.
+   */
+  ask?: (question: string) => Promise<AskResult>
 }
 
 export type ApiHandler = (request: Request) => Promise<Response>
@@ -138,6 +144,25 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
+/** Longest question `/ask` accepts, in characters (code points). */
+export const MAX_QUESTION_CHARS = 2000
+
+/** The question from an `/ask` body: a non-empty string of at most MAX_QUESTION_CHARS. */
+function readQuestion(body: unknown): string {
+  const question: unknown =
+    body !== null && typeof body === "object"
+      ? Reflect.get(body, "question")
+      : undefined
+  if (typeof question !== "string" || question.trim() === "")
+    throw new HttpError("bad_request", "question must be a non-empty string")
+  if ([...question].length > MAX_QUESTION_CHARS)
+    throw new HttpError(
+      "bad_request",
+      `question must be at most ${String(MAX_QUESTION_CHARS)} characters`
+    )
+  return question.trim()
+}
+
 const ENTITY_PATH = /^\/entities\/([^/]+)$/
 
 /** The path below `basePath`, or null when the request is outside it. */
@@ -221,6 +246,13 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return new Response(null, { status: 204 })
       }
       return notAllowed("PATCH", "DELETE")
+    }
+
+    if (path === "/ask" && deps.ask !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const question = readQuestion(await readJson(request))
+      const body: AskResult = await deps.ask(question)
+      return json(body)
     }
 
     if (path === "/entity-assignments") {
