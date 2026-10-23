@@ -24,12 +24,14 @@ if (docsArg === undefined || labelsArg === undefined) {
   console.error("usage: extraction-accuracy <documents-dir> <labels.json>")
   process.exit(2)
 }
-const port = process.env["EIDO_LLAMA_PORT"]
+// The same variables the data plane reads for llama-server (src/main.ts DATA_PLANE_ENV).
+const env: NodeJS.ProcessEnv = process.env
+const port = env["EIDO_LLAMA_PORT"]
 if (port === undefined || port === "") {
   console.error("set EIDO_LLAMA_PORT to the local llama-server port")
   process.exit(2)
 }
-const host = process.env["EIDO_LLAMA_HOST"] ?? "127.0.0.1"
+const host = env["EIDO_LLAMA_HOST"] ?? "127.0.0.1"
 const baseUrl = `http://${host.includes(":") ? `[${host}]` : host}:${port}`
 
 const docsDir = realpathSync(resolve(docsArg))

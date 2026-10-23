@@ -14,6 +14,9 @@ import { ExtractionError, createExtractor } from "./pipeline"
 import { EXTRACTION_SYSTEM_PROMPT, passageMessage } from "./prompt"
 import type { ExtractionLogEvent } from "./types"
 
+const urlOf = (input: string | URL | Request): string =>
+  input instanceof Request ? input.url : input.toString()
+
 let h: Harness | undefined
 afterEach(async () => {
   await h?.close()
@@ -485,7 +488,7 @@ describe("prompt injection", () => {
     const result = await h.extractor.extractDocument(h.docId)
     expect(result.status).toBe("model_output_rejected")
     expect(h.counts()).toEqual(before)
-    const urls = fetchSpy.mock.calls.map(([input]) => String(input))
+    const urls = fetchSpy.mock.calls.map(([input]) => urlOf(input))
     expect(urls).toEqual([
       `${h.server.url}/v1/chat/completions`,
       `${h.server.url}/v1/chat/completions`,
@@ -508,7 +511,7 @@ describe("prompt injection", () => {
       extraction_field_confidence: 1,
       obligations: 1,
     })
-    expect(new Set(fetchSpy.mock.calls.map(([input]) => String(input)))).toEqual(
+    expect(new Set(fetchSpy.mock.calls.map(([input]) => urlOf(input)))).toEqual(
       new Set([`${h.server.url}/v1/chat/completions`])
     )
     // The planner-facing result carries no passage text.
