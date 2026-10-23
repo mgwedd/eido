@@ -287,7 +287,8 @@ describe("source tags", () => {
       "c1",
       "digest",
       fixture.store.fingerprint("c1") ?? "",
-      "2025-10-20T11:00:00Z"
+      "2025-10-20T11:00:00Z",
+      { summary: "digest", coveredTurns: 2 }
     )
     fixture = fixture.reopen()
 

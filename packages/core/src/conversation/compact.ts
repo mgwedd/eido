@@ -12,6 +12,8 @@ import type {
 export const DEFAULT_THRESHOLD_TOKENS = 4000
 export const DEFAULT_KEEP_RECENT_TOKENS = 1500
 export const DEFAULT_SUMMARY_CHUNK_TOKENS = 1500
+/** The reply cap on each summary call, so a running summary stays small enough to fold into. */
+export const DEFAULT_SUMMARY_REPLY_TOKENS = 600
 
 export type CompactDeps = {
   /** Every model call goes through the queue (#18). */
@@ -103,22 +105,36 @@ function chunkTurns(turns: readonly Turn[], chunkTokens: number): Turn[][] {
 }
 
 export type Summarized =
-  | { ok: true; text: string; preserved: Preserved }
+  | {
+      ok: true
+      /** The summary with every preserved reference present. */
+      text: string
+      /** The model's running summary alone, which a later build can fold new turns into. */
+      summary: string
+      preserved: Preserved
+    }
   | { ok: false; error: CompactError }
+
+/** A summary already made of the first `coveredTurns` turns, to fold the rest into. */
+export type SummaryStart = { summary: string; coveredTurns: number }
 
 /**
  * Summarize `turns` into one text through the model queue. Older text goes in chunks, each call
- * folding the next chunk into the running summary, so no input is cut to fit. Every date and
- * source tag of `turns` is then checked in the result and appended by code when missing.
+ * folding the next chunk into the running summary, so no input is cut to fit. With `start`, the
+ * first `start.coveredTurns` turns are already in `start.summary` and only the rest go to the
+ * model. Every date and source tag of all of `turns` is then checked in the result and appended
+ * by code when missing.
  */
 export async function summarizeTurns(
   turns: readonly Turn[],
   deps: CompactDeps,
-  chunkTokens: number = DEFAULT_SUMMARY_CHUNK_TOKENS
+  chunkTokens: number = DEFAULT_SUMMARY_CHUNK_TOKENS,
+  start?: SummaryStart
 ): Promise<Summarized> {
   const lane = deps.lane ?? "foreground"
-  let running = ""
-  for (const chunk of chunkTurns(turns, chunkTokens)) {
+  let running = start?.summary ?? ""
+  const pending = turns.slice(start?.coveredTurns ?? 0)
+  for (const chunk of chunkTurns(pending, chunkTokens)) {
     const content = [
       running === "" ? "" : `Summary so far:\n${running}\n\nNew turns:\n`,
       chunk.map(describeTurn).join("\n"),
@@ -130,6 +146,7 @@ export async function summarizeTurns(
           messages: [{ role: "user", content }],
           jsonSchema: SUMMARY_SCHEMA,
           temperature: 0,
+          maxTokens: DEFAULT_SUMMARY_REPLY_TOKENS,
         })
       )
       const summary =
@@ -161,6 +178,7 @@ export async function summarizeTurns(
   return {
     ok: true,
     text: withPreservedReferences(running, preserved),
+    summary: running,
     preserved,
   }
 }

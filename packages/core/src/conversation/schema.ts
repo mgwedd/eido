@@ -35,7 +35,11 @@ CREATE TABLE IF NOT EXISTS conversation_digests (
   fingerprint TEXT NOT NULL UNIQUE,
   parent_raw_fingerprint TEXT NOT NULL,
   text TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- The model's summary before references were appended, and how many turns it covers, so the
+  -- next build after a resume folds in only the new turns.
+  summary TEXT NOT NULL,
+  covered_turns INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS conversation_source_tags (

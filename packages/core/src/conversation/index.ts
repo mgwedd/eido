@@ -1,11 +1,12 @@
 export {
   DEFAULT_KEEP_RECENT_TOKENS,
   DEFAULT_SUMMARY_CHUNK_TOKENS,
+  DEFAULT_SUMMARY_REPLY_TOKENS,
   DEFAULT_THRESHOLD_TOKENS,
   compactConversation,
   summarizeTurns,
 } from "./compact"
-export type { CompactDeps, Summarized } from "./compact"
+export type { CompactDeps, Summarized, SummaryStart } from "./compact"
 export { compactReply, dispatchCommand, runCompactCommand } from "./command"
 export type { CommandOutcome, CompactCommandContext } from "./command"
 export { DEFAULT_DIGEST_IDLE_TTL_MINUTES, runDigestSweep } from "./digest"

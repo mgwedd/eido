@@ -251,10 +251,67 @@ describe("resuming a conversation", () => {
     ).toHaveLength(1)
   })
 
+  it("folds only the turns added since into the old digest's summary", async () => {
+    seed()
+    await sweep(summarizingModel("Old lemur summary."), minutes(60))
+    fixture.clock.now = minutes(120)
+    fixture.store.appendTurn(
+      "c1",
+      rawTurn(3, "One more thing about the lease.")
+    )
+
+    const model = summarizingModel("Lemur and lease.")
+    expect((await sweep(model, minutes(180))).built).toEqual(["c1"])
+    expect(model.requests).toHaveLength(1)
+    const content = model.requests[0]?.messages[0]?.content ?? ""
+    expect(content).toContain("Summary so far:\nOld lemur summary.\n")
+    expect(content).not.toContain("Preserved references")
+    expect(content).toContain("One more thing about the lease.")
+    expect(content).not.toContain("walrus")
+    // References of the turns not re-sent still come through.
+    expect(fixture.store.getConversationDigest("c1")?.text).toBe(
+      "Lemur and lease.\nPreserved references: Oct 31; M1"
+    )
+    expect(fixture.store.digestStart("c1")).toEqual({
+      summary: "Lemur and lease.",
+      coveredTurns: 3,
+    })
+  })
+
+  it("rebuilds from the start when the stored summary does not cover these turns", async () => {
+    seed()
+    // A digest whose fingerprint is not of the first turns: nothing to fold into.
+    fixture.store.putDigest(
+      "c1",
+      "Stray.",
+      "not-these-turns",
+      minutes(1).toISOString(),
+      {
+        summary: "Stray.",
+        coveredTurns: 1,
+      }
+    )
+    const model = summarizingModel("Fresh.")
+    expect((await sweep(model, minutes(90))).built).toEqual(["c1"])
+    const content = model.requests[0]?.messages[0]?.content ?? ""
+    expect(content).not.toContain("Stray.")
+    expect(content).toContain("walrus")
+  })
+
+  it("caps each summary reply", async () => {
+    seed()
+    const model = summarizingModel("S")
+    await sweep(model, minutes(60))
+    expect(model.requests[0]?.maxTokens).toBe(600)
+  })
+
   it("is not marked due while its digest still matches the raw transcript", () => {
     seed()
     const parent = fixture.store.fingerprint("c1") ?? ""
-    fixture.store.putDigest("c1", "D", parent, minutes(1).toISOString())
+    fixture.store.putDigest("c1", "D", parent, minutes(1).toISOString(), {
+      summary: "D",
+      coveredTurns: 2,
+    })
     expect(fixture.store.dueForDigest(minutes(600), 60)).toEqual([])
     fixture.store.appendTurn("c1", rawTurn(3, "later"))
     expect(fixture.store.dueForDigest(minutes(1000), 60)).toEqual(["c1"])

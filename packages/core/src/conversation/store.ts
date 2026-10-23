@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite"
 import { deriveDigestFingerprint, fingerprintTurns } from "./fingerprint"
+import type { SummaryStart } from "./compact"
 import { ensureConversationSchema } from "./schema"
 import {
   ensureIndex,
@@ -30,15 +31,19 @@ export interface ConversationStore {
   searchConversations(query: string, opts?: SearchOptions): SearchHit[]
   /**
    * Store the final compaction of `turns` as the conversation's digest, replacing the old one
-   * and its index entry. `parentRawFingerprint` is the fingerprint of the turns it summarized.
+   * and its index entry. `parentRawFingerprint` is the fingerprint of the turns it summarized;
+   * `start` is the model's summary of them before references were appended, and their count.
    */
   putDigest(
     conversationId: string,
     text: string,
     parentRawFingerprint: string,
-    createdAt: string
+    createdAt: string,
+    start: SummaryStart
   ): ConversationDigest
   getConversationDigest(conversationId: string): ConversationDigest | undefined
+  /** The stored digest's summary and turn count, for the next build to fold new turns into. */
+  digestStart(conversationId: string): SummaryStart | undefined
   /** Digests matching `query`, best first, one per conversation, with their parent link. */
   retrieveContext(query: string, opts?: { limit?: number }): ContextHit[]
   /** Idle for at least `ttlMinutes` at `now`, and no digest of its current raw transcript. */
@@ -117,7 +122,9 @@ export function createConversationStore(
     conversationId: string
   ): ConversationDigest | undefined {
     const row = db
-      .prepare("SELECT * FROM conversation_digests WHERE conversation_id = ?")
+      .prepare(
+        "SELECT conversation_id, fingerprint, parent_raw_fingerprint, text, created_at FROM conversation_digests WHERE conversation_id = ?"
+      )
       .get(conversationId)
     return row === undefined ? undefined : toDigest(row)
   }
@@ -196,7 +203,7 @@ export function createConversationStore(
       return searchIndex(index, query, opts)
     },
 
-    putDigest(conversationId, text, parentRawFingerprint, createdAt) {
+    putDigest(conversationId, text, parentRawFingerprint, createdAt, start) {
       const digest: ConversationDigest = {
         conversationId,
         fingerprint: deriveDigestFingerprint(parentRawFingerprint, text),
@@ -209,13 +216,15 @@ export function createConversationStore(
           "DELETE FROM conversation_digests WHERE conversation_id = ?"
         ).run(conversationId)
         db.prepare(
-          "INSERT INTO conversation_digests (conversation_id, fingerprint, parent_raw_fingerprint, text, created_at) VALUES (?, ?, ?, ?, ?)"
+          "INSERT INTO conversation_digests (conversation_id, fingerprint, parent_raw_fingerprint, text, created_at, summary, covered_turns) VALUES (?, ?, ?, ?, ?, ?, ?)"
         ).run(
           conversationId,
           digest.fingerprint,
           parentRawFingerprint,
           text,
-          createdAt
+          createdAt,
+          start.summary,
+          start.coveredTurns
         )
       })
       replaceDigestPassages(index, conversationId, text)
@@ -223,6 +232,20 @@ export function createConversationStore(
     },
 
     getConversationDigest,
+
+    digestStart(conversationId) {
+      const row = db
+        .prepare(
+          "SELECT summary, covered_turns FROM conversation_digests WHERE conversation_id = ?"
+        )
+        .get(conversationId)
+      return row === undefined
+        ? undefined
+        : {
+            summary: String(row["summary"]),
+            coveredTurns: Number(row["covered_turns"]),
+          }
+    },
 
     retrieveContext(query, opts) {
       const limit = opts?.limit ?? 5
