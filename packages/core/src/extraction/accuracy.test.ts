@@ -22,14 +22,18 @@ describe("parseLabels", () => {
       parseLabels([
         {
           file: "letters/a.pdf",
-          expected: [{ action: "Pay rent", party: "Example Co.", amount: "$10.00" }],
+          expected: [
+            { action: "Pay rent", party: "Example Co.", amount: "$10.00" },
+          ],
         },
         { file: "b.eml", expected: [] },
       ])
     ).toEqual([
       {
         file: "letters/a.pdf",
-        expected: [{ action: "Pay rent", party: "Example Co.", amount: "$10.00" }],
+        expected: [
+          { action: "Pay rent", party: "Example Co.", amount: "$10.00" },
+        ],
       },
       { file: "b.eml", expected: [] },
     ])
@@ -38,17 +42,47 @@ describe("parseLabels", () => {
   test.each([
     [{}, "labels must be an array"],
     [[null], "labels[0] must be an object"],
-    [[{ file: "a.pdf", expected: [], note: "x" }], "labels[0] has an unknown key note"],
-    [[{ file: "/abs/a.pdf", expected: [] }], "labels[0].file must be a relative path inside the documents directory"],
-    [[{ file: "../a.pdf", expected: [] }], "labels[0].file must be a relative path inside the documents directory"],
-    [[{ file: "x/../../a.pdf", expected: [] }], "labels[0].file must be a relative path inside the documents directory"],
-    [[{ file: "..", expected: [] }], "labels[0].file must be a relative path inside the documents directory"],
-    [[{ file: "", expected: [] }], "labels[0].file must be a relative path inside the documents directory"],
+    [
+      [{ file: "a.pdf", expected: [], note: "x" }],
+      "labels[0] has an unknown key note",
+    ],
+    [
+      [{ file: "/abs/a.pdf", expected: [] }],
+      "labels[0].file must be a relative path inside the documents directory",
+    ],
+    [
+      [{ file: "../a.pdf", expected: [] }],
+      "labels[0].file must be a relative path inside the documents directory",
+    ],
+    [
+      [{ file: "x/../../a.pdf", expected: [] }],
+      "labels[0].file must be a relative path inside the documents directory",
+    ],
+    [
+      [{ file: "..", expected: [] }],
+      "labels[0].file must be a relative path inside the documents directory",
+    ],
+    [
+      [{ file: "", expected: [] }],
+      "labels[0].file must be a relative path inside the documents directory",
+    ],
     [[{ file: "a.pdf", expected: {} }], "labels[0].expected must be an array"],
-    [[{ file: "a.pdf", expected: ["x"] }], "labels[0].expected[0] must be an object"],
-    [[{ file: "a.pdf", expected: [{ action: "a", status: "paid" }] }], "labels[0].expected[0] has an unknown key status"],
-    [[{ file: "a.pdf", expected: [{ action: 1 }] }], "labels[0].expected[0].action must be a string"],
-    [[{ file: "a.pdf", expected: [{ party: "Example Co." }] }], "labels[0].expected[0].action is required"],
+    [
+      [{ file: "a.pdf", expected: ["x"] }],
+      "labels[0].expected[0] must be an object",
+    ],
+    [
+      [{ file: "a.pdf", expected: [{ action: "a", status: "paid" }] }],
+      "labels[0].expected[0] has an unknown key status",
+    ],
+    [
+      [{ file: "a.pdf", expected: [{ action: 1 }] }],
+      "labels[0].expected[0].action must be a string",
+    ],
+    [
+      [{ file: "a.pdf", expected: [{ party: "Example Co." }] }],
+      "labels[0].expected[0].action is required",
+    ],
   ])("refuses %j", (value, message) => {
     expect(() => parseLabels(value)).toThrow(message)
   })
@@ -92,7 +126,11 @@ describe("scoreAccuracy and formatReport", () => {
         extracted: [{ action: "Pay" }, { action: "Pay" }, { action: "Pay" }],
       },
     ])
-    expect(report.fields.action).toMatchObject({ matched: 2, precision: 2 / 3, recall: 1 })
+    expect(report.fields.action).toMatchObject({
+      matched: 2,
+      precision: 2 / 3,
+      recall: 1,
+    })
   })
 })
 
@@ -113,7 +151,8 @@ describe("runAccuracy", () => {
       "broken.pdf": broken,
       "notes.docx": new TextEncoder().encode("x"),
     }
-    const shaOf = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
+    const shaOf = (bytes: Uint8Array) =>
+      createHash("sha256").update(bytes).digest("hex")
     const invoiceText = parsedText(
       [
         "Example Supply Co.",
@@ -132,7 +171,10 @@ describe("runAccuracy", () => {
               amount: { quote: "$4,800.00" },
               due_date: { quote: "March 15, 2031" },
             },
-            { action: { quote: "Ref INV-2041" }, reference_number: { quote: "INV-2041" } },
+            {
+              action: { quote: "Ref INV-2041" },
+              reference_number: { quote: "INV-2041" },
+            },
           ],
         }),
       ],
@@ -161,7 +203,10 @@ describe("runAccuracy", () => {
         entityId: property.id,
         readFile: (file) => files[file] ?? new Uint8Array(),
         parser: {
-          storeOriginal: (bytes) => ({ sha256: shaOf(bytes), blobPath: "unused" }),
+          storeOriginal: (bytes) => ({
+            sha256: shaOf(bytes),
+            blobPath: "unused",
+          }),
           parseDocument: ({ blobSha256 }): Promise<ParseResult> =>
             Promise.resolve(
               blobSha256 === shaOf(invoice)
@@ -172,7 +217,12 @@ describe("runAccuracy", () => {
                     ...invoiceText,
                     pages: null,
                   }
-                : { ok: false, sha256: blobSha256, reason: "malformed", detail: "bad" }
+                : {
+                    ok: false,
+                    sha256: blobSha256,
+                    reason: "malformed",
+                    detail: "bad",
+                  }
             ),
         },
         model: createModelClient({
@@ -181,7 +231,8 @@ describe("runAccuracy", () => {
           maxReplyTokens: 1024,
         }),
         config: { model: "stub-model" },
-        fieldConfidence: ({ field }) => (field === "reference_number" ? 0.5 : 1),
+        fieldConfidence: ({ field }) =>
+          field === "reference_number" ? 0.5 : 1,
       }
     )
 

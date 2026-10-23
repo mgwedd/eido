@@ -5,7 +5,11 @@ import type { ChatMessage, ModelClient } from "../inference/types"
 import { insertExtraction, insertObligation } from "../ledger/store"
 import type { Parser } from "../parsers/parse-document"
 import type { ParseSuccess } from "../parsers/types"
-import { DEFAULT_MAX_PASSAGES, DEFAULT_PHRASES, selectCandidatePassages } from "./prefilter"
+import {
+  DEFAULT_MAX_PASSAGES,
+  DEFAULT_PHRASES,
+  selectCandidatePassages,
+} from "./prefilter"
 import {
   EXTRACTION_SYSTEM_PROMPT,
   checkReply,
@@ -111,7 +115,8 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
     throw new RangeError("threshold must be between 0 and 1")
   }
   const tokenBudget = config.tokenBudget ?? DEFAULT_TOKEN_BUDGET
-  const maxReplyTokens = config.maxReplyTokens ?? DEFAULT_EXTRACTION_REPLY_TOKENS
+  const maxReplyTokens =
+    config.maxReplyTokens ?? DEFAULT_EXTRACTION_REPLY_TOKENS
   const charsPerToken = config.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
   const scorer = deps.fieldConfidence ?? defaultFieldConfidence
   const log = deps.log ?? (() => undefined)
@@ -122,7 +127,9 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
       charsPerToken
     ) + maxReplyTokens
   // What a passage costs beyond its own text: the system prompt, the wrapper and the reply.
-  const overheadTokens = requestCost([{ role: "user", content: passageMessage("") }])
+  const overheadTokens = requestCost([
+    { role: "user", content: passageMessage("") },
+  ])
 
   function loadDocument(docId: string): { mime: string; entityId: string } {
     const row = db
@@ -139,27 +146,33 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
     opts: ExtractOptions = {}
   ): Promise<ExtractionResult> {
     const doc = loadDocument(docId)
-    const parsed = await parser.parseDocument({ blobSha256: docId, mime: doc.mime })
+    const parsed = await parser.parseDocument({
+      blobSha256: docId,
+      mime: doc.mime,
+    })
     if (!parsed.ok) {
       throw new ExtractionError(
         "parse_failed",
         `the document could not be parsed (${parsed.reason})`
       )
     }
-    const { passages, total } = selectCandidatePassages(parsed.text, parsed.offsets, {
-      phrases: config.phrases ?? DEFAULT_PHRASES,
-      windowChars: config.windowChars,
-      maxPassages: config.maxPassages ?? DEFAULT_MAX_PASSAGES,
-      tokenBudget,
-      overheadTokens,
-      charsPerToken,
-    })
+    const { passages, total } = selectCandidatePassages(
+      parsed.text,
+      parsed.offsets,
+      {
+        phrases: config.phrases ?? DEFAULT_PHRASES,
+        windowChars: config.windowChars,
+        maxPassages: config.maxPassages ?? DEFAULT_MAX_PASSAGES,
+        tokenBudget,
+        overheadTokens,
+        charsPerToken,
+      }
+    )
 
     const createdAt = now().toISOString()
     const finish = (
       status: ExtractionStatus,
-      counts: Pick<ExtractionResult, "passagesRead"> &
-        Partial<ExtractionResult>
+      counts: Pick<ExtractionResult, "passagesRead"> & Partial<ExtractionResult>
     ): ExtractionResult => {
       const result = {
         docId,
@@ -204,7 +217,12 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
             log({ event: "passage_skipped_over_budget", docId, passage: index })
             return { kind: "skipped" }
           }
-          log({ event: "reply_failed_check", docId, attempt, check: "over_budget" })
+          log({
+            event: "reply_failed_check",
+            docId,
+            attempt,
+            check: "over_budget",
+          })
           return { kind: "rejected" }
         }
         const cost = requestCost(messages)
@@ -228,10 +246,18 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         remaining -= cost
         const outcome = checkReply(reply)
         if (outcome.ok) return { kind: "read", items: outcome.candidates.items }
-        log({ event: "reply_failed_check", docId, attempt, check: outcome.check })
+        log({
+          event: "reply_failed_check",
+          docId,
+          attempt,
+          check: outcome.check,
+        })
         messages.push(
           { role: "assistant", content: reply.text },
-          { role: "user", content: correctionMessage(outcome.check, outcome.errors) }
+          {
+            role: "user",
+            content: correctionMessage(outcome.check, outcome.errors),
+          }
         )
       }
       return { kind: "rejected" }

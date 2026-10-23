@@ -2,10 +2,7 @@ import type { SourceSpan } from "@eido/schemas"
 import type { ExtractionFieldName } from "../ledger/types"
 
 export type ExtractionStatus =
-  | "ok"
-  | "no_candidates"
-  | "model_output_rejected"
-  | "refused_over_budget"
+  "ok" | "no_candidates" | "model_output_rejected" | "refused_over_budget"
 
 /** A field the ledger does not accept on its own: a human confirms it first (#47). */
 export type ConfirmCandidate = {

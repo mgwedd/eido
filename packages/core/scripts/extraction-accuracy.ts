@@ -1,7 +1,11 @@
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
-import { formatReport, parseLabels, runAccuracy } from "../src/extraction/accuracy"
+import {
+  formatReport,
+  parseLabels,
+  runAccuracy,
+} from "../src/extraction/accuracy"
 import { createModelClient, readContextTokens } from "../src/inference/client"
 import { openDataDb } from "../src/ledger/db"
 import { createParser } from "../src/parsers/parse-document"
@@ -69,7 +73,8 @@ try {
     config: { model: `llama-server ${baseUrl}` },
   })
   for (const outcome of outcomes) {
-    const detail = outcome.kind === "extracted" ? outcome.status : outcome.reason
+    const detail =
+      outcome.kind === "extracted" ? outcome.status : outcome.reason
     console.log(`${outcome.file}: ${outcome.kind} (${detail})`)
   }
   console.log("")

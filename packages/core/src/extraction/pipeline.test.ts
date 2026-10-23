@@ -127,8 +127,9 @@ describe("verbatim checks", () => {
       due_date: { status: "parsed", value: "2031-03-15" },
       reference_number: { raw: "INV-2041", span: { page: 2, line: 2 } },
     })
-    const amountSpan = (fields as { amount: { span: { start: number; end: number } } })
-      .amount.span
+    const amountSpan = (
+      fields as { amount: { span: { start: number; end: number } } }
+    ).amount.span
     expect(h.text.slice(amountSpan.start, amountSpan.end)).toBe("$4,800.00")
   })
 
@@ -194,18 +195,22 @@ describe("verbatim checks", () => {
 
 describe("per-field confidence", () => {
   test("stores one confidence row per field; a low amount is a candidate and a confident party is not", async () => {
-    h = await harness(INVOICE, [
-      items({
-        action: { quote: "Payment of $4,800.00 is due" },
-        party: { quote: "Example Supply Co." },
-        amount: { quote: "$4,800.00" },
-        due_date: { quote: "March 15, 2031" },
-      }),
-    ], {
-      deps: {
-        fieldConfidence: ({ field }) => (field === "amount" ? 0.71 : 0.93),
-      },
-    })
+    h = await harness(
+      INVOICE,
+      [
+        items({
+          action: { quote: "Payment of $4,800.00 is due" },
+          party: { quote: "Example Supply Co." },
+          amount: { quote: "$4,800.00" },
+          due_date: { quote: "March 15, 2031" },
+        }),
+      ],
+      {
+        deps: {
+          fieldConfidence: ({ field }) => (field === "amount" ? 0.71 : 0.93),
+        },
+      }
+    )
     const result = await h.extractor.extractDocument(h.docId)
     const [row] = extractionRows(h)
     const confidences = h.db
@@ -238,23 +243,29 @@ describe("per-field confidence", () => {
   })
 
   test("a configured threshold decides: the same 0.71 passes a 0.7 threshold", async () => {
-    h = await harness(INVOICE, [
-      items({
-        action: { quote: "Payment of $4,800.00 is due" },
-        amount: { quote: "$4,800.00" },
-      }),
-    ], {
-      config: { threshold: 0.7 },
-      deps: { fieldConfidence: () => 0.71 },
-    })
+    h = await harness(
+      INVOICE,
+      [
+        items({
+          action: { quote: "Payment of $4,800.00 is due" },
+          amount: { quote: "$4,800.00" },
+        }),
+      ],
+      {
+        config: { threshold: 0.7 },
+        deps: { fieldConfidence: () => 0.71 },
+      }
+    )
     const result = await h.extractor.extractDocument(h.docId)
     expect(result).toMatchObject({ verified: 1, needsConfirmation: 0 })
   })
 
   test("a scorer outside 0..1 is a programming error", async () => {
-    h = await harness(INVOICE, [
-      items({ action: { quote: "Payment of $4,800.00 is due" } }),
-    ], { deps: { fieldConfidence: () => 1.5 } })
+    h = await harness(
+      INVOICE,
+      [items({ action: { quote: "Payment of $4,800.00 is due" } })],
+      { deps: { fieldConfidence: () => 1.5 } }
+    )
     await expect(h.extractor.extractDocument(h.docId)).rejects.toThrow(
       "confidence for action must be between 0 and 1"
     )
@@ -267,7 +278,7 @@ describe("partial acceptance", () => {
     h = await harness(INVOICE, [
       items(
         { action: { quote: "Payment of $4,800.00 is due" } },
-        { action: { quote: "Terms: \"Net 30\" apply" } },
+        { action: { quote: 'Terms: "Net 30" apply' } },
         { action: { quote: "Payment of $4,800 is due" } }
       ),
     ])
@@ -287,7 +298,9 @@ describe("an extraction record per processed document", () => {
     }))
 
   test("no prefilter hits: zero model calls, no_candidates and one processed_empty row with model none", async () => {
-    h = await harness("A friendly hello from Example Supply Co.", [NOTHING_FOUND])
+    h = await harness("A friendly hello from Example Supply Co.", [
+      NOTHING_FOUND,
+    ])
     const result = await h.extractor.extractDocument(h.docId)
     expect(result).toMatchObject({
       status: "no_candidates",
@@ -337,7 +350,9 @@ describe("an extraction record per processed document", () => {
     expect(extractionRows(h)).toEqual([])
     await h.close()
 
-    h = await harness(INVOICE, [NOTHING_FOUND], { config: { tokenBudget: 100 } })
+    h = await harness(INVOICE, [NOTHING_FOUND], {
+      config: { tokenBudget: 100 },
+    })
     expect((await h.extractor.extractDocument(h.docId)).status).toBe(
       "refused_over_budget"
     )
@@ -429,17 +444,18 @@ describe("token budget: refuse or skip, never truncate", () => {
     const result = await h.extractor.extractDocument(h.docId)
     expect(result.status).toBe("model_output_rejected")
     expect(chatRequests(h.server)).toHaveLength(1)
-    expect(events.map((e) => e.event === "reply_failed_check" && e.check)).toEqual([
-      "not_json",
-      "over_budget",
-    ])
+    expect(
+      events.map((e) => e.event === "reply_failed_check" && e.check)
+    ).toEqual(["not_json", "over_budget"])
   })
 
   test("a retry over the model context also rejects", async () => {
     // The first request fits a 1500-token context; the retry adds the reply and the correction.
-    h = await harness(SHORT, [
-      { deltas: ["x".repeat(600)], promptTokens: 1_000_000 },
-    ], { contextTokens: 1500 })
+    h = await harness(
+      SHORT,
+      [{ deltas: ["x".repeat(600)], promptTokens: 1_000_000 }],
+      { contextTokens: 1500 }
+    )
     const result = await h.extractor.extractDocument(h.docId)
     expect(result.status).toBe("model_output_rejected")
     expect(chatRequests(h.server)).toHaveLength(1)
@@ -463,7 +479,10 @@ describe("prompt injection", () => {
       "a tool-call shape",
       {
         tool_calls: [
-          { type: "function", function: { name: "email.send", arguments: "{}" } },
+          {
+            type: "function",
+            function: { name: "email.send", arguments: "{}" },
+          },
         ],
       },
     ],
@@ -481,19 +500,22 @@ describe("prompt injection", () => {
     ],
   ]
 
-  test.each(shapes)("%s is rejected by the schema and nothing is written", async (_, shape) => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch")
-    h = await harness(HOSTILE, [jsonReply(shape)])
-    const before = h.counts()
-    const result = await h.extractor.extractDocument(h.docId)
-    expect(result.status).toBe("model_output_rejected")
-    expect(h.counts()).toEqual(before)
-    const urls = fetchSpy.mock.calls.map(([input]) => urlOf(input))
-    expect(urls).toEqual([
-      `${h.server.url}/v1/chat/completions`,
-      `${h.server.url}/v1/chat/completions`,
-    ])
-  })
+  test.each(shapes)(
+    "%s is rejected by the schema and nothing is written",
+    async (_, shape) => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch")
+      h = await harness(HOSTILE, [jsonReply(shape)])
+      const before = h.counts()
+      const result = await h.extractor.extractDocument(h.docId)
+      expect(result.status).toBe("model_output_rejected")
+      expect(h.counts()).toEqual(before)
+      const urls = fetchSpy.mock.calls.map(([input]) => urlOf(input))
+      expect(urls).toEqual([
+        `${h.server.url}/v1/chat/completions`,
+        `${h.server.url}/v1/chat/completions`,
+      ])
+    }
+  )
 
   test("after a corrected reply only extraction and obligation rows are written and no other endpoint is called", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch")
@@ -544,10 +566,14 @@ describe("the result holds extracted fields only", () => {
 describe("corrective retry", () => {
   test("one retry names the failed check, and a valid second reply succeeds", async () => {
     const events: ExtractionLogEvent[] = []
-    h = await harness(INVOICE, [
-      jsonReply({ nothing_found: false }),
-      items({ action: { quote: "Payment of $4,800.00 is due" } }),
-    ], { deps: { log: (event) => events.push(event) } })
+    h = await harness(
+      INVOICE,
+      [
+        jsonReply({ nothing_found: false }),
+        items({ action: { quote: "Payment of $4,800.00 is due" } }),
+      ],
+      { deps: { log: (event) => events.push(event) } }
+    )
     const result = await h.extractor.extractDocument(h.docId)
     expect(result).toMatchObject({ status: "ok", verified: 1 })
     const [first, second] = chatRequests(h.server)
@@ -563,14 +589,24 @@ describe("corrective retry", () => {
         "Reply again with only a JSON object that matches the schema."
     )
     expect(events).toEqual([
-      { event: "reply_failed_check", docId: h.docId, attempt: 1, check: "schema" },
+      {
+        event: "reply_failed_check",
+        docId: h.docId,
+        attempt: 1,
+        check: "schema",
+      },
     ])
   })
 
   test("a second failure returns model_output_rejected", async () => {
     h = await harness(INVOICE, [
       { deltas: ["{oops"], promptTokens: 1_000_000 },
-      { deltas: ['{"nothing_found": true, "items": [{"action": {"quote": "x"}}]}'], promptTokens: 1_000_000 },
+      {
+        deltas: [
+          '{"nothing_found": true, "items": [{"action": {"quote": "x"}}]}',
+        ],
+        promptTokens: 1_000_000,
+      },
     ])
     const result = await h.extractor.extractDocument(h.docId)
     expect(result).toMatchObject({
@@ -587,21 +623,28 @@ describe("Unicode", () => {
     const text =
       "§ 4.2 — Tenant shall give “written notice” of renewal by 31 January 2031."
     const quote = "§ 4.2 — Tenant shall give “written notice”"
-    h = await harness(text, [
-      items({ action: { quote }, due_date: { quote: "31 January 2031" } }),
-    ].map((reply) => ({ ...reply, splitInside: ["§", "—", "“"] })))
+    h = await harness(
+      text,
+      [
+        items({ action: { quote }, due_date: { quote: "31 January 2031" } }),
+      ].map((reply) => ({ ...reply, splitInside: ["§", "—", "“"] }))
+    )
     const result = await h.extractor.extractDocument(h.docId)
     expect(result).toMatchObject({ status: "ok", verified: 1 })
     const [obligation] = listObligations(h.db)
     expect(obligation?.dueAt).toBe("2031-01-31")
-    expect(h.text.slice(obligation?.span.start, obligation?.span.end)).toBe(quote)
+    expect(h.text.slice(obligation?.span.start, obligation?.span.end)).toBe(
+      quote
+    )
   })
 })
 
 describe("errors", () => {
   test("an unknown document throws document_not_found and writes nothing", async () => {
     h = await harness(INVOICE, [NOTHING_FOUND])
-    await expect(h.extractor.extractDocument("0".repeat(64))).rejects.toMatchObject({
+    await expect(
+      h.extractor.extractDocument("0".repeat(64))
+    ).rejects.toMatchObject({
       name: "ExtractionError",
       code: "document_not_found",
     })
@@ -623,7 +666,9 @@ describe("errors", () => {
       model: { complete: () => Promise.reject(new Error("not called")) },
       config: { model: "stub-model" },
     })
-    const error: unknown = await extractor.extractDocument(h.docId).catch((e: unknown) => e)
+    const error: unknown = await extractor
+      .extractDocument(h.docId)
+      .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(ExtractionError)
     expect(error).toMatchObject({
       code: "parse_failed",
@@ -653,7 +698,9 @@ describe("errors", () => {
         "WHEN (SELECT count(*) FROM obligations) >= 1 BEGIN SELECT RAISE(ABORT, 'disk full'); END"
     )
     const before = h.counts()
-    await expect(h.extractor.extractDocument(h.docId)).rejects.toThrow("disk full")
+    await expect(h.extractor.extractDocument(h.docId)).rejects.toThrow(
+      "disk full"
+    )
     expect(h.counts()).toEqual(before)
   })
 

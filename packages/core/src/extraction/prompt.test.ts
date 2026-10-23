@@ -2,7 +2,10 @@ import { describe, expect, test } from "vitest"
 import type { InferenceResult } from "../inference/types"
 import { checkReply, correctionMessage, passageMessage } from "./prompt"
 
-const reply = (text: string, over: Partial<InferenceResult> = {}): InferenceResult => ({
+const reply = (
+  text: string,
+  over: Partial<InferenceResult> = {}
+): InferenceResult => ({
   text,
   estimatedPromptTokens: 100,
   reportedPromptTokens: 100,
@@ -30,7 +33,10 @@ describe("checkReply", () => {
   })
 
   test("nothing_found with items is inconsistent", () => {
-    const text = JSON.stringify({ nothing_found: true, items: [{ action: { quote: "renew" } }] })
+    const text = JSON.stringify({
+      nothing_found: true,
+      items: [{ action: { quote: "renew" } }],
+    })
     expect(checkReply(reply(text))).toEqual({
       ok: false,
       check: "inconsistent_nothing_found",

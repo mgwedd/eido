@@ -166,13 +166,16 @@ export function selectCandidatePassages(
     while (paras[p]![1] <= match.index) p += 1
     windows.push(windowFor(match.index, match[0].length, paras[p]!, cap))
   }
-  const all = mergeWindows(windows, cap).map(
-    ([start, end]): Passage => ({ start, end, text: text.slice(start, end) })
-  )
+  const all = mergeWindows(windows, cap).map(([start, end]): Passage => ({
+    start,
+    end,
+    text: text.slice(start, end),
+  }))
 
   const cost = (passages: Passage[]): number =>
     passages.reduce(
-      (sum, passage) => sum + estimateTokens(passage.text, charsPerToken) + overhead,
+      (sum, passage) =>
+        sum + estimateTokens(passage.text, charsPerToken) + overhead,
       0
     )
   for (let k = Math.min(all.length, maxPassages); k > 0; k -= 1) {

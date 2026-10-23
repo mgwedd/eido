@@ -8,17 +8,23 @@ import {
   selectCandidatePassages,
 } from "./prefilter"
 
-const select = (text: string, opts: Parameters<typeof selectCandidatePassages>[2] = {}) => {
+const select = (
+  text: string,
+  opts: Parameters<typeof selectCandidatePassages>[2] = {}
+) => {
   const parsed = parsedText(text)
   return selectCandidatePassages(parsed.text, parsed.offsets, opts)
 }
-const spans = (text: string, opts: Parameters<typeof selectCandidatePassages>[2] = {}) =>
-  select(text, opts).passages.map(({ start, end }) => [start, end])
+const spans = (
+  text: string,
+  opts: Parameters<typeof selectCandidatePassages>[2] = {}
+) => select(text, opts).passages.map(({ start, end }) => [start, end])
 
 describe("phraseRegExp", () => {
   test("matches at word starts, case-insensitively, with any whitespace inside a phrase", () => {
     const regex = phraseRegExp(["renew", "due by"])
-    const hits = (text: string) => [...text.matchAll(regex ?? /$^/g)].map((m) => m[0])
+    const hits = (text: string) =>
+      [...text.matchAll(regex ?? /$^/g)].map((m) => m[0])
     expect(hits("Renewal is DUE\n  by Friday")).toEqual(["Renew", "DUE\n  by"])
     expect(hits("a nonrenewable term, overdue by")).toEqual([])
     expect(hits("auto_renew or 2renew")).toEqual([])
@@ -31,7 +37,9 @@ describe("phraseRegExp", () => {
   })
 
   test("an empty phrase is refused and no phrases give no regex", () => {
-    expect(() => phraseRegExp(["renew", "  "])).toThrow("a prefilter phrase is empty")
+    expect(() => phraseRegExp(["renew", "  "])).toThrow(
+      "a prefilter phrase is empty"
+    )
     expect(phraseRegExp([])).toBeNull()
   })
 })
@@ -71,7 +79,9 @@ describe("paragraphs", () => {
 
 describe("evenlySpaced", () => {
   test("takes the middle of each equal slice", () => {
-    expect(evenlySpaced(60, 12)).toEqual([2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57])
+    expect(evenlySpaced(60, 12)).toEqual([
+      2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57,
+    ])
     expect(evenlySpaced(3, 2)).toEqual([0, 2])
     expect(evenlySpaced(3, 3)).toEqual([0, 1, 2])
   })
@@ -97,11 +107,17 @@ describe("selectCandidatePassages", () => {
   test("a long paragraph is cut to the cap, centred on the hit and clamped to the paragraph", () => {
     const dots = (n: number) => ".".repeat(n)
     // Hit at 30, cap 20: 7 characters before the 5-character hit, 8 after.
-    expect(spans(`${dots(30)}renew${dots(40)}`, { windowChars: 20 })).toEqual([[23, 43]])
+    expect(spans(`${dots(30)}renew${dots(40)}`, { windowChars: 20 })).toEqual([
+      [23, 43],
+    ])
     // Near the start, the window starts at the paragraph.
-    expect(spans(`${dots(2)}renew${dots(40)}`, { windowChars: 20 })).toEqual([[0, 20]])
+    expect(spans(`${dots(2)}renew${dots(40)}`, { windowChars: 20 })).toEqual([
+      [0, 20],
+    ])
     // Near the end, the window ends at the paragraph and keeps the full cap.
-    expect(spans(`${dots(40)}renew${dots(2)}`, { windowChars: 20 })).toEqual([[27, 47]])
+    expect(spans(`${dots(40)}renew${dots(2)}`, { windowChars: 20 })).toEqual([
+      [27, 47],
+    ])
   })
 
   test("overlapping windows that would exceed the cap do not overlap: the later starts where the earlier ends", () => {
@@ -113,11 +129,16 @@ describe("selectCandidatePassages", () => {
   })
 
   test("windows clamped to the same paragraph end merge", () => {
-    expect(spans(`${".".repeat(30)}renew renew`, { windowChars: 20 })).toEqual([[21, 41]])
+    expect(spans(`${".".repeat(30)}renew renew`, { windowChars: 20 })).toEqual([
+      [21, 41],
+    ])
   })
 
   test("more windows than maxPassages are spread across the document and all are counted", () => {
-    const text = Array.from({ length: 5 }, (_, i) => `P${String(i)} renew`).join("\n\n")
+    const text = Array.from(
+      { length: 5 },
+      (_, i) => `P${String(i)} renew`
+    ).join("\n\n")
     const result = select(text, { maxPassages: 2 })
     expect(result.total).toBe(5)
     expect(result.passages.map((p) => p.text)).toEqual(["P1 renew", "P3 renew"])
@@ -135,9 +156,9 @@ describe("selectCandidatePassages", () => {
   })
 
   test("custom phrases replace the defaults", () => {
-    expect(spans("Please renew.\n\nInvoice overdue.", { phrases: ["invoice"] })).toEqual([
-      [15, 31],
-    ])
+    expect(
+      spans("Please renew.\n\nInvoice overdue.", { phrases: ["invoice"] })
+    ).toEqual([[15, 31]])
   })
 
   test("a non-positive window or passage count is refused", () => {

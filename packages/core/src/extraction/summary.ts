@@ -1,6 +1,9 @@
 import type { ExtractionResult } from "./types"
 
-type Counts = Omit<ExtractionResult, "summary" | "confirmations" | "obligationIds" | "docId">
+type Counts = Omit<
+  ExtractionResult,
+  "summary" | "confirmations" | "obligationIds" | "docId"
+>
 
 /** The visible partial acceptance line: "2 of 3 verified; 1 needs confirmation; 1 dropped". */
 export function summarize(counts: Counts): string {

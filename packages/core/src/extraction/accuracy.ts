@@ -49,9 +49,12 @@ export function parseLabels(value: unknown): AccuracyLabel[] {
       }
     }
     if (typeof file !== "string" || !insideDirectory(file)) {
-      throw new Error(`${at}.file must be a relative path inside the documents directory`)
+      throw new Error(
+        `${at}.file must be a relative path inside the documents directory`
+      )
     }
-    if (!Array.isArray(expected)) throw new Error(`${at}.expected must be an array`)
+    if (!Array.isArray(expected))
+      throw new Error(`${at}.expected must be an array`)
     return {
       file,
       expected: expected.map((item: unknown, j) =>
@@ -76,7 +79,8 @@ function expectedItem(value: unknown, at: string): ExpectedItem {
     const field = ACCURACY_FIELDS.find((name) => name === key)
     if (field === undefined) throw new Error(`${at} has an unknown key ${key}`)
     const raw: unknown = Reflect.get(value, key)
-    if (typeof raw !== "string") throw new Error(`${at}.${key} must be a string`)
+    if (typeof raw !== "string")
+      throw new Error(`${at}.${key} must be a string`)
     fields[field] = raw
   }
   const { action } = fields
@@ -101,15 +105,21 @@ export function mimeFor(file: string): string | null {
 }
 
 /** Raw quotes of every `extracted` row stored for a document, verified or awaiting confirmation. */
-export function readExtractedItems(db: DatabaseSync, docId: string): ExtractedItem[] {
+export function readExtractedItems(
+  db: DatabaseSync,
+  docId: string
+): ExtractedItem[] {
   const rows = db
     .prepare(
       "SELECT fields_json FROM extractions WHERE doc_id = ? AND status = 'extracted' ORDER BY id"
     )
     .all(docId)
   return rows.map((row) => {
-    const validated = validateExtractedFields(JSON.parse(String(row["fields_json"])))
-    if (!validated.ok) throw new Error("a stored extraction does not match its schema")
+    const validated = validateExtractedFields(
+      JSON.parse(String(row["fields_json"]))
+    )
+    if (!validated.ok)
+      throw new Error("a stored extraction does not match its schema")
     const item: ExtractedItem = {}
     for (const field of ACCURACY_FIELDS) {
       const value = validated.value[field]
@@ -186,7 +196,9 @@ const score = (counts: Counts): FieldScore => ({
 })
 
 /** Per-field precision and recall by strict exact match, per document, summed over documents. */
-export function scoreAccuracy(outcomes: readonly DocumentOutcome[]): AccuracyReport {
+export function scoreAccuracy(
+  outcomes: readonly DocumentOutcome[]
+): AccuracyReport {
   const totals: Record<ExtractionFieldName, Counts> = {
     action: zero(),
     party: zero(),
@@ -281,14 +293,22 @@ export async function runAccuracy(
   for (const [index, label] of labels.entries()) {
     const mime = mimeFor(label.file)
     if (mime === null) {
-      outcomes.push({ file: label.file, kind: "skipped", reason: "unsupported_type" })
+      outcomes.push({
+        file: label.file,
+        kind: "skipped",
+        reason: "unsupported_type",
+      })
       continue
     }
     const { sha256 } = deps.parser.storeOriginal(deps.readFile(label.file))
     const first = seen.get(sha256)
     if (first !== undefined) {
       // A second run would store a second set of rows for the same document and count them twice.
-      outcomes.push({ file: label.file, kind: "failed", reason: `same bytes as ${first}` })
+      outcomes.push({
+        file: label.file,
+        kind: "failed",
+        reason: `same bytes as ${first}`,
+      })
       continue
     }
     seen.set(sha256, label.file)
