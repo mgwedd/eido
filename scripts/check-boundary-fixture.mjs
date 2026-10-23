@@ -46,6 +46,12 @@ const cases = [
       /error\s+gate-imports-schemas-only:\s+\S*packages\/gate\/src\/bad-core-import\.ts\b/,
   },
   {
+    label:
+      "the gate importing a document parser library (bad-parser-import.ts)",
+    pattern:
+      /error\s+gate-has-no-parsers:\s+\S*packages\/gate\/src\/bad-parser-import\.ts\b/,
+  },
+  {
     label: "app code importing a web test fixture (bad-fixture-import.ts)",
     pattern:
       /error\s+web-test-fixtures-are-test-only:\s+\S*apps\/web\/app\/bad-fixture-import\.ts\b/,
