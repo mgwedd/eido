@@ -333,6 +333,17 @@ export function createProfileStore(
           "entity_assignments",
           "SELECT 1 FROM entity_assignments WHERE entity_id = ? LIMIT 1",
         ],
+        // The obligations table exists once the ledger schema is applied (openDataDb).
+        ...(one(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'obligations'"
+        )
+          ? [
+              [
+                "obligations",
+                "SELECT 1 FROM obligations WHERE entity_id = ? LIMIT 1",
+              ],
+            ]
+          : []),
       ]
         .filter(([, sql]) => one(sql ?? "", id) !== undefined)
         .map(([table]) => table ?? "")
