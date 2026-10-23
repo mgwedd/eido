@@ -453,7 +453,7 @@ describe("OCR", { timeout: CHILD_TIMEOUT }, () => {
     expect(result).toMatchObject({ ok: false, reason: "ocr_unavailable" })
   })
 
-  // Runs where the Tesseract binary is installed (on PATH); CI's Linux image has none yet (#OCR_CI).
+  // Runs where the Tesseract binary is installed (on PATH); CI's Linux image has none yet (#261).
   it.skipIf(TESSERACT === null)(
     `reads the words of a scanned page and a scanned PDF (needs tesseract on PATH: ${TESSERACT ?? "not found, skipped"})`,
     async () => {
