@@ -14,11 +14,7 @@ export type {
   DigestSweepDeps,
   DigestSweepResult,
 } from "./digest"
-export {
-  deriveDigestFingerprint,
-  fingerprintConversation,
-  fingerprintTurns,
-} from "./fingerprint"
+export { fingerprintTurns } from "./fingerprint"
 export { extractDates, extractTags } from "./references"
 export { openConversationIndex } from "./search-index"
 export { createConversationStore } from "./store"
@@ -32,7 +28,7 @@ export type {
   CompactError,
   CompactErrorKind,
   CompactOptions,
-  CompactResult,
+  CompactResult as ConversationCompactResult,
   ConversationDigest,
   Preserved,
   RawTurn,
