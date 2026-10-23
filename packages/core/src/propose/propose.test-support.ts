@@ -121,8 +121,7 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
       },
       now: () => new Date("2030-03-01T12:00:00.000Z"),
     },
-    completions: () =>
-      server.completions().map((c) => ({ messages: c.turns })),
+    completions: () => server.completions().map((c) => ({ messages: c.turns })),
     close: async () => {
       db.close()
       await server.close()

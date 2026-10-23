@@ -81,13 +81,19 @@ function bodyAt(
   return parsed
 }
 
+/** The URL a fetch was called with, whatever form it came in. */
+function urlOf(input: string | URL | Request): string {
+  if (typeof input === "string") return input
+  return input instanceof URL ? input.href : input.url
+}
+
 /**
  * A fetch that answers `/apply-template` and `/tokenize` like a working server and hands every
  * `/completion` the response `completionResponse` builds.
  */
 function fetchWithCompletion(completionResponse: () => Response): typeof fetch {
   return (input) => {
-    const url = typeof input === "string" ? input : input.toString()
+    const url = urlOf(input)
     if (url.endsWith("/apply-template")) {
       return Promise.resolve(Response.json({ prompt: "P" }))
     }
@@ -353,7 +359,9 @@ describe("request body", () => {
         {
           role: "user",
           content: [
-            fence(toMaterial("body", { source: "mail", from: "a@example.invalid" })),
+            fence(
+              toMaterial("body", { source: "mail", from: "a@example.invalid" })
+            ),
             "Q",
           ],
         },
@@ -364,7 +372,11 @@ describe("request body", () => {
       .map((r): unknown => JSON.parse(r.body))
     expect(tokenizeBodies).toEqual([
       expect.objectContaining({ add_special: true, parse_special: true }),
-      { content: "a@example.invalid", add_special: false, parse_special: false },
+      {
+        content: "a@example.invalid",
+        add_special: false,
+        parse_special: false,
+      },
       expect.objectContaining({ add_special: false, parse_special: true }),
       { content: "body", add_special: false, parse_special: false },
       expect.objectContaining({ add_special: false, parse_special: true }),
@@ -423,7 +435,10 @@ describe("splitRendered", () => {
       createModelClient(config(server)).complete({
         system: "",
         messages: [
-          { role: "user", content: [fence(toMaterial("m", { source: "mail" }))] },
+          {
+            role: "user",
+            content: [fence(toMaterial("m", { source: "mail" }))],
+          },
         ],
       })
     )
@@ -436,7 +451,10 @@ describe("server features", () => {
   test.each(["apply-template", "tokenize"] as const)(
     "a server without /%s fails with a named error and sends no prompt",
     async (feature) => {
-      const server = await start({ replies: [{ deltas: ["ok"] }], missing: [feature] })
+      const server = await start({
+        replies: [{ deltas: ["ok"] }],
+        missing: [feature],
+      })
       const error = await rejection(
         createModelClient(config(server)).complete({
           system: "",
@@ -455,9 +473,15 @@ describe("server features", () => {
   test.each(["apply-template", "tokenize"] as const)(
     "connectModelClient fails at startup without /%s and sends no prompt",
     async (feature) => {
-      const server = await start({ replies: [{ deltas: ["ok"] }], missing: [feature] })
+      const server = await start({
+        replies: [{ deltas: ["ok"] }],
+        missing: [feature],
+      })
       const error = await rejection(connectModelClient(config(server)))
-      expect(error).toMatchObject({ name: "UnsupportedModelServerError", feature })
+      expect(error).toMatchObject({
+        name: "UnsupportedModelServerError",
+        feature,
+      })
       expect(server.completions()).toEqual([])
     }
   )
@@ -517,14 +541,17 @@ describe("server features", () => {
     }
     const calls: string[] = []
     const doFetch: typeof fetch = (input) => {
-      const path = new URL(typeof input === "string" ? input : input.toString())
-        .pathname
+      const path = new URL(urlOf(input)).pathname
       calls.push(path)
       const answer = routes[path]
       return Promise.resolve(answer ?? new Response(null, { status: 500 }))
     }
     const client = createModelClient(
-      { baseUrl: "http://127.0.0.1:1", contextTokens: 4096, maxReplyTokens: 100 },
+      {
+        baseUrl: "http://127.0.0.1:1",
+        contextTokens: 4096,
+        maxReplyTokens: 100,
+      },
       { fetch: doFetch }
     )
     const error = await rejection(
@@ -536,11 +563,15 @@ describe("server features", () => {
 
   test("another error status on /tokenize rejects as http, not unsupported", async () => {
     const client = createModelClient(
-      { baseUrl: "http://127.0.0.1:1", contextTokens: 4096, maxReplyTokens: 100 },
+      {
+        baseUrl: "http://127.0.0.1:1",
+        contextTokens: 4096,
+        maxReplyTokens: 100,
+      },
       {
         fetch: (input) =>
           Promise.resolve(
-            String(input).endsWith("/tokenize")
+            urlOf(input).endsWith("/tokenize")
               ? new Response("{}", { status: 503 })
               : Response.json({ prompt: "P" })
           ),
@@ -560,7 +591,11 @@ describe("server features", () => {
   test("an abort while reading a JSON answer rejects as aborted", async () => {
     const controller = new AbortController()
     const client = createModelClient(
-      { baseUrl: "http://127.0.0.1:1", contextTokens: 4096, maxReplyTokens: 100 },
+      {
+        baseUrl: "http://127.0.0.1:1",
+        contextTokens: 4096,
+        maxReplyTokens: 100,
+      },
       {
         fetch: () => {
           controller.abort()
@@ -707,7 +742,9 @@ describe("errors", () => {
     const fetchBadBytes = fetchWithCompletion(
       () =>
         new Response(
-          new Uint8Array([0x64, 0x61, 0x74, 0x61, 0x3a, 0x20, 0xff, 0x0a, 0x0a]),
+          new Uint8Array([
+            0x64, 0x61, 0x74, 0x61, 0x3a, 0x20, 0xff, 0x0a, 0x0a,
+          ]),
           { status: 200 }
         )
     )

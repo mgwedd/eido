@@ -50,7 +50,8 @@ export class InferenceError extends Error {
 }
 
 /** What a model server must offer so that no material is parsed for special tokens. */
-export type RequiredServerFeature = "apply-template" | "tokenize" | "parse_special"
+export type RequiredServerFeature =
+  "apply-template" | "tokenize" | "parse_special"
 
 /**
  * The model server lacks `/apply-template` or `/tokenize`, or ignores `parse_special`. Inference

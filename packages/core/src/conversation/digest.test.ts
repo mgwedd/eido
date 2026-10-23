@@ -265,7 +265,9 @@ describe("resuming a conversation", () => {
     expect((await sweep(model, minutes(180))).built).toEqual(["c1"])
     expect(model.requests).toHaveLength(1)
     const content = contentOf(model.requests[0])
-    expect(content).toContain('Summary so far:\n<material id="B" source="summary">\nOld lemur summary.\n</material id="B">\n')
+    expect(content).toContain(
+      'Summary so far:\n<material id="B" source="summary">\nOld lemur summary.\n</material id="B">\n'
+    )
     expect(content).not.toContain("Preserved references")
     expect(content).toContain("One more thing about the lease.")
     expect(content).not.toContain("walrus")

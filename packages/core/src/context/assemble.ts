@@ -313,7 +313,9 @@ export function assembleContext(
     blocks.push(tagged)
     members.push(memberOf(tagged, doc.sha256, edge, tokens))
   }
-  const packHash = createHash("sha256").update(packText({ blocks })).digest("hex")
+  const packHash = createHash("sha256")
+    .update(packText({ blocks }))
+    .digest("hex")
   const pack: ContextPack = {
     id: packIdFor(packHash),
     blocks,

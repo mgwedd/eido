@@ -61,9 +61,8 @@ describe("applyEvent and finishStream", () => {
 
   test("a chunk without content still counts its stop flag", () => {
     expect(
-      run([
-        'data: {"stop":true,"stop_type":"eos","tokens_evaluated":7}',
-      ]).promptTokens
+      run(['data: {"stop":true,"stop_type":"eos","tokens_evaluated":7}'])
+        .promptTokens
     ).toBe(7)
   })
 

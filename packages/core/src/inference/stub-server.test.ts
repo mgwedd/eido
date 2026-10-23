@@ -49,9 +49,7 @@ describe("streamBody", () => {
   })
 
   test("a null promptTokens leaves out tokens_evaluated", () => {
-    expect(streamBody({ promptTokens: null })).not.toContain(
-      "tokens_evaluated"
-    )
+    expect(streamBody({ promptTokens: null })).not.toContain("tokens_evaluated")
   })
 })
 

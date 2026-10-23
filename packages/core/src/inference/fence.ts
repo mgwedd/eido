@@ -25,14 +25,14 @@ export interface MaterialMeta {
 // Zero-width and invisible formatting characters, bidi controls, and the tag block
 // (U+E0000-U+E007F), which can hide text from a reader while the model still reads it.
 const INVISIBLE =
-  /[­᠎​-‏‪-‮⁠-⁤⁦-⁩؜﻿]|[\u{E0000}-\u{E007F}]/gu
+  /[\u00ad\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u061c\ufeff]|[\u{E0000}-\u{E007F}]/gu
 
 // An opening or closing `material` or `summary` tag in any case or spacing, after NFKC has
 // folded fullwidth and small forms of `<` and `/` to ASCII.
 const FENCE_TAG = /<(?=\s*\/?\s*(?:material|summary)(?![a-z0-9_-]))/giu
 
 /** Stands in for `<` in a defused tag: it reads the same to a person and opens nothing. */
-const DEFUSED_LT = "‹"
+const DEFUSED_LT = "\u2039"
 
 /**
  * The text exactly as the model reads it and the owner sees it: NFKC, then invisible and bidi

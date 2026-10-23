@@ -269,16 +269,18 @@ describe("summarizeTurns: chunking", () => {
     )
     const result = await summarizeTurns(turns, { queue: model.queue }, 12)
     expect(model.requests).toHaveLength(3)
-    const [first, second, third] = model.requests.map(
-      (r) => contentOf(r)
-    )
+    const [first, second, third] = model.requests.map((r) => contentOf(r))
     expect(first).toBe(
       `[user 2025-10-11T09:00:00Z] a ${ten}\n\nSummarize the turns above.`
     )
-    expect(second).toContain('Summary so far:\n<material id="B" source="summary">\nsummary 1\n</material id="B">')
+    expect(second).toContain(
+      'Summary so far:\n<material id="B" source="summary">\nsummary 1\n</material id="B">'
+    )
     expect(second).toContain(`b ${ten}`)
     expect(second).not.toContain(`a ${ten}`)
-    expect(third).toContain('Summary so far:\n<material id="B" source="summary">\nsummary 2\n</material id="B">')
+    expect(third).toContain(
+      'Summary so far:\n<material id="B" source="summary">\nsummary 2\n</material id="B">'
+    )
     expect(result).toMatchObject({ ok: true, text: "summary 3" })
   })
 

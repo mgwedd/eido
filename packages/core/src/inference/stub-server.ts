@@ -189,9 +189,7 @@ export function renderChatTemplate(body: unknown): string {
     throw new Error("apply-template body has no messages")
   }
   const tools =
-    body.tools === undefined
-      ? ""
-      : `\n\n# Tools\n${JSON.stringify(body.tools)}`
+    body.tools === undefined ? "" : `\n\n# Tools\n${JSON.stringify(body.tools)}`
   const turns = body.messages.map((message: unknown, i) => {
     if (
       !isRecord(message) ||
@@ -315,9 +313,7 @@ export function parseCompletion(raw: string): CompletionView {
   if (!isRecord(parsed) || !Array.isArray(parsed.prompt)) {
     throw new Error("completion body has no prompt array")
   }
-  const tokens = parsed.prompt.filter(
-    (t): t is number => typeof t === "number"
-  )
+  const tokens = parsed.prompt.filter((t): t is number => typeof t === "number")
   if (tokens.length !== parsed.prompt.length) {
     throw new Error("completion prompt holds something other than token ids")
   }

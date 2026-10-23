@@ -1,0 +1,12 @@
+// A prompt builder that writes its own fence. Synthetic: the lint test in
+// packages/core/src/inference/fence-lint.test.ts lints this text as if it were core product code
+// and expects each of the four lines marked "flagged" to be reported.
+import { materialText } from "../inference/fence"
+import type { Material } from "../inference/fence"
+
+export function forgedPrompt(body: string, material: Material): string {
+  const open = '<material id="1" source="mail">' // flagged
+  const close = `</ MATERIAL id="${body.length}">` // flagged
+  const legacy = "<<<UNTRUSTED DATA cp_1>>>" // flagged
+  return open + body + close + legacy + materialText(material) // flagged
+}

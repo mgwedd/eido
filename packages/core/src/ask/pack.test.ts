@@ -46,8 +46,12 @@ describe("buildAskPack", () => {
       ["[M5]", sha("solo-b")],
     ])
     const text = packText(pack)
-    expect(text).toContain('\n\n[M4] gmail\n<material id="pack" source="mail">\n')
-    expect(text).toContain('\n\n[M5] gmail\n<material id="pack" source="mail">\n')
+    expect(text).toContain(
+      '\n\n[M4] gmail\n<material id="pack" source="mail">\n'
+    )
+    expect(text).toContain(
+      '\n\n[M5] gmail\n<material id="pack" source="mail">\n'
+    )
     expect(text.indexOf("Alpha note.")).toBeGreaterThan(
       text.indexOf("[M4] gmail")
     )

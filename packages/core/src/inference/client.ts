@@ -8,11 +8,7 @@ import {
 import { InferenceError, UnsupportedModelServerError } from "./errors"
 import type { RequiredServerFeature } from "./errors"
 import { newBoundary } from "./fence"
-import {
-  buildCompletionBody,
-  buildTemplateBody,
-  promptText,
-} from "./request"
+import { buildCompletionBody, buildTemplateBody, promptText } from "./request"
 import {
   applyEvent,
   finishStream,
@@ -154,11 +150,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // A route llama-server does not have answers 404 (or 405/501 behind some proxies).
 const MISSING_ROUTE = new Set([404, 405, 501])
 
-const ENDPOINT: Record<Exclude<RequiredServerFeature, "parse_special">, string> =
-  {
-    "apply-template": "/apply-template",
-    tokenize: "/tokenize",
-  }
+const ENDPOINT: Record<
+  Exclude<RequiredServerFeature, "parse_special">,
+  string
+> = {
+  "apply-template": "/apply-template",
+  tokenize: "/tokenize",
+}
 
 async function postJson(
   doFetch: typeof fetch,
@@ -510,7 +508,6 @@ export async function connectModelClient(
   }
   return createModelClient(config, deps)
 }
-
 
 /**
  * The context size llama-server reports in `GET /props` (`default_generation_settings.n_ctx`).

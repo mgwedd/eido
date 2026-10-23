@@ -90,7 +90,8 @@ export function applyEvent(
   for (const line of event.split(/\r?\n/)) {
     if (!line.startsWith("data:")) continue // comments, `event:` and `id:` lines
     const data = line.slice("data:".length).trimStart()
-    if (state.final !== null) throw malformed(status, "data after the final chunk")
+    if (state.final !== null)
+      throw malformed(status, "data after the final chunk")
     let chunk: unknown
     try {
       chunk = JSON.parse(data)
