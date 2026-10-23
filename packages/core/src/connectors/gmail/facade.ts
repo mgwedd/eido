@@ -12,7 +12,7 @@ import type {
   GateIntentOrigin,
 } from "@eido/schemas"
 import { search } from "../../index/index"
-import { isTextMime } from "../mail/parse"
+import { isPdfMime, isTextMime } from "../mail/parse"
 import type { SearchHit } from "../../index/index"
 import { rationaleField } from "../proposal-rationale"
 import type { ProposalNote } from "../proposal-rationale"
@@ -44,7 +44,7 @@ export type GmailMessage = Untrusted<{
 export type GmailAttachmentText = Untrusted<{
   filename: string
   mime: string
-  /** Null when the attachment is not a text type. */
+  /** Null when the attachment is not a text type or PDF, or a PDF had no readable text. */
   text: string | null
 }>
 
@@ -167,10 +167,12 @@ export function createGmailFacade(deps: GmailFacadeDeps) {
       if (row === undefined)
         throw new GmailError("not_found", "the message has no such attachment")
       const mime = String(row["mime"])
+      const body = String(row["body"])
+      const readable = isTextMime(mime) || (isPdfMime(mime) && body !== "")
       return {
         filename: String(row["title"]),
         mime,
-        text: isTextMime(mime) ? String(row["body"]) : null,
+        text: readable ? body : null,
         untrusted: true,
       }
     },
