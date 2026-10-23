@@ -34,7 +34,8 @@ jobs:
       - name: Install Tesseract (parser OCR test, #261)
         run: |
           sudo apt-get update
-          apt-cache policy tesseract-ocr tesseract-ocr-eng
+          sudo apt-get install -y --no-install-recommends tesseract-ocr=5.3.4-1build5 tesseract-ocr-eng=1:4.1.0-2
+          tesseract --version
       # The checks are one turbo run, defined by scripts/verify.mjs and turbo.json: edit those to change CI and
       # `pnpm verify` together. Pull requests that only touch docs or images run the light steps;
       # every push to main runs everything.
