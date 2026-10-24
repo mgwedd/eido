@@ -66,5 +66,8 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "figma@inline": true
   }
 }
