@@ -41,9 +41,9 @@ test("lists pending intents from the gate, oldest first, and counts them in the 
   const rows = [...container.querySelectorAll("li")].map((li) => li.textContent)
   expect(rows[0]).toContain("Calendar · Send invitation")
   expect(rows[1]).toContain("Email · Send")
-  expect(container.querySelector("h1")?.nextElementSibling?.textContent).toContain(
-    "2 items need you"
-  )
+  expect(
+    container.querySelector("h1")?.nextElementSibling?.textContent
+  ).toContain("2 items need you")
 })
 
 test("a malformed response is an error, not a list", async () => {

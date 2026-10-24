@@ -5,25 +5,26 @@ export type PendingIntent = GatePendingIntentList["intents"][number]
 /** The Needs you card shows at most this many intents. */
 export const NEEDS_YOU_LIMIT = 5
 
-const KIND_LABELS: Readonly<Record<string, { source: string; action: string }>> =
-  {
-    "email.draft": { source: "Email", action: "Save draft" },
-    "email.label": { source: "Email", action: "Label" },
-    "email.archive": { source: "Email", action: "Archive" },
-    "email.markRead": { source: "Email", action: "Mark read" },
-    "email.send": { source: "Email", action: "Send" },
-    "email.reply": { source: "Email", action: "Reply" },
-    "email.forward": { source: "Email", action: "Forward" },
-    "email.trash": { source: "Email", action: "Move to trash" },
-    "calendar.create": { source: "Calendar", action: "Send invitation" },
-    "calendar.edit": { source: "Calendar", action: "Change event" },
-    "calendar.delete": { source: "Calendar", action: "Cancel event" },
-    "reminder.create": { source: "Reminders", action: "Create reminder" },
-    "file.create": { source: "Files", action: "Create file" },
-    "file.rename": { source: "Files", action: "Rename file" },
-    "file.move": { source: "Files", action: "Move file" },
-    "file.delete": { source: "Files", action: "Move file to trash" },
-  }
+const KIND_LABELS: Readonly<
+  Record<string, { source: string; action: string }>
+> = {
+  "email.draft": { source: "Email", action: "Save draft" },
+  "email.label": { source: "Email", action: "Label" },
+  "email.archive": { source: "Email", action: "Archive" },
+  "email.markRead": { source: "Email", action: "Mark read" },
+  "email.send": { source: "Email", action: "Send" },
+  "email.reply": { source: "Email", action: "Reply" },
+  "email.forward": { source: "Email", action: "Forward" },
+  "email.trash": { source: "Email", action: "Move to trash" },
+  "calendar.create": { source: "Calendar", action: "Send invitation" },
+  "calendar.edit": { source: "Calendar", action: "Change event" },
+  "calendar.delete": { source: "Calendar", action: "Cancel event" },
+  "reminder.create": { source: "Reminders", action: "Create reminder" },
+  "file.create": { source: "Files", action: "Create file" },
+  "file.rename": { source: "Files", action: "Rename file" },
+  "file.move": { source: "Files", action: "Move file" },
+  "file.delete": { source: "Files", action: "Move file to trash" },
+}
 
 /**
  * "Email · Send". The pending list carries the intent kind but no payload, so the label
