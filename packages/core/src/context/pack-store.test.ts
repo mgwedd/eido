@@ -7,8 +7,17 @@ import { packIdFor, readContextPack, storeContextPack } from "./pack-store"
 const HASH = "ab".repeat(32)
 const PACK: ContextPack = {
   id: packIdFor(HASH),
-  text: "Format: x",
-  members: [{ tag: "[M1]", sha256: "cd".repeat(32), edge: "seed", tokens: 4 }],
+  blocks: [],
+  members: [
+    {
+      tag: "[M1]",
+      sha256: "cd".repeat(32),
+      edge: "seed",
+      tokens: 4,
+      injectionSuspected: true,
+      injectionReasons: ["fence-tag", "hidden-characters"],
+    },
+  ],
   tokenCount: 4,
   droppedMembers: 0,
   packHash: HASH,
@@ -45,9 +54,22 @@ describe("context pack store", () => {
     storeContextPack(db, PACK)
     insertRaw("a", "{}")
     insertRaw("b", "[1]")
-    insertRaw("c", '[{"tag":"[M1]","sha256":"x","edge":"cousin","tokens":1}]')
+    insertRaw(
+      "c",
+      '[{"tag":"[M1]","sha256":"x","edge":"cousin","tokens":1,"injectionSuspected":false,"injectionReasons":[]}]'
+    )
+    insertRaw(
+      "d",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":"no","injectionReasons":[]}]'
+    )
+    insertRaw(
+      "e",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":true,"injectionReasons":["made-up"]}]'
+    )
     expect(() => readContextPack(db, "a")).toThrow("not a list")
     expect(() => readContextPack(db, "b")).toThrow("not an object")
     expect(() => readContextPack(db, "c")).toThrow("malformed field")
+    expect(() => readContextPack(db, "d")).toThrow("malformed field")
+    expect(() => readContextPack(db, "e")).toThrow("malformed field")
   })
 })

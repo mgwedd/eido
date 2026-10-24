@@ -1,3 +1,5 @@
+import type { PromptPart } from "./fence"
+
 // Types for the llama-server client. Inference is local: the client talks to a loopback
 // llama-server only, holds no credentials, and never reaches a hosted model API.
 
@@ -21,7 +23,11 @@ export interface ModelServerConfig {
 
 export interface ChatMessage {
   role: "user" | "assistant" | "tool"
-  content: string
+  /**
+   * Trusted text, or trusted text mixed with fenced material blocks (`fence` in fence.ts). Inbound
+   * material is never written into a plain string.
+   */
+  content: string | readonly PromptPart[]
 }
 
 /** An OpenAI-style function tool, as llama-server's chat template expects it. */
@@ -55,7 +61,7 @@ export interface InferenceResult {
   /** Decoded from the accumulated response bytes. */
   text: string
   estimatedPromptTokens: number
-  /** `usage.prompt_tokens`, which includes tokens served from the prompt cache. */
+  /** `tokens_evaluated` from `/completion`, which includes tokens served from the prompt cache. */
   reportedPromptTokens: number
   truncationSuspected: boolean
   finishReason: FinishReason

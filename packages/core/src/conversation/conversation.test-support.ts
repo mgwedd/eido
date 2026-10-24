@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
+import { plainContent } from "../inference/fence"
 import { createInferenceQueue } from "../inference/queue"
 import type { InferenceQueue } from "../inference/queue"
 import type {
@@ -40,6 +41,12 @@ export function stubModel(
     },
   }
   return { client, queue: createInferenceQueue(client), requests }
+}
+
+/** The first message's content as the model reads it, with every block's boundary "B". */
+export function contentOf(req: InferenceRequest | undefined): string {
+  const content = req?.messages[0]?.content
+  return content === undefined ? "" : plainContent(content, "B")
 }
 
 /** A model that always summarizes as `summary`, leaving out every date and tag on purpose. */

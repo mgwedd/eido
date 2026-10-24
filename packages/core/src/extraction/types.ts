@@ -1,4 +1,5 @@
 import type { SourceSpan } from "@eido/schemas"
+import type { InjectionReason } from "../inference/fence"
 import type { ExtractionFieldName } from "../ledger/types"
 
 export type ExtractionStatus =
@@ -18,6 +19,9 @@ export type ConfirmCandidate = {
   confidence: number
   threshold: number
   span: SourceSpan
+  /** True when fence flagged the passage the quote came from; the card can warn on it. */
+  injectionSuspected: boolean
+  injectionReasons: InjectionReason[]
 }
 
 /**
@@ -36,9 +40,11 @@ export type ExtractionResult = {
   summary: string
   confirmations: ConfirmCandidate[]
   obligationIds: number[]
+  /** What fence found in the passages sent to the model, in a fixed order; empty when clean. */
+  injectionReasons: InjectionReason[]
 }
 
-/** A window of the parsed text, `[start, end)` in UTF-16 code units. */
+/** A window of the normalized parsed text, `[start, end)` in UTF-16 code units. */
 export type Passage = { start: number; end: number; text: string }
 
 /** What a field's confidence is computed from. `parsed` is false for a quote that did not parse. */

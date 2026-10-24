@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 
+import { plainContent } from "./fence"
 import { createInferenceQueue, splitIntoBatches } from "./queue"
 import type { BatchPlan } from "./queue"
 import type { InferenceRequest, InferenceResult, ModelClient } from "./types"
@@ -21,12 +22,12 @@ function controllableClient() {
     complete(req: InferenceRequest): Promise<InferenceResult> {
       inFlight += 1
       maxInFlight = Math.max(maxInFlight, inFlight)
-      const label = req.messages[0]?.content ?? ""
+      const label = plainContent(req.messages[0]?.content ?? "")
       started.push(label)
       return new Promise<InferenceResult>((resolve, reject) => {
         calls.push({
           label,
-          items: req.messages.map((m) => m.content),
+          items: req.messages.map((m) => plainContent(m.content)),
           resolve: () => {
             inFlight -= 1
             resolve({

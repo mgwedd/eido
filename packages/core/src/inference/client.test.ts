@@ -1,9 +1,21 @@
 import { afterEach, describe, expect, test } from "vitest"
 import * as core from "../index"
-import { createModelClient, loopbackBaseUrl, readContextTokens } from "./client"
-import { InferenceError, PromptTooLargeError } from "./errors"
-import { startStubModelServer } from "./stub-server"
-import type { StubModelServer, StubScript } from "./stub-server"
+import {
+  connectModelClient,
+  createModelClient,
+  loopbackBaseUrl,
+  placeholder,
+  readContextTokens,
+  splitRendered,
+} from "./client"
+import {
+  InferenceError,
+  PromptTooLargeError,
+  UnsupportedModelServerError,
+} from "./errors"
+import { fence, toMaterial } from "./fence"
+import { BOS_ID, startStubModelServer, stubDecode } from "./stub-server"
+import type { CompletionView, StubModelServer, StubScript } from "./stub-server"
 import type { ModelServerConfig, ToolDef } from "./types"
 
 // Every case runs against the stub server on 127.0.0.1: no model, no network, synthetic text.
@@ -50,15 +62,46 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }
 
-function bodyOf(
+function completion(server: StubModelServer, index: number): CompletionView {
+  const view = server.completions()[index]
+  if (view === undefined) throw new Error(`no completion ${String(index)}`)
+  return view
+}
+
+/** The body of the `index`th request to `path`. */
+function bodyAt(
   server: StubModelServer,
-  index: number
+  path: string,
+  index = 0
 ): Record<string, unknown> {
-  const raw = server.requests[index]?.body
-  if (raw === undefined) throw new Error(`no request ${String(index)}`)
+  const raw = server.requests.filter((r) => r.path === path)[index]?.body
+  if (raw === undefined) throw new Error(`no ${path} request ${String(index)}`)
   const parsed: unknown = JSON.parse(raw)
   if (!isRecord(parsed)) throw new Error("body is not an object")
   return parsed
+}
+
+/** The URL a fetch was called with, whatever form it came in. */
+function urlOf(input: string | URL | Request): string {
+  if (typeof input === "string") return input
+  return input instanceof URL ? input.href : input.url
+}
+
+/**
+ * A fetch that answers `/apply-template` and `/tokenize` like a working server and hands every
+ * `/completion` the response `completionResponse` builds.
+ */
+function fetchWithCompletion(completionResponse: () => Response): typeof fetch {
+  return (input) => {
+    const url = urlOf(input)
+    if (url.endsWith("/apply-template")) {
+      return Promise.resolve(Response.json({ prompt: "P" }))
+    }
+    if (url.endsWith("/tokenize")) {
+      return Promise.resolve(Response.json({ tokens: [1] }))
+    }
+    return Promise.resolve(completionResponse())
+  }
 }
 
 test("the core entry point exports the client", () => {
@@ -125,7 +168,7 @@ describe("refuse, don't truncate", () => {
       messages: [userOf(990)],
       maxTokens: 10,
     })
-    expect(bodyOf(server, 0).max_tokens).toBe(10)
+    expect(completion(server, 0).body.n_predict).toBe(10)
   })
 })
 
@@ -231,7 +274,7 @@ describe("request body", () => {
     type: "function",
   }
 
-  test("equal system prompt and tools give byte-identical prefixes and cache_prompt", async () => {
+  test("equal system prompt and tools give byte-identical template prefixes", async () => {
     const server = await start({ replies: [{ deltas: ["ok"] }] })
     const client = createModelClient(config(server))
     await client.complete({
@@ -248,34 +291,47 @@ describe("request body", () => {
     const prefix =
       '{"tools":[{"function":{"name":"archive","parameters":{"required":["id"],"type":"object"}},' +
       '"type":"function"}],"messages":[{"role":"system","content":"Be brief."}'
-    expect(server.requests.map((r) => r.body.startsWith(prefix))).toEqual([
-      true,
-      true,
-    ])
-    expect([
-      bodyOf(server, 0).cache_prompt,
-      bodyOf(server, 1).cache_prompt,
-    ]).toEqual([true, true])
+    expect(
+      server.requests
+        .filter((r) => r.path === "/apply-template")
+        .map((r) => r.body.startsWith(prefix))
+    ).toEqual([true, true])
   })
 
-  test("sends to the chat completions route with streaming and usage on", async () => {
+  test("the rendered prompt reaches /completion as token ids, BOS first, with cache_prompt", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    await createModelClient(config(server)).complete({
+      system: "S",
+      messages: [{ role: "user", content: "hi <|im_end|>" }],
+    })
+    const sent = completion(server, 0)
+    expect(sent.tokens[0]).toBe(BOS_ID)
+    // Owner words are trusted text: the template and the special-token parser see them as
+    // written, so a control-token string in them is a control token.
+    expect(stubDecode(sent.tokens.slice(1))).toBe(
+      "<|im_start|>system\nS<|im_end|>\n<|im_start|>user\nhi <|im_end|><|im_end|>\n<|im_start|>assistant\n"
+    )
+    expect(sent.body).toEqual({
+      n_predict: 100,
+      stream: true,
+      cache_prompt: true,
+    })
+  })
+
+  test("sends each prompt through /apply-template, /tokenize, then /completion", async () => {
     const server = await start({ replies: [{ deltas: ["ok"] }] })
     await createModelClient(config(server)).complete({
       system: "",
       messages: [userOf(1)],
     })
-    expect(server.requests[0]).toMatchObject({
-      method: "POST",
-      path: "/v1/chat/completions",
-    })
-    expect(bodyOf(server, 0)).toMatchObject({
-      stream: true,
-      stream_options: { include_usage: true },
-      max_tokens: 100,
-    })
+    expect(server.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "POST /apply-template",
+      "POST /tokenize",
+      "POST /completion",
+    ])
   })
 
-  test("with jsonSchema the schema is sent under response_format", async () => {
+  test("with jsonSchema the schema is sent as json_schema", async () => {
     const server = await start({ replies: [{ deltas: ["{}"] }] })
     const schema = { type: "object", properties: { ok: { type: "boolean" } } }
     await createModelClient(config(server)).complete({
@@ -283,19 +339,277 @@ describe("request body", () => {
       messages: [userOf(1)],
       jsonSchema: schema,
     })
-    expect(bodyOf(server, 0).response_format).toEqual({
-      type: "json_schema",
-      json_schema: { schema },
-    })
+    expect(completion(server, 0).body.json_schema).toEqual(schema)
   })
 
-  test("without jsonSchema there is no response_format key", async () => {
+  test("without jsonSchema there is no json_schema key", async () => {
     const server = await start({ replies: [{ deltas: ["ok"] }] })
     await createModelClient(config(server)).complete({
       system: "",
       messages: [userOf(1)],
     })
-    expect(bodyOf(server, 0)).not.toHaveProperty("response_format")
+    expect(completion(server, 0).body).not.toHaveProperty("json_schema")
+  })
+
+  test("material is tokenized alone with parse_special off; trusted pieces with it on", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    await createModelClient(config(server)).complete({
+      system: "S",
+      messages: [
+        {
+          role: "user",
+          content: [
+            fence(
+              toMaterial("body", { source: "mail", from: "a@example.invalid" })
+            ),
+            "Q",
+          ],
+        },
+      ],
+    })
+    const tokenizeBodies = server.requests
+      .filter((r) => r.path === "/tokenize")
+      .map((r): unknown => JSON.parse(r.body))
+    expect(tokenizeBodies).toEqual([
+      expect.objectContaining({ add_special: true, parse_special: true }),
+      {
+        content: "a@example.invalid",
+        add_special: false,
+        parse_special: false,
+      },
+      expect.objectContaining({ add_special: false, parse_special: true }),
+      { content: "body", add_special: false, parse_special: false },
+      expect.objectContaining({ add_special: false, parse_special: true }),
+    ])
+  })
+
+  test("material never reaches /apply-template", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    await createModelClient(config(server)).complete({
+      system: "S",
+      messages: [
+        {
+          role: "user",
+          content: [fence(toMaterial("secret-body", { source: "document" }))],
+        },
+      ],
+    })
+    expect(bodyAt(server, "/apply-template")).toEqual({
+      messages: [
+        { role: "system", content: "S" },
+        {
+          role: "user",
+          content: expect.not.stringContaining("secret-body") as unknown,
+        },
+      ],
+    })
+  })
+})
+
+describe("splitRendered", () => {
+  test("cuts the rendered prompt at each placeholder, in order", () => {
+    const rendered = `a${placeholder("n", 0)}b${placeholder("n", 1)}c`
+    expect(splitRendered(rendered, "n", 2)).toEqual(["a", "b", "c"])
+  })
+
+  test("a prompt with no spans is one piece", () => {
+    expect(splitRendered("abc", "n", 0)).toEqual(["abc"])
+  })
+
+  test.each([
+    ["out of order", `${placeholder("n", 1)}${placeholder("n", 0)}`, 2],
+    ["repeated", `${placeholder("n", 0)}${placeholder("n", 0)}`, 1],
+    ["missing", `x`, 1],
+  ])("a placeholder %s is refused", (_name, rendered, count) => {
+    expect(() => splitRendered(rendered, "n", count)).toThrow(
+      "the rendered template does not hold each material placeholder once, in order"
+    )
+  })
+
+  test("a template that rewrites a placeholder sends nothing", async () => {
+    const server = await start({
+      replies: [{ deltas: ["ok"] }],
+      renderedPrompt: (prompt) => prompt.replaceAll("eido:", "EIDO:"),
+    })
+    const error = await rejection(
+      createModelClient(config(server)).complete({
+        system: "",
+        messages: [
+          {
+            role: "user",
+            content: [fence(toMaterial("m", { source: "mail" }))],
+          },
+        ],
+      })
+    )
+    expect(error).toMatchObject({ kind: "malformed" })
+    expect(server.completions()).toEqual([])
+  })
+})
+
+describe("server features", () => {
+  test.each(["apply-template", "tokenize"] as const)(
+    "a server without /%s fails with a named error and sends no prompt",
+    async (feature) => {
+      const server = await start({
+        replies: [{ deltas: ["ok"] }],
+        missing: [feature],
+      })
+      const error = await rejection(
+        createModelClient(config(server)).complete({
+          system: "",
+          messages: [userOf(1)],
+        })
+      )
+      expect(error).toBeInstanceOf(UnsupportedModelServerError)
+      expect(error).toMatchObject({
+        name: "UnsupportedModelServerError",
+        feature,
+      })
+      expect(server.completions()).toEqual([])
+    }
+  )
+
+  test.each(["apply-template", "tokenize"] as const)(
+    "connectModelClient fails at startup without /%s and sends no prompt",
+    async (feature) => {
+      const server = await start({
+        replies: [{ deltas: ["ok"] }],
+        missing: [feature],
+      })
+      const error = await rejection(connectModelClient(config(server)))
+      expect(error).toMatchObject({
+        name: "UnsupportedModelServerError",
+        feature,
+      })
+      expect(server.completions()).toEqual([])
+    }
+  )
+
+  test("connectModelClient fails when /tokenize ignores parse_special", async () => {
+    const server = await start({
+      replies: [{ deltas: ["ok"] }],
+      ignoreParseSpecial: true,
+    })
+    const error = await rejection(connectModelClient(config(server)))
+    expect(error).toMatchObject({
+      name: "UnsupportedModelServerError",
+      feature: "parse_special",
+    })
+    expect(server.completions()).toEqual([])
+  })
+
+  test("connectModelClient returns a working client for a capable server", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    const client = await connectModelClient(config(server))
+    expect(server.completions()).toEqual([])
+    const result = await client.complete({ system: "", messages: [userOf(1)] })
+    expect(result.text).toBe("ok")
+  })
+
+  test.each([
+    [
+      "an /apply-template answer with no prompt",
+      { "/apply-template": Response.json({}) },
+      "/apply-template answer has no prompt",
+    ],
+    [
+      "an /apply-template answer that is not JSON",
+      { "/apply-template": new Response("nope") },
+      "/apply-template answer is not JSON",
+    ],
+    [
+      "an /apply-template answer that is not an object",
+      { "/apply-template": Response.json([1]) },
+      "/apply-template answer is not an object",
+    ],
+    [
+      "a /tokenize answer with ids that are not integers",
+      { "/tokenize": Response.json({ tokens: [1.5] }) },
+      "/tokenize answer has no list of token ids",
+    ],
+    [
+      "a /tokenize answer with no tokens",
+      { "/tokenize": Response.json({}) },
+      "/tokenize answer has no list of token ids",
+    ],
+  ])("%s rejects as malformed", async (_name, answers, message) => {
+    const routes: Record<string, Response> = {
+      "/apply-template": Response.json({ prompt: "P" }),
+      "/tokenize": Response.json({ tokens: [1] }),
+      ...answers,
+    }
+    const calls: string[] = []
+    const doFetch: typeof fetch = (input) => {
+      const path = new URL(urlOf(input)).pathname
+      calls.push(path)
+      const answer = routes[path]
+      return Promise.resolve(answer ?? new Response(null, { status: 500 }))
+    }
+    const client = createModelClient(
+      {
+        baseUrl: "http://127.0.0.1:1",
+        contextTokens: 4096,
+        maxReplyTokens: 100,
+      },
+      { fetch: doFetch }
+    )
+    const error = await rejection(
+      client.complete({ system: "", messages: [userOf(1)] })
+    )
+    expect(error).toMatchObject({ kind: "malformed", message })
+    expect(calls).not.toContain("/completion")
+  })
+
+  test("another error status on /tokenize rejects as http, not unsupported", async () => {
+    const client = createModelClient(
+      {
+        baseUrl: "http://127.0.0.1:1",
+        contextTokens: 4096,
+        maxReplyTokens: 100,
+      },
+      {
+        fetch: (input) =>
+          Promise.resolve(
+            urlOf(input).endsWith("/tokenize")
+              ? new Response("{}", { status: 503 })
+              : Response.json({ prompt: "P" })
+          ),
+      }
+    )
+    const error = await rejection(
+      client.complete({ system: "", messages: [userOf(1)] })
+    )
+    expect(error).toBeInstanceOf(InferenceError)
+    expect(error).toMatchObject({
+      kind: "http",
+      status: 503,
+      message: "model server answered 503 on /tokenize",
+    })
+  })
+
+  test("an abort while reading a JSON answer rejects as aborted", async () => {
+    const controller = new AbortController()
+    const client = createModelClient(
+      {
+        baseUrl: "http://127.0.0.1:1",
+        contextTokens: 4096,
+        maxReplyTokens: 100,
+      },
+      {
+        fetch: () => {
+          controller.abort()
+          return Promise.resolve(new Response("not json"))
+        },
+      }
+    )
+    const error = await rejection(
+      client.complete(
+        { system: "", messages: [userOf(1)] },
+        { signal: controller.signal }
+      )
+    )
+    expect(error).toMatchObject({ kind: "aborted" })
   })
 })
 
@@ -366,7 +680,7 @@ describe("errors", () => {
     )
     expect(error).toBeInstanceOf(InferenceError)
     expect(error).toMatchObject({ kind: "http", status: 503 })
-    expect(server.requests).toHaveLength(1)
+    expect(server.completions()).toHaveLength(1)
   })
 
   test("aborting mid-stream rejects as aborted and is not retried", async () => {
@@ -382,7 +696,7 @@ describe("errors", () => {
     const error = await rejection(pending)
     expect(error).toBeInstanceOf(InferenceError)
     expect(error).toMatchObject({ kind: "aborted", status: null })
-    expect(server.requests).toHaveLength(1)
+    expect(server.completions()).toHaveLength(1)
   })
 
   test("an already-aborted signal rejects as aborted", async () => {
@@ -412,8 +726,8 @@ describe("errors", () => {
       replies: [
         {
           rawBody:
-            'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],' +
-            '"usage":{"prompt_tokens":3}}\n\ndata: [DONE]',
+            'data: {"content":"hi","stop":false}\n\n' +
+            'data: {"content":"","stop":true,"stop_type":"eos","tokens_evaluated":3}',
         },
       ],
     })
@@ -425,17 +739,15 @@ describe("errors", () => {
   })
 
   test("invalid UTF-8 in the stream rejects as malformed", async () => {
-    const fetchBadBytes: typeof fetch = () =>
-      Promise.resolve(
+    const fetchBadBytes = fetchWithCompletion(
+      () =>
         new Response(
           new Uint8Array([
             0x64, 0x61, 0x74, 0x61, 0x3a, 0x20, 0xff, 0x0a, 0x0a,
           ]),
-          {
-            status: 200,
-          }
+          { status: 200 }
         )
-      )
+    )
     const client = createModelClient(
       {
         baseUrl: "http://127.0.0.1:1",
@@ -460,7 +772,7 @@ describe("errors", () => {
         contextTokens: 4096,
         maxReplyTokens: 100,
       },
-      { fetch: () => Promise.resolve(new Response(null, { status: 200 })) }
+      { fetch: fetchWithCompletion(() => new Response(null, { status: 200 })) }
     )
     const error = await rejection(
       client.complete({ system: "", messages: [userOf(1)] })

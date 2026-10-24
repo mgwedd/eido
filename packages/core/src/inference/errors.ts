@@ -48,3 +48,21 @@ export class InferenceError extends Error {
     this.status = status
   }
 }
+
+/** What a model server must offer so that no material is parsed for special tokens. */
+export type RequiredServerFeature =
+  "apply-template" | "tokenize" | "parse_special"
+
+/**
+ * The model server lacks `/apply-template` or `/tokenize`, or ignores `parse_special`. Inference
+ * refuses to run on it: there is no fallback that sends material as one prompt string.
+ */
+export class UnsupportedModelServerError extends Error {
+  readonly feature: RequiredServerFeature
+
+  constructor(feature: RequiredServerFeature, message: string) {
+    super(message)
+    this.name = "UnsupportedModelServerError"
+    this.feature = feature
+  }
+}
