@@ -270,7 +270,7 @@ describe("Bridge failures", () => {
     )
     expect(reply).toEqual({
       status: 503,
-      body: { code: "unavailable", message: "the gate is busy reading mail" },
+      body: { code: "busy", message: "the gate is busy reading mail" },
       headers: { "retry-after": "5" },
     })
     expect(lastAudit()).toMatchObject({
