@@ -178,7 +178,9 @@ export async function runGate(
   let phone: RunningGate["phone"]
   try {
     // Owner addresses and allowed roots come from the gate's settings (#167); until then
-    // calendar guests need approval and file intents are forbidden.
+    // calendar guests need approval and file intents are forbidden. No stored-attendee reader
+    // is wired until the calendar connector's record exists (#21), so every calendar edit and
+    // delete needs approval.
     const overlayErrors = startGate(
       db,
       { dataDir: config.dataDir, ownerAddresses: [], allowedRoots: [] },
