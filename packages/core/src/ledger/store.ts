@@ -179,6 +179,17 @@ export function insertObligation(
   ) {
     throw new LedgerError("entity_not_found", "no such entity")
   }
+  // A document has one entity, and an obligation belongs to it (migration v2, #259).
+  if (
+    db
+      .prepare("SELECT entity_id FROM documents WHERE sha256 = ?")
+      .get(input.docId)?.["entity_id"] !== input.entityId
+  ) {
+    throw new LedgerError(
+      "entity_mismatch",
+      "obligation entity differs from its document entity"
+    )
+  }
   const { lastInsertRowid } = db
     .prepare(
       `INSERT INTO obligations (entity_id, party, action, due_at, status, doc_id, source_span)

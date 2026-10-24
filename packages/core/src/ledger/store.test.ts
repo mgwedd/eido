@@ -323,7 +323,59 @@ describe("obligation status", () => {
   test("rejects a due date that is not YYYY-MM-DD", () => {
     expect(() =>
       insertObligation(db, obligation({ dueAt: "1 Feb 2030" }))
-    ).toThrow(/CHECK/)
+    ).toThrow(/real date/)
+  })
+
+  test.each(["2030-13-45", "2030-02-30", "2030-00-10", "2031-02-29"])(
+    "rejects the impossible date %s, on insert and on update",
+    (dueAt) => {
+      expect(() => insertObligation(db, obligation({ dueAt }))).toThrow(
+        /real date/
+      )
+      const id = insertObligation(db, obligation())
+      expect(() =>
+        db
+          .prepare("UPDATE obligations SET due_at = ? WHERE id = ?")
+          .run(dueAt, id)
+      ).toThrow(/real date/)
+    }
+  )
+
+  test.each(["2030-02-28", "2032-02-29"])(
+    "accepts the real date %s",
+    (dueAt) => {
+      insertObligation(db, obligation({ dueAt }))
+      expect(listObligations(db).map((o) => o.dueAt)).toEqual([dueAt])
+    }
+  )
+})
+
+describe("an obligation has its document's entity", () => {
+  test("insertObligation refuses another entity with entity_mismatch", () => {
+    expect(
+      codeOf(() => insertObligation(db, obligation({ entityId: company.id })))
+    ).toBe("entity_mismatch")
+    expect(listObligations(db)).toEqual([])
+    expect(
+      insertObligation(db, obligation({ docId: docB, entityId: company.id }))
+    ).toBe(1)
+  })
+
+  test("the database refuses a mismatch written directly, on insert and on update", () => {
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO obligations (entity_id, action, status, doc_id, source_span)
+           VALUES (?, 'Pay', 'open', ?, '{"start":0,"end":3}')`
+        )
+        .run(company.id, docA)
+    ).toThrow(/document entity/)
+    const id = insertObligation(db, obligation())
+    expect(() =>
+      db
+        .prepare("UPDATE obligations SET entity_id = ? WHERE id = ?")
+        .run(company.id, id)
+    ).toThrow(/document entity/)
   })
 })
 
@@ -434,13 +486,16 @@ describe("entities come from the profile store (#80)", () => {
   })
 
   test("an entity referenced by a document or an obligation is not deleted", async () => {
-    // The company has a document (docB); the spare entity only an obligation that cites docB.
+    // The company has a document (docB); the spare entity has a document and an obligation citing it.
     const spare = await profile.createEntity({
       kind: "property",
       name: "Spare Property",
       tag: "SP",
     })
-    insertObligation(db, obligation({ entityId: spare.id, docId: docB }))
+    const [docSpare = ""] = addDocs(db, [
+      testDoc("spare", { entityId: spare.id }),
+    ])
+    insertObligation(db, obligation({ entityId: spare.id, docId: docSpare }))
     const refusal = async (id: string) => {
       try {
         await profile.deleteEntity(id)
@@ -451,7 +506,10 @@ describe("entities come from the profile store (#80)", () => {
       return ["deleted"]
     }
     expect(await refusal(company.id)).toEqual(["entity_in_use", ["documents"]])
-    expect(await refusal(spare.id)).toEqual(["entity_in_use", ["obligations"]])
+    expect(await refusal(spare.id)).toEqual([
+      "entity_in_use",
+      ["documents", "obligations"],
+    ])
     expect(() =>
       db.prepare("DELETE FROM entities WHERE id = ?").run(spare.id)
     ).toThrow(/still referenced/)
