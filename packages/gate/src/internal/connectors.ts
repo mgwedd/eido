@@ -203,6 +203,11 @@ export function pinManifest(
          enabled = 1,
          health = 'healthy',
          consecutive_failures = 0,
+         next_attempt_at = NULL,
+         last_error = NULL,
+         probe_started_at = NULL,
+         probe_lease_id = NULL,
+         health_generation = health_generation + 1,
          drift_json = NULL,
          pin_approval_ref_hash = excluded.pin_approval_ref_hash`
       ).run(

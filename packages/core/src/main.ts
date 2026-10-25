@@ -211,7 +211,11 @@ export async function serveDataPlane(
   plane: DataPlane,
   config: CoreApiConfig
 ): Promise<CoreApi> {
-  const api = await listenCoreApi({ profile: plane.profile, ...config })
+  const api = await listenCoreApi({
+    profile: plane.profile,
+    connectorHealth: plane.gate.getConnectorHealth,
+    ...config,
+  })
   plane.log("listening", {
     host: api.host,
     port: String(api.port),

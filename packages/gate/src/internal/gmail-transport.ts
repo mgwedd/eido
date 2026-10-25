@@ -84,7 +84,9 @@ async function call(
       disable: (name) => {
         options.db
           .prepare(
-            "UPDATE connectors SET enabled=0, health='open' WHERE name=?"
+            `UPDATE connectors SET enabled=0, health='open', last_error='auth_failed',
+               next_attempt_at=NULL, probe_started_at=NULL, probe_lease_id=NULL,
+               health_generation=health_generation + 1 WHERE name=?`
           )
           .run(name)
         return Promise.resolve()

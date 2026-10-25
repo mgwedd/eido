@@ -2,6 +2,7 @@ import { request as httpRequest } from "node:http"
 import {
   validateGateApiError,
   validateGateAuditRecordResult,
+  validateGateConnectorHealth,
   validateGateIntentHistory,
   validateGateIntentStatus,
   validateGateMailFolderList,
@@ -14,6 +15,7 @@ import {
 import type {
   GateAuditRecordRequest,
   GateAuditRecordResult,
+  GateConnectorHealth,
   GateIntentHistory,
   GateIntentProposal,
   GateIntentStatus,
@@ -73,6 +75,8 @@ export type IntentClient = {
   status: (id: string) => Promise<GateIntentStatus>
   history: (id: string) => Promise<GateIntentHistory["entries"]>
   listPending: () => Promise<GatePendingIntentList["intents"]>
+  /** Health projection from the gate's control database; contains no manifests or secrets. */
+  getConnectorHealth: () => Promise<GateConnectorHealth["connectors"]>
 }
 
 export type AuditClient = {
@@ -209,6 +213,13 @@ export function createIntentClient(options: IntentClientOptions): IntentClient {
         validateGatePendingIntentList,
         "GatePendingIntentList"
       ).intents,
+    getConnectorHealth: async () =>
+      expect(
+        await call(resolved, "GET", "/connector-health"),
+        [200],
+        validateGateConnectorHealth,
+        "GateConnectorHealth"
+      ).connectors,
   }
 }
 

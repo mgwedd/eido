@@ -41,6 +41,7 @@ function fakeIntents() {
     status: () => Promise.reject(new Error("not used")),
     history: () => Promise.reject(new Error("not used")),
     listPending: () => Promise.reject(new Error("not used")),
+    getConnectorHealth: () => Promise.resolve([]),
   }
   return { client, proposals }
 }

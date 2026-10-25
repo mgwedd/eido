@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "vitest"
+import { GateUnavailableError } from "@eido/gate"
 import type {
   CoreApiAssignmentList,
   CoreApiEntity,
@@ -459,6 +460,58 @@ describe("base path", () => {
   test("a method outside the prefix is 404, not 405", async () => {
     expect((await under("/profile", "DELETE")).status).toBe(404)
     expect((await under("/api/core/profile", "DELETE")).status).toBe(405)
+  })
+})
+
+describe("connector health", () => {
+  test("the Today read route returns the gate's sanitized connector projection", async () => {
+    const profile = createProfileStore(db, { audit: () => Promise.resolve() })
+    const handleHealth = createApiHandler({
+      profile,
+      allowedHosts: ["core.test"],
+      connectorHealth: () =>
+        Promise.resolve([
+          {
+            name: "proton",
+            health: "open",
+            consecutiveFailures: 3,
+            lastError: "handshake_failed",
+            nextAttemptAt: "2026-10-25T12:00:00.000Z",
+          },
+        ]),
+    })
+    const response = await handleHealth(
+      new Request("http://core.test/connectors/health")
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      connectors: [
+        {
+          name: "proton",
+          health: "open",
+          consecutiveFailures: 3,
+          lastError: "handshake_failed",
+          nextAttemptAt: "2026-10-25T12:00:00.000Z",
+        },
+      ],
+    })
+  })
+
+  test("returns a stable 503 when the gate cannot supply health", async () => {
+    const profile = createProfileStore(db, { audit: () => Promise.resolve() })
+    const handleHealth = createApiHandler({
+      profile,
+      allowedHosts: ["core.test"],
+      connectorHealth: () =>
+        Promise.reject(new GateUnavailableError("the gate is not reachable")),
+    })
+    const response = await handleHealth(
+      new Request("http://core.test/connectors/health")
+    )
+    expect([response.status, await response.json()]).toEqual([
+      503,
+      { error: { code: "gate_unavailable", message: "gate unavailable" } },
+    ])
   })
 })
 

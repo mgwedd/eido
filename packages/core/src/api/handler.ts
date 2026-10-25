@@ -6,6 +6,7 @@ import type {
   CoreApiError,
   CoreApiProfile,
   CoreApiProfileResponse,
+  GateConnectorHealth,
   ProfileAccountAssignment,
 } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
@@ -15,6 +16,8 @@ import type { ProfileStore } from "../profile/store"
 
 export interface ApiDeps {
   profile: ProfileStore
+  /** Read-only projection from the gate; no connector credentials or mail payloads. */
+  connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
   /**
    * Host header values core answers to, such as `127.0.0.1:8787`. A request with any other
    * Host gets 421. Core has no auth, so this stops a page that rebinds its own domain to the
@@ -208,6 +211,17 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return json(body)
       }
       return notAllowed("GET", "PATCH")
+    }
+
+    if (path === "/connectors/health") {
+      if (method !== "GET") return notAllowed("GET")
+      if (deps.connectorHealth === undefined) {
+        return failure("gate_unavailable", "connector health unavailable")
+      }
+      const body: GateConnectorHealth = {
+        connectors: await deps.connectorHealth(),
+      }
+      return json(body)
     }
 
     if (path === "/entities") {

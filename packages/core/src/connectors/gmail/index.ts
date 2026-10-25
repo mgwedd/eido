@@ -32,7 +32,7 @@ export {
   gmailPolicyFor,
 } from "./manifest"
 export { GMAIL_CONNECTOR, GMAIL_HOST } from "./routes"
-export { syncGmail, syncGmailLabel } from "./sync"
+export { syncGmail, syncGmailLabel, syncGmailWithHealth } from "./sync"
 export type { LabelSyncResult as GmailLabelSyncResult } from "./sync"
 export { createEgressTransport as createGmailEgressTransport } from "./transport"
 export type {

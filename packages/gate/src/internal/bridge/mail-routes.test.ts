@@ -2,10 +2,11 @@ import { createHash } from "node:crypto"
 import { afterEach, describe, expect, it } from "vitest"
 import type { GateRequest, Reply } from "../http"
 import { dataPlaneHandler } from "../routes"
-import { auditRows, setup } from "../test-fixtures"
+import { auditRows, MAIL_OPS, manifest, setup } from "../test-fixtures"
 import type { Setup } from "../test-fixtures"
 import { BridgeError } from "./errors"
 import type { MailReads } from "./mail-routes"
+import { PROTON_CONNECTOR } from "./config"
 
 // The mail read routes through the data-plane handler, with a stub in place of Bridge. The
 // adapter itself is tested against the fake Bridge in bridge.test.ts.
@@ -73,7 +74,7 @@ async function call(
   request: GateRequest,
   mail: MailReads | undefined
 ): Promise<Reply> {
-  s = setup()
+  s = setup([manifest(PROTON_CONNECTOR, MAIL_OPS)])
   const state = { db: s.db, policy: s.policy }
   return dataPlaneHandler(() => state, mail)(request)
 }
@@ -81,7 +82,9 @@ async function call(
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 
 function lastAudit(): { action: string; target: string; detail_hash: string } {
-  const row = auditRows(s?.db ?? failSetup()).at(-1)
+  const row = auditRows(s?.db ?? failSetup())
+    .filter((entry) => entry.action.startsWith("mail."))
+    .at(-1)
   if (row === undefined) throw new Error("no audit row")
   return {
     action: row.action,
