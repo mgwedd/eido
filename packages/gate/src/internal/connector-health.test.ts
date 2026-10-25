@@ -106,6 +106,24 @@ describe("gate-owned connector health", () => {
     )
   })
 
+  it("rolls back a failed atomic probe reservation", () => {
+    const db = setup()
+    db.prepare(
+      `UPDATE connectors SET health = 'open', consecutive_failures = 3,
+       next_attempt_at = ?, last_error = 'handshake_failed' WHERE name = 'mail'`
+    ).run(new Date(5_000).toISOString())
+    db.exec(`CREATE TRIGGER fail_probe_reservation
+      BEFORE UPDATE OF probe_started_at ON connectors
+      BEGIN SELECT RAISE(ABORT, 'probe reservation failed'); END;`)
+
+    expect(() => beginConnectorRead(db, "mail", 5_000)).toThrow(
+      "probe reservation failed"
+    )
+    expect(getConnectorHealth(db)[0]?.health).toBe("open")
+    db.prepare("DROP TRIGGER fail_probe_reservation").run()
+    expect(beginConnectorRead(db, "mail", 5_000).probe).toBe(true)
+  })
+
   it("does not let an expired probe close or release its replacement lease", () => {
     const db = setup()
     db.prepare(
@@ -117,6 +135,7 @@ describe("gate-owned connector health", () => {
     expect(second.probeLeaseId).not.toBe(first.probeLeaseId)
 
     recordConnectorReadSuccess(db, "mail", first)
+    recordConnectorReadFailure(db, "mail", "timeout", first, 65_001)
     releaseConnectorProbe(db, "mail", first)
     expect(getConnectorHealth(db)[0]?.health).toBe("open")
     expect(beginConnectorRead(db, "mail", 65_002).allowed).toBe(false)
