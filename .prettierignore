@@ -7,3 +7,4 @@ pnpm-lock.yaml
 .pnpm-store/
 CHANGELOG.md
 packages/schemas/src/generated/
+.claude/settings.local.json
