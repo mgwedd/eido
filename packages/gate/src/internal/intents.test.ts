@@ -367,7 +367,7 @@ describe("editing", () => {
     expect([unknown.tier, unknown.state]).toEqual(["approval", "pending"])
   })
 
-  it("re-runs policy: an edit that drops the only other guest would make it auto, so it is refused", () => {
+  it("invariant: an edit that changes the tier is refused instead of replacing the approval card", () => {
     const s = fresh()
     const original = ok(
       proposeKind(
@@ -388,7 +388,7 @@ describe("editing", () => {
     expect(intentCount(s)).toBe(1)
   })
 
-  it("refuses an edit that makes the payload forbidden; the original stays pending", () => {
+  it("invariant: a forbidden edit is refused and leaves the original pending", () => {
     const s = fresh()
     const { intentId } = ok(proposeKind(s, sample("file.delete")))
     const result = editIntent(

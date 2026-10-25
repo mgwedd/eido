@@ -314,7 +314,7 @@ describe("executor", () => {
     )
   })
 
-  it("refuses tampered approved payloads before transport and audits a hash mismatch alert", async () => {
+  it("invariant: executor refuses tampered approved payloads before transport", async () => {
     const f = fixture()
     approved(f.id)
     s.db.prepare("UPDATE intents SET payload_json=? WHERE id=?").run(

@@ -70,7 +70,7 @@ describe("audit chain", () => {
     )
   })
 
-  it("detects an edited middle row at the row after it", () => {
+  it("invariant: tampering with an audit row breaks the chain", () => {
     const { db, path } = fileDb()
     add(db, 10)
     tamper(path, "UPDATE audit_log SET target = 'evil' WHERE seq = 5")
@@ -106,7 +106,7 @@ describe("audit chain", () => {
     })
   })
 
-  it("blocks UPDATE and DELETE and leaves the chain valid", () => {
+  it("invariant: audit chain is append-only and verifies from sequence one", () => {
     const db = openControlDb(":memory:")
     add(db, 5)
     expect(() => db.exec("UPDATE audit_log SET target = 'x'")).toThrow(
