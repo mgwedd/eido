@@ -406,7 +406,9 @@ describe("typed failures", () => {
     source.failAll = Object.assign(new Error("the gate is busy reading mail"), {
       code: "busy",
     })
-    const error = await syncProton(db, source, config).catch((e: unknown) => e)
+    const error = await syncProton(db, source, config, profile).catch(
+      (e: unknown) => e
+    )
     expect(error).toBeInstanceOf(BusyError)
     expect(error).toMatchObject({
       code: "busy",
