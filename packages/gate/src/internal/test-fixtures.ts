@@ -23,7 +23,12 @@ import {
   preparePolicyChange,
   setPolicyOverrides,
 } from "./policy"
-import type { IntentKind, Policy, PolicyOptions } from "./policy"
+import type {
+  IntentKind,
+  Policy,
+  PolicyOptions,
+  StoredAttendees,
+} from "./policy"
 import type { Registration } from "./credentials"
 import type { WebAuthnConfig } from "./webauthn"
 
@@ -174,13 +179,27 @@ export type Setup = {
   cleanup: () => void
 }
 
-/** A control DB with the mail, calendar and files fixtures pinned, and the policy loaded. */
+/** A stored-attendee reader over a fixed map; an unlisted event cannot be read. */
+export function attendeeRecord(
+  events: Readonly<Record<string, readonly string[]>>
+): StoredAttendees {
+  return (eventUid) => {
+    const attendees = events[eventUid]
+    return attendees === undefined ? { ok: false } : { ok: true, attendees }
+  }
+}
+
+/**
+ * A control DB with the mail, calendar and files fixtures pinned, and the policy loaded. The
+ * sample event `evt-1` is stored with the owner as its only attendee.
+ */
 export function setup(
   connectors: readonly ConnectorManifest[] = [
     manifest("mail", MAIL_OPS),
     manifest("calendar", CALENDAR_OPS),
     manifest("files", FILE_OPS),
-  ]
+  ],
+  storedAttendees: StoredAttendees = attendeeRecord({ "evt-1": [OWNER] })
 ): Setup {
   const dataDir = mkdtempSync(join(tmpdir(), "eido-gate-"))
   const db = openControlDb(":memory:")
@@ -189,6 +208,7 @@ export function setup(
     dataDir,
     ownerAddresses: [OWNER],
     allowedRoots: [ALLOWED_ROOT],
+    storedAttendees,
   }
   return {
     db,

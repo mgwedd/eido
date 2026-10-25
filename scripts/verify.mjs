@@ -42,6 +42,7 @@ const TASKS = [
   { task: "//#check:deps-fixture" },
   { task: "//#check:gate-deps" },
   { task: "//#check:lint-coverage" },
+  { task: "//#check:invariants" },
   { task: "//#check:no-js", always: true },
   { task: "//#check:no-js-fixture", always: true },
   { task: "//#check:secrets", always: true },

@@ -14,7 +14,9 @@ import { ProtonError } from "./errors"
 import { isTextMime } from "../mail/parse"
 import { rationaleField } from "../proposal-rationale"
 import type { ProposalNote } from "../proposal-rationale"
+import type { ProfileStore } from "../../profile/store"
 import { replyRecipients, storedAddresses } from "../reply-target"
+import { appendDraftSignature } from "../draft-signature"
 import { CONNECTOR } from "./sync"
 import { CONNECTOR_NAME } from "./manifest"
 
@@ -55,6 +57,8 @@ export type ProtonFacadeDeps = {
   intents: IntentClient
   /** The assistant address: never a recipient of its own reply. */
   identity: string
+  /** Profile settings used to apply the owner's signature to every new draft. */
+  profile: Pick<ProfileStore, "getProfile">
   origin?: GateIntentOrigin
 }
 
@@ -91,7 +95,7 @@ const FROM = `FROM document_text t JOIN documents d ON d.sha256 = t.sha256
  * The verbs the model sees. Reads answer from the local index only. Write verbs only propose an intent to the gate and return its id: no source call.
  */
 export function createProtonFacade(deps: ProtonFacadeDeps) {
-  const { db, intents, identity } = deps
+  const { db, intents, identity, profile } = deps
   const origin = deps.origin ?? "reactive"
   /** The indexed message the Message-ID names: its raw-byte hash and its stored addresses. */
   const target = (messageId: string) => {
@@ -165,8 +169,22 @@ export function createProtonFacade(deps: ProtonFacadeDeps) {
       }
     },
 
-    draft_create: (args: EmailDraftIntent["args"], note?: ProposalNote) =>
-      propose({ kind: "email.draft", args }, note),
+    draft_create: async (
+      args: EmailDraftIntent["args"],
+      note?: ProposalNote
+    ) => {
+      const owner = await profile.getProfile()
+      return propose(
+        {
+          kind: "email.draft",
+          args: {
+            ...args,
+            body: appendDraftSignature(args.body, owner?.signature ?? ""),
+          },
+        },
+        note
+      )
+    },
     send: (args: EmailSendIntent["args"], note?: ProposalNote) =>
       propose({ kind: "email.send", args }, note),
     reply: (args: ReplyRequest, note?: ProposalNote) => {

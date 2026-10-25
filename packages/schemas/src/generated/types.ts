@@ -101,7 +101,6 @@ export interface CoreApiProfileResponse {
 export interface CoreApiProfile {
   displayName: string
   timezone: string
-  workingHours: ProfileWorkingHours
   signature: string
   addresses: Array<{
     address: string
@@ -604,12 +603,6 @@ export interface ProfileAddress {
   label?: string
 }
 
-/** Working hours for one weekday, local time, 24-hour HH:MM. */
-export interface ProfileDayHours {
-  start: string
-  end: string
-}
-
 /** Create an entity: a personal context, a property or a company, with a short tag. */
 export interface ProfileEntityInput {
   kind: "personal" | "property" | "company"
@@ -627,20 +620,8 @@ export interface ProfileEntityPatch {
 export interface ProfileUpdate {
   displayName?: string
   timezone?: string
-  workingHours?: ProfileWorkingHours
   signature?: string
   addresses?: Array<ProfileAddress>
-}
-
-/** Working hours per weekday; a missing day is a day off. */
-export interface ProfileWorkingHours {
-  mon?: ProfileDayHours
-  tue?: ProfileDayHours
-  wed?: ProfileDayHours
-  thu?: ProfileDayHours
-  fri?: ProfileDayHours
-  sat?: ProfileDayHours
-  sun?: ProfileDayHours
 }
 
 export interface SourceSpan {

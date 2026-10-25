@@ -76,6 +76,18 @@
         "!**/dist/**"
       ]
     },
+    "//#check:invariants": {
+      "inputs": [
+        "scripts/check-invariant-tests.mjs",
+        "packages/gate/src/internal/approvals.test.ts",
+        "packages/gate/src/internal/audit.test.ts",
+        "packages/gate/src/internal/connectors.test.ts",
+        "packages/gate/src/internal/egress.test.ts",
+        "packages/gate/src/internal/executor.test.ts",
+        "packages/gate/src/internal/intents.test.ts",
+        "packages/gate/src/internal/vault/authorized-call.test.ts"
+      ]
+    },
     "//#check:no-js": {
       "inputs": [
         "**",

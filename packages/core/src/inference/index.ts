@@ -7,11 +7,36 @@ export {
 export {
   DEFAULT_TRIPWIRE_MIN_PROMPT_TOKENS,
   DEFAULT_TRIPWIRE_RATIO,
+  connectModelClient,
   createModelClient,
   readContextTokens,
 } from "./client"
-export { InferenceError, PromptTooLargeError } from "./errors"
-export type { InferenceErrorKind } from "./errors"
+export {
+  InferenceError,
+  PromptTooLargeError,
+  UnsupportedModelServerError,
+} from "./errors"
+export type { InferenceErrorKind, RequiredServerFeature } from "./errors"
+export {
+  ESTIMATE_BOUNDARY,
+  INJECTION_REASONS,
+  MATERIAL_RULES,
+  fence,
+  materialMeta,
+  materialText,
+  normalizeMaterial,
+  plainContent,
+  toMaterial,
+} from "./fence"
+export type {
+  FencedBlock,
+  InjectionFlag,
+  InjectionReason,
+  Material,
+  MaterialMeta,
+  MaterialSource,
+  PromptPart,
+} from "./fence"
 export type {
   ChatMessage,
   CompleteOptions,

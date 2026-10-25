@@ -117,6 +117,21 @@ function audits(db: ReturnType<typeof openControlDb>) {
 }
 
 describe("read egress proxy", () => {
+  test("invariant: proxy refuses hosts, methods, and paths outside the pinned manifest", async () => {
+    const { request, upstream } = await setup()
+    const cases = [
+      ["https://other.example.com/v1/messages/one", "GET", 403],
+      ["https://api.example.com/v1/messages/one", "DELETE", 405],
+      ["https://api.example.com/v1/secrets", "GET", 406],
+    ] as const
+
+    for (const [target, method, status] of cases) {
+      const response = await request(target, method)
+      expect(response.status).toBe(status)
+      expect(upstream).not.toHaveBeenCalled()
+    }
+  })
+
   test.each([
     [
       "https://other.example.com/v1/messages/one",

@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url"
 import { ESLint } from "eslint"
-import { describe, expect, it } from "vitest"
+import { beforeAll, describe, expect, it } from "vitest"
 
 // The gate's lint rule against permanent mail deletion (#195), run through the gate's own
 // ESLint config. The code is linted in memory under an existing source path, so the
@@ -11,8 +11,10 @@ const AS_FILE = fileURLToPath(new URL("./bridge.ts", import.meta.url))
 const MESSAGE =
   "The gate never deletes mail permanently: move to Trash instead (#195)."
 
+// One instance for every case, so the type-aware program is built once.
+const eslint = new ESLint({ cwd: GATE })
+
 async function banned(code: string): Promise<number> {
-  const eslint = new ESLint({ cwd: GATE })
   const [result] = await eslint.lintText(code, { filePath: AS_FILE })
   return (result?.messages ?? []).filter(
     (message) => message.message === MESSAGE
@@ -23,6 +25,12 @@ const client =
   "declare const client: Record<string, (...args: unknown[]) => unknown>\n"
 
 describe("the no-permanent-delete lint rule", () => {
+  // Building the gate's type-aware program takes about 30 s on a cold CI runner (#276).
+  // Pay it here, with its own budget, so no single case carries it.
+  beforeAll(async () => {
+    await eslint.lintText("export {}\n", { filePath: AS_FILE })
+  }, 120_000)
+
   it.each([
     ["messageDelete", "void client.messageDelete('1:*')"],
     ["expunge", "void client.expunge()"],

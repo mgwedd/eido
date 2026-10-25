@@ -280,7 +280,7 @@ describe("checkDrift", () => {
     expect(auditRows(db)).toHaveLength(1)
   })
 
-  it("disables the connector when the server adds a tool", () => {
+  it("invariant: manifest tool drift disables the connector until re-reviewed", () => {
     const db = pinned()
     expect(
       checkDrift(db, "example-mail", [...PINNED_TOOLS, "delete_message"])

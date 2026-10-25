@@ -18,6 +18,7 @@ import {
   FILE_OPS,
   MAIL_OPS,
   OWNER,
+  attendeeRecord,
   auditRows,
   loggedText,
   manifest,
@@ -353,7 +354,20 @@ describe("editing", () => {
     expect(pendingIntents(s.db).map((p) => p.id)).toEqual([id])
   })
 
-  it("re-runs policy: an edit that drops the only other guest would make it auto, so it is refused", () => {
+  it("a calendar delete of an event with a stored guest waits for approval; an unreadable event does too", () => {
+    const s = fresh(
+      undefined,
+      attendeeRecord({ "evt-1": [OWNER, "guest@example.com"] })
+    )
+    const withGuest = ok(proposeKind(s, sample("calendar.delete")))
+    expect([withGuest.tier, withGuest.state]).toEqual(["approval", "pending"])
+    const unknown = ok(
+      proposeKind(s, sample("calendar.delete", { eventUid: "evt-9" }))
+    )
+    expect([unknown.tier, unknown.state]).toEqual(["approval", "pending"])
+  })
+
+  it("invariant: an edit that changes the tier is refused instead of replacing the approval card", () => {
     const s = fresh()
     const original = ok(
       proposeKind(
@@ -374,7 +388,7 @@ describe("editing", () => {
     expect(intentCount(s)).toBe(1)
   })
 
-  it("refuses an edit that makes the payload forbidden; the original stays pending", () => {
+  it("invariant: a forbidden edit is refused and leaves the original pending", () => {
     const s = fresh()
     const { intentId } = ok(proposeKind(s, sample("file.delete")))
     const result = editIntent(

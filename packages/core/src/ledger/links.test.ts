@@ -198,6 +198,29 @@ describe("insertLinks and linksFor", () => {
     ).toThrow(/CHECK/)
   })
 
+  test("an ent: endpoint must name a known entity", () => {
+    const link = (entityId: string): Link => ({
+      src: `doc:${DOC("m1")}`,
+      dst: `ent:${entityId}`,
+      kind: "about_party",
+      confidence: 0.5,
+      origin: "match",
+    })
+    expect(() => insertLinks(db, [link("no-such-entity")])).toThrow(
+      /endpoint does not exist/
+    )
+    expect(() =>
+      insertLinks(db, [
+        {
+          ...link("no-such-entity"),
+          src: "ent:no-such-entity",
+          dst: `doc:${DOC("m1")}`,
+        },
+      ])
+    ).toThrow(/endpoint does not exist/)
+    expect(insertLinks(db, [link(property.id)])).toBe(1)
+  })
+
   test("doc: and obl: endpoints must exist; a failed batch stores nothing", () => {
     const stored = insertObligation(db, {
       entityId: property.id,

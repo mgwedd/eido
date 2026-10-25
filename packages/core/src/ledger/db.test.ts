@@ -77,7 +77,7 @@ describe("migrations", () => {
     const defaultEntityId = await createDefaultEntity(path)
     const upgraded = openDataDb(path, { defaultEntityId })
     expect(schemaOf(upgraded)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(upgraded)).toBe(1)
+    expect(ledgerVersion(upgraded)).toBe(2)
     const documentsBefore = upgraded
       .prepare("SELECT * FROM documents ORDER BY sha256")
       .all()
@@ -85,7 +85,7 @@ describe("migrations", () => {
 
     const again = openDataDb(path)
     expect(schemaOf(again)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(again)).toBe(1)
+    expect(ledgerVersion(again)).toBe(2)
     expect(
       again.prepare("SELECT * FROM documents ORDER BY sha256").all()
     ).toEqual(documentsBefore)
@@ -141,9 +141,59 @@ describe("migrations", () => {
   test("a database from a newer ledger version is refused", () => {
     const path = tempPath()
     const db = openDataDb(path)
-    db.exec("UPDATE ledger_schema SET version = 2")
+    db.exec("UPDATE ledger_schema SET version = 3")
     db.close()
     expect(codeOf(() => openDataDb(path))).toBe("newer_schema")
+  })
+
+  test("a database at ledger v1 migrates to v2: stored rows stay, the new checks apply to new writes", async () => {
+    const path = tempPath()
+    const old = openIndex(path)
+    const profile = createProfileStore(old, { audit: () => Promise.resolve() })
+    const a = await profile.createEntity({
+      kind: "property",
+      name: "A",
+      tag: "A",
+    })
+    const b = await profile.createEntity({
+      kind: "company",
+      name: "B",
+      tag: "B",
+    })
+    const [doc = ""] = addDocs(old, [testDoc("v1", { entityId: a.id })])
+    old.exec(LEDGER_MIGRATIONS[0] ?? "")
+    old.exec("INSERT INTO ledger_schema (id, version) VALUES (1, 1)")
+    // Both pass the v1 schema: an impossible date, and an entity unlike the document's.
+    const insert = old.prepare(
+      `INSERT INTO obligations (entity_id, action, due_at, status, doc_id, source_span)
+       VALUES (?, 'Pay', ?, 'open', ?, '{"start":0,"end":3}')`
+    )
+    insert.run(a.id, "2030-02-30", doc)
+    insert.run(b.id, "2030-02-28", doc)
+    old.close()
+
+    const db = openDataDb(path)
+    expect(ledgerVersion(db)).toBe(2)
+    expect(
+      db
+        .prepare("SELECT entity_id, due_at FROM obligations ORDER BY id")
+        .all()
+        .map((r) => [r["entity_id"], r["due_at"]])
+    ).toEqual([
+      [a.id, "2030-02-30"],
+      [b.id, "2030-02-28"],
+    ])
+    // A stored row can still change status, and gets no new check on columns it leaves alone.
+    db.prepare("UPDATE obligations SET status = 'done' WHERE id = 1").run()
+    expect(() =>
+      db
+        .prepare("UPDATE obligations SET due_at = '2030-13-45' WHERE id = 1")
+        .run()
+    ).toThrow(/real date/)
+    expect(() =>
+      db.prepare("UPDATE obligations SET entity_id = ? WHERE id = 1").run(b.id)
+    ).toThrow(/document entity/)
+    db.close()
   })
 
   test("the backfill trigger allows only entity_id NULL -> known entity", async () => {

@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/main.ts",
+    "extraction-accuracy": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./scripts/extraction-accuracy.ts",
     "lint": "eslint",
     "typecheck": "tsc -b",
     "test": "vitest run --coverage",
@@ -21,7 +22,7 @@
     "html-to-text": "9.0.5",
     "htmlparser2": "8.0.2",
     "pdfjs-dist": "6.4.299",
-    "postal-mime": "4.0.5"
+    "postal-mime": "4.0.8"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
