@@ -96,7 +96,8 @@ export function createDriveClient(transport: DriveTransport) {
   }
   return {
     listFiles,
-    searchFiles: (query: string) => listFiles({ query }),
+    searchFiles: (query: string, options: { pageToken?: string } = {}) =>
+      listFiles({ ...options, query }),
     async getFileText(fileId: string) {
       const path = `files/${encodeURIComponent(fileId)}`
       const metadata = file(await json(path, { fields: "id,name,mimeType" }))

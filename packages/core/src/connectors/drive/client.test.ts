@@ -190,6 +190,12 @@ describe("Drive reads", () => {
       mimeType: "text/plain",
       text: "body",
     })
+    fake.files.set("next", {
+      id: "next",
+      name: "Next",
+      mimeType: "text/plain",
+      text: "next body",
+    })
     const facade = createDriveFacade(client)
     const manifest = driveManifest()
     expect(validateConnectorManifest(manifest).ok).toBe(true)
@@ -219,6 +225,13 @@ describe("Drive reads", () => {
     expect(await facade.drive_search_files("name = 'Doc'")).toMatchObject({
       untrusted: true,
     })
+    expect(await facade.drive_list_files({ pageToken: "1" })).toMatchObject({
+      files: [{ id: "next" }],
+      untrusted: true,
+    })
+    expect(
+      await facade.drive_search_files("Doc", { pageToken: "1" })
+    ).toMatchObject({ files: [{ id: "next" }], untrusted: true })
     expect(await facade.drive_get_file_text("doc")).toMatchObject({
       text: "body",
       untrusted: true,
