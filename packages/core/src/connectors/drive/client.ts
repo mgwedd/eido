@@ -76,11 +76,15 @@ export function createDriveClient(transport: DriveTransport) {
   async function listFiles(
     options: { query?: string; pageToken?: string } = {}
   ) {
+    // Drive q is a query language. Caller text is a quoted literal, never query syntax.
+    const literal = options.query
+      ?.replaceAll("\\", "\\\\")
+      .replaceAll("'", "\\'")
     const body = await json("files", {
       q:
         options.query === undefined
           ? "trashed = false"
-          : `trashed = false and (${options.query})`,
+          : `trashed = false and (name contains '${literal}' or fullText contains '${literal}')`,
       pageSize: "100",
       pageToken: options.pageToken,
       fields: "nextPageToken,files(id,name,mimeType)",

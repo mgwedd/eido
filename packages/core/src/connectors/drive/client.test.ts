@@ -19,6 +19,22 @@ async function fixture() {
 }
 
 describe("Drive reads", () => {
+  it.each([
+    ["O'Reilly", "O\\'Reilly"],
+    ["path\\name", "path\\\\name"],
+    ["or", "or"],
+    ["') or trashed = true or ('", "\\') or trashed = true or (\\'"],
+  ])(
+    "treats search text %s as one literal rather than Drive query syntax",
+    async (text, escaped) => {
+      const { fake, client } = await fixture()
+      await client.searchFiles(text)
+      expect(fake.requests.at(-1)?.query.get("q")).toBe(
+        `trashed = false and (name contains '${escaped}' or fullText contains '${escaped}')`
+      )
+    }
+  )
+
   it("accepts omitted empty collections but refuses malformed changes and mismatched metadata", async () => {
     const empty = createDriveClient(() =>
       Promise.resolve(Response.json({ newStartPageToken: "next" }))
@@ -70,8 +86,8 @@ describe("Drive reads", () => {
 
   it("lists pages, sends the query as data, and exports Docs text as untrusted", async () => {
     const { fake, client } = await fixture()
-    fake.files.set("doc/1", {
-      id: "doc/1",
+    fake.files.set("doc-1", {
+      id: "doc-1",
       name: "Quarterly",
       mimeType: "application/vnd.google-apps.document",
       text: "Untrusted document instructions",
@@ -83,19 +99,19 @@ describe("Drive reads", () => {
       text: "notes text",
     })
     expect(await client.listFiles()).toMatchObject({
-      files: [{ id: "doc/1" }],
+      files: [{ id: "doc-1" }],
       nextPageToken: "1",
     })
     expect(await client.listFiles({ pageToken: "1" })).toMatchObject({
       files: [{ id: "text" }],
       nextPageToken: undefined,
     })
-    await client.searchFiles("name contains 'Quarterly'")
+    await client.searchFiles("Quarterly")
     expect(fake.requests.at(-1)?.query.get("q")).toBe(
-      "trashed = false and (name contains 'Quarterly')"
+      "trashed = false and (name contains 'Quarterly' or fullText contains 'Quarterly')"
     )
-    expect(await client.getFileText("doc/1")).toEqual({
-      id: "doc/1",
+    expect(await client.getFileText("doc-1")).toEqual({
+      id: "doc-1",
       name: "Quarterly",
       mimeType: "application/vnd.google-apps.document",
       text: "Untrusted document instructions",
