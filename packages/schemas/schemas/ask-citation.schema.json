@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskCitation",
+  "description": "An indexed source cited by an Ask answer.",
+  "type": "object",
+  "properties": {
+    "tag": { "type": "string", "minLength": 1, "maxLength": 16 },
+    "documentId": { "type": "string", "minLength": 64, "maxLength": 64 },
+    "source": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "sourceRef": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "title": { "type": "string", "maxLength": 500 },
+    "occurredAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+    "injectionSuspected": { "type": "boolean" },
+    "injectionReasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "fence-tag",
+          "template-marker",
+          "boundary-confusion",
+          "hidden-characters"
+        ]
+      },
+      "maxItems": 4
+    }
+  },
+  "required": [
+    "tag",
+    "documentId",
+    "source",
+    "sourceRef",
+    "injectionSuspected",
+    "injectionReasons"
+  ],
+  "additionalProperties": false
+}

@@ -67,11 +67,12 @@ describe("POST /ask", () => {
     ["a non-string question", { question: 42 }],
     ["a non-object body", ["question"]],
     ["an over-long question", { question: "é".repeat(2001) }],
-  ])("returns 400 for %s, without calling ask", async (_, body) => {
+  ])("returns field-level 422 for %s, without calling ask", async (_, body) => {
     const response = await post(body)
-    expect(response.status).toBe(400)
+    expect(response.status).toBe(422)
     const json: unknown = await response.json()
-    expect(json).toMatchObject({ error: { code: "bad_request" } })
+    expect(json).toMatchObject({ error: { code: "invalid" } })
+    expect(json).toHaveProperty("error.fields")
     expect(asked).toEqual([])
   })
 
@@ -87,6 +88,17 @@ describe("POST /ask", () => {
     expect(response.headers.get("content-type")).toBe("application/json")
     expect(await response.json()).toEqual(RESULT)
     expect(asked).toEqual(["When was the invoice paid?"])
+  })
+
+  test("reports an unknown request field by name", async () => {
+    const response = await post({ question: "anything?", secret: "ignored" })
+    expect(response.status).toBe(422)
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "invalid",
+        fields: [{ field: "secret", message: "unknown key" }],
+      },
+    })
   })
 
   test("answers only POST", async () => {
@@ -106,15 +118,21 @@ describe("POST /ask", () => {
     expect(response.status).toBe(404)
   })
 
-  test("a pipeline failure is a 500 that does not repeat the cause", async () => {
+  test("a pipeline failure is a generic 503 that does not repeat the cause", async () => {
     const failing = createApiHandler({
       profile: createProfileStore(db, { audit: () => Promise.resolve() }),
       allowedHosts: ["core.test"],
       ask: () => Promise.reject(new Error("model at /var/eido/models failed")),
     })
     const response = await post({ question: "anything?" }, failing)
-    expect(response.status).toBe(500)
-    expect(await response.text()).not.toContain("/var/eido")
+    expect(response.status).toBe(503)
+    const text = await response.text()
+    expect(text).toBe(
+      JSON.stringify({
+        error: { code: "busy", message: "ask is temporarily unavailable" },
+      })
+    )
+    expect(text).not.toContain("/var/eido")
   })
 })
 

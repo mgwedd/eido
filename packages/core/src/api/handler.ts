@@ -1,6 +1,8 @@
 import { GateUnavailableError } from "@eido/gate"
 import type {
   CoreApiAssignmentList,
+  CoreApiAskRequest,
+  CoreApiAskResponse,
   CoreApiEntity,
   CoreApiEntityList,
   CoreApiError,
@@ -9,6 +11,7 @@ import type {
   GateConnectorHealth,
   ProfileAccountAssignment,
 } from "@eido/schemas"
+import { validateCoreApiAskRequest } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
@@ -147,23 +150,8 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
-/** Longest question `/ask` accepts, in characters (code points). */
-export const MAX_QUESTION_CHARS = 2000
-
-/** The question from an `/ask` body: a non-empty string of at most MAX_QUESTION_CHARS. */
-function readQuestion(body: unknown): string {
-  const question: unknown =
-    body !== null && typeof body === "object"
-      ? Reflect.get(body, "question")
-      : undefined
-  if (typeof question !== "string" || question.trim() === "")
-    throw new HttpError("bad_request", "question must be a non-empty string")
-  if ([...question].length > MAX_QUESTION_CHARS)
-    throw new HttpError(
-      "bad_request",
-      `question must be at most ${String(MAX_QUESTION_CHARS)} characters`
-    )
-  return question.trim()
+function readQuestion(body: CoreApiAskRequest): string {
+  return body.question.trim()
 }
 
 const ENTITY_PATH = /^\/entities\/([^/]+)$/
@@ -264,8 +252,21 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
 
     if (path === "/ask" && deps.ask !== undefined) {
       if (method !== "POST") return notAllowed("POST")
-      const question = readQuestion(await readJson(request))
-      const body: AskResult = await deps.ask(question)
+      const raw = await readJson(request)
+      const validation = validateCoreApiAskRequest(raw)
+      if (!validation.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(validation.errors),
+        })
+      }
+      const question = readQuestion(validation.value)
+      let result: AskResult
+      try {
+        result = await deps.ask(question)
+      } catch {
+        return failure("busy", "ask is temporarily unavailable")
+      }
+      const body: CoreApiAskResponse = result
       return json(body)
     }
 

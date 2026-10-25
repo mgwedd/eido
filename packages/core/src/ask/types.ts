@@ -1,5 +1,9 @@
 import type { DatabaseSync } from "node:sqlite"
-import type { InjectionReason } from "../inference/fence"
+import type {
+  AskCitation as SchemaAskCitation,
+  AskCoverage as SchemaAskCoverage,
+  CoreApiAskResponse,
+} from "@eido/schemas"
 import type { InferenceQueue } from "../inference/queue"
 
 /** What the model's first step asks code to run. Code runs it; the model never counts. */
@@ -12,46 +16,9 @@ export interface SearchPlan {
   wants: "count" | "find" | "summarize"
 }
 
-export interface AskCitation {
-  /** The tag without brackets, such as `M3`. */
-  tag: string
-  /** sha256 of the cited document. */
-  documentId: string
-  source: string
-  sourceRef: string
-  title?: string
-  occurredAt?: string
-  /** From `fence`: the cited text looked like an injection attempt. The answer still used it. */
-  injectionSuspected: boolean
-  injectionReasons: InjectionReason[]
-}
-
-export interface AskCoverage {
-  /** Indexed documents inside the plan's date filters. */
-  searched: number
-  /** Documents matching the plan: `facts.matchCount`, or 0 when nothing was counted. */
-  matched: number
-  /** Pack members the model read. */
-  readInFull: number
-  /** `read X of Y matching messages in full`, built by code. */
-  label: string
-}
-
-export interface AskResult {
-  status: "answered" | "no_match" | "refused"
-  /** Invented citation tags removed; real tags kept as `[M3]`. */
-  answer: string
-  citations: AskCitation[]
-  coverage: AskCoverage
-  /** From `countMatches`, never from the model. Null when the ask was refused before counting. */
-  facts: { matchCount: number | null }
-  /** Invented tags removed from the answer, without brackets. */
-  droppedTags: string[]
-  /** The prompt-token tripwire fired on a model step. */
-  possiblyTruncated: boolean
-  /** Set when refused. */
-  reason?: string
-}
+export type AskCitation = SchemaAskCitation
+export type AskCoverage = SchemaAskCoverage
+export type AskResult = CoreApiAskResponse
 
 export interface AskDeps {
   /** The index (`openIndex`). */

@@ -1,4 +1,4 @@
-export { createApiHandler, MAX_BODY_BYTES, MAX_QUESTION_CHARS } from "./handler"
+export { createApiHandler, MAX_BODY_BYTES } from "./handler"
 export type { ApiDeps, ApiHandler } from "./handler"
 export { createApiServer } from "./server"
 export {
