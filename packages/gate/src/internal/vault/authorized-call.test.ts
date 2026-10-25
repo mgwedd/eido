@@ -49,7 +49,7 @@ async function setup(refreshResult: RefreshResult, statuses: number[] = [200]) {
 }
 
 describe("authorizedCall", () => {
-  test("revoked grant disables the connector, audits it and does not retry", async () => {
+  test("invariant: revoked grant disables and audits the connector without retry", async () => {
     const s = await setup({ ok: false, error: "invalid_grant" })
     await s.vault.set(
       { connector: "google", kind: "access_token", client: "write" },
