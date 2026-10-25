@@ -22,6 +22,7 @@ function client(overrides: Partial<IntentClient> = {}): IntentClient {
     status: unavailable,
     history: unavailable,
     listPending: unavailable,
+    getConnectorHealth: unavailable,
     ...overrides,
   }
 }

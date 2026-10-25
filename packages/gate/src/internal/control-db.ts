@@ -170,6 +170,12 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      created_at    TEXT NOT NULL,
      expires_at    TEXT NOT NULL
    ) STRICT;`,
+  // Connector health backoff and the short lived half-open read lease (#24).
+  `ALTER TABLE connectors ADD COLUMN next_attempt_at TEXT;
+   ALTER TABLE connectors ADD COLUMN last_error TEXT;
+   ALTER TABLE connectors ADD COLUMN probe_started_at TEXT;
+   ALTER TABLE connectors ADD COLUMN probe_lease_id TEXT;
+   ALTER TABLE connectors ADD COLUMN health_generation INTEGER NOT NULL DEFAULT 0;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

@@ -5,10 +5,13 @@ import type { IndexedDocument } from "../../index/index"
 import { ingestEntityId } from "../ingest-entity"
 import type { IngestAccount, IngestEntities } from "../ingest-entity"
 import type { ProtonConfig } from "./config"
+import { CONNECTOR_NAME } from "./manifest"
 import { isTextMime, parseMessage, attachmentText } from "../mail/parse"
 import { extractAddresses } from "../reply-target"
 import { callSource } from "./source"
 import type { ProtonMailSource } from "./source"
+import { healthAwareSyncRunner } from "../health-aware-sync"
+import type { ConnectorHealthReader } from "../health-aware-sync"
 
 export const CONNECTOR = "proton"
 
@@ -223,4 +226,17 @@ export async function syncProton(
       await syncFolder(db, source, folder, config.batchSize, account)
     )
   return results
+}
+
+/** Runs Proton's existing UID cursor-safe sync only while the gate says the connector may be tried. */
+export async function syncProtonWithHealth(
+  gate: ConnectorHealthReader,
+  db: DatabaseSync,
+  source: ProtonMailSource,
+  config: ProtonConfig,
+  entities: IngestEntities
+) {
+  return healthAwareSyncRunner(gate)(CONNECTOR_NAME, () =>
+    syncProton(db, source, config, entities)
+  )
 }

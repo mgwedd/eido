@@ -118,7 +118,7 @@ export function gmailManifest(config: GmailConfig): ConnectorManifest {
     ledgerMapping: { source: GMAIL_SOURCE, refField: "source_ref" },
     health: {
       backoff: { baseMs: 1000, maxMs: 300_000, jitter: true },
-      breaker: { failureThreshold: 5, halfOpenProbeAfterMs: 60_000 },
+      breaker: { failureThreshold: 3, halfOpenProbeAfterMs: 60_000 },
     },
   }
 }

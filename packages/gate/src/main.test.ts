@@ -587,6 +587,7 @@ describe("runGate with Bridge", () => {
     const c = await bridged(BRIDGE_SECRET)
     const gate = await runGate(c)
     try {
+      pinProton()
       const mail = createProtonMailClient({ socketPath: c.socketPath })
       expect((await mail.listFolders()).sort()).toEqual([
         "Drafts",
@@ -612,10 +613,152 @@ describe("runGate with Bridge", () => {
     }
   })
 
+  it("closes a due Proton breaker only after the gate observes a successful Bridge read", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    const gate = await runGate(c)
+    try {
+      pinProton()
+      runningGate()
+        .db.prepare(
+          `UPDATE connectors SET health = 'open', consecutive_failures = 3,
+           next_attempt_at = ?, last_error = 'handshake_failed' WHERE name = ?`
+        )
+        .run(new Date(Date.now() - 1).toISOString(), PROTON_CONNECTOR)
+
+      const mail = createProtonMailClient({ socketPath: c.socketPath })
+      expect(await mail.listFolders()).toContain("INBOX")
+      expect(
+        runningGate()
+          .db.prepare(
+            "SELECT health, consecutive_failures, next_attempt_at FROM connectors WHERE name = ?"
+          )
+          .get(PROTON_CONNECTOR)
+      ).toMatchObject({
+        health: "healthy",
+        consecutive_failures: 0,
+        next_attempt_at: null,
+      })
+      expect(
+        fake?.imapCommands.filter((command) => command.startsWith("LOGIN"))
+      ).toHaveLength(1)
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("reopens a failed Proton probe and does not retry before its next attempt", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    const gate = await runGate(c)
+    try {
+      pinProton()
+      runningGate()
+        .db.prepare(
+          `UPDATE connectors SET health = 'open', consecutive_failures = 3,
+           next_attempt_at = ?, last_error = 'handshake_failed' WHERE name = ?`
+        )
+        .run(new Date(Date.now() - 1).toISOString(), PROTON_CONNECTOR)
+      await fake?.close()
+      fake = undefined
+
+      const mail = createProtonMailClient({ socketPath: c.socketPath })
+      await expect(mail.listFolders()).rejects.toMatchObject({
+        code: "handshake_failed",
+      })
+      const health = runningGate()
+        .db.prepare(
+          "SELECT health, consecutive_failures, last_error, next_attempt_at FROM connectors WHERE name = ?"
+        )
+        .get(PROTON_CONNECTOR)
+      expect(health).toMatchObject({
+        health: "open",
+        consecutive_failures: 4,
+        last_error: "handshake_failed",
+      })
+      expect(Date.parse(String(health?.["next_attempt_at"]))).toBeGreaterThan(
+        Date.now()
+      )
+      await expect(mail.listFolders()).rejects.toMatchObject({
+        status: 503,
+        code: "unavailable",
+      })
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("isolates three real Bridge handshake failures and recovers on one due read", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    const gate = await runGate(c)
+    try {
+      pinProton()
+      signedPin(runningGate().db, manifest("gmail", MAIL_OPS))
+      const imapPort = fake?.imapPort
+      const smtpPort = fake?.smtpPort
+      if (imapPort === undefined || smtpPort === undefined)
+        throw new Error("fake Bridge did not start")
+      await fake?.close()
+      fake = undefined
+
+      const mail = createProtonMailClient({ socketPath: c.socketPath })
+      for (const attempt of [1, 2, 3]) {
+        await expect(mail.listFolders()).rejects.toMatchObject({
+          code: "handshake_failed",
+        })
+        if (attempt < 3) {
+          runningGate()
+            .db.prepare(
+              "UPDATE connectors SET next_attempt_at = ? WHERE name = ?"
+            )
+            .run(new Date(0).toISOString(), PROTON_CONNECTOR)
+        }
+      }
+      expect(
+        runningGate()
+          .db.prepare(
+            "SELECT health, consecutive_failures FROM connectors WHERE name = ?"
+          )
+          .get(PROTON_CONNECTOR)
+      ).toMatchObject({ health: "open", consecutive_failures: 3 })
+      expect(
+        runningGate()
+          .db.prepare(
+            "SELECT health, consecutive_failures FROM connectors WHERE name = 'gmail'"
+          )
+          .get()
+      ).toMatchObject({ health: "healthy", consecutive_failures: 0 })
+
+      fake = await startFakeBridge({
+        host: "127.0.0.1",
+        imapPort,
+        smtpPort,
+        username: USER,
+        password: BRIDGE_SECRET,
+      })
+      runningGate()
+        .db.prepare("UPDATE connectors SET next_attempt_at = ? WHERE name = ?")
+        .run(new Date(0).toISOString(), PROTON_CONNECTOR)
+      expect(await mail.listFolders()).toContain("INBOX")
+      expect(
+        runningGate()
+          .db.prepare(
+            "SELECT health, consecutive_failures, next_attempt_at FROM connectors WHERE name = ?"
+          )
+          .get(PROTON_CONNECTOR)
+      ).toMatchObject({
+        health: "healthy",
+        consecutive_failures: 0,
+        next_attempt_at: null,
+      })
+    } finally {
+      await gate.close()
+    }
+  })
+
   it("passes an oversized UID through the client without returning its bytes", async () => {
     const c = await bridged(BRIDGE_SECRET, true, true)
     const gate = await runGate(c)
     try {
+      pinProton()
       const mail = createProtonMailClient({ socketPath: c.socketPath })
       const page = await mail.fetchRaw("INBOX", 1, 10)
       expect(page.messages.map((entry) => entry.uid)).toEqual([4])
@@ -783,16 +926,23 @@ describe("runGate with Bridge", () => {
     const gate = await runGate(c)
     let caught: unknown
     try {
+      pinProton()
       const mail = createProtonMailClient({ socketPath: c.socketPath })
       caught = await mail.listFolders().catch((error: unknown) => error)
       expect(caught).toBeInstanceOf(GateRequestError)
       expect(caught).toMatchObject({ status: 502, code: "auth_failed" })
       await expect(mail.listFolders()).rejects.toMatchObject({
-        code: "auth_failed",
+        status: 503,
+        code: "unavailable",
       })
       expect(
         fake?.imapCommands.filter((command) => command.startsWith("LOGIN"))
       ).toHaveLength(1)
+      expect(
+        runningGate()
+          .db.prepare("SELECT enabled FROM connectors WHERE name = ?")
+          .get(PROTON_CONNECTOR)?.["enabled"]
+      ).toBe(0)
       expect(loggedText(runningGate().db)).not.toContain(wrong)
     } finally {
       await gate.close()

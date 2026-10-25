@@ -64,7 +64,7 @@ export function protonManifest(config: ProtonConfig): ConnectorManifest {
     ledgerMapping: { source: "proton", refField: "message_id" },
     health: {
       backoff: { baseMs: 1000, maxMs: 300_000, jitter: true },
-      breaker: { failureThreshold: 5, halfOpenProbeAfterMs: 60_000 },
+      breaker: { failureThreshold: 3, halfOpenProbeAfterMs: 60_000 },
     },
   }
 }

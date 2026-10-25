@@ -7,6 +7,13 @@ import { payloadHash } from "./canonical"
 import { egressAllowlist, getPinnedManifest } from "./connectors"
 import { markGrantRevoked } from "./vault/revocation"
 import type { Vault } from "./vault/vault"
+import {
+  beginConnectorRead,
+  recordConnectorReadFailure,
+  recordConnectorReadSuccess,
+  releaseConnectorProbe,
+} from "./connector-health"
+import type { ReadAttempt } from "./connector-health"
 
 type Options = {
   db: DatabaseSync
@@ -15,6 +22,8 @@ type Options = {
   maxBodyBytes?: number
   timeoutMs?: number
   fetch?: typeof fetch
+  now?: () => number
+  random?: () => number
 }
 
 type Route = NonNullable<ConnectorOperation["routes"]>[number]
@@ -135,14 +144,25 @@ function selectedRoute(
   db: DatabaseSync,
   connector: string,
   target: URL,
-  method: string
+  method: string,
+  healthAttempt: ReadAttempt | boolean = false
 ): Route {
   const state = db
-    .prepare("SELECT enabled, health FROM connectors WHERE name = ?")
+    .prepare(
+      "SELECT enabled, health, probe_started_at, probe_lease_id FROM connectors WHERE name = ?"
+    )
     .get(connector)
   if (!state) return fail(404, "connector_unknown")
   if (state["enabled"] !== 1) return fail(423, "connector_disabled")
-  if (state["health"] === "open") return fail(503, "connector_open")
+  if (
+    state["health"] === "open" &&
+    (healthAttempt === false ||
+      (healthAttempt !== true &&
+        (!healthAttempt.probe ||
+          typeof state["probe_started_at"] !== "string" ||
+          state["probe_lease_id"] !== healthAttempt.probeLeaseId)))
+  )
+    return fail(503, "connector_open")
   if (!egressAllowlist(db).some((entry) => entry.host === target.hostname))
     return fail(403, "global_host_denied")
   const manifest = getPinnedManifest(db, connector)
@@ -231,10 +251,13 @@ export async function startEgressProxy(
     }
     const disconnect = () => controller.abort()
     res.on("close", disconnect)
+    let connector = ""
+    let attempt: ReadAttempt | undefined
+    let upstreamReadStarted = false
+    let probeOutcomeRecorded = false
     const work = async () => {
       const connectorHeader = req.headers["x-eido-connector"]
-      const connector =
-        typeof connectorHeader === "string" ? connectorHeader : ""
+      connector = typeof connectorHeader === "string" ? connectorHeader : ""
       let summary: Record<string, string | number> = {}
       try {
         if (req.url !== "/" || !/^[a-z][a-z0-9-]{0,63}$/.test(connector))
@@ -245,7 +268,15 @@ export async function startEgressProxy(
           typeof targetHeader === "string" ? targetHeader : ""
         )
         const method = req.method ?? "GET"
-        const route = selectedRoute(db, connector, target, method)
+        const route = selectedRoute(db, connector, target, method, true)
+        attempt = beginConnectorRead(
+          db,
+          connector,
+          (options.now ?? Date.now)(),
+          method
+        )
+        if (!attempt.allowed) fail(503, attempt.reason ?? "connector_open")
+        selectedRoute(db, connector, target, method, attempt)
         summary = {
           method,
           host: target.hostname,
@@ -258,7 +289,7 @@ export async function startEgressProxy(
         )
         if (!token) fail(424, "credential_missing")
         // Recheck after vault IO: disabling a connector while awaiting a token stops the call.
-        selectedRoute(db, connector, target, method)
+        selectedRoute(db, connector, target, method, attempt)
         const headers = new Headers()
         const connection = (req.headers.connection ?? "")
           .toLowerCase()
@@ -274,6 +305,7 @@ export async function startEgressProxy(
         }
         if (controller.signal.aborted) fail(502, "upstream_timeout")
         headers.set("authorization", `Bearer ${token}`)
+        upstreamReadStarted = true
         const upstream = await bounded(
           (options.fetch ?? fetch)(upstreamURL(route, target), {
             method,
@@ -295,7 +327,9 @@ export async function startEgressProxy(
               isEnabled: () => Promise.resolve(true),
               disable: () => {
                 db.prepare(
-                  "UPDATE connectors SET enabled = 0, health = 'open' WHERE name = ?"
+                  `UPDATE connectors SET enabled = 0, health = 'open',
+                     last_error = 'auth_failed', next_attempt_at = NULL,
+                     probe_started_at = NULL WHERE name = ?`
                 ).run(connector)
                 return Promise.resolve()
               },
@@ -316,6 +350,17 @@ export async function startEgressProxy(
         }
         if (upstream.status >= 300 && upstream.status < 400) {
           void upstream.body?.cancel().catch(() => undefined)
+          if (attempt.probe) {
+            recordConnectorReadFailure(
+              db,
+              connector,
+              "unavailable",
+              attempt,
+              (options.now ?? Date.now)(),
+              options.random ?? Math.random
+            )
+            probeOutcomeRecorded = true
+          }
           fail(502, "redirect_denied")
         }
         // Bound and inspect before sending headers: neither oversized nor token-echo responses
@@ -334,6 +379,20 @@ export async function startEgressProxy(
         )
           fail(502, "credential_echo")
         if (controller.signal.aborted) fail(502, "upstream_timeout")
+        if (upstream.status >= 500) {
+          recordConnectorReadFailure(
+            db,
+            connector,
+            "unavailable",
+            attempt,
+            (options.now ?? Date.now)(),
+            options.random ?? Math.random
+          )
+          probeOutcomeRecorded = true
+        } else {
+          recordConnectorReadSuccess(db, connector, attempt)
+          probeOutcomeRecorded = true
+        }
         append(db, {
           actor: "system",
           action: "egress_allowed",
@@ -353,6 +412,44 @@ export async function startEgressProxy(
           : error instanceof Refusal
             ? error
             : new Refusal(502, "upstream_failure")
+        if (attempt?.probe === true && !probeOutcomeRecorded) {
+          if (
+            upstreamReadStarted &&
+            (refusal.reason === "upstream_timeout" ||
+              refusal.reason === "upstream_failure")
+          ) {
+            recordConnectorReadFailure(
+              db,
+              connector,
+              refusal.reason === "upstream_timeout"
+                ? "timeout"
+                : "handshake_failed",
+              attempt,
+              (options.now ?? Date.now)(),
+              options.random ?? Math.random
+            )
+          } else {
+            releaseConnectorProbe(db, connector, attempt)
+          }
+          probeOutcomeRecorded = true
+        } else if (
+          attempt !== undefined &&
+          !attempt.probe &&
+          upstreamReadStarted &&
+          (refusal.reason === "upstream_timeout" ||
+            refusal.reason === "upstream_failure")
+        ) {
+          recordConnectorReadFailure(
+            db,
+            connector,
+            refusal.reason === "upstream_timeout"
+              ? "timeout"
+              : "handshake_failed",
+            attempt,
+            (options.now ?? Date.now)(),
+            options.random ?? Math.random
+          )
+        }
         append(db, {
           actor: "system",
           action: "egress_refused",
@@ -373,6 +470,9 @@ export async function startEgressProxy(
     try {
       await work()
     } finally {
+      if (attempt?.probe === true && !probeOutcomeRecorded) {
+        releaseConnectorProbe(db, connector, attempt)
+      }
       clearTimeout(timer)
       res.off("close", disconnect)
       controller.abort()
