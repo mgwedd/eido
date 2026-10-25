@@ -160,5 +160,98 @@ describe("gate-owned connector health", () => {
       consecutiveFailures: 0,
       lastError: "auth_failed",
     })
+    expect(beginConnectorRead(db, "mail", 1_000)).toMatchObject({
+      allowed: false,
+      reason: "connector_disabled",
+    })
+    disableConnectorAfterAuthFailure(db, "mail")
+  })
+
+  it("refuses missing connectors and permits healthy non-probe reads", () => {
+    const db = setup()
+    expect(beginConnectorRead(db, "missing", 1_000)).toMatchObject({
+      allowed: false,
+      reason: "connector_disabled",
+    })
+    const attempt = beginConnectorRead(db, "mail", 1_000)
+    expect(attempt).toMatchObject({ allowed: true, probe: false })
+    recordConnectorReadSuccess(db, "mail", attempt)
+    recordConnectorReadSuccess(db, "missing", attempt)
+    recordConnectorReadFailure(db, "missing", "timeout", attempt, 1_000)
+    expect(getConnectorHealth(db)[0]?.health).toBe("healthy")
+  })
+
+  it("requires a due GET and a free lease for open breaker probes", () => {
+    const db = setup()
+    db.prepare(
+      `UPDATE connectors SET health = 'open', consecutive_failures = 3,
+       next_attempt_at = ?, last_error = 'handshake_failed' WHERE name = 'mail'`
+    ).run(new Date(1_000).toISOString())
+    expect(beginConnectorRead(db, "mail", 1_000, "POST")).toMatchObject({
+      allowed: false,
+      reason: "connector_open",
+    })
+    const dueProbe = beginConnectorRead(db, "mail", 1_000)
+    expect(dueProbe.probe).toBe(true)
+    expect(beginConnectorRead(db, "mail", 1_001).allowed).toBe(false)
+    recordConnectorReadSuccess(db, "mail", {
+      ...dueProbe,
+      probeLeaseId: "wrong-lease",
+    })
+    expect(getConnectorHealth(db)[0]?.health).toBe("open")
+    recordConnectorReadSuccess(db, "mail", {
+      ...dueProbe,
+      generation: dueProbe.generation + 1,
+    })
+    recordConnectorReadSuccess(db, "mail", {
+      ...dueProbe,
+      probeLeaseId: undefined,
+    })
+    releaseConnectorProbe(db, "mail", {
+      ...dueProbe,
+      probeLeaseId: undefined,
+    })
+    expect(getConnectorHealth(db)[0]?.health).toBe("open")
+  })
+
+  it("ignores failures from stale, unleased, or wrong-mode attempts", () => {
+    const db = setup()
+    const normalAttempt = beginConnectorRead(db, "mail", 1_000)
+    recordConnectorReadFailure(
+      db,
+      "mail",
+      "timeout",
+      { ...normalAttempt, probe: true },
+      1_000
+    )
+    expect(getConnectorHealth(db)[0]?.health).toBe("healthy")
+
+    db.prepare(
+      `UPDATE connectors SET health = 'open', consecutive_failures = 3,
+       next_attempt_at = ?, last_error = 'handshake_failed' WHERE name = 'mail'`
+    ).run(new Date(2_000).toISOString())
+    const probe = beginConnectorRead(db, "mail", 2_000)
+    recordConnectorReadFailure(
+      db,
+      "mail",
+      "timeout",
+      { ...probe, probe: false },
+      2_001
+    )
+    recordConnectorReadFailure(
+      db,
+      "mail",
+      "timeout",
+      { ...probe, probeLeaseId: "wrong-lease" },
+      2_001
+    )
+    recordConnectorReadFailure(
+      db,
+      "mail",
+      "timeout",
+      { ...probe, generation: probe.generation + 1 },
+      2_001
+    )
+    expect(getConnectorHealth(db)[0]?.health).toBe("open")
   })
 })
