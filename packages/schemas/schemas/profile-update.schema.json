@@ -6,7 +6,6 @@
   "properties": {
     "displayName": { "type": "string", "minLength": 1, "maxLength": 100 },
     "timezone": { "type": "string", "minLength": 1, "maxLength": 64 },
-    "workingHours": { "$ref": "profile-working-hours.schema.json" },
     "signature": { "type": "string", "maxLength": 2000 },
     "addresses": {
       "type": "array",

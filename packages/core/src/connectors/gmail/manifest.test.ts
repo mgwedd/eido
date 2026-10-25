@@ -67,6 +67,7 @@ describe("manifest", () => {
         db: openIndex(":memory:"),
         intents: unusedIntents,
         identity: "assistant@example.com",
+        profile: { getProfile: () => Promise.resolve(null) },
       })
     ).sort()
     expect(manifest.operations.map((op) => op.name).sort()).toEqual(verbs)

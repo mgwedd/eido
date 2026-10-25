@@ -1,22 +1,7 @@
-import type {
-  ProfileAddress,
-  ProfileWorkingHours,
-  ValidationResult,
-} from "@eido/schemas"
+import type { ProfileAddress, ValidationResult } from "@eido/schemas"
 import { ProfileError } from "./errors"
 
 export const TAG_MAX_LENGTH = 24
-export const WEEKDAYS = [
-  "mon",
-  "tue",
-  "wed",
-  "thu",
-  "fri",
-  "sat",
-  "sun",
-] as const
-
-const TIME = /^([01]\d|2[0-3]):[0-5]\d$/
 const ZONE_SHAPE = /^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/
 const EMAIL =
   /^[^\s@<>()[\]\\,;:"]+@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$/
@@ -57,20 +42,6 @@ export function cleanTag(tag: string): string | null {
   if (trimmed.length === 0 || trimmed.length > TAG_MAX_LENGTH) return null
   if (/[[\]]/.test(trimmed) || CONTROL.test(trimmed)) return null
   return trimmed
-}
-
-export function workingHoursIssues(hours: ProfileWorkingHours): string[] {
-  const issues: string[] = []
-  for (const day of WEEKDAYS) {
-    const span = hours[day]
-    if (!span) continue
-    if (!TIME.test(span.start) || !TIME.test(span.end)) {
-      issues.push(`workingHours.${day}: times must be HH:MM, 00:00 to 23:59`)
-    } else if (span.end <= span.start) {
-      issues.push(`workingHours.${day}: end must be after start`)
-    }
-  }
-  return issues
 }
 
 export function addressIssues(addresses: readonly ProfileAddress[]): {

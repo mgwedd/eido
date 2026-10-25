@@ -1,11 +1,10 @@
-import type { GateAuditRecordRequest, ProfileWorkingHours } from "@eido/schemas"
+import type { GateAuditRecordRequest } from "@eido/schemas"
 
 export type EntityKind = "personal" | "property" | "company"
 
 export interface Profile {
   displayName: string
   timezone: string
-  workingHours: ProfileWorkingHours
   signature: string
   /** The email addresses Eido acts for, in the owner's order. */
   addresses: { address: string; label: string }[]

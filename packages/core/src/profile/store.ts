@@ -6,7 +6,6 @@ import {
   validateProfileEntityPatch,
   validateProfileUpdate,
 } from "@eido/schemas"
-import type { ProfileWorkingHours } from "@eido/schemas"
 import { ProfileError } from "./errors"
 import type {
   AccountAssignment,
@@ -22,7 +21,6 @@ import {
   cleanTag,
   ensure,
   isIanaTimezone,
-  workingHoursIssues,
 } from "./validate"
 
 type Row = Record<string, unknown>
@@ -177,10 +175,6 @@ export function createProfileStore(
     return {
       displayName: text(row, "display_name"),
       timezone: text(row, "timezone"),
-      // Written only by updateProfile, as validated JSON.
-      workingHours: JSON.parse(
-        text(row, "working_hours_json")
-      ) as ProfileWorkingHours,
       signature: text(row, "signature"),
       addresses: all(
         "SELECT address, label FROM profile_addresses ORDER BY position"
@@ -202,8 +196,6 @@ export function createProfileStore(
     if (timezone === undefined) issues.push("timezone: required")
     else if (!isIanaTimezone(timezone))
       issues.push("timezone: not an IANA zone")
-    const workingHours = patch.workingHours ?? current?.workingHours ?? {}
-    issues.push(...workingHoursIssues(workingHours))
     const addresses = addressIssues(patch.addresses ?? current?.addresses ?? [])
     issues.push(...addresses.issues)
     if (
@@ -219,7 +211,6 @@ export function createProfileStore(
       const next = {
         displayName,
         timezone,
-        workingHours,
         signature,
         addresses: addresses.clean,
       }
@@ -231,14 +222,15 @@ export function createProfileStore(
         }
       }
       run(
+        // Keep the legacy working-hours column untouched after its API field was removed (#88),
+        // so existing local profile data is preserved without being exposed as active settings.
         `INSERT INTO profile (id, display_name, timezone, working_hours_json, signature, updated_at)
-         VALUES (1, ?, ?, ?, ?, ?)
+         VALUES (1, ?, ?, '{}', ?, ?)
          ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name,
-           timezone = excluded.timezone, working_hours_json = excluded.working_hours_json,
-           signature = excluded.signature, updated_at = excluded.updated_at`,
+           timezone = excluded.timezone, signature = excluded.signature,
+           updated_at = excluded.updated_at`,
         displayName,
         timezone,
-        JSON.stringify(workingHours),
         signature,
         now()
       )

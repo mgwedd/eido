@@ -120,7 +120,6 @@ describe("profile", () => {
     const res = await call("PATCH", "/profile", {
       displayName: "Owner",
       timezone: "Mars/Base",
-      workingHours: { mon: { start: "17:00", end: "09:00" } },
       addresses: [
         { address: "ok@example.test" },
         { address: "not-an-address" },
@@ -130,10 +129,21 @@ describe("profile", () => {
     expect(res.json.error.code).toBe("invalid")
     expect(res.json.error.fields).toEqual([
       { field: "timezone", message: "not an IANA zone" },
-      { field: "workingHours.mon", message: "end must be after start" },
       { field: "addresses[1]", message: "not a valid email address" },
     ])
     expect((await call("GET", "/profile")).json).toEqual({})
+  })
+
+  test("rejects the removed working-hours profile field", async () => {
+    const res = await call("PATCH", "/profile", {
+      displayName: "Owner",
+      timezone: "Etc/UTC",
+      workingHours: { mon: { start: "09:00", end: "17:00" } },
+    })
+    expect(res.status).toBe(422)
+    expect(res.json.error.fields).toEqual([
+      { field: "workingHours", message: "unknown key" },
+    ])
   })
 
   test("schema-level problems name the field without the $ root", async () => {

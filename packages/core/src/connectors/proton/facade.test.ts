@@ -4,6 +4,7 @@ import { validateIntent } from "@eido/schemas"
 import { beforeEach, describe, expect, test, vi } from "vitest"
 import { openDataDb } from "../../ledger/db"
 import { createProfileStore } from "../../profile/store"
+import type { ProfileStore } from "../../profile/store"
 import type { IngestAccount } from "../ingest-entity"
 import { createProtonFacade } from "./facade"
 import { policyFor, protonManifest } from "./manifest"
@@ -16,6 +17,7 @@ let db: DatabaseSync
 let source: MemorySource
 
 let account: IngestAccount
+let profile: ProfileStore
 
 const ACCOUNT = "assistant@example.com"
 
@@ -23,7 +25,11 @@ beforeEach(async () => {
   // The ledger schema refuses a document without a known entity.
   db = openDataDb(":memory:")
   source = new MemorySource()
-  const profile = createProfileStore(db, { audit: () => Promise.resolve() })
+  profile = createProfileStore(db, { audit: () => Promise.resolve() })
+  await profile.updateProfile({
+    displayName: "Test Owner",
+    timezone: "Etc/UTC",
+  })
   const assigned = await profile.createEntity({
     kind: "personal",
     name: "Test Personal",
@@ -55,6 +61,7 @@ function setup() {
       db,
       intents,
       identity: "assistant@example.com",
+      profile,
     }),
   }
 }
@@ -122,6 +129,20 @@ describe("write verbs", () => {
     expect(policyFor(manifest, "draft_create")?.defaultTier).toBe("auto")
   })
 
+  test("draft_create appends the saved profile signature", async () => {
+    await profile.updateProfile({ signature: "Regards,\nTest Owner" })
+    const { facade, proposals } = setup()
+    await facade.draft_create({
+      to: ["a@example.com"],
+      subject: "s",
+      body: "Hello.",
+    })
+    expect(proposals[0]?.intent).toMatchObject({
+      kind: "email.draft",
+      args: { body: "Hello.\n\nRegards,\nTest Owner" },
+    })
+  })
+
   test("a proposal carries the origin and exactly the intent the caller gave", async () => {
     const { facade, proposals } = setup()
     await facade.trash({ messageIds: ["<a@example.com>"] })
@@ -179,6 +200,7 @@ describe("write verbs", () => {
           return Promise.resolve({ id: "i" })
         },
       } as unknown as IntentClient,
+      profile,
     })
     await facade.trash({ messageIds: ["<a@example.com>"] })
     expect(proposals[0]).toMatchObject({ origin: "proactive" })
