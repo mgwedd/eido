@@ -57,9 +57,9 @@ function failed(db: DatabaseSync, read: Read, error: unknown): Reply {
   }
   if (mapped.code === "busy") {
     // The gate's own limit on concurrent reads (#219): 503 with Retry-After, so core waits
-    // and asks again later rather than looping. The code is the schema's `unavailable`.
+    // and asks again later rather than looping. The code is `busy`, distinct from a Bridge failure.
     return {
-      ...apiError(503, "unavailable", "the gate is busy reading mail"),
+      ...apiError(503, "busy", "the gate is busy reading mail"),
       headers: { "retry-after": String(BUSY_RETRY_AFTER_SECONDS) },
     }
   }

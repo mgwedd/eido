@@ -207,9 +207,8 @@ export async function syncFolder(
 
 /**
  * Syncs every configured folder in order. The first typed failure (`auth_failed`,
- * `handshake_failed`, gate unavailable) stops the run: the same bad credentials are not retried per
- * folder or in a loop. Health (#24) decides when to try again. The account is the Bridge
- * username.
+ * `handshake_failed`, `busy`, gate unavailable) stops the run: the same bad credentials are not retried per
+ * folder or in a loop. Health (#24) decides when to try again.
  */
 export async function syncProton(
   db: DatabaseSync,
