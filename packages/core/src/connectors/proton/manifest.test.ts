@@ -98,6 +98,7 @@ describe("manifest", () => {
       db: openIndex(":memory:"),
       intents: {} as IntentClient,
       identity: "assistant@example.com",
+      profile: { getProfile: () => Promise.resolve(null) },
     })
     expect(Object.keys(facade).sort()).toEqual(
       manifest.operations.map((op) => op.name).sort()
