@@ -136,6 +136,52 @@ beforeEach(() => {
 })
 
 describe("phoneHandler: push subscriptions", () => {
+  it("returns unavailable when the gate has no configured push vault", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    expect((await call("GET", "/push/key", { cookie })).status).toBe(503)
+    expect(
+      (await call("POST", "/push/prepare", { cookie, body: {} })).status
+    ).toBe(503)
+    expect(
+      (await call("POST", "/push/subscriptions", { cookie, body: {} })).status
+    ).toBe(503)
+  })
+
+  it("refuses a signed registration whose endpoint changed after preparation", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    state.push = {
+      publicKey: () => Promise.resolve("synthetic-public-key"),
+      notifyPending: () => undefined,
+    }
+    const receiver = createECDH("prime256v1")
+    receiver.generateKeys()
+    const subscription = {
+      endpoint: "https://push.example.invalid/one",
+      p256dh: receiver
+        .getPublicKey(undefined, "uncompressed")
+        .toString("base64url"),
+      auth: randomBytes(16).toString("base64url"),
+    }
+    const authorization = controlAuthorization(
+      s.db,
+      preparePushRegistration(s.db, subscription)
+    )
+    const changed = {
+      ...subscription,
+      endpoint: "https://other.example.invalid/one",
+    }
+    const reply = await call("POST", "/push/subscriptions", {
+      cookie,
+      body: { subscription: changed, approval: authorization.request },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect((await call("GET", "/push/subscriptions", { cookie })).body).toEqual(
+      { subscriptions: [] }
+    )
+  })
+
   it("requires a session and a signed binding, then lists and removes the subscription", async () => {
     enrol(auth)
     const cookie = await signIn()

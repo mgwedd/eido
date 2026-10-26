@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest"
 import { propose } from "./intents"
 import { createPushNotifier, pushPayload } from "./push-notify"
 import {
+  checkedSubscription,
   preparePushRegistration,
+  pushEgressAllowed,
   pushSubscriptions,
   registerPushSubscription,
+  removePushSubscription,
 } from "./push-subscriptions"
 import { auditRows, controlAuthorization, sample, setup } from "./test-fixtures"
 
@@ -35,6 +38,130 @@ function requestUrl(value: string | URL | Request): string {
 }
 
 describe("count-only Web Push", () => {
+  it.each([
+    "http://push.example.invalid/send",
+    "https://push.example.invalid:444/send",
+    "https://user@push.example.invalid/send",
+    "https://push.example.invalid/send#fragment",
+    "https://localhost/send",
+    "https://127.0.0.1/send",
+    "https://push.example.invalid/old/../send",
+  ])("rejects an unsafe or noncanonical endpoint: %s", (endpoint) => {
+    expect(() => checkedSubscription({ endpoint, ...keys() })).toThrow(
+      "invalid push subscription"
+    )
+  })
+
+  it("refuses a subscription whose authentication secret is malformed", () => {
+    expect(() =>
+      checkedSubscription({
+        endpoint: "https://push.example.invalid/send",
+        ...keys(),
+        auth: "short",
+      })
+    ).toThrow("invalid push subscription")
+  })
+
+  it("requires signed endpoint authority at egress and revokes it on removal", () => {
+    const s = setup()
+    try {
+      const subscription = {
+        endpoint: "https://push.example.invalid/send/auth",
+        ...keys(),
+      }
+      expect(() => registerPushSubscription(s.db, subscription)).toThrow(
+        "control approval refused"
+      )
+      const prepared = preparePushRegistration(s.db, subscription)
+      const authorization = controlAuthorization(s.db, prepared)
+      const id = registerPushSubscription(s.db, subscription, authorization)
+      const stored = pushSubscriptions(s.db).find((item) => item.id === id)
+      if (stored === undefined)
+        throw new Error("signed subscription is missing")
+      expect(pushEgressAllowed(s.db, stored)).toBe(true)
+      expect(() =>
+        registerPushSubscription(s.db, subscription, authorization)
+      ).toThrow("control approval refused")
+      removePushSubscription(s.db, id)
+      expect(pushEgressAllowed(s.db, stored)).toBe(false)
+      const auditCount = auditRows(s.db).length
+      removePushSubscription(s.db, id)
+      expect(auditRows(s.db).length).toBe(auditCount)
+    } finally {
+      s.cleanup()
+    }
+  })
+
+  it("does not read the vault or send when nobody is subscribed", async () => {
+    const s = setup()
+    let time = 1_000
+    let keyReads = 0
+    const notifier = createPushNotifier({
+      db: s.db,
+      now: () => time,
+      subject: "mailto:ops@example.invalid",
+      privateKey: () => {
+        keyReads++
+        return Promise.resolve(privateKey())
+      },
+      fetch: () => Promise.reject(new Error("there is no approved endpoint")),
+    })
+    try {
+      const proposed = propose(s.db, s.policy, {
+        intent: sample("email.send"),
+        origin: "reactive",
+      })
+      expect(proposed.ok).toBe(true)
+      notifier.notifyPending()
+      time = 61_000
+      expect(await notifier.flushDue()).toBe(true)
+      expect(keyReads).toBe(0)
+    } finally {
+      notifier.close()
+      s.cleanup()
+    }
+  })
+
+  it("keeps a subscription after a temporary push-service failure", async () => {
+    const s = setup()
+    let time = 1_000
+    const subscription = {
+      endpoint: "https://push.example.invalid/send/retry",
+      ...keys(),
+    }
+    const id = registerPushSubscription(
+      s.db,
+      subscription,
+      controlAuthorization(s.db, preparePushRegistration(s.db, subscription))
+    )
+    const notifier = createPushNotifier({
+      db: s.db,
+      now: () => time,
+      subject: "mailto:ops@example.invalid",
+      privateKey: () => Promise.resolve(privateKey()),
+      fetch: () => Promise.resolve(new Response(null, { status: 503 })),
+    })
+    try {
+      const proposed = propose(s.db, s.policy, {
+        intent: sample("email.send"),
+        origin: "reactive",
+      })
+      expect(proposed.ok).toBe(true)
+      notifier.notifyPending()
+      time = 61_000
+      expect(await notifier.flushDue()).toBe(true)
+      expect(pushSubscriptions(s.db).map((item) => item.id)).toEqual([id])
+      expect(
+        auditRows(s.db).some(
+          (row) => row.action === "push.failed" && row.target === id
+        )
+      ).toBe(true)
+    } finally {
+      notifier.close()
+      s.cleanup()
+    }
+  })
+
   it("refuses a negative or non-integer count before it can reach the wire", () => {
     expect(() => pushPayload(-1)).toThrow("invalid pending count")
     expect(() => pushPayload(1.5)).toThrow("invalid pending count")
