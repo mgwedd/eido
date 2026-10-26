@@ -137,7 +137,7 @@ describe("the running gate", () => {
     )
   })
 
-  it("refuses and audits an owner config accessible by group or others", () => {
+  it("applies the platform owner-config access check", () => {
     const s = setup()
     current = s
     const path = join(s.dataDir, "owner-config.json")
@@ -150,14 +150,25 @@ describe("the running gate", () => {
       }),
       { mode: 0o644 }
     )
-    expect(
-      startGate(s.db, { ...s.options, ownerConfigPath: path }, WEBAUTHN)
-    ).toContain(
-      "owner-config.json: accessible by group or others; only the gate user may access it"
+    const errors = startGate(
+      s.db,
+      { ...s.options, ownerConfigPath: path },
+      WEBAUTHN
     )
-    expect(runningGate().policy.allowedRoots).toEqual([])
-    expect(
-      auditRows(s.db).some((row) => row.action === "owner_config.rejected")
-    ).toBe(true)
+    if (process.platform === "win32") {
+      expect(errors).toEqual([])
+      expect(runningGate().policy.allowedRoots).toEqual(["notes"])
+      expect(
+        auditRows(s.db).some((row) => row.action === "owner_config.loaded")
+      ).toBe(true)
+    } else {
+      expect(errors).toContain(
+        "owner-config.json: accessible by group or others; only the gate user may access it"
+      )
+      expect(runningGate().policy.allowedRoots).toEqual([])
+      expect(
+        auditRows(s.db).some((row) => row.action === "owner_config.rejected")
+      ).toBe(true)
+    }
   })
 })
