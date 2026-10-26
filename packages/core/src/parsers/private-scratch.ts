@@ -14,7 +14,47 @@ import { join } from "node:path"
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000
 const BACKUP_EXCLUSION = "com.apple.metadata:com_apple_backup_excludeItem"
 const WORK_MARKER = ".eido-parser-work"
-const WORK_MARKER_CONTENT = "eido-parser-scratch-v1"
+
+type WorkOwners = { parentPid: number | null; childPid: number | null }
+
+function markerOwners(path: string): number[] | null {
+  let value: unknown
+  try {
+    value = JSON.parse(readFileSync(path, "utf8"))
+  } catch {
+    return null
+  }
+  if (typeof value !== "object" || value === null) return null
+  const version: unknown = Reflect.get(value, "version")
+  const parentPid: unknown = Reflect.get(value, "parentPid")
+  const childPid: unknown = Reflect.get(value, "childPid")
+  if (version !== 1 || !isNullablePid(parentPid) || !isNullablePid(childPid)) {
+    return null
+  }
+  return [parentPid, childPid].filter((pid): pid is number => pid !== null)
+}
+
+function isNullablePid(value: unknown): value is number | null {
+  return value === null || (Number.isInteger(value) && Number(value) > 0)
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ESRCH"
+    ) {
+      return false
+    }
+    // Permission and unexpected errors are treated as alive to avoid deleting active work.
+    return true
+  }
+}
 
 function excludeFromMacBackups(root: string): void {
   const set = spawnSync(
@@ -55,23 +95,44 @@ function sweepStaleWork(root: string, now: number): void {
       !info.isDirectory() ||
       !marker.isFile() ||
       marker.isSymbolicLink() ||
-      readFileSync(join(path, WORK_MARKER), "utf8") !== WORK_MARKER_CONTENT ||
+      (marker.mode & 0o077) !== 0 ||
       now - info.mtimeMs < STALE_AFTER_MS
     ) {
       continue
     }
+    const owners = markerOwners(join(path, WORK_MARKER))
+    if (owners === null || owners.some(processIsAlive)) continue
     rmSync(path, { recursive: true, force: true })
   }
 }
 
 /** Creates an identifiable generated work directory so cleanup can prove ownership. */
-export function createPrivateWorkDirectory(root: string): string {
+export function createPrivateWorkDirectory(
+  root: string,
+  owners: WorkOwners = { parentPid: process.pid, childPid: null }
+): string {
   const workDir = mkdtempSync(join(root, "parse-"))
-  writeFileSync(join(workDir, WORK_MARKER), WORK_MARKER_CONTENT, {
-    flag: "wx",
-    mode: 0o600,
-  })
+  writeFileSync(
+    join(workDir, WORK_MARKER),
+    JSON.stringify({ version: 1, ...owners }),
+    {
+      flag: "wx",
+      mode: 0o600,
+    }
+  )
   return workDir
+}
+
+/** Records the parse child too, so cleanup can preserve it if its parent exits unexpectedly. */
+export function recordPrivateWorkChild(
+  workDir: string,
+  childPid: number
+): void {
+  writeFileSync(
+    join(workDir, WORK_MARKER),
+    JSON.stringify({ version: 1, parentPid: process.pid, childPid }),
+    { mode: 0o600 }
+  )
 }
 
 /** Creates and hardens the parser-only scratch root, then reaps abandoned generated work. */

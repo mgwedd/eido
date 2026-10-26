@@ -45,8 +45,14 @@ describe("private parser scratch", () => {
   it("removes only stale generated work and preserves active work and unrelated files", () => {
     const root = makeRoot()
     mkdirSync(root, { recursive: true, mode: 0o700 })
-    const stale = createPrivateWorkDirectory(root)
-    const active = createPrivateWorkDirectory(root)
+    const stale = createPrivateWorkDirectory(root, {
+      parentPid: null,
+      childPid: null,
+    })
+    const active = createPrivateWorkDirectory(root, {
+      parentPid: null,
+      childPid: process.pid,
+    })
     writeFileSync(join(stale, "job.json"), "synthetic stale plaintext", {
       mode: 0o600,
     })

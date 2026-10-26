@@ -6,6 +6,7 @@ import type { FailureReason } from "./types"
 import {
   createPrivateWorkDirectory,
   preparePrivateScratchRoot,
+  recordPrivateWorkChild,
 } from "./private-scratch"
 
 // Runs one parse in a short-lived child process and reaps it. The portable fences are here: an
@@ -127,6 +128,14 @@ export async function runInChild(run: ChildRun): Promise<ChildOutcome> {
         windowsHide: true,
       }
     )
+    if (child.pid !== undefined) {
+      try {
+        recordPrivateWorkChild(workDir, child.pid)
+      } catch (error) {
+        killTree(child.pid)
+        throw error
+      }
+    }
     let stderr = ""
     child.stderr.setEncoding("utf8")
     child.stderr.on("data", (chunk: string) => {
