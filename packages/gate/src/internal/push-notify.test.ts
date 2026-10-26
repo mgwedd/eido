@@ -38,6 +38,38 @@ describe("count-only Web Push", () => {
   it("refuses a negative or non-integer count before it can reach the wire", () => {
     expect(() => pushPayload(-1)).toThrow("invalid pending count")
     expect(() => pushPayload(1.5)).toThrow("invalid pending count")
+    expect(() => pushPayload(Number.NaN)).toThrow("invalid pending count")
+  })
+
+  it("rejects a zero coalescing window and skips delivery when the queue has cleared", async () => {
+    const s = setup()
+    let time = 1_000
+    const options = {
+      db: s.db,
+      now: () => time,
+      subject: "mailto:ops@example.invalid",
+      privateKey: () => Promise.resolve(privateKey()),
+      fetch: () =>
+        Promise.reject(new Error("an empty queue must not trigger fetch")),
+    }
+    try {
+      expect(() => createPushNotifier({ ...options, windowMs: 0 })).toThrow(
+        "invalid push window"
+      )
+      const notifier = createPushNotifier(options)
+      try {
+        notifier.notifyPending()
+        time = 61_000
+        expect(await notifier.flushDue()).toBe(true)
+        expect(
+          auditRows(s.db).some((row) => row.action.startsWith("push."))
+        ).toBe(false)
+      } finally {
+        notifier.close()
+      }
+    } finally {
+      s.cleanup()
+    }
   })
 
   it("serializes only version and pending count across several sensitive intent kinds", () => {
@@ -76,56 +108,59 @@ describe("count-only Web Push", () => {
     }
   })
 
-  it("coalesces pending transitions and revokes a 410 subscription before retry", async () => {
-    const s = setup()
-    let time = 1_000
-    const subscription = {
-      endpoint: "https://push.example.invalid/send/one",
-      ...keys(),
-    }
-    const prepared = preparePushRegistration(s.db, subscription)
-    const auth = controlAuthorization(s.db, prepared)
-    const id = registerPushSubscription(s.db, subscription, auth)
-    const sent: string[] = []
-    const notifier = createPushNotifier({
-      db: s.db,
-      now: () => time,
-      windowMs: 60_000,
-      subject: "mailto:ops@example.invalid",
-      privateKey: () => Promise.resolve(privateKey()),
-      fetch: (url) => {
-        sent.push(requestUrl(url))
-        return Promise.resolve(new Response(null, { status: 410 }))
-      },
-    })
-    try {
-      for (const kind of ["email.send", "email.reply"] as const) {
-        const result = propose(s.db, s.policy, {
-          intent: sample(kind),
-          origin: "reactive",
-        })
-        expect(result.ok).toBe(true)
-        notifier.notifyPending()
+  it.each([404, 410])(
+    "coalesces pending transitions and revokes a %i subscription before retry",
+    async (status) => {
+      const s = setup()
+      let time = 1_000
+      const subscription = {
+        endpoint: "https://push.example.invalid/send/one",
+        ...keys(),
       }
-      expect(await notifier.flushDue()).toBe(false)
-      time = 61_000
-      expect(await notifier.flushDue()).toBe(true)
-      expect(sent).toEqual([subscription.endpoint])
-      expect(pushSubscriptions(s.db)).toEqual([])
-      notifier.notifyPending()
-      time = 121_000
-      expect(await notifier.flushDue()).toBe(true)
-      expect(sent).toEqual([subscription.endpoint])
-      expect(
-        auditRows(s.db).some(
-          (row) => row.action === "push.gone" && row.target === id
-        )
-      ).toBe(true)
-    } finally {
-      notifier.close()
-      s.cleanup()
+      const prepared = preparePushRegistration(s.db, subscription)
+      const auth = controlAuthorization(s.db, prepared)
+      const id = registerPushSubscription(s.db, subscription, auth)
+      const sent: string[] = []
+      const notifier = createPushNotifier({
+        db: s.db,
+        now: () => time,
+        windowMs: 60_000,
+        subject: "mailto:ops@example.invalid",
+        privateKey: () => Promise.resolve(privateKey()),
+        fetch: (url) => {
+          sent.push(requestUrl(url))
+          return Promise.resolve(new Response(null, { status }))
+        },
+      })
+      try {
+        for (const kind of ["email.send", "email.reply"] as const) {
+          const result = propose(s.db, s.policy, {
+            intent: sample(kind),
+            origin: "reactive",
+          })
+          expect(result.ok).toBe(true)
+          notifier.notifyPending()
+        }
+        expect(await notifier.flushDue()).toBe(false)
+        time = 61_000
+        expect(await notifier.flushDue()).toBe(true)
+        expect(sent).toEqual([subscription.endpoint])
+        expect(pushSubscriptions(s.db)).toEqual([])
+        notifier.notifyPending()
+        time = 121_000
+        expect(await notifier.flushDue()).toBe(true)
+        expect(sent).toEqual([subscription.endpoint])
+        expect(
+          auditRows(s.db).some(
+            (row) => row.action === "push.gone" && row.target === id
+          )
+        ).toBe(true)
+      } finally {
+        notifier.close()
+        s.cleanup()
+      }
     }
-  })
+  )
 
   it("refuses and audits an endpoint changed after its signed approval", async () => {
     const s = setup()
