@@ -25,6 +25,7 @@ import { phoneHandler } from "./internal/phone-routes"
 import { controlHandler, dataPlaneHandler } from "./internal/routes"
 import type { Clock } from "./internal/sessions"
 import { runningGate, startGate, stopGate } from "./internal/runtime"
+import { OWNER_CONFIG_FILE } from "./internal/policy"
 import { devFlagFromEnv, FileVault } from "./internal/vault/file-vault"
 import type { WebAuthnConfig } from "./internal/webauthn"
 
@@ -177,13 +178,18 @@ export async function runGate(
   const servers: Server[] = []
   let phone: RunningGate["phone"]
   try {
-    // Owner addresses and allowed roots come from the gate's settings (#167); until then
-    // calendar guests need approval and file intents are forbidden. No stored-attendee reader
+    // Owner addresses and allowed roots come from the gate-owned owner-config.json (#167).
+    // No stored-attendee reader
     // is wired until the calendar connector's record exists (#21), so every calendar edit and
     // delete needs approval.
     const overlayErrors = startGate(
       db,
-      { dataDir: config.dataDir, ownerAddresses: [], allowedRoots: [] },
+      {
+        dataDir: config.dataDir,
+        ownerAddresses: [],
+        allowedRoots: [],
+        ownerConfigPath: join(config.dataDir, OWNER_CONFIG_FILE),
+      },
       config.webAuthn
     )
     const state = () => runningGate()

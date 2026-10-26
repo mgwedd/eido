@@ -332,6 +332,13 @@ export interface GateMailMessagePage {
   skipped: Array<number>
 }
 
+/** The canonical config consumed by the gate and core for owner addresses and allowed folder IDs. */
+export interface GateOwnerConfiguration {
+  version: 1
+  ownerAddresses: Array<string>
+  allowedRoots: Array<string>
+}
+
 /** Response of the pending-approvals list: intents in state pending, without payload bodies (#11 listPendingIntents, plus origin, which #33 needs). */
 export interface GatePendingIntentList {
   intents: Array<{

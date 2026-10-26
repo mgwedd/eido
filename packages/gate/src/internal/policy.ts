@@ -1,9 +1,20 @@
 import { createHash } from "node:crypto"
-import { closeSync, fstatSync, openSync, readFileSync } from "node:fs"
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+} from "node:fs"
 import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
-import { INTENT_KINDS } from "@eido/schemas"
-import type { ConnectorOperation, ConnectorTier, Intent } from "@eido/schemas"
+import { INTENT_KINDS, validateGateOwnerConfiguration } from "@eido/schemas"
+import type {
+  ConnectorOperation,
+  ConnectorTier,
+  GateOwnerConfiguration,
+  Intent,
+} from "@eido/schemas"
 import { append } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
 import {
@@ -53,6 +64,8 @@ export type PolicyOptions = {
   ownerAddresses: readonly string[]
   /** Allowed-folder ids a file intent's `root` may name. */
   allowedRoots: readonly string[]
+  /** When set, owner addresses and allowed roots are loaded from this gate-owned JSON file. */
+  ownerConfigPath?: string
   /** The calendar's stored attendees; without it every calendar edit and delete needs approval. */
   storedAttendees?: StoredAttendees
   /** The shipped default table; tests point this at a fixture. */
@@ -64,6 +77,7 @@ export type Policy = {
   overlay: PermissionTable | undefined
   ownerAddresses: readonly string[]
   allowedRoots: readonly string[]
+  ownerConfigHash?: string
   storedAttendees: StoredAttendees | undefined
 }
 
@@ -83,6 +97,7 @@ export const SHIPPED_DEFAULT_PATH = new URL(
   import.meta.url
 )
 export const OVERLAY_FILE = "permissions.json"
+export const OWNER_CONFIG_FILE = "owner-config.json"
 
 const KINDS: ReadonlySet<string> = new Set(INTENT_KINDS)
 
@@ -92,6 +107,13 @@ function isIntentKind(kind: string): kind is IntentKind {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === "string" && item.trim() !== "")
+  )
 }
 
 function forbidden(reason: ForbiddenReason): TierDecision {
@@ -341,7 +363,7 @@ function isMissingFile(error: unknown): boolean {
 function ownershipError(mode: number, uid: number): string | undefined {
   // Windows has no POSIX owner or mode bits; there the data dir's ACL is the control.
   if (process.platform === "win32") return undefined
-  if ((mode & 0o022) !== 0) {
+  if ((mode & 0o077) !== 0) {
     return `${OVERLAY_FILE}: writable by group or others; only the gate user may write it`
   }
   const gateUid = process.getuid?.()
@@ -349,6 +371,76 @@ function ownershipError(mode: number, uid: number): string | undefined {
     return `${OVERLAY_FILE}: not owned by the gate user`
   }
   return undefined
+}
+
+function ownerConfigOwnershipError(
+  mode: number,
+  uid: number
+): string | undefined {
+  if (process.platform === "win32") return undefined
+  if ((mode & 0o077) !== 0) {
+    return "owner-config.json: accessible by group or others; only the gate user may access it"
+  }
+  const gateUid = process.getuid?.()
+  return gateUid !== undefined && uid !== gateUid
+    ? "owner-config.json: not owned by the gate user"
+    : undefined
+}
+
+type OwnerConfigRead =
+  | { ok: true; config: GateOwnerConfiguration; hash: string }
+  | { ok: false; error: string; hash: string }
+
+function readOwnerConfig(path: string): OwnerConfigRead {
+  let fd: number
+  try {
+    fd = openSync(
+      path,
+      process.platform === "win32"
+        ? "r"
+        : constants.O_RDONLY | constants.O_NOFOLLOW
+    )
+  } catch {
+    return {
+      ok: false,
+      error: "owner-config.json: unavailable",
+      hash: payloadHash(null),
+    }
+  }
+  let raw: Buffer
+  let ownership: string | undefined
+  try {
+    const stat = fstatSync(fd)
+    ownership = stat.isFile()
+      ? ownerConfigOwnershipError(stat.mode, stat.uid)
+      : "owner-config.json: not a regular file"
+    raw = readFileSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  const hash = createHash("sha256").update(raw).digest("hex")
+  if (ownership !== undefined) return { ok: false, error: ownership, hash }
+  let value: unknown
+  try {
+    value = JSON.parse(raw.toString("utf8"))
+  } catch {
+    return { ok: false, error: "owner-config.json: not valid JSON", hash }
+  }
+  const validation = validateGateOwnerConfiguration(value)
+  if (
+    !validation.ok ||
+    !isRecord(value) ||
+    !isStringArray(value.ownerAddresses) ||
+    !isStringArray(value.allowedRoots)
+  ) {
+    return {
+      ok: false,
+      error:
+        "owner-config.json: expected version 1 and non-empty string arrays",
+      hash,
+    }
+  }
+  return { ok: true, config: validation.value, hash }
 }
 
 function readOverlay(db: DatabaseSync, path: string): OverlayRead {
@@ -500,13 +592,11 @@ export function loadPolicy(
 ): { policy: Policy; errors: string[] } {
   const shipped = readShipped(options.shippedPath ?? SHIPPED_DEFAULT_PATH)
   const overlay = approvedOverlay(db)
-  const policy: Policy = {
-    shipped,
-    overlay,
-    ownerAddresses: [...options.ownerAddresses],
-    allowedRoots: [...options.allowedRoots],
-    storedAttendees: options.storedAttendees,
-  }
+  let ownerAddresses =
+    options.ownerConfigPath === undefined ? options.ownerAddresses : []
+  let allowedRoots =
+    options.ownerConfigPath === undefined ? options.allowedRoots : []
+  let ownerConfigHash: string | undefined
   const path = join(options.dataDir, OVERLAY_FILE)
   const read = readOverlay(db, path)
   const errors =
@@ -527,6 +617,51 @@ export function loadPolicy(
       target: path,
       detailHash: payloadHash({ file_hash: fileHash, errors }),
     })
+  }
+  if (options.ownerConfigPath !== undefined) {
+    const result = readOwnerConfig(options.ownerConfigPath)
+    const beforeHash = previous?.ownerConfigHash ?? payloadHash(null)
+    const afterHash = result.ok ? result.hash : beforeHash
+    if (!result.ok) {
+      errors.push(result.error)
+      append(db, {
+        actor: "system",
+        action: "owner_config.rejected",
+        target: options.ownerConfigPath,
+        detailHash: payloadHash({
+          file_hash: result.hash,
+          error: result.error,
+        }),
+      })
+    } else if (previous === undefined || beforeHash !== afterHash) {
+      ownerAddresses = result.config.ownerAddresses
+      allowedRoots = result.config.allowedRoots
+      ownerConfigHash = result.hash
+      append(db, {
+        actor: "system",
+        action:
+          previous === undefined
+            ? "owner_config.loaded"
+            : "owner_config.reloaded",
+        target: options.ownerConfigPath,
+        detailHash: payloadHash({
+          before_hash: beforeHash,
+          after_hash: afterHash,
+        }),
+      })
+    } else if (previous !== undefined) {
+      ownerAddresses = previous.ownerAddresses
+      allowedRoots = previous.allowedRoots
+      ownerConfigHash = previous.ownerConfigHash
+    }
+  }
+  const policy: Policy = {
+    shipped,
+    overlay,
+    ownerAddresses: [...ownerAddresses],
+    allowedRoots: [...allowedRoots],
+    ...(ownerConfigHash === undefined ? {} : { ownerConfigHash }),
+    storedAttendees: options.storedAttendees,
   }
   if (previous === undefined)
     append(db, {

@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { kindTier, preparePolicyChange } from "./policy"
+import { createHash } from "node:crypto"
+import { chmodSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { auditRows, sample } from "./test-fixtures"
+import { payloadHash } from "./canonical"
+import { intentTier, kindTier, preparePolicyChange } from "./policy"
 import {
   applyPolicyOverrides,
   reloadPolicy,
@@ -65,5 +70,94 @@ describe("the running gate", () => {
     expect(kindTier(s.db, runningGate().policy, "email.archive")).toEqual({
       tier: "approval",
     })
+  })
+
+  it("reloads allowed roots from the gate-owned config and audits before and after hashes", () => {
+    const s = setup()
+    current = s
+    const path = join(s.dataDir, "owner-config.json")
+    const writeConfig = (roots: string[]) => {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          version: 1,
+          ownerAddresses: ["owner@example.com"],
+          allowedRoots: roots,
+        }),
+        { mode: 0o600 }
+      )
+      chmodSync(path, 0o600)
+    }
+    writeConfig(["notes"])
+    const options = { ...s.options, ownerConfigPath: path }
+    expect(startGate(s.db, options, WEBAUTHN)).toEqual([])
+    expect(runningGate().policy.allowedRoots).toEqual(["notes"])
+    writeConfig(["work"])
+    expect(reloadPolicy()).toEqual([])
+    expect(runningGate().policy.allowedRoots).toEqual(["work"])
+    expect(
+      intentTier(
+        s.db,
+        runningGate().policy,
+        sample("file.create", { root: "work" })
+      )
+    ).toEqual({ tier: "auto" })
+    expect(
+      intentTier(
+        s.db,
+        runningGate().policy,
+        sample("file.create", { root: "notes" })
+      )
+    ).toEqual({ tier: "forbidden", reason: "root_not_allowed" })
+    const changes = auditRows(s.db).filter(
+      (row) => row.action === "owner_config.reloaded"
+    )
+    expect(changes).toHaveLength(1)
+    expect(changes[0]?.detail_hash).toBe(
+      payloadHash({
+        before_hash: createHash("sha256")
+          .update(
+            JSON.stringify({
+              version: 1,
+              ownerAddresses: ["owner@example.com"],
+              allowedRoots: ["notes"],
+            })
+          )
+          .digest("hex"),
+        after_hash: createHash("sha256")
+          .update(
+            JSON.stringify({
+              version: 1,
+              ownerAddresses: ["owner@example.com"],
+              allowedRoots: ["work"],
+            })
+          )
+          .digest("hex"),
+      })
+    )
+  })
+
+  it("refuses and audits an owner config accessible by group or others", () => {
+    const s = setup()
+    current = s
+    const path = join(s.dataDir, "owner-config.json")
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ownerAddresses: ["owner@example.com"],
+        allowedRoots: ["notes"],
+      }),
+      { mode: 0o644 }
+    )
+    expect(
+      startGate(s.db, { ...s.options, ownerConfigPath: path }, WEBAUTHN)
+    ).toContain(
+      "owner-config.json: accessible by group or others; only the gate user may access it"
+    )
+    expect(runningGate().policy.allowedRoots).toEqual([])
+    expect(
+      auditRows(s.db).some((row) => row.action === "owner_config.rejected")
+    ).toBe(true)
   })
 })

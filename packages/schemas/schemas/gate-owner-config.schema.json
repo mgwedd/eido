@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Gate owner configuration",
+  "description": "The canonical config consumed by the gate and core for owner addresses and allowed folder IDs.",
+  "type": "object",
+  "properties": {
+    "version": { "const": 1 },
+    "ownerAddresses": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "allowedRoots": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "required": ["version", "ownerAddresses", "allowedRoots"],
+  "additionalProperties": false
+}
