@@ -1,15 +1,12 @@
 import { spawn } from "node:child_process"
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs"
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { FailureReason } from "./types"
+import {
+  createPrivateWorkDirectory,
+  preparePrivateScratchRoot,
+} from "./private-scratch"
 
 // Runs one parse in a short-lived child process and reaps it. The portable fences are here: an
 // empty environment (no tokens, no proxy variables, no credential paths), the no-network preload,
@@ -106,8 +103,8 @@ function readOutcome(resultPath: string, resultBytes: number): ChildOutcome {
 
 /** Runs `entry` in a child process. Never throws for anything the child does. */
 export async function runInChild(run: ChildRun): Promise<ChildOutcome> {
-  mkdirSync(run.tmpRoot, { recursive: true, mode: 0o700 })
-  const workDir = mkdtempSync(join(run.tmpRoot, "parse-"))
+  preparePrivateScratchRoot(run.tmpRoot)
+  const workDir = createPrivateWorkDirectory(run.tmpRoot)
   try {
     const resultPath = join(workDir, "result.json")
     const jobPath = join(workDir, "job.json")
@@ -115,6 +112,7 @@ export async function runInChild(run: ChildRun): Promise<ChildOutcome> {
       jobPath,
       JSON.stringify({ resultPath, workDir, payload: run.payload }),
       {
+        flag: "wx",
         mode: 0o600,
       }
     )
