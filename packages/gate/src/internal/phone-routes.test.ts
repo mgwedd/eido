@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto"
+import { createECDH, createHash, randomBytes } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   validateGateCredentialStatus,
@@ -12,9 +12,11 @@ import {
 import type { Body, GateRequest, Reply } from "./http"
 import { propose } from "./intents"
 import { matchRoute, phoneHandler, routePath } from "./phone-routes"
+import { preparePushRegistration } from "./push-subscriptions"
 import type { PhoneState } from "./phone-routes"
 import {
   assertion,
+  controlAuthorization,
   deviceChallenge,
   sample,
   setup,
@@ -131,6 +133,81 @@ beforeEach(() => {
   state = { db: s.db, policy: s.policy, webAuthn: WEBAUTHN }
   at = START
   auth = testAuthenticator()
+})
+
+describe("phoneHandler: push subscriptions", () => {
+  it("requires a session and a signed binding, then lists and removes the subscription", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    state.push = {
+      publicKey: () => Promise.resolve("synthetic-public-key"),
+      notifyPending: () => undefined,
+    }
+    const receiver = createECDH("prime256v1")
+    receiver.generateKeys()
+    const subscription = {
+      endpoint: "https://push.example.invalid/one",
+      p256dh: receiver
+        .getPublicKey(undefined, "uncompressed")
+        .toString("base64url"),
+      auth: randomBytes(16).toString("base64url"),
+    }
+    expect((await call("GET", "/push/key")).status).toBe(401)
+    expect((await call("GET", "/push/key", { cookie })).body).toEqual({
+      publicKey: "synthetic-public-key",
+    })
+    const prepared = await call("POST", "/push/prepare", {
+      cookie,
+      body: subscription,
+    })
+    expect(prepared.status).toBe(200)
+    if (
+      typeof prepared.body !== "object" ||
+      prepared.body === null ||
+      !("challenge" in prepared.body) ||
+      !("purpose" in prepared.body)
+    )
+      throw new Error("push preparation did not return a challenge")
+    expect(prepared.body.purpose).toBe("policy.set")
+    expect(typeof prepared.body.challenge).toBe("string")
+    expect(
+      (
+        await call("POST", "/push/prepare", {
+          cookie,
+          body: { ...subscription, endpoint: "http://localhost/send" },
+        })
+      ).status
+    ).toBe(400)
+    const unsigned = await call("POST", "/push/subscriptions", {
+      cookie,
+      body: { subscription, approval: {} },
+    })
+    expect(unsigned.status).toBe(400)
+    const ceremony = preparePushRegistration(s.db, subscription)
+    const authorization = controlAuthorization(s.db, ceremony)
+    const registered = await call("POST", "/push/subscriptions", {
+      cookie,
+      body: { subscription, approval: authorization.request },
+    })
+    expect(registered.status).toBe(201)
+    if (
+      typeof registered.body !== "object" ||
+      registered.body === null ||
+      !("id" in registered.body) ||
+      typeof registered.body.id !== "string"
+    )
+      throw new Error("registration did not return an id")
+    const id = registered.body.id
+    expect((await call("GET", "/push/subscriptions", { cookie })).body).toEqual(
+      { subscriptions: [{ id }] }
+    )
+    expect((await call("POST", `/push/${id}/remove`, { cookie })).status).toBe(
+      200
+    )
+    expect((await call("GET", "/push/subscriptions", { cookie })).body).toEqual(
+      { subscriptions: [] }
+    )
+  })
 })
 
 afterEach(() => {
@@ -457,7 +534,7 @@ describe("phoneHandler: approvals", () => {
     expect(reply.status).toBe(200)
     expect(validateGateDecisionResult(reply.body)).toEqual({
       ok: true,
-      value: { intentId: id, state: "approved" },
+      value: { intentId: id, state: "approved", nudge: false },
     })
     expect(intentState(id)).toBe("approved")
   })
@@ -593,6 +670,7 @@ describe("phoneHandler: approvals", () => {
       expect(signed.body).toEqual({
         intentId: card.intentId,
         state: "approved",
+        nudge: false,
       })
     })
 

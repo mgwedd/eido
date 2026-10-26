@@ -1,5 +1,5 @@
-/* global classifyRequest, isCacheableResponse */
-/* Eido service worker. Routing rules live in sw-routing.js. No push handling here. */
+/* global APPROVAL_QUEUE_URL, classifyRequest, isCacheableResponse, notificationForPush */
+/* Eido service worker. Routing and push rules live in sw-routing.js. */
 importScripts("/sw-routing.js")
 
 var CACHE = "eido-shell-v1"
@@ -82,4 +82,37 @@ self.addEventListener("fetch", function (event) {
   if (kind === "static") event.respondWith(cacheFirst(event))
   else if (kind === "navigation") event.respondWith(networkFirst(event, "/"))
   else if (kind === "api-read") event.respondWith(networkFirst(event, null))
+})
+
+self.addEventListener("push", function (event) {
+  if (!event.data) return
+  var notification = notificationForPush(event.data.text())
+  if (!notification) return
+  event.waitUntil(
+    self.registration.showNotification(notification.title, {
+      body: notification.body,
+    })
+  )
+})
+
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close()
+  var target = new URL(APPROVAL_QUEUE_URL, self.location.origin).href
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then(function (clients) {
+        for (var i = 0; i < clients.length; i++) {
+          var client = clients[i]
+          var url = new URL(client.url)
+          if (
+            url.origin === self.location.origin &&
+            url.pathname === APPROVAL_QUEUE_URL
+          ) {
+            return client.focus()
+          }
+        }
+        return self.clients.openWindow(target)
+      })
+  )
 })

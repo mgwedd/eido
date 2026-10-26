@@ -35,7 +35,11 @@ import type { Policy } from "./policy"
 // listener (#85) and the Mac-local admin listener (#78) are further handlers over the same
 // server wrapper, each on its own listener.
 
-export type GateState = { db: DatabaseSync; policy: Policy }
+export type GateState = {
+  db: DatabaseSync
+  policy: Policy
+  notifyPending?: () => void
+}
 
 const MAX_ERRORS = 50
 const MAX_ERROR_LENGTH = 300
@@ -98,6 +102,7 @@ async function proposeRoute(
       : { rationale: proposal.rationale }),
   })
   if (result.ok) {
+    if (result.state === "pending") gate.notifyPending?.()
     if (result.tier === "auto" && execute !== undefined) {
       await execute(result.intentId)
     }
