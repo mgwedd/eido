@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs"
+import { createECDH } from "node:crypto"
 import type { Server } from "node:http"
 import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
@@ -22,10 +23,13 @@ import {
 import type { Handler, LoopbackHost } from "./internal/http"
 import { fileLog } from "./internal/log"
 import { phoneHandler } from "./internal/phone-routes"
+import { createPushNotifier } from "./internal/push-notify"
+import { vapidAuthorization, vapidPublicKey } from "./internal/push-crypto"
 import { controlHandler, dataPlaneHandler } from "./internal/routes"
 import type { Clock } from "./internal/sessions"
 import { runningGate, startGate, stopGate } from "./internal/runtime"
 import { devFlagFromEnv, FileVault } from "./internal/vault/file-vault"
+import type { Vault } from "./internal/vault/vault"
 import type { WebAuthnConfig } from "./internal/webauthn"
 
 // The gate process (ADR 0003). It owns eido-control.db and opens no other database. It
@@ -63,6 +67,14 @@ export type GateConfig = {
   bridge?: BridgeListenerConfig
   /** Gmail compose client: refresh/access tokens and the OAuth client secret live in this vault. */
   gmail?: { vaultPath: string; devVault: boolean; clientId: string }
+  push?: {
+    vaultPath: string
+    devVault: boolean
+    subject: string
+    windowMs: number
+    nudgeThreshold: number
+    nudgeWindowMs: number
+  }
 }
 
 export type BridgeListenerConfig = {
@@ -106,6 +118,17 @@ export function gateConfig(
   const gmailVaultPath = env["EIDO_GATE_VAULT_FILE"] ?? ""
   if (gmailClientId !== "" && gmailVaultPath === "")
     throw new Error("Gmail needs EIDO_GATE_VAULT_FILE")
+  const pushSubject = env["EIDO_PUSH_VAPID_SUBJECT"] ?? ""
+  if (pushSubject !== "" && gmailVaultPath === "")
+    throw new Error("Web Push needs EIDO_GATE_VAULT_FILE")
+  const positive = (name: string, fallback: number): number => {
+    const value = env[name]
+    if (value === undefined || value === "") return fallback
+    const number = Number(value)
+    if (!Number.isSafeInteger(number) || number < 1)
+      throw new Error(`${name} must be a positive integer`)
+    return number
+  }
   return {
     ...config,
     ...(port === "" ? {} : { phone: phoneConfig(env, port) }),
@@ -117,6 +140,18 @@ export function gateConfig(
             vaultPath: gmailVaultPath,
             devVault: devFlagFromEnv({ ...env }),
             clientId: gmailClientId,
+          },
+        }),
+    ...(pushSubject === ""
+      ? {}
+      : {
+          push: {
+            vaultPath: gmailVaultPath,
+            devVault: devFlagFromEnv({ ...env }),
+            subject: pushSubject,
+            windowMs: positive("EIDO_PUSH_WINDOW_MS", 60_000),
+            nudgeThreshold: positive("EIDO_APPROVAL_NUDGE_THRESHOLD", 5),
+            nudgeWindowMs: positive("EIDO_APPROVAL_NUDGE_WINDOW_MS", 120_000),
           },
         }),
   }
@@ -175,6 +210,7 @@ export async function runGate(
   const log = fileLog(join(config.dataDir, GATE_LOG_FILE))
   const db: DatabaseSync = openControlDb(join(config.dataDir, CONTROL_DB_FILE))
   const servers: Server[] = []
+  let notifier: ReturnType<typeof createPushNotifier> | undefined
   let phone: RunningGate["phone"]
   try {
     // Owner addresses and allowed roots come from the gate's settings (#167); until then
@@ -186,7 +222,63 @@ export async function runGate(
       { dataDir: config.dataDir, ownerAddresses: [], allowedRoots: [] },
       config.webAuthn
     )
-    const state = () => runningGate()
+    const pushVault: Vault | undefined =
+      config.push === undefined
+        ? undefined
+        : new FileVault({
+            path: config.push.vaultPath,
+            devFlag: config.push.devVault,
+          })
+    const vapidKey = {
+      connector: "eido-web-push",
+      kind: "api_key",
+      client: "write",
+    } as const
+    const privateKey = async (): Promise<string | undefined> => {
+      if (pushVault === undefined) return undefined
+      let key = await pushVault.get(vapidKey)
+      if (key === undefined) {
+        const generated = createECDH("prime256v1")
+        generated.generateKeys()
+        key = generated.getPrivateKey().toString("base64url")
+        await pushVault.set(vapidKey, key)
+      }
+      vapidPublicKey(key)
+      return key
+    }
+    if (config.push !== undefined) {
+      const key = await privateKey()
+      if (key === undefined) throw new Error("Web Push key is unavailable")
+      vapidAuthorization(
+        "https://push.example.invalid/",
+        key,
+        config.push.subject
+      )
+      notifier = createPushNotifier({
+        db,
+        privateKey,
+        subject: config.push.subject,
+        fetch,
+        now: () => now().getTime(),
+        windowMs: config.push.windowMs,
+      })
+    }
+    const state = () => ({
+      ...runningGate(),
+      notifyPending: notifier?.notifyPending,
+      ...(config.push === undefined
+        ? {}
+        : {
+            nudge: {
+              threshold: config.push.nudgeThreshold,
+              windowMs: config.push.nudgeWindowMs,
+            },
+            push: {
+              publicKey: async () => vapidPublicKey((await privateKey()) ?? ""),
+              notifyPending: () => notifier?.notifyPending(),
+            },
+          }),
+    })
     // FileVault refuses to open without the explicit development flag.
     const mail =
       config.bridge === undefined
@@ -273,6 +365,7 @@ export async function runGate(
       overlayErrors: overlayErrors.length,
     })
   } catch (error) {
+    notifier?.close()
     await Promise.all(servers.filter((s) => s.listening).map(close))
     stopGate()
     db.close()
@@ -281,6 +374,7 @@ export async function runGate(
   return {
     ...(phone === undefined ? {} : { phone }),
     close: async () => {
+      notifier?.close()
       await Promise.all(servers.map(close))
       stopGate()
       db.close()

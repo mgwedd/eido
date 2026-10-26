@@ -46,6 +46,19 @@ function challenge(
   ).toString("base64url")
 }
 
+/** Browser challenge for an already prepared signed control change. */
+export function controlApprovalChallenge(
+  prepared: PreparedControlApproval
+): string {
+  return challenge(
+    prepared.purpose,
+    prepared.target,
+    prepared.id,
+    prepared.payloadHash,
+    prepared.nonce
+  )
+}
+
 /** Prepares a fresh control ceremony; replacing it invalidates any earlier card for this target. */
 export function prepareControlApproval(
   db: DatabaseSync,
