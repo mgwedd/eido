@@ -2,6 +2,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   statSync,
@@ -46,6 +47,12 @@ describe("private parser scratch", () => {
     mkdirSync(root, { recursive: true, mode: 0o700 })
     const stale = createPrivateWorkDirectory(root)
     const active = createPrivateWorkDirectory(root)
+    writeFileSync(join(stale, "job.json"), "synthetic stale plaintext", {
+      mode: 0o600,
+    })
+    writeFileSync(join(active, "job.json"), "synthetic current plaintext", {
+      mode: 0o600,
+    })
     const unrelated = join(root, "parse-unrelated")
     mkdirSync(unrelated, { mode: 0o700 })
     writeFileSync(join(root, "keep.txt"), "synthetic")
@@ -57,6 +64,9 @@ describe("private parser scratch", () => {
 
     expect(readdirSync(root).sort()).toEqual(
       ["keep.txt", "parse-unrelated", basename(active)].sort()
+    )
+    expect(readFileSync(join(active, "job.json"), "utf8")).toBe(
+      "synthetic current plaintext"
     )
   })
 
