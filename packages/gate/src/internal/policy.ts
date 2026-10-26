@@ -360,29 +360,34 @@ function isMissingFile(error: unknown): boolean {
 }
 
 /** Why the overlay file may not be trusted, or undefined when it may. */
-function ownershipError(mode: number, uid: number): string | undefined {
+export function ownershipError(
+  mode: number,
+  uid: number,
+  platform = process.platform,
+  gateUid: number | null = process.getuid?.() ?? null
+): string | undefined {
   // Windows has no POSIX owner or mode bits; there the data dir's ACL is the control.
-  if (process.platform === "win32") return undefined
-  if ((mode & 0o077) !== 0) {
+  if (platform === "win32") return undefined
+  if ((mode & 0o022) !== 0) {
     return `${OVERLAY_FILE}: writable by group or others; only the gate user may write it`
   }
-  const gateUid = process.getuid?.()
-  if (gateUid !== undefined && uid !== gateUid) {
+  if (gateUid !== null && uid !== gateUid) {
     return `${OVERLAY_FILE}: not owned by the gate user`
   }
   return undefined
 }
 
-function ownerConfigOwnershipError(
+export function ownerConfigOwnershipError(
   mode: number,
-  uid: number
+  uid: number,
+  platform = process.platform,
+  gateUid: number | null = process.getuid?.() ?? null
 ): string | undefined {
-  if (process.platform === "win32") return undefined
+  if (platform === "win32") return undefined
   if ((mode & 0o077) !== 0) {
     return "owner-config.json: accessible by group or others; only the gate user may access it"
   }
-  const gateUid = process.getuid?.()
-  return gateUid !== undefined && uid !== gateUid
+  return gateUid !== null && uid !== gateUid
     ? "owner-config.json: not owned by the gate user"
     : undefined
 }

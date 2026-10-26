@@ -239,6 +239,19 @@ describe("the running gate", () => {
       JSON.stringify({
         version: 1,
         ownerAddresses: ["owner@example.com"],
+        allowedRoots: ["other"],
+        unexpected: true,
+      })
+    )
+    expect(reloadPolicy()).toContain(
+      "owner-config.json: expected version 1 and non-empty string arrays"
+    )
+    expect(runningGate().policy.allowedRoots).toEqual(["notes"])
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ownerAddresses: ["owner@example.com"],
         allowedRoots: [" "],
       })
     )
