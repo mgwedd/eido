@@ -95,6 +95,10 @@ describe("the running gate", () => {
     writeConfig(["work"])
     expect(reloadPolicy()).toEqual([])
     expect(runningGate().policy.allowedRoots).toEqual(["work"])
+    expect(reloadPolicy()).toEqual([])
+    expect(
+      auditRows(s.db).filter((row) => row.action === "owner_config.reloaded")
+    ).toHaveLength(1)
     expect(
       intentTier(
         s.db,
@@ -170,5 +174,80 @@ describe("the running gate", () => {
         auditRows(s.db).some((row) => row.action === "owner_config.rejected")
       ).toBe(true)
     }
+  })
+
+  it("starts closed when owner config is missing and accepts it on reload", () => {
+    const s = setup()
+    current = s
+    const path = join(s.dataDir, "owner-config.json")
+    const options = { ...s.options, ownerConfigPath: path }
+    expect(startGate(s.db, options, WEBAUTHN)).toContain(
+      "owner-config.json: unavailable"
+    )
+    expect(runningGate().policy.allowedRoots).toEqual([])
+    expect(
+      auditRows(s.db).some((row) => row.action === "owner_config.rejected")
+    ).toBe(true)
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ownerAddresses: ["owner@example.com"],
+        allowedRoots: ["notes"],
+      }),
+      { mode: 0o600 }
+    )
+    chmodSync(path, 0o600)
+    expect(reloadPolicy()).toEqual([])
+    expect(runningGate().policy.allowedRoots).toEqual(["notes"])
+  })
+
+  it("retains the accepted roots when a reload file is malformed", () => {
+    const s = setup()
+    current = s
+    const path = join(s.dataDir, "owner-config.json")
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ownerAddresses: ["owner@example.com"],
+        allowedRoots: ["notes"],
+      }),
+      { mode: 0o600 }
+    )
+    chmodSync(path, 0o600)
+    expect(
+      startGate(s.db, { ...s.options, ownerConfigPath: path }, WEBAUTHN)
+    ).toEqual([])
+    writeFileSync(path, "{")
+    expect(reloadPolicy()).toContain("owner-config.json: not valid JSON")
+    expect(runningGate().policy.allowedRoots).toEqual(["notes"])
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ownerAddresses: [" "],
+        allowedRoots: ["other"],
+      })
+    )
+    expect(reloadPolicy()).toContain(
+      "owner-config.json: expected version 1 and non-empty string arrays"
+    )
+    expect(runningGate().policy.allowedRoots).toEqual(["notes"])
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ownerAddresses: ["owner@example.com"],
+        allowedRoots: [" "],
+      })
+    )
+    expect(reloadPolicy()).toContain(
+      "owner-config.json: expected version 1 and non-empty string arrays"
+    )
+    expect(runningGate().policy.allowedRoots).toEqual(["notes"])
+    expect(
+      auditRows(s.db).some((row) => row.action === "owner_config.rejected")
+    ).toBe(true)
   })
 })
