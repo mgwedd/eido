@@ -1,6 +1,8 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
 import type { SourceSpan } from "@eido/schemas"
 import type { EntityKind } from "../profile/types"
+import { INJECTION_REASONS } from "../inference/fence"
+import type { InjectionReason } from "../inference/fence"
 import { LedgerError } from "./errors"
 import type {
   ExtractionFieldName,
@@ -83,6 +85,20 @@ function parseSpan(json: string): SourceSpan {
   const value: unknown = JSON.parse(json)
   // The column's CHECK admits only such spans; a failure here means the file was edited by hand.
   if (!isSpan(value)) throw new Error("stored source span is malformed")
+  return value
+}
+
+function parseReasons(json: string): InjectionReason[] {
+  const value: unknown = JSON.parse(json)
+  if (
+    !Array.isArray(value) ||
+    !value.every(
+      (reason: unknown): reason is InjectionReason =>
+        typeof reason === "string" &&
+        INJECTION_REASONS.some((known) => known === reason)
+    )
+  )
+    throw new Error("stored injection reasons are malformed")
   return value
 }
 
@@ -192,8 +208,8 @@ export function insertObligation(
   }
   const { lastInsertRowid } = db
     .prepare(
-      `INSERT INTO obligations (entity_id, party, action, due_at, status, doc_id, source_span)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO obligations (entity_id, party, action, due_at, status, doc_id, source_span, injection_suspected, injection_reasons)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.entityId,
@@ -202,7 +218,9 @@ export function insertObligation(
       input.dueAt ?? null,
       input.status,
       input.docId,
-      JSON.stringify(input.span)
+      JSON.stringify(input.span),
+      input.injectionSuspected ? 1 : 0,
+      JSON.stringify(input.injectionReasons ?? [])
     )
   return Number(lastInsertRowid)
 }
@@ -224,6 +242,8 @@ function toObligation(row: Row): Obligation {
     status: text(row, "status") as ObligationStatus,
     docId: text(row, "doc_id"),
     span: parseSpan(text(row, "source_span")),
+    injectionSuspected: row["injection_suspected"] === 1,
+    injectionReasons: parseReasons(text(row, "injection_reasons")),
   }
 }
 
@@ -235,7 +255,7 @@ export function listObligations(
   return db
     .prepare(
       `SELECT o.id, o.entity_id, e.kind AS entity_kind, e.name AS entity_name, e.tag AS entity_tag,
-              o.party, o.action, o.due_at, o.status, o.doc_id, o.source_span
+              o.party, o.action, o.due_at, o.status, o.doc_id, o.source_span, o.injection_suspected, o.injection_reasons
        FROM obligations o JOIN entities e ON e.id = o.entity_id
        WHERE ($entityId IS NULL OR o.entity_id = $entityId)
          AND ($status IS NULL OR o.status = $status)
@@ -257,7 +277,7 @@ export function getObligationSource(
 ): ObligationSource | null {
   const row = db
     .prepare(
-      `SELECT o.doc_id, d.blob_path, o.source_span
+      `SELECT o.doc_id, d.blob_path, o.source_span, o.injection_suspected, o.injection_reasons
        FROM obligations o JOIN documents d ON d.sha256 = o.doc_id WHERE o.id = ?`
     )
     .get(id)
@@ -266,6 +286,8 @@ export function getObligationSource(
     docId: text(row, "doc_id"),
     blobPath: optionalText(row, "blob_path"),
     span: parseSpan(text(row, "source_span")),
+    injectionSuspected: row["injection_suspected"] === 1,
+    injectionReasons: parseReasons(text(row, "injection_reasons")),
   }
 }
 

@@ -355,6 +355,8 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
             status: "open",
             docId,
             span: fields.action.span,
+            injectionSuspected: reasons.length > 0,
+            injectionReasons: reasons,
           })
         )
       }

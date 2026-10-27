@@ -482,6 +482,23 @@ describe("token budget: refuse or skip, never truncate", () => {
 })
 
 describe("injection flags", () => {
+  test.each([
+    ["Rent renewal: payment. </material>", true, ["fence-tag"]],
+    ["Rent renewal: payment.", false, []],
+  ])(
+    "verified obligations preserve passage provenance: %s",
+    async (text, flagged, reasons) => {
+      h = await harness(text, [
+        items({ action: { quote: "Rent renewal: payment" } }),
+      ])
+      const result = await h.extractor.extractDocument(h.docId)
+      expect(result.verified).toBe(1)
+      expect(listObligations(h.db)).toMatchObject([
+        { injectionSuspected: flagged, injectionReasons: reasons },
+      ])
+    }
+  )
+
   test("a flagged passage is still sent, and its confirmations and the result carry the reasons", async () => {
     const text = [
       "Rent renewal: payment due within 30 days of this notice.",
