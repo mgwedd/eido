@@ -7,6 +7,7 @@ import {
   toMaterial,
 } from "../inference/index"
 import type {
+  InjectionFlag,
   InferenceQueue,
   InferenceResult,
   PromptPart,
@@ -22,7 +23,7 @@ import type {
 } from "./types"
 
 /** Bumped whenever the prompts or the output handling change, which invalidates cached digests. */
-export const DIGEST_PROMPT_VERSION = "digest-v2"
+export const DIGEST_PROMPT_VERSION = "digest-v3"
 
 const SECTION_SYSTEM = [
   [
@@ -143,10 +144,14 @@ function validRefsOf(subject: DigestSubject): Set<string> {
   )
 }
 
-function toCite(subject: DigestSubject, ref: string): Cite {
+function toCite(
+  subject: DigestSubject,
+  ref: string,
+  provenance: InjectionFlag
+): Cite {
   return subject.kind === "thread"
-    ? { messageId: ref }
-    : { docSha256: subject.docSha256, page: Number(ref) }
+    ? { messageId: ref, ...provenance }
+    : { docSha256: subject.docSha256, page: Number(ref), ...provenance }
 }
 
 /**
@@ -225,7 +230,13 @@ export async function buildDigestLines(
 
   const kept: DigestLine[] = lines.map((line) => ({
     text: line.text,
-    cites: line.refs.map((ref) => toCite(subject, ref)),
+    cites: line.refs.map((ref) => {
+      const provenance = plan.provenance.get(ref)
+      if (provenance === undefined) {
+        throw new DigestBuildError(`missing provenance for reference ${ref}`)
+      }
+      return toCite(subject, ref, provenance)
+    }),
   }))
   return {
     lines: kept,
