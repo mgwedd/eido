@@ -182,6 +182,15 @@ export function insertObligation(
   db: DatabaseSync,
   input: ObligationInput
 ): number {
+  if (
+    (input.injectionSuspected ?? false) !==
+    (input.injectionReasons?.length ?? 0) > 0
+  ) {
+    throw new LedgerError(
+      "invalid_injection_provenance",
+      "injection flag must match the presence of reasons"
+    )
+  }
   requireDocument(db, input.docId)
   if (!isSpan(input.span)) {
     throw new LedgerError(

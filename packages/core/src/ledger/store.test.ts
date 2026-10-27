@@ -655,6 +655,26 @@ describe("parameterized statements only", () => {
 })
 
 describe("injection provenance", () => {
+  test("inconsistent flags and reasons fail before writing, including direct SQL", () => {
+    expect(
+      codeOf(() =>
+        insertObligation(db, obligation({ injectionSuspected: true }))
+      )
+    ).toBe("invalid_injection_provenance")
+    expect(
+      codeOf(() =>
+        insertObligation(db, obligation({ injectionReasons: ["fence-tag"] }))
+      )
+    ).toBe("invalid_injection_provenance")
+    expect(listObligations(db)).toEqual([])
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO obligations (entity_id, action, status, doc_id, source_span, injection_suspected) VALUES (?, 'Pay', 'open', ?, '{"start":0,"end":3}', 1)`
+        )
+        .run(property.id, docA)
+    ).toThrow(/CHECK/)
+  })
   test("flagged and clean obligations retain their passage flags on both read paths", () => {
     const flagged = insertObligation(
       db,
@@ -693,6 +713,7 @@ describe("injection provenance", () => {
   test("malformed stored reasons are reported instead of returned", () => {
     const id = insertObligation(db, obligation())
     db.exec("DROP TRIGGER obligations_injection_fixed")
+    db.exec("PRAGMA ignore_check_constraints = ON")
     db.prepare(
       "UPDATE obligations SET injection_reasons = '[1]' WHERE id = ?"
     ).run(id)
