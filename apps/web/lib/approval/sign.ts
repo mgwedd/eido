@@ -19,8 +19,7 @@ export type ApprovalFailure = {
 }
 
 export type ApprovalResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: ApprovalFailure }
+  { ok: true; value: T } | { ok: false; error: ApprovalFailure }
 
 function failure<T>(
   code: ApprovalFailure["code"],
@@ -83,7 +82,9 @@ export async function assertionOptions(
   }
 }
 
-function toAssertion(credential: PublicKeyCredential): GateWebAuthnAssertion | undefined {
+function toAssertion(
+  credential: PublicKeyCredential
+): GateWebAuthnAssertion | undefined {
   const response = credential.response
   if (!(response instanceof AuthenticatorAssertionResponse)) return undefined
   return {
@@ -112,8 +113,11 @@ export async function signApproval(
     return failure("cancelled", "Face ID did not complete.")
   }
   const assertion =
-    credential instanceof PublicKeyCredential ? toAssertion(credential) : undefined
-  if (assertion === undefined) return failure("cancelled", "Face ID did not complete.")
+    credential instanceof PublicKeyCredential
+      ? toAssertion(credential)
+      : undefined
+  if (assertion === undefined)
+    return failure("cancelled", "Face ID did not complete.")
 
   const body: GateDecisionRequest = {
     intentId: prepared.intentId,

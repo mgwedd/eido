@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
-import { buildChallenge, shortHash, toBase64url } from "@/lib/approval/challenge"
+import {
+  buildChallenge,
+  shortHash,
+  toBase64url,
+} from "@/lib/approval/challenge"
 
 type Vector = {
   id: string
@@ -11,7 +15,7 @@ type Vector = {
   challengeHex: string
 }
 
-const vectors: { vectors: Vector[] } = JSON.parse(
+const vectors = JSON.parse(
   readFileSync(
     new URL(
       "../../../packages/schemas/vectors/approval-challenge-vectors.json",
@@ -19,7 +23,7 @@ const vectors: { vectors: Vector[] } = JSON.parse(
     ),
     "utf8"
   )
-)
+) as { vectors: Vector[] } // test fixture owned by this repo, not external input
 
 describe("buildChallenge against the gate's shared vectors", () => {
   it.each(vectors.vectors)("matches $id", async (vector) => {

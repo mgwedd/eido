@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+/* eslint-disable @typescript-eslint/require-await -- fetch and navigator.credentials.get return promises, so their stubs are async functions with nothing to await */
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { GatePrepareApproval } from "@eido/schemas"
 import {
@@ -123,13 +124,20 @@ describe("signApproval", () => {
     await signApproval(second)
 
     for (const [index, call] of [first, second].entries()) {
-      const sent = get.mock.calls[index] as unknown as [CredentialRequestOptions]
+      const sent = get.mock.calls[index] as unknown as [
+        CredentialRequestOptions,
+      ]
       const expected = await assertionOptions(call, window.location.hostname)
-      expect(sent[0].publicKey?.challenge).toEqual(expected.publicKey?.challenge)
+      expect(sent[0].publicKey?.challenge).toEqual(
+        expected.publicKey?.challenge
+      )
       expect(sent[0].publicKey?.userVerification).toBe("required")
       expect(sent[0].publicKey?.rpId).toBe(window.location.hostname)
-      const init = fetchMock.mock.calls[index] as unknown as [string, RequestInit]
-      expect(JSON.parse(String(init[1].body))).toEqual({
+      const init = fetchMock.mock.calls[index] as unknown as [
+        string,
+        RequestInit,
+      ]
+      expect(JSON.parse(init[1].body as string)).toEqual({
         intentId: "intent-1",
         decision: "approved",
         nonce: call.nonce,
@@ -141,12 +149,11 @@ describe("signApproval", () => {
         },
       })
     }
-    const challenges = get.mock.calls.map(
-      (c) =>
-        toHex(
-          (c as unknown as [CredentialRequestOptions])[0].publicKey
-            ?.challenge as ArrayBuffer
-        )
+    const challenges = get.mock.calls.map((c) =>
+      toHex(
+        (c as unknown as [CredentialRequestOptions])[0].publicKey
+          ?.challenge as ArrayBuffer
+      )
     )
     expect(challenges[0]).not.toBe(challenges[1])
   })
