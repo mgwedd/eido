@@ -125,6 +125,26 @@ export function encryptPush(
   return Buffer.concat([header, asPublic, ciphertext])
 }
 
+type KeyGenerator = {
+  generateKeys: () => unknown
+  getPrivateKey: () => Buffer
+}
+
+/**
+ * A fresh VAPID private key as unpadded base64url. Node returns the ECDH scalar without
+ * its leading zero bytes, so about 1 key in 256 comes back shorter than 32 bytes and is
+ * rejected as invalid; it is left-padded back to the full width.
+ */
+export function generateVapidPrivateKey(
+  ecdh: KeyGenerator = createECDH("prime256v1")
+): string {
+  ecdh.generateKeys()
+  const scalar = ecdh.getPrivateKey()
+  return Buffer.concat([Buffer.alloc(32 - scalar.length), scalar]).toString(
+    "base64url"
+  )
+}
+
 export function vapidPublicKey(privateKey: string): string {
   return privateKeyFromScalar(privateKey).point.toString("base64url")
 }

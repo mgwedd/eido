@@ -9,6 +9,7 @@ import {
 import { describe, expect, it } from "vitest"
 import {
   encryptPush,
+  generateVapidPrivateKey,
   validatePushKeys,
   vapidAuthorization,
   vapidPublicKey,
@@ -108,10 +109,21 @@ describe("push crypto", () => {
     expect(() => encryptPush(Buffer.alloc(3994), p256dh, auth)).toThrow()
   })
 
+  it("pads a generated VAPID key whose scalar lost its leading zero bytes", () => {
+    // Node's ECDH getPrivateKey() drops leading zero bytes; this is that case (1 in 256 keys).
+    const stripped = Buffer.alloc(30, 7)
+    const key = generateVapidPrivateKey({
+      generateKeys: () => Buffer.alloc(0),
+      getPrivateKey: () => stripped,
+    })
+    expect(Buffer.from(key, "base64url")).toEqual(
+      Buffer.concat([Buffer.alloc(2), stripped])
+    )
+    expect(vapidPublicKey(key)).toMatch(/^[A-Za-z0-9_-]{87}$/)
+  })
+
   it("creates a VAPID token with verifiable ES256 signature and claims", () => {
-    const ecdh = createECDH("prime256v1")
-    ecdh.generateKeys()
-    const privateKey = ecdh.getPrivateKey().toString("base64url")
+    const privateKey = generateVapidPrivateKey()
     const authorization = vapidAuthorization(
       "https://push.example.invalid/path",
       privateKey,
