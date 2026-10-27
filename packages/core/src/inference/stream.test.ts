@@ -22,11 +22,10 @@ function failure(events: string[]): unknown {
   return undefined
 }
 
-const delta = (content: string): string =>
-  `data: {"choices":[{"index":0,"delta":{"content":${JSON.stringify(content)}},"finish_reason":null}]}`
-const stop = 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
-const usage = 'data: {"choices":[],"usage":{"prompt_tokens":42}}'
-const done = "data: [DONE]"
+const piece = (content: string): string =>
+  `data: {"content":${JSON.stringify(content)},"stop":false}`
+const final = (stopType: string, evaluated = 42): string =>
+  `data: {"content":"","stop":true,"stop_type":"${stopType}","tokens_evaluated":${String(evaluated)}}`
 
 describe("splitEvents", () => {
   test("returns complete events and keeps the unterminated rest", () => {
@@ -38,8 +37,8 @@ describe("splitEvents", () => {
 })
 
 describe("applyEvent and finishStream", () => {
-  test("joins deltas and reads finish reason and prompt tokens", () => {
-    expect(run([delta("Hel"), delta("lo"), stop, usage, done])).toEqual({
+  test("joins content and reads the finish and tokens_evaluated", () => {
+    expect(run([piece("Hel"), piece("lo"), final("eos")])).toEqual({
       text: "Hello",
       finishReason: "stop",
       promptTokens: 42,
@@ -48,19 +47,23 @@ describe("applyEvent and finishStream", () => {
 
   test("skips comment and field lines", () => {
     expect(
-      run([": keep-alive\nevent: message\n" + delta("x"), stop, usage, done])
-        .text
+      run([": keep-alive\nevent: message\n" + piece("x"), final("eos")]).text
     ).toBe("x")
   })
 
-  test("reads a length finish", () => {
+  test.each([
+    ["eos", "stop"],
+    ["word", "stop"],
+    ["limit", "length"],
+  ])("stop_type %s finishes as %s", (stopType, finishReason) => {
+    expect(run([final(stopType)]).finishReason).toBe(finishReason)
+  })
+
+  test("a chunk without content still counts its stop flag", () => {
     expect(
-      run([
-        'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
-        usage,
-        done,
-      ]).finishReason
-    ).toBe("length")
+      run(['data: {"stop":true,"stop_type":"eos","tokens_evaluated":7}'])
+        .promptTokens
+    ).toBe(7)
   })
 
   test.each([
@@ -71,29 +74,29 @@ describe("applyEvent and finishStream", () => {
       "stream chunk is not an object",
     ],
     [
-      "a chunk with neither choices nor usage",
-      ["data: {}"],
-      "stream chunk has neither choices nor usage",
+      "a chunk without a stop flag",
+      ['data: {"content":"x"}'],
+      "stream chunk has no stop flag",
     ],
     [
-      "choices that are not an array",
-      ['data: {"choices":1}'],
-      "choices is not an array",
+      "content that is not a string",
+      ['data: {"content":1,"stop":false}'],
+      "stream chunk content is not a string",
     ],
     [
-      "a choice that is not an object",
-      ['data: {"choices":[1]}'],
-      "choice is not an object",
+      "an unhandled stop type",
+      ['data: {"stop":true,"stop_type":"none","tokens_evaluated":1}'],
+      'stop_type "none" is not handled',
     ],
     [
-      "usage without prompt tokens",
-      ['data: {"choices":[],"usage":{}}'],
-      "usage.prompt_tokens is missing or not a number",
+      "a missing stop type",
+      ['data: {"stop":true,"tokens_evaluated":1}'],
+      "stop_type null is not handled",
     ],
     [
-      "an unhandled finish reason",
-      ['data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'],
-      'finish_reason "tool_calls" is not handled',
+      "a final chunk without tokens_evaluated",
+      ['data: {"stop":true,"stop_type":"eos"}'],
+      "tokens_evaluated is missing or not a number",
     ],
     [
       "a server error with a message",
@@ -106,32 +109,18 @@ describe("applyEvent and finishStream", () => {
       "server reported an error in the stream",
     ],
     [
-      "data after [DONE]",
-      [stop, usage, done, delta("late")],
-      "data after [DONE]",
-    ],
-    ["a stream cut before [DONE]", [stop, usage], "stream ended before [DONE]"],
-    [
-      "a stream with no finish reason",
-      [usage, done],
-      "stream carried no finish_reason",
+      "data after the final chunk",
+      [final("eos"), piece("late")],
+      "data after the final chunk",
     ],
     [
-      "a stream with no usage",
-      [stop, done],
-      "stream carried no usage.prompt_tokens",
+      "a stream cut before the final chunk",
+      [piece("partial")],
+      "stream ended before the final chunk",
     ],
   ])("rejects %s as malformed", (_name, events, message) => {
     const error = failure(events)
     expect(error).toBeInstanceOf(InferenceError)
     expect(error).toMatchObject({ kind: "malformed", status: 200, message })
-  })
-
-  test("a null usage is not a usage report", () => {
-    expect(
-      failure([stop, 'data: {"choices":[],"usage":null}', done])
-    ).toMatchObject({
-      message: "stream carried no usage.prompt_tokens",
-    })
   })
 })

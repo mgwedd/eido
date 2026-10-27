@@ -18,7 +18,6 @@ import { isIanaTimezone, normalizeAddress } from "./validate"
 const OWNER = {
   displayName: "Test Owner",
   timezone: "Europe/Zurich",
-  workingHours: { mon: { start: "09:00", end: "17:30" } },
   signature: "Test Owner",
   addresses: [{ address: "Owner@Example.test", label: "main" }],
 }
@@ -119,6 +118,20 @@ describe("updateProfile", () => {
     expect(history()).toBe(before + 1)
   })
 
+  test("preserves legacy working-hours data without exposing it in the profile", async () => {
+    await store.updateProfile(OWNER)
+    db.prepare("UPDATE profile SET working_hours_json = ? WHERE id = 1").run(
+      '{"mon":{"start":"09:00","end":"17:30"}}'
+    )
+    await store.updateProfile({ signature: "Regards" })
+    expect(await store.getProfile()).not.toHaveProperty("workingHours")
+    expect(
+      db.prepare("SELECT working_hours_json FROM profile WHERE id = 1").get()?.[
+        "working_hours_json"
+      ]
+    ).toBe('{"mon":{"start":"09:00","end":"17:30"}}')
+  })
+
   test.each([
     ["invalid timezone", { timezone: "Mars/Olympus" }],
     ["offset timezone", { timezone: "+01:00" }],
@@ -135,10 +148,9 @@ describe("updateProfile", () => {
     ["empty display name", { displayName: "" }],
     ["blank display name", { displayName: "   " }],
     [
-      "end before start",
-      { workingHours: { tue: { start: "17:00", end: "09:00" } } },
+      "removed working-hours field",
+      { workingHours: { tue: { start: "9am", end: "17:00" } } },
     ],
-    ["bad time", { workingHours: { tue: { start: "9am", end: "17:00" } } }],
     ["unknown key", { password: "x" }],
   ])("rejects %s and leaves the data unchanged", async (_name, patch) => {
     await store.updateProfile(OWNER)
@@ -735,7 +747,6 @@ describe("profile_history", () => {
     expect(fields).toEqual([
       "profile.displayName",
       "profile.timezone",
-      "profile.workingHours",
       "profile.signature",
       "profile.addresses",
       "entity.create",

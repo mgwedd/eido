@@ -75,6 +75,7 @@ const noIntents: IntentClient = {
   status: () => Promise.reject(new Error("not used")),
   history: () => Promise.reject(new Error("not used")),
   listPending: () => Promise.reject(new Error("not used")),
+  getConnectorHealth: () => Promise.resolve([]),
 }
 
 const sync = (parser: Parser | undefined) =>
@@ -87,7 +88,12 @@ const sync = (parser: Parser | undefined) =>
   )
 
 const facade = () =>
-  createGmailFacade({ db, intents: noIntents, identity: "x@example.invalid" })
+  createGmailFacade({
+    db,
+    intents: noIntents,
+    identity: "x@example.invalid",
+    profile: { getProfile: () => Promise.resolve(null) },
+  })
 
 describe("PDF attachments", () => {
   test("a synced PDF's text comes back from attachment_text, flagged untrusted", async () => {

@@ -16,7 +16,9 @@ import { isPdfMime, isTextMime } from "../mail/parse"
 import type { SearchHit } from "../../index/index"
 import { rationaleField } from "../proposal-rationale"
 import type { ProposalNote } from "../proposal-rationale"
+import type { ProfileStore } from "../../profile/store"
 import { replyRecipients, storedAddresses } from "../reply-target"
+import { appendDraftSignature } from "../draft-signature"
 import { GmailError } from "./errors"
 import { GMAIL_SOURCE } from "./routes"
 
@@ -67,6 +69,8 @@ export type GmailFacadeDeps = {
   intents: IntentClient
   /** The assistant's Gmail address: never a recipient of its own reply. */
   identity: string
+  /** Profile settings used to apply the owner's signature to every new draft. */
+  profile: Pick<ProfileStore, "getProfile">
   origin?: GateIntentOrigin
 }
 
@@ -109,7 +113,7 @@ function messages(
  * its executor performs it.
  */
 export function createGmailFacade(deps: GmailFacadeDeps) {
-  const { db, intents, identity } = deps
+  const { db, intents, identity, profile } = deps
   const origin = deps.origin ?? "reactive"
   /** The indexed message the Gmail id names: its raw-byte hash and its stored addresses. */
   const target = (messageId: string) => {
@@ -177,8 +181,22 @@ export function createGmailFacade(deps: GmailFacadeDeps) {
       }
     },
 
-    draft_create: (args: EmailDraftIntent["args"], note?: ProposalNote) =>
-      propose({ kind: "email.draft", args }, note),
+    draft_create: async (
+      args: EmailDraftIntent["args"],
+      note?: ProposalNote
+    ) => {
+      const owner = await profile.getProfile()
+      return propose(
+        {
+          kind: "email.draft",
+          args: {
+            ...args,
+            body: appendDraftSignature(args.body, owner?.signature ?? ""),
+          },
+        },
+        note
+      )
+    },
     label: (args: EmailLabelIntent["args"], note?: ProposalNote) =>
       propose({ kind: "email.label", args }, note),
     archive: (args: EmailArchiveIntent["args"], note?: ProposalNote) =>

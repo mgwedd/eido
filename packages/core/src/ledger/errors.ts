@@ -5,6 +5,7 @@ export type LedgerErrorCode =
   | "entity_not_found"
   | "extraction_not_found"
   | "already_confirmed"
+  | "entity_mismatch"
   | "invalid_span"
   | "invalid_confidence"
 

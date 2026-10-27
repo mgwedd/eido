@@ -2,6 +2,7 @@ export { DEFAULTS, resolveConfig } from "./config"
 export type { ProtonConfig } from "./config"
 export {
   AuthFailedError,
+  BusyError,
   GateUnavailableMailError,
   HandshakeFailedError,
   ProtonError,
@@ -28,5 +29,5 @@ export { attachmentText, isTextMime, parseMessage } from "../mail/parse"
 export type { Mailbox, ParsedAttachment, ParsedMessage } from "../mail/parse"
 export { callSource } from "./source"
 export type { ProtonMailSource } from "./source"
-export { CONNECTOR, syncFolder, syncProton } from "./sync"
+export { CONNECTOR, syncFolder, syncProton, syncProtonWithHealth } from "./sync"
 export type { FolderSyncResult } from "./sync"

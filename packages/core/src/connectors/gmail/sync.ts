@@ -13,6 +13,8 @@ import type { GmailConfig } from "./config"
 import { GmailError } from "./errors"
 import { asObject, optionalString } from "./json"
 import { GMAIL_CONNECTOR, GMAIL_SOURCE } from "./routes"
+import { healthAwareSyncRunner } from "../health-aware-sync"
+import type { ConnectorHealthReader } from "../health-aware-sync"
 
 export type LabelSyncResult = {
   label: string
@@ -309,4 +311,18 @@ export async function syncGmail(
       await syncGmailLabel(db, client, label, config, account, options)
     )
   return results
+}
+
+/** Runs Gmail's existing cursor-safe sync only while the gate says the connector may be tried. */
+export async function syncGmailWithHealth(
+  gate: ConnectorHealthReader,
+  db: DatabaseSync,
+  client: GmailClient,
+  config: GmailConfig,
+  account: IngestAccount,
+  options: SyncOptions = {}
+) {
+  return healthAwareSyncRunner(gate)(GMAIL_CONNECTOR, () =>
+    syncGmail(db, client, config, account, options)
+  )
 }

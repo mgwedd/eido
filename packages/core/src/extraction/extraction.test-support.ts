@@ -114,23 +114,5 @@ export async function harness(
 export function chatRequests(server: StubModelServer): Array<{
   messages: Array<{ role: string; content: string }>
 }> {
-  return server.requests
-    .filter((r) => r.path === "/v1/chat/completions")
-    .map((r) => {
-      const body: unknown = JSON.parse(r.body)
-      if (
-        typeof body !== "object" ||
-        body === null ||
-        !("messages" in body) ||
-        !Array.isArray(body.messages)
-      ) {
-        throw new Error("unexpected request body")
-      }
-      return {
-        messages: body.messages.map((m: unknown) => ({
-          role: String(Reflect.get(m as object, "role")),
-          content: String(Reflect.get(m as object, "content")),
-        })),
-      }
-    })
+  return server.completions().map((c) => ({ messages: c.turns }))
 }

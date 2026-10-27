@@ -170,6 +170,29 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      created_at    TEXT NOT NULL,
      expires_at    TEXT NOT NULL
    ) STRICT;`,
+  // Connector health backoff and the short lived half-open read lease (#24).
+  `ALTER TABLE connectors ADD COLUMN next_attempt_at TEXT;
+   ALTER TABLE connectors ADD COLUMN last_error TEXT;
+   ALTER TABLE connectors ADD COLUMN probe_started_at TEXT;
+   ALTER TABLE connectors ADD COLUMN probe_lease_id TEXT;
+   ALTER TABLE connectors ADD COLUMN health_generation INTEGER NOT NULL DEFAULT 0;`,
+  // Count-only push subscriptions and durable coalescing state (#16). The exact binding's
+  // signed policy.set approval is checked again before each outbound request.
+  `CREATE TABLE push_subscriptions (
+     id TEXT PRIMARY KEY,
+     endpoint TEXT NOT NULL UNIQUE,
+     p256dh TEXT NOT NULL,
+     auth TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     revoked_at TEXT,
+     approval_id TEXT NOT NULL REFERENCES control_approvals(id)
+   ) STRICT;
+   CREATE TABLE push_state (
+     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+     due_at INTEGER,
+     last_attempt_at INTEGER
+   ) STRICT;
+   INSERT INTO push_state (singleton) VALUES (1);`,
 ]
 
 function userVersion(db: DatabaseSync): number {

@@ -47,6 +47,7 @@ import {
 import { reloadPolicy } from "./internal/runtime"
 import { validateGatePrepareApproval } from "@eido/schemas"
 import { FileVault } from "./internal/vault/file-vault"
+import { vapidPublicKey } from "./internal/push-crypto"
 import { CONTROL_DB_FILE, GATE_LOG_FILE, gateConfig, runGate } from "./main"
 import type { GateConfig } from "./main"
 
@@ -196,6 +197,95 @@ describe("gateConfig", () => {
     ).toThrow(
       "the gate needs EIDO_GATE_SOCKET, EIDO_GATE_CONTROL_SOCKET, EIDO_WEBAUTHN_RP_ID, EIDO_WEBAUTHN_ORIGIN"
     )
+  })
+})
+
+describe("Web Push configuration", () => {
+  const BASE = {
+    EIDO_GATE_DATA_DIR: "/d",
+    EIDO_GATE_SOCKET: "/d/gate.sock",
+    EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+    EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+    EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+  }
+
+  it("requires a vault and validates configured windows", () => {
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_PUSH_VAPID_SUBJECT: "mailto:ops@example.invalid",
+      })
+    ).toThrow("Web Push needs EIDO_GATE_VAULT_FILE")
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_PUSH_VAPID_SUBJECT: "mailto:ops@example.invalid",
+        EIDO_GATE_VAULT_FILE: "/tmp/vault",
+        EIDO_PUSH_WINDOW_MS: "0",
+      })
+    ).toThrow("EIDO_PUSH_WINDOW_MS")
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_PUSH_VAPID_SUBJECT: "mailto:ops@example.invalid",
+        EIDO_GATE_VAULT_FILE: "/tmp/vault",
+        EIDO_DEV_VAULT: "1",
+        EIDO_PUSH_WINDOW_MS: "30000",
+        EIDO_APPROVAL_NUDGE_THRESHOLD: "3",
+        EIDO_APPROVAL_NUDGE_WINDOW_MS: "90000",
+      }).push
+    ).toEqual({
+      vaultPath: "/tmp/vault",
+      devVault: true,
+      subject: "mailto:ops@example.invalid",
+      windowMs: 30000,
+      nudgeThreshold: 3,
+      nudgeWindowMs: 90000,
+    })
+  })
+
+  it("creates and reuses its VAPID secret inside the gate vault", async () => {
+    const vaultPath = join(dir, "vapid-vault.json")
+    const c: GateConfig = {
+      ...config(),
+      push: {
+        vaultPath,
+        devVault: true,
+        subject: "mailto:ops@example.invalid",
+        windowMs: 60_000,
+        nudgeThreshold: 5,
+        nudgeWindowMs: 120_000,
+      },
+    }
+    const key = {
+      connector: "eido-web-push",
+      kind: "api_key",
+      client: "write",
+    } as const
+    const gate = await runGate(c)
+    const vault = new FileVault({ path: vaultPath, devFlag: true })
+    const first = await vault.get(key)
+    expect(typeof first).toBe("string")
+    expect(vapidPublicKey(first ?? "")).toMatch(/^[A-Za-z0-9_-]+$/)
+    await gate.close()
+    const again = await runGate(c)
+    expect(await vault.get(key)).toBe(first)
+    await again.close()
+  })
+
+  it("refuses an invalid VAPID subject before the phone listener starts", async () => {
+    const c: GateConfig = {
+      ...config(),
+      push: {
+        vaultPath: join(dir, "bad-vapid-vault.json"),
+        devVault: true,
+        subject: "invalid-subject",
+        windowMs: 60_000,
+        nudgeThreshold: 5,
+        nudgeWindowMs: 120_000,
+      },
+    }
+    await expect(runGate(c)).rejects.toThrow("Invalid VAPID subject")
   })
 })
 
@@ -587,6 +677,7 @@ describe("runGate with Bridge", () => {
     const c = await bridged(BRIDGE_SECRET)
     const gate = await runGate(c)
     try {
+      pinProton()
       const mail = createProtonMailClient({ socketPath: c.socketPath })
       expect((await mail.listFolders()).sort()).toEqual([
         "Drafts",
@@ -612,10 +703,152 @@ describe("runGate with Bridge", () => {
     }
   })
 
+  it("closes a due Proton breaker only after the gate observes a successful Bridge read", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    const gate = await runGate(c)
+    try {
+      pinProton()
+      runningGate()
+        .db.prepare(
+          `UPDATE connectors SET health = 'open', consecutive_failures = 3,
+           next_attempt_at = ?, last_error = 'handshake_failed' WHERE name = ?`
+        )
+        .run(new Date(Date.now() - 1).toISOString(), PROTON_CONNECTOR)
+
+      const mail = createProtonMailClient({ socketPath: c.socketPath })
+      expect(await mail.listFolders()).toContain("INBOX")
+      expect(
+        runningGate()
+          .db.prepare(
+            "SELECT health, consecutive_failures, next_attempt_at FROM connectors WHERE name = ?"
+          )
+          .get(PROTON_CONNECTOR)
+      ).toMatchObject({
+        health: "healthy",
+        consecutive_failures: 0,
+        next_attempt_at: null,
+      })
+      expect(
+        fake?.imapCommands.filter((command) => command.startsWith("LOGIN"))
+      ).toHaveLength(1)
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("reopens a failed Proton probe and does not retry before its next attempt", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    const gate = await runGate(c)
+    try {
+      pinProton()
+      runningGate()
+        .db.prepare(
+          `UPDATE connectors SET health = 'open', consecutive_failures = 3,
+           next_attempt_at = ?, last_error = 'handshake_failed' WHERE name = ?`
+        )
+        .run(new Date(Date.now() - 1).toISOString(), PROTON_CONNECTOR)
+      await fake?.close()
+      fake = undefined
+
+      const mail = createProtonMailClient({ socketPath: c.socketPath })
+      await expect(mail.listFolders()).rejects.toMatchObject({
+        code: "handshake_failed",
+      })
+      const health = runningGate()
+        .db.prepare(
+          "SELECT health, consecutive_failures, last_error, next_attempt_at FROM connectors WHERE name = ?"
+        )
+        .get(PROTON_CONNECTOR)
+      expect(health).toMatchObject({
+        health: "open",
+        consecutive_failures: 4,
+        last_error: "handshake_failed",
+      })
+      expect(Date.parse(String(health?.["next_attempt_at"]))).toBeGreaterThan(
+        Date.now()
+      )
+      await expect(mail.listFolders()).rejects.toMatchObject({
+        status: 503,
+        code: "unavailable",
+      })
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("isolates three real Bridge handshake failures and recovers on one due read", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    const gate = await runGate(c)
+    try {
+      pinProton()
+      signedPin(runningGate().db, manifest("gmail", MAIL_OPS))
+      const imapPort = fake?.imapPort
+      const smtpPort = fake?.smtpPort
+      if (imapPort === undefined || smtpPort === undefined)
+        throw new Error("fake Bridge did not start")
+      await fake?.close()
+      fake = undefined
+
+      const mail = createProtonMailClient({ socketPath: c.socketPath })
+      for (const attempt of [1, 2, 3]) {
+        await expect(mail.listFolders()).rejects.toMatchObject({
+          code: "handshake_failed",
+        })
+        if (attempt < 3) {
+          runningGate()
+            .db.prepare(
+              "UPDATE connectors SET next_attempt_at = ? WHERE name = ?"
+            )
+            .run(new Date(0).toISOString(), PROTON_CONNECTOR)
+        }
+      }
+      expect(
+        runningGate()
+          .db.prepare(
+            "SELECT health, consecutive_failures FROM connectors WHERE name = ?"
+          )
+          .get(PROTON_CONNECTOR)
+      ).toMatchObject({ health: "open", consecutive_failures: 3 })
+      expect(
+        runningGate()
+          .db.prepare(
+            "SELECT health, consecutive_failures FROM connectors WHERE name = 'gmail'"
+          )
+          .get()
+      ).toMatchObject({ health: "healthy", consecutive_failures: 0 })
+
+      fake = await startFakeBridge({
+        host: "127.0.0.1",
+        imapPort,
+        smtpPort,
+        username: USER,
+        password: BRIDGE_SECRET,
+      })
+      runningGate()
+        .db.prepare("UPDATE connectors SET next_attempt_at = ? WHERE name = ?")
+        .run(new Date(0).toISOString(), PROTON_CONNECTOR)
+      expect(await mail.listFolders()).toContain("INBOX")
+      expect(
+        runningGate()
+          .db.prepare(
+            "SELECT health, consecutive_failures, next_attempt_at FROM connectors WHERE name = ?"
+          )
+          .get(PROTON_CONNECTOR)
+      ).toMatchObject({
+        health: "healthy",
+        consecutive_failures: 0,
+        next_attempt_at: null,
+      })
+    } finally {
+      await gate.close()
+    }
+  })
+
   it("passes an oversized UID through the client without returning its bytes", async () => {
     const c = await bridged(BRIDGE_SECRET, true, true)
     const gate = await runGate(c)
     try {
+      pinProton()
       const mail = createProtonMailClient({ socketPath: c.socketPath })
       const page = await mail.fetchRaw("INBOX", 1, 10)
       expect(page.messages.map((entry) => entry.uid)).toEqual([4])
@@ -783,16 +1016,23 @@ describe("runGate with Bridge", () => {
     const gate = await runGate(c)
     let caught: unknown
     try {
+      pinProton()
       const mail = createProtonMailClient({ socketPath: c.socketPath })
       caught = await mail.listFolders().catch((error: unknown) => error)
       expect(caught).toBeInstanceOf(GateRequestError)
       expect(caught).toMatchObject({ status: 502, code: "auth_failed" })
       await expect(mail.listFolders()).rejects.toMatchObject({
-        code: "auth_failed",
+        status: 503,
+        code: "unavailable",
       })
       expect(
         fake?.imapCommands.filter((command) => command.startsWith("LOGIN"))
       ).toHaveLength(1)
+      expect(
+        runningGate()
+          .db.prepare("SELECT enabled FROM connectors WHERE name = ?")
+          .get(PROTON_CONNECTOR)?.["enabled"]
+      ).toBe(0)
       expect(loggedText(runningGate().db)).not.toContain(wrong)
     } finally {
       await gate.close()

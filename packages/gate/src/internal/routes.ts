@@ -6,12 +6,14 @@ import {
 import type {
   GateAuditRecordRequest,
   GateAuditRecordResult,
+  GateConnectorHealth,
   GateIntentHistory,
   GatePendingIntentList,
   GateProposeRefusal,
   GateProposeResult,
 } from "@eido/schemas"
 import { append, verifyChain } from "./audit"
+import { getConnectorHealth } from "./connector-health"
 import { mailRoute } from "./bridge/mail-routes"
 import type { MailReads } from "./bridge/mail-routes"
 import { payloadHash } from "./canonical"
@@ -27,13 +29,17 @@ import {
 import type { Policy } from "./policy"
 
 // The gate's routes. The data-plane listener serves the intent API (propose, and three
-// read-only views without payload bodies) and POST /audit, which appends one hash-only
+// read-only views without payload bodies), connector health, and POST /audit, which appends one hash-only
 // audit.profile.* row for a profile change in core (#181). The control listener is a separate socket that the
 // data plane is never given; it serves the same reads plus the audit chain check. The phone
 // listener (#85) and the Mac-local admin listener (#78) are further handlers over the same
 // server wrapper, each on its own listener.
 
-export type GateState = { db: DatabaseSync; policy: Policy }
+export type GateState = {
+  db: DatabaseSync
+  policy: Policy
+  notifyPending?: () => void
+}
 
 const MAX_ERRORS = 50
 const MAX_ERROR_LENGTH = 300
@@ -96,6 +102,7 @@ async function proposeRoute(
       : { rationale: proposal.rationale }),
   })
   if (result.ok) {
+    if (result.state === "pending") gate.notifyPending?.()
     if (result.tier === "auto" && execute !== undefined) {
       await execute(result.intentId)
     }
@@ -219,6 +226,19 @@ async function auditRoute(
 
 const INTENT_PATH = /^\/intents\/([^/]+)(\/history)?$/
 
+function connectorHealthRoute(
+  request: GateRequest,
+  gate: GateState
+): Reply | undefined {
+  if (request.method !== "GET" || request.path !== "/connector-health") {
+    return undefined
+  }
+  const result: GateConnectorHealth = {
+    connectors: getConnectorHealth(gate.db),
+  }
+  return { status: 200, body: result }
+}
+
 /** The read-only intent views, or undefined when the request is not one of them. */
 function readRoute(request: GateRequest, gate: GateState): Reply | undefined {
   if (request.method !== "GET") return undefined
@@ -248,8 +268,8 @@ function readRoute(request: GateRequest, gate: GateState): Reply | undefined {
 }
 
 /**
- * The data-plane listener: the intent API, POST /audit and, when Bridge is configured, the
- * Proton mail read routes (#195); nothing else.
+ * The data-plane listener: the intent API, POST /audit, connector health and, when Bridge is
+ * configured, the Proton mail read routes (#195); nothing else.
  */
 export function dataPlaneHandler(
   gate: () => GateState,
@@ -266,7 +286,12 @@ export function dataPlaneHandler(
     }
     const mailReply =
       mail === undefined ? undefined : mailRoute(request, state.db, mail)
-    return mailReply ?? readRoute(request, state) ?? NOT_FOUND
+    return (
+      mailReply ??
+      connectorHealthRoute(request, state) ??
+      readRoute(request, state) ??
+      NOT_FOUND
+    )
   }
 }
 
@@ -277,6 +302,10 @@ export function controlHandler(gate: () => GateState): Handler {
     if (request.method === "GET" && request.path === "/audit/chain") {
       return { status: 200, body: verifyChain(state.db) }
     }
-    return readRoute(request, state) ?? NOT_FOUND
+    return (
+      connectorHealthRoute(request, state) ??
+      readRoute(request, state) ??
+      NOT_FOUND
+    )
   }
 }

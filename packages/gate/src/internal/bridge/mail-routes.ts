@@ -11,6 +11,13 @@ import type { GateRequest, Reply } from "../http"
 import type { ProtonBridge } from "./bridge"
 import { PROTON_CONNECTOR } from "./config"
 import { imapError } from "./errors"
+import {
+  beginConnectorRead,
+  disableConnectorAfterAuthFailure,
+  recordConnectorReadFailure,
+  recordConnectorReadSuccess,
+  releaseConnectorProbe,
+} from "../connector-health"
 
 // The Proton mail read routes on the data-plane listener (#195). Core reads raw messages here
 // and parses them itself; the gate never does. Each call writes one audit row whose detail hash
@@ -57,9 +64,9 @@ function failed(db: DatabaseSync, read: Read, error: unknown): Reply {
   }
   if (mapped.code === "busy") {
     // The gate's own limit on concurrent reads (#219): 503 with Retry-After, so core waits
-    // and asks again later rather than looping. The code is the schema's `unavailable`.
+    // and asks again later rather than looping. The code is `busy`, distinct from a Bridge failure.
     return {
-      ...apiError(503, "unavailable", "the gate is busy reading mail"),
+      ...apiError(503, "busy", "the gate is busy reading mail"),
       headers: { "retry-after": String(BUSY_RETRY_AFTER_SECONDS) },
     }
   }
@@ -164,19 +171,93 @@ export function mailRoute(
   request: GateRequest,
   db: DatabaseSync,
   bridge: MailReads
-): Promise<Reply> | Reply | undefined {
+): Promise<Reply> | undefined {
   if (request.method !== "GET") return undefined
-  if (request.path === FOLDERS_PATH) return folders(db, bridge)
-  const match = FOLDER_PATH.exec(request.path)
-  if (match === null) return undefined
-  const read = match[2] === "state" ? "state" : "messages"
-  let folder: string
-  try {
-    folder = decodeURIComponent(match[1] ?? "")
-  } catch {
-    return invalid(db, read, "the folder name is not valid percent-encoding")
+  const match =
+    request.path === FOLDERS_PATH ? undefined : FOLDER_PATH.exec(request.path)
+  if (request.path !== FOLDERS_PATH && match === null) return undefined
+  const read =
+    request.path === FOLDERS_PATH
+      ? "folders"
+      : match?.[2] === "state"
+        ? "state"
+        : "messages"
+  let folder: string | undefined
+  if (match !== null && match !== undefined) {
+    try {
+      folder = decodeURIComponent(match[1] ?? "")
+    } catch {
+      return Promise.resolve(
+        invalid(db, read, "the folder name is not valid percent-encoding")
+      )
+    }
   }
-  return read === "state"
-    ? state(db, bridge, folder)
-    : messages(db, bridge, folder, request.query)
+  if (read === "messages") {
+    const fromUid = integer(request.query.get("fromUid"), 1, MAX_UID)
+    const rawLimit = request.query.get("limit")
+    const limit =
+      rawLimit === null
+        ? DEFAULT_PAGE_LIMIT
+        : integer(rawLimit, 1, Number.MAX_SAFE_INTEGER)
+    if (fromUid === undefined)
+      return Promise.resolve(
+        invalid(db, "messages", "fromUid must be a UID from 1 to 4294967295")
+      )
+    if (limit === undefined)
+      return Promise.resolve(
+        invalid(db, "messages", "limit must be a whole number from 1")
+      )
+  }
+  const attempt = beginConnectorRead(db, PROTON_CONNECTOR)
+  if (!attempt.allowed) {
+    const reason = attempt.reason ?? "connector_open"
+    audit(db, read, `refused.${reason}`, {})
+    return Promise.resolve(
+      apiError(
+        503,
+        "unavailable",
+        reason === "connector_disabled"
+          ? "connector is disabled"
+          : "connector is waiting for its next read probe"
+      )
+    )
+  }
+  const operation =
+    request.path === FOLDERS_PATH
+      ? folders(db, bridge)
+      : read === "state"
+        ? state(db, bridge, folder ?? "")
+        : messages(db, bridge, folder ?? "", request.query)
+  return operation
+    .then((reply) => {
+      const code =
+        typeof reply.body === "object" &&
+        reply.body !== null &&
+        "code" in reply.body
+          ? reply.body.code
+          : undefined
+      if (reply.status === 200) {
+        recordConnectorReadSuccess(db, PROTON_CONNECTOR, attempt)
+      } else if (code === "handshake_failed") {
+        recordConnectorReadFailure(
+          db,
+          PROTON_CONNECTOR,
+          "handshake_failed",
+          attempt
+        )
+      } else if (code === "auth_failed") {
+        disableConnectorAfterAuthFailure(db, PROTON_CONNECTOR)
+      } else if (code === "busy") {
+        if (attempt.probe) releaseConnectorProbe(db, PROTON_CONNECTOR, attempt)
+      } else if (attempt.probe) {
+        recordConnectorReadFailure(db, PROTON_CONNECTOR, "unavailable", attempt)
+      }
+      return reply
+    })
+    .catch(() => {
+      if (attempt.probe) {
+        recordConnectorReadFailure(db, PROTON_CONNECTOR, "unavailable", attempt)
+      }
+      return apiError(500, "unavailable", "Bridge could not answer")
+    })
 }

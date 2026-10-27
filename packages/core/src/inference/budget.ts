@@ -3,13 +3,31 @@ import { PromptTooLargeError } from "./errors"
 export const DEFAULT_CHARS_PER_TOKEN = 3
 export const DEFAULT_MARGIN_RATIO = 0.1
 
-/** A conservative token estimate: code points divided by `charsPerToken`, rounded up. */
+const ASCII_ONLY = /^[\x00-\x7f]*$/
+const LATIN_ESTIMATE_CHARACTER =
+  /^[\u0000-\u02af\u0300-\u036f\u1e00-\u1eff\u2000-\u206f\u20a0-\u20cf]$/u
+
+/**
+ * A conservative token estimate: Latin-script and common punctuation code points count as one
+ * character; code points from other scripts count as `charsPerToken` characters. The latter
+ * makes scripts such as Japanese, where a code point is often a token, safe against undercounting.
+ */
 export function estimateTokens(
   text: string,
   charsPerToken: number = DEFAULT_CHARS_PER_TOKEN
 ): number {
-  // Spreading a string iterates code points, so an astral character counts once.
-  return Math.ceil([...text].length / charsPerToken)
+  if (ASCII_ONLY.test(text)) {
+    return Math.ceil(text.length / charsPerToken)
+  }
+
+  let weightedCharacters = 0
+  // Iterating a string yields code points, so an astral character counts once.
+  for (const character of text) {
+    weightedCharacters += LATIN_ESTIMATE_CHARACTER.test(character)
+      ? 1
+      : charsPerToken
+  }
+  return Math.ceil(weightedCharacters / charsPerToken)
 }
 
 /**

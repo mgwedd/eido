@@ -15,6 +15,7 @@ import {
 import type { AuditClient, IntentClient } from "./client"
 import { close, createGateServer, listen, MAX_BODY_BYTES } from "./http"
 import type { Handler } from "./http"
+import { getConnectorHealth } from "./connector-health"
 import { intentHistory, pendingIntents } from "./intents"
 import { controlHandler, dataPlaneHandler } from "./routes"
 import { runningGate, startGate, stopGate } from "./runtime"
@@ -427,6 +428,22 @@ describe("POST /audit", () => {
 })
 
 describe("the read routes", () => {
+  it("returns the safe connector health projection", async () => {
+    s.db
+      .prepare(
+        `UPDATE connectors SET health = 'degraded', consecutive_failures = 2,
+         next_attempt_at = ?, last_error = 'timeout' WHERE name = 'mail'`
+      )
+      .run("2026-10-25T12:00:00.000Z")
+    expect(await client.getConnectorHealth()).toContainEqual({
+      name: "mail",
+      health: "degraded",
+      consecutiveFailures: 2,
+      nextAttemptAt: "2026-10-25T12:00:00.000Z",
+      lastError: "timeout",
+    })
+  })
+
   it("return the same data as the gate's own functions", async () => {
     const pending = await client.propose(proposal)
     await client.propose({
@@ -495,6 +512,9 @@ describe("everything else on the data-plane listener", () => {
       ["POST", "/approvals"],
       ["GET", "/audit"],
       ["GET", "/audit/chain"],
+      ["POST", "/connector-health"],
+      ["PUT", "/connector-health"],
+      ["DELETE", "/connector-health"],
       ["PUT", `/intents/${id}`],
       ["DELETE", `/intents/${id}`],
       ["POST", `/intents/${id}`],
@@ -527,6 +547,11 @@ describe("the control listener", () => {
     })
     const pending = await raw(controlSocket, "GET", "/intents?state=pending")
     expect(pending.status).toBe(200)
+    const health = await raw(controlSocket, "GET", "/connector-health")
+    expect(health.status).toBe(200)
+    expect(JSON.parse(health.text)).toEqual({
+      connectors: getConnectorHealth(s.db),
+    })
     expect((await raw(controlSocket, "POST", "/intents", "{}")).status).toBe(
       404
     )

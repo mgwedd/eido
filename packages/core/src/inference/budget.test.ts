@@ -13,13 +13,30 @@ describe("estimateTokens", () => {
     expect(estimateTokens("abcdefg")).toBe(3)
   })
 
-  test("counts code points, so an astral character is one character", () => {
-    // "😀" is two UTF-16 code units; counted as units, four of them would be 8 / 3 = 3 tokens.
-    expect(estimateTokens("😀😀😀😀")).toBe(2)
+  test("counts each astral non-Latin code point as one token", () => {
+    // "😀" is two UTF-16 code units; counting units would incorrectly estimate eight tokens.
+    expect(estimateTokens("😀😀😀😀")).toBe(4)
   })
 
   test("takes the characters-per-token ratio from the caller", () => {
     expect(estimateTokens("abcdefgh", 4)).toBe(2)
+  })
+
+  test("counts every Japanese code point as at least one token", () => {
+    const japanese = "日".repeat(300)
+
+    expect(estimateTokens(japanese)).toBe(300)
+    expect(() => assertFits(estimateTokens(japanese), 0, 200)).toThrow(
+      PromptTooLargeError
+    )
+  })
+
+  test("weights Latin and Japanese parts of mixed text independently", () => {
+    expect(estimateTokens("abc日本")).toBe(3)
+  })
+
+  test("keeps accented Vietnamese characters on the Latin estimate", () => {
+    expect(estimateTokens("Tiếng Việt")).toBe(4)
   })
 })
 

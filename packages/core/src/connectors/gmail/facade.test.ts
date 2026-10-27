@@ -5,6 +5,8 @@ import { validateIntent } from "@eido/schemas"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { ingestBatch, openIndex } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
+import { createProfileStore } from "../../profile/store"
+import type { ProfileStore } from "../../profile/store"
 import { createGmailFacade } from "./facade"
 import type { GmailFacade } from "./facade"
 import { resolveGmailConfig } from "./config"
@@ -39,6 +41,7 @@ function fakeIntents() {
     status: () => Promise.reject(new Error("not used")),
     history: () => Promise.reject(new Error("not used")),
     listPending: () => Promise.reject(new Error("not used")),
+    getConnectorHealth: () => Promise.resolve([]),
   }
   return { client, proposals }
 }
@@ -46,14 +49,21 @@ function fakeIntents() {
 let db: DatabaseSync
 let intents: ReturnType<typeof fakeIntents>
 let facade: GmailFacade
+let profile: ProfileStore
 
-beforeEach(() => {
+beforeEach(async () => {
   db = openIndex(":memory:")
   intents = fakeIntents()
+  profile = createProfileStore(db, { audit: () => Promise.resolve() })
+  await profile.updateProfile({
+    displayName: "Test Owner",
+    timezone: "Etc/UTC",
+  })
   facade = createGmailFacade({
     db,
     intents: intents.client,
     identity: "assistant@example.com",
+    profile,
   })
   ingestBatch(db, {
     connector: "gmail",
@@ -175,6 +185,7 @@ describe("write verbs", () => {
       db,
       intents: intents.client,
       identity: "assistant@example.com",
+      profile,
       origin: "task",
     })
     await tasks.archive({ messageIds: ["gm-1"] })
@@ -369,5 +380,27 @@ describe("read verbs", () => {
     expect(() =>
       facade.attachment_text({ messageId: "gm-1", attachmentIndex: 7 })
     ).toThrow(expect.objectContaining({ code: "not_found" }))
+  })
+
+  test("draft_create appends the saved profile signature exactly once", async () => {
+    await profile.updateProfile({ signature: "Regards,\nTest Owner" })
+    await facade.draft_create({
+      to: ["ada@example.com"],
+      subject: "Hello",
+      body: "The answer is 42.",
+    })
+    expect(intents.proposals[0]?.intent).toMatchObject({
+      kind: "email.draft",
+      args: { body: "The answer is 42.\n\nRegards,\nTest Owner" },
+    })
+
+    await facade.draft_create({
+      to: ["ada@example.com"],
+      subject: "Hello again",
+      body: "The answer is 42.\n\nRegards,\nTest Owner",
+    })
+    expect(intents.proposals[1]?.intent).toMatchObject({
+      args: { body: "The answer is 42.\n\nRegards,\nTest Owner" },
+    })
   })
 })

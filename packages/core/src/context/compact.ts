@@ -24,7 +24,7 @@ export interface CompactResult {
 
 /** Added once per prompt, ahead of the members, so the model can read the compacted format. */
 export const COMPACTION_LEGEND =
-  "Format: [M#] source | trust, then from | to | date | subject (attachments: filename | date), then the body; quoted replies, signatures, footers and tracking removed."
+  "Format: each [M#] tag line names the connector and is followed by one material block. A message block starts with from | to | date | subject, an attachment block with filename | date, then the body; quoted replies, signatures, footers and tracking removed."
 
 const ORIGINAL_MESSAGE = /^\s*-{2,}\s*original message\s*-{2,}\s*$/i
 const ATTRIBUTION_START = /^\s*on\s.+/i

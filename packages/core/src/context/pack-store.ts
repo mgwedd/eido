@@ -1,4 +1,11 @@
 import type { DatabaseSync } from "node:sqlite"
+import { plainContent } from "../inference/fence"
+import type {
+  FencedBlock,
+  InjectionReason,
+  PromptPart,
+} from "../inference/fence"
+import { COMPACTION_LEGEND } from "./compact"
 
 export type MemberEdge = "seed" | "reply" | "thread" | "attachment"
 
@@ -7,15 +14,44 @@ export interface PackMember {
   sha256: string
   edge: MemberEdge
   tokens: number
+  /** From `fence`: the member's text looked like an injection attempt. It is still sent. */
+  injectionSuspected: boolean
+  injectionReasons: InjectionReason[]
+}
+
+/** One member's place in the prompt: its tag line (trusted, from the index) and its block. */
+export interface PackBlock {
+  tag: string
+  /** The connector the document came from, from the index. */
+  label: string
+  block: FencedBlock
 }
 
 export interface ContextPack {
   id: string
-  text: string
+  /** One per member, in the same order. */
+  blocks: PackBlock[]
   members: PackMember[]
   tokenCount: number
   droppedMembers: number
   packHash: string
+}
+
+export { ESTIMATE_BOUNDARY } from "../inference/fence"
+
+/** A member's tag line and block as they follow the previous text in the prompt. */
+export function blockParts(entry: PackBlock): PromptPart[] {
+  return [`\n\n${entry.tag} ${entry.label}\n`, entry.block]
+}
+
+/** The pack as prompt parts: the legend, then each member's tag line and fenced block. */
+export function packParts(pack: Pick<ContextPack, "blocks">): PromptPart[] {
+  return [COMPACTION_LEGEND, ...pack.blocks.flatMap(blockParts)]
+}
+
+/** The pack's text with a fixed boundary: what its hash is taken over. */
+export function packText(pack: Pick<ContextPack, "blocks">): string {
+  return plainContent(packParts(pack), "pack")
 }
 
 const CREATE_TABLE = `
@@ -51,6 +87,16 @@ function isEdge(value: unknown): value is MemberEdge {
   )
 }
 
+const REASONS: ReadonlySet<unknown> = new Set<InjectionReason>([
+  "fence-tag",
+  "template-marker",
+  "boundary-confusion",
+  "hidden-characters",
+])
+
+const isReason = (value: unknown): value is InjectionReason =>
+  REASONS.has(value)
+
 function parseMember(value: unknown): PackMember {
   if (typeof value !== "object" || value === null)
     throw new Error("context pack member is not an object")
@@ -58,14 +104,26 @@ function parseMember(value: unknown): PackMember {
   const sha256: unknown = Reflect.get(value, "sha256")
   const edge: unknown = Reflect.get(value, "edge")
   const tokens: unknown = Reflect.get(value, "tokens")
+  const suspected: unknown = Reflect.get(value, "injectionSuspected")
+  const reasons: unknown = Reflect.get(value, "injectionReasons")
   if (
     typeof tag !== "string" ||
     typeof sha256 !== "string" ||
     typeof tokens !== "number" ||
-    !isEdge(edge)
+    !isEdge(edge) ||
+    typeof suspected !== "boolean" ||
+    !Array.isArray(reasons) ||
+    !reasons.every(isReason)
   )
     throw new Error("context pack member has a malformed field")
-  return { tag, sha256, edge, tokens }
+  return {
+    tag,
+    sha256,
+    edge,
+    tokens,
+    injectionSuspected: suspected,
+    injectionReasons: reasons,
+  }
 }
 
 /** Read a stored pack record back, or null when no pack has that id. */

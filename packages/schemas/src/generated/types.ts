@@ -101,7 +101,6 @@ export interface CoreApiProfileResponse {
 export interface CoreApiProfile {
   displayName: string
   timezone: string
-  workingHours: ProfileWorkingHours
   signature: string
   addresses: Array<{
     address: string
@@ -171,9 +170,9 @@ export interface ExtractionCandidates {
   }>
 }
 
-/** Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. Statuses: not_found 404, already_decided 409, verification_failed 403, invalid_request 400 (413 over 1 MiB, 422 for an edited intent the schemas or the original's kind refuse), unauthenticated 401 (no valid session cookie on a gated phone route), misdirected_request 421 (a Host header the listener does not serve), unsupported_media_type 415 (a phone-listener POST whose Content-Type is not application/json), tier_changed 409 and forbidden 403 (an edit refused by policy), unavailable 500, handshake_failed 502 (Proton Bridge refused the connection or the TLS handshake) and auth_failed 502 (Bridge refused the username or password). */
+/** Error body returned by the gate endpoints. The code identifies the error. The message is text for people and does not include payload bodies, nonces or signatures. Statuses: not_found 404, already_decided 409, verification_failed 403, invalid_request 400 (413 over 1 MiB, 422 for an edited intent the schemas or the original's kind refuse), unauthenticated 401 (no valid session cookie on a gated phone route), misdirected_request 421 (a Host header the listener does not serve), unsupported_media_type 415 (a phone-listener POST whose Content-Type is not application/json), tier_changed 409 and forbidden 403 (an edit refused by policy), unavailable 500, busy 503 (the gate refused a mail read at its concurrent-read limit, with a Retry-After header), handshake_failed 502 (Proton Bridge refused the connection or the TLS handshake) and auth_failed 502 (Bridge refused the username or password). */
 export interface GateApiError {
-  code: "not_found" | "already_decided" | "verification_failed" | "invalid_request" | "unauthenticated" | "misdirected_request" | "unsupported_media_type" | "tier_changed" | "forbidden" | "unavailable" | "handshake_failed" | "auth_failed"
+  code: "not_found" | "already_decided" | "verification_failed" | "invalid_request" | "unauthenticated" | "misdirected_request" | "unsupported_media_type" | "tier_changed" | "forbidden" | "unavailable" | "busy" | "handshake_failed" | "auth_failed"
   message: string
 }
 
@@ -255,6 +254,7 @@ export type GateDecisionRequest = {
 export interface GateDecisionResult {
   intentId: string
   state: "approved" | "rejected"
+  nudge?: boolean
 }
 
 /** Body of POST /approvals/:id/edit (decided in #85, was #146). Unsigned: it creates a new pending intent with editedFrom set and marks the original rejected (edited). The response is a GatePrepareApproval for the new intent, which the device then signs, so one Face ID prompt covers the edit. An edit that changes the tier is refused with tier_changed, one policy forbids with forbidden. */
@@ -374,6 +374,21 @@ export interface GateProposeResult {
   tier: GateTier
   state: GateIntentState
   reason?: string
+}
+
+export interface GatePushRegistration {
+  subscription: GatePushSubscription
+  approval: {
+    id: string
+    nonce: string
+    assertion: GateWebAuthnAssertion
+  }
+}
+
+export interface GatePushSubscription {
+  endpoint: string
+  p256dh: string
+  auth: string
 }
 
 /** Why the owner rejected an intent; feeds the eval set (decided in #85, was #147). wrong_recipient: the right action addressed to the wrong person or place. wrong_content: what the intent says or does is wrong. wrong_tone: the content is right but the wording is not how the owner would put it. wrong_time: the action is right but not now, or scheduled for the wrong time. not_needed: nothing should have been proposed. other: none of these. */
@@ -604,12 +619,6 @@ export interface ProfileAddress {
   label?: string
 }
 
-/** Working hours for one weekday, local time, 24-hour HH:MM. */
-export interface ProfileDayHours {
-  start: string
-  end: string
-}
-
 /** Create an entity: a personal context, a property or a company, with a short tag. */
 export interface ProfileEntityInput {
   kind: "personal" | "property" | "company"
@@ -627,20 +636,8 @@ export interface ProfileEntityPatch {
 export interface ProfileUpdate {
   displayName?: string
   timezone?: string
-  workingHours?: ProfileWorkingHours
   signature?: string
   addresses?: Array<ProfileAddress>
-}
-
-/** Working hours per weekday; a missing day is a day off. */
-export interface ProfileWorkingHours {
-  mon?: ProfileDayHours
-  tue?: ProfileDayHours
-  wed?: ProfileDayHours
-  thu?: ProfileDayHours
-  fri?: ProfileDayHours
-  sat?: ProfileDayHours
-  sun?: ProfileDayHours
 }
 
 export interface SourceSpan {

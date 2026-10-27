@@ -117,6 +117,21 @@ function audits(db: ReturnType<typeof openControlDb>) {
 }
 
 describe("read egress proxy", () => {
+  test("invariant: proxy refuses hosts, methods, and paths outside the pinned manifest", async () => {
+    const { request, upstream } = await setup()
+    const cases = [
+      ["https://other.example.com/v1/messages/one", "GET", 403],
+      ["https://api.example.com/v1/messages/one", "DELETE", 405],
+      ["https://api.example.com/v1/secrets", "GET", 406],
+    ] as const
+
+    for (const [target, method, status] of cases) {
+      const response = await request(target, method)
+      expect(response.status).toBe(status)
+      expect(upstream).not.toHaveBeenCalled()
+    }
+  })
+
   test.each([
     [
       "https://other.example.com/v1/messages/one",
@@ -252,6 +267,68 @@ describe("read egress proxy", () => {
       expect(upstream).not.toHaveBeenCalled()
     }
   )
+  test("one due half-open read is admitted and its observed response closes the breaker", async () => {
+    const { db, request, upstream } = await setup({ now: () => 2_000 })
+    db.prepare(
+      `UPDATE connectors SET health = 'open', consecutive_failures = 3,
+       next_attempt_at = ?, last_error = 'handshake_failed' WHERE name = 'mail'`
+    ).run(new Date(2_000).toISOString())
+    let finishProbe: ((response: Response) => void) | undefined
+    upstream.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishProbe = resolve
+        })
+    )
+
+    const probe = request()
+    await vi.waitFor(() => expect(upstream).toHaveBeenCalledOnce())
+    const competing = await request()
+    expect(competing.status).toBe(503)
+    expect(await competing.json()).toEqual({ reason: "connector_open" })
+    expect(upstream).toHaveBeenCalledOnce()
+
+    finishProbe?.(new Response("message-content"))
+    expect((await probe).status).toBe(200)
+    expect(
+      db
+        .prepare(
+          "SELECT health, consecutive_failures, next_attempt_at FROM connectors WHERE name = 'mail'"
+        )
+        .get()
+    ).toMatchObject({
+      health: "healthy",
+      consecutive_failures: 0,
+      next_attempt_at: null,
+    })
+  })
+
+  test("a failed half-open read stays open and schedules another delay", async () => {
+    const { db, request, upstream } = await setup({
+      now: () => 4_000,
+      random: () => 0,
+    })
+    db.prepare(
+      `UPDATE connectors SET health = 'open', consecutive_failures = 3,
+       next_attempt_at = ?, last_error = 'handshake_failed' WHERE name = 'mail'`
+    ).run(new Date(4_000).toISOString())
+    upstream.mockRejectedValueOnce(new Error("synthetic connection refused"))
+
+    expect((await request()).status).toBe(502)
+    expect(
+      db
+        .prepare(
+          "SELECT health, consecutive_failures, last_error, next_attempt_at FROM connectors WHERE name = 'mail'"
+        )
+        .get()
+    ).toMatchObject({
+      health: "open",
+      consecutive_failures: 4,
+      last_error: "handshake_failed",
+      next_attempt_at: new Date(4_010).toISOString(),
+    })
+  })
+
   test("unknown connectors fail first", async () => {
     const { request, upstream } = await setup()
     expect(

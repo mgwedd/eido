@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { compactConversation } from "./compact"
 import {
+  contentOf,
   rawTurn,
   storeFixture,
   stubModel,
@@ -85,8 +86,8 @@ describe("the idle digest job", () => {
     } as typeof model.queue
     await runDigestSweep(fixture.store, { queue, now: () => minutes(90) })
     expect(lanes).toEqual(["background"])
-    expect(model.requests[0]?.messages[0]?.content).toContain("walrus")
-    expect(model.requests[0]?.messages[0]?.content).toContain("Yes, see [M1].")
+    expect(contentOf(model.requests[0])).toContain("walrus")
+    expect(contentOf(model.requests[0])).toContain("Yes, see [M1].")
   })
 
   it("does not rebuild a digest that is up to date", async () => {
@@ -263,8 +264,10 @@ describe("resuming a conversation", () => {
     const model = summarizingModel("Lemur and lease.")
     expect((await sweep(model, minutes(180))).built).toEqual(["c1"])
     expect(model.requests).toHaveLength(1)
-    const content = model.requests[0]?.messages[0]?.content ?? ""
-    expect(content).toContain("Summary so far:\nOld lemur summary.\n")
+    const content = contentOf(model.requests[0])
+    expect(content).toContain(
+      'Summary so far:\n<material id="B" source="summary">\nOld lemur summary.\n</material id="B">\n'
+    )
     expect(content).not.toContain("Preserved references")
     expect(content).toContain("One more thing about the lease.")
     expect(content).not.toContain("walrus")
@@ -293,7 +296,7 @@ describe("resuming a conversation", () => {
     )
     const model = summarizingModel("Fresh.")
     expect((await sweep(model, minutes(90))).built).toEqual(["c1"])
-    const content = model.requests[0]?.messages[0]?.content ?? ""
+    const content = contentOf(model.requests[0])
     expect(content).not.toContain("Stray.")
     expect(content).toContain("walrus")
   })

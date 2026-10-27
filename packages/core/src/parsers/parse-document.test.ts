@@ -165,6 +165,7 @@ describe("input checks in the parent", () => {
     try {
       const broken = createParser({ dataDir })
       const { sha256 } = broken.storeOriginal(GOOD_PDF)
+      rmSync(join(dataDir, "parse-tmp"), { recursive: true })
       writeFileSync(
         join(dataDir, "parse-tmp"),
         "a file where the work dir root should be"

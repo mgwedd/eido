@@ -179,6 +179,7 @@ describe("a valid approval", () => {
       ok: true,
       intentId: id,
       state: "approved",
+      nudge: false,
     })
     expect(intentStatus(w.db, id)?.state).toBe("approved")
     expect(approvalRows(w.db)).toEqual([
@@ -214,7 +215,7 @@ describe("a valid approval", () => {
 })
 
 describe("replay", () => {
-  it("refuses the same assertion twice and a second, different valid assertion", () => {
+  it("invariant: approval replay and a second assertion are refused", () => {
     const w = world()
     const id = pendingSend(w)
     const prepared = prepare(w.db, id)
@@ -236,7 +237,7 @@ describe("replay", () => {
 })
 
 describe("nonce reuse", () => {
-  it("refuses one intent's nonce on another intent, which stays pending", () => {
+  it("invariant: a nonce from another intent is refused", () => {
     const w = world()
     const a = prepare(w.db, pendingSend(w, "A"))
     const b = pendingSend(w, "B")
@@ -250,7 +251,7 @@ describe("nonce reuse", () => {
     chainHolds(w.db)
   })
 
-  it("refuses a nonce the gate never issued", () => {
+  it("invariant: a nonce the gate never issued is refused", () => {
     const w = world()
     const id = pendingSend(w)
     const prepared = prepare(w.db, id)
@@ -259,7 +260,7 @@ describe("nonce reuse", () => {
     expect(actions(w.db, id)).toContain("approval.refused.unknown_nonce")
   })
 
-  it("refuses a nonce after it was used", () => {
+  it("invariant: a nonce after it was used is refused", () => {
     const w = world()
     const id = pendingSend(w)
     const prepared = prepare(w.db, id)
@@ -278,7 +279,7 @@ describe("nonce reuse", () => {
 })
 
 describe("issueNonce", () => {
-  it("replaces the current nonce on each call, and the superseded one is refused", () => {
+  it("invariant: a superseded nonce is refused", () => {
     const w = world()
     const id = pendingSend(w)
     const first = prepare(w.db, id)
@@ -362,32 +363,35 @@ describe("an approval over a changed payload", () => {
   it.each([
     ["the payload alone was altered", false],
     ["the payload and its stored hash were altered together", true],
-  ])("is rejected with an alert when %s", (_name, rehash) => {
-    const w = world()
-    const id = pendingSend(w)
-    const prepared = prepare(w.db, id)
-    const request = signed(w.auth, prepared)
-    editStoredPayload(w.db, id, rehash)
+  ])(
+    "invariant: approval is rejected with an alert when %s",
+    (_name, rehash) => {
+      const w = world()
+      const id = pendingSend(w)
+      const prepared = prepare(w.db, id)
+      const request = signed(w.auth, prepared)
+      editStoredPayload(w.db, id, rehash)
 
-    expect(verifyApproval(w.db, WEBAUTHN, request)).toEqual(REFUSED)
-    expect(intentStatus(w.db, id)?.state).toBe("rejected")
-    expect(actions(w.db, id)).toContain("alert.approval_mismatch")
-    expect(approvalRows(w.db)).toEqual([
-      expect.objectContaining({
-        intent_id: id,
-        decision: "rejected",
-        signature: null,
-        reason_code: "approval_mismatch",
-      }),
-    ])
-    expect(intentHistory(w.db, id).at(-1)).toMatchObject({
-      from: "pending",
-      to: "rejected",
-      actor: "system",
-      reason: "approval_mismatch",
-    })
-    chainHolds(w.db)
-  })
+      expect(verifyApproval(w.db, WEBAUTHN, request)).toEqual(REFUSED)
+      expect(intentStatus(w.db, id)?.state).toBe("rejected")
+      expect(actions(w.db, id)).toContain("alert.approval_mismatch")
+      expect(approvalRows(w.db)).toEqual([
+        expect.objectContaining({
+          intent_id: id,
+          decision: "rejected",
+          signature: null,
+          reason_code: "approval_mismatch",
+        }),
+      ])
+      expect(intentHistory(w.db, id).at(-1)).toMatchObject({
+        from: "pending",
+        to: "rejected",
+        actor: "system",
+        reason: "approval_mismatch",
+      })
+      chainHolds(w.db)
+    }
+  )
 
   it("is rejected when the stored hash no longer matches the stored payload", () => {
     const w = world()
@@ -428,18 +432,21 @@ describe("ceremony and signature checks", () => {
       { type: "webauthn.create" },
       "wrong_type",
     ],
-  ])("refuses %s and leaves the intent pending", (_name, options, reason) => {
-    const w = world()
-    const id = pendingSend(w)
-    const request = signed(w.auth, prepare(w.db, id), options)
-    expect(verifyApproval(w.db, WEBAUTHN, request)).toEqual(REFUSED)
-    expect(intentStatus(w.db, id)?.state).toBe("pending")
-    expect(actions(w.db, id)).toEqual(
-      expect.arrayContaining([`approval.refused.${reason}`])
-    )
-    expect(approvalRows(w.db)).toEqual([])
-    chainHolds(w.db)
-  })
+  ])(
+    "invariant: wrong origin or RP id is refused (%s)",
+    (_name, options, reason) => {
+      const w = world()
+      const id = pendingSend(w)
+      const request = signed(w.auth, prepare(w.db, id), options)
+      expect(verifyApproval(w.db, WEBAUTHN, request)).toEqual(REFUSED)
+      expect(intentStatus(w.db, id)?.state).toBe("pending")
+      expect(actions(w.db, id)).toEqual(
+        expect.arrayContaining([`approval.refused.${reason}`])
+      )
+      expect(approvalRows(w.db)).toEqual([])
+      chainHolds(w.db)
+    }
+  )
 
   it("refuses a signature from another key", () => {
     const w = world()
@@ -556,6 +563,27 @@ describe("signCountAccepted", () => {
     [5, 4, false],
   ])("stored %i, received %i: %s", (stored, received, accepted) => {
     expect(signCountAccepted(stored, received)).toBe(accepted)
+  })
+})
+
+describe("approval burst nudge", () => {
+  it("flags only approvals above the configured rolling threshold", () => {
+    const w = world()
+    let time = new Date("2026-10-25T12:00:00.000Z")
+    const approve = (number: number) => {
+      const id = pendingSend(w, `Burst ${number}`)
+      return verifyApproval(w.db, WEBAUTHN, signed(w.auth, prepare(w.db, id)), {
+        now: () => time,
+        threshold: 5,
+        windowMs: 120_000,
+      })
+    }
+    for (let number = 1; number <= 5; number++) {
+      expect(approve(number)).toMatchObject({ ok: true, nudge: false })
+    }
+    expect(approve(6)).toMatchObject({ ok: true, nudge: true })
+    time = new Date("2026-10-25T12:02:01.000Z")
+    expect(approve(7)).toMatchObject({ ok: true, nudge: false })
   })
 })
 

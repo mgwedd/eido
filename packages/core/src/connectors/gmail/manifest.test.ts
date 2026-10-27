@@ -20,6 +20,7 @@ const unusedIntents: IntentClient = {
   status: () => Promise.reject(new Error("not used")),
   history: () => Promise.reject(new Error("not used")),
   listPending: () => Promise.reject(new Error("not used")),
+  getConnectorHealth: () => Promise.resolve([]),
 }
 
 describe("config", () => {
@@ -67,6 +68,7 @@ describe("manifest", () => {
         db: openIndex(":memory:"),
         intents: unusedIntents,
         identity: "assistant@example.com",
+        profile: { getProfile: () => Promise.resolve(null) },
       })
     ).sort()
     expect(manifest.operations.map((op) => op.name).sort()).toEqual(verbs)

@@ -429,7 +429,7 @@ describe("decision result and error", () => {
     expect(
       errorsOf(validateGateApiError({ code: "teapot", message: "x" }))
     ).toEqual([
-      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable", "handshake_failed", "auth_failed"',
+      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable", "busy", "handshake_failed", "auth_failed"',
     ])
     expect(
       errorsOf(validateGateApiError({ code: "not_found", message: "" }))
@@ -946,6 +946,12 @@ describe("Proton mail read routes", () => {
         })
       )
     ).toEqual(["$.messages[0].subject: unknown key"])
+  })
+
+  test("the error codes include busy, the gate's concurrent-read refusal", () => {
+    expect(
+      validateGateApiError({ code: "busy", message: "the gate is busy" }).ok
+    ).toBe(true)
   })
 
   test("the error codes include the Bridge failures", () => {

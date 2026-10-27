@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { PromptTooLargeError } from "../inference/errors"
 import { compactConversation, summarizeTurns } from "./compact"
 import {
+  contentOf,
   stubModel,
   summarizingModel,
   turn,
@@ -68,7 +69,7 @@ describe("compactConversation: keeping recent turns", () => {
       { thresholdTokens: 20, keepRecentTokens: 12 },
       { queue: model.queue }
     )
-    const sent = model.requests[0]?.messages[0]?.content ?? ""
+    const sent = contentOf(model.requests[0])
     expect(sent).toContain("old ")
     expect(sent).toContain("mid ")
     expect(sent).not.toContain("new ")
@@ -179,8 +180,8 @@ describe("compactConversation: dates and source tags survive", () => {
       { thresholdTokens: 60, keepRecentTokens: 25 },
       { queue: model.queue }
     )
-    expect(model.requests[0]?.messages[0]?.content).toContain(
-      "[summary 2025-10-13T09:00:00Z] First pass."
+    expect(contentOf(model.requests[0])).toContain(
+      '[summary 2025-10-13T09:00:00Z]\n<material id="B" source="summary">\nFirst pass.'
     )
   })
 })
@@ -268,14 +269,18 @@ describe("summarizeTurns: chunking", () => {
     )
     const result = await summarizeTurns(turns, { queue: model.queue }, 12)
     expect(model.requests).toHaveLength(3)
-    const [first, second, third] = model.requests.map(
-      (r) => r.messages[0]?.content ?? ""
+    const [first, second, third] = model.requests.map((r) => contentOf(r))
+    expect(first).toBe(
+      `[user 2025-10-11T09:00:00Z] a ${ten}\n\nSummarize the turns above.`
     )
-    expect(first).toBe(`[user 2025-10-11T09:00:00Z] a ${ten}`)
-    expect(second).toContain("Summary so far:\nsummary 1")
+    expect(second).toContain(
+      'Summary so far:\n<material id="B" source="summary">\nsummary 1\n</material id="B">'
+    )
     expect(second).toContain(`b ${ten}`)
     expect(second).not.toContain(`a ${ten}`)
-    expect(third).toContain("Summary so far:\nsummary 2")
+    expect(third).toContain(
+      'Summary so far:\n<material id="B" source="summary">\nsummary 2\n</material id="B">'
+    )
     expect(result).toMatchObject({ ok: true, text: "summary 3" })
   })
 

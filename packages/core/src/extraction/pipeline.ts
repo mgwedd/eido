@@ -1,6 +1,12 @@
 import type { DatabaseSync } from "node:sqlite"
 import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
 import { PromptTooLargeError } from "../inference/errors"
+import {
+  ESTIMATE_BOUNDARY,
+  INJECTION_REASONS,
+  plainContent,
+} from "../inference/fence"
+import type { InjectionReason } from "../inference/fence"
 import type { ChatMessage, ModelClient } from "../inference/types"
 import { insertExtraction, insertObligation } from "../ledger/store"
 import type { Parser } from "../parsers/parse-document"
@@ -15,7 +21,9 @@ import {
   checkReply,
   correctionMessage,
   passageMessage,
+  priorReply,
 } from "./prompt"
+import { normalizeParsed, passageReasons } from "./normalize"
 import type { CandidateItem, ItemOutcome } from "./verify"
 import { defaultFieldConfidence, verifyItem } from "./verify"
 import { summarize } from "./summary"
@@ -83,7 +91,11 @@ export type Extractor = {
   ): Promise<ExtractionResult>
 }
 
-type Proposed = { item: CandidateItem; passage: Passage }
+type Proposed = {
+  item: CandidateItem
+  passage: Passage
+  injectionReasons: InjectionReason[]
+}
 
 type AskOutcome =
   | { kind: "read"; items: CandidateItem[] }
@@ -123,7 +135,10 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
   const now = deps.now ?? (() => new Date())
   const requestCost = (messages: ChatMessage[]): number =>
     estimateTokens(
-      EXTRACTION_SYSTEM_PROMPT + messages.map((m) => m.content).join(""),
+      EXTRACTION_SYSTEM_PROMPT +
+        messages
+          .map((m) => plainContent(m.content, ESTIMATE_BOUNDARY))
+          .join(""),
       charsPerToken
     ) + maxReplyTokens
   // What a passage costs beyond its own text: the system prompt, the wrapper and the reply.
@@ -156,9 +171,11 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         `the document could not be parsed (${parsed.reason})`
       )
     }
+    // Quotes are checked against the text exactly as the model read it.
+    const normalized = normalizeParsed(parsed)
     const { passages, total } = selectCandidatePassages(
-      parsed.text,
-      parsed.offsets,
+      normalized.text,
+      normalized.offsets,
       {
         phrases: config.phrases ?? DEFAULT_PHRASES,
         windowChars: config.windowChars,
@@ -170,6 +187,8 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
     )
 
     const createdAt = now().toISOString()
+    // What fence found in the passages sent to the model, for the run's provenance.
+    const sentReasons = new Set<InjectionReason>()
     const finish = (
       status: ExtractionStatus,
       counts: Pick<ExtractionResult, "passagesRead"> & Partial<ExtractionResult>
@@ -189,6 +208,7 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         summary: summarize(result),
         confirmations: counts.confirmations ?? [],
         obligationIds: counts.obligationIds ?? [],
+        injectionReasons: INJECTION_REASONS.filter((r) => sentReasons.has(r)),
       }
     }
 
@@ -253,7 +273,7 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
           check: outcome.check,
         })
         messages.push(
-          { role: "assistant", content: reply.text },
+          { role: "assistant", content: priorReply(reply.text) },
           {
             role: "user",
             content: correctionMessage(outcome.check, outcome.errors),
@@ -267,28 +287,34 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
     let passagesRead = 0
     for (const [index, passage] of passages.entries()) {
       const outcome = await ask(passage, index)
+      if (outcome.kind === "skipped") continue
+      const injectionReasons = passageReasons(normalized, passage)
+      for (const reason of injectionReasons) sentReasons.add(reason)
       if (outcome.kind === "rejected") {
         return finish("model_output_rejected", { passagesRead })
       }
-      if (outcome.kind === "skipped") continue
       passagesRead += 1
-      for (const item of outcome.items) proposedItems.push({ item, passage })
+      for (const item of outcome.items) {
+        proposedItems.push({ item, passage, injectionReasons })
+      }
     }
     if (passagesRead === 0) {
       return finish("refused_over_budget", { passagesRead })
     }
 
-    const source: Pick<ParseSuccess, "text" | "offsets"> = parsed
-    const outcomes: ItemOutcome[] = proposedItems.map(({ item, passage }) =>
-      verifyItem(item, passage, source, threshold, scorer)
-    )
+    const source: Pick<ParseSuccess, "text" | "offsets"> = normalized
+    const outcomes: { outcome: ItemOutcome; reasons: InjectionReason[] }[] =
+      proposedItems.map(({ item, passage, injectionReasons }) => ({
+        outcome: verifyItem(item, passage, source, threshold, scorer),
+        reasons: injectionReasons,
+      }))
     const confirmations: ConfirmCandidate[] = []
     const obligationIds: number[] = []
     let verified = 0
     let needsConfirmation = 0
     let dropped = 0
     savepoint(db, () => {
-      for (const outcome of outcomes) {
+      for (const { outcome, reasons } of outcomes) {
         if (outcome.kind === "dropped") {
           dropped += 1
           continue
@@ -305,7 +331,14 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         if (outcome.kind === "needs_confirmation") {
           needsConfirmation += 1
           for (const flag of outcome.flagged) {
-            confirmations.push({ docId, extractionId, threshold, ...flag })
+            confirmations.push({
+              docId,
+              extractionId,
+              threshold,
+              ...flag,
+              injectionSuspected: reasons.length > 0,
+              injectionReasons: reasons,
+            })
           }
           continue
         }
