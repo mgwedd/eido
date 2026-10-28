@@ -20,6 +20,7 @@ import { DatabaseSync } from "node:sqlite"
 import { afterEach, beforeEach, describe, expect, it, test } from "vitest"
 import type { CoreApi } from "./api/index"
 import { ingestBatch } from "./index/ingest"
+import { startStubModelServer } from "./inference/stub-server"
 import { openIndex } from "./index/schema"
 import { openDataDb } from "./ledger/db"
 import { createProfileStore } from "./profile/store"
@@ -118,6 +119,27 @@ describe("coreApiConfig", () => {
       basePath: "/api/core",
       allowedHosts: ["eido.example.invalid", "127.0.0.1:9000"],
     })
+  })
+
+  test("builds a local model URL from the allowlisted llama host and port", () => {
+    expect(
+      coreApiConfig({ EIDO_LLAMA_HOST: "::1", EIDO_LLAMA_PORT: "8080" })
+    ).toMatchObject({ modelBaseUrl: "http://[::1]:8080" })
+  })
+
+  test("requires a paired loopback model host and valid port", () => {
+    expect(() => coreApiConfig({ EIDO_LLAMA_HOST: "127.0.0.1" })).toThrow(
+      "EIDO_LLAMA_HOST and EIDO_LLAMA_PORT must be configured together"
+    )
+    expect(() =>
+      coreApiConfig({
+        EIDO_LLAMA_HOST: "192.168.1.20",
+        EIDO_LLAMA_PORT: "8080",
+      })
+    ).toThrow("inference is local")
+    expect(() =>
+      coreApiConfig({ EIDO_LLAMA_HOST: "127.0.0.1", EIDO_LLAMA_PORT: "0" })
+    ).toThrow("EIDO_LLAMA_PORT must be between 1 and 65535")
   })
 
   test.each(["0.0.0.0", "192.168.1.20", "localhost", "::"])(
@@ -326,6 +348,98 @@ function servedEnv(extra: Record<string, string> = {}) {
 }
 
 describe("serveDataPlane", () => {
+  it("keeps non-ask routes available when the local model is unavailable", async () => {
+    const env = servedEnv({
+      EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_LLAMA_PORT: "1",
+    })
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      expect((await getJson(api.port, "/profile")).status).toBe(200)
+      const response = await fetch(`http://127.0.0.1:${String(api.port)}/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "anything?" }),
+      })
+      expect(response.status).toBe(503)
+      expect(await response.json()).toEqual({
+        error: { code: "busy", message: "ask is temporarily unavailable" },
+      })
+    } finally {
+      await api.close()
+      await plane.close()
+    }
+  })
+
+  it("serves POST /ask through the configured data plane and local model client", async () => {
+    const model = await startStubModelServer({
+      contextTokens: 8192,
+      replies: [
+        { deltas: [JSON.stringify({ terms: ["invoice"], wants: "find" })] },
+        { deltas: ["The invoice was paid [M1]."] },
+      ],
+    })
+    const port = new URL(model.url).port
+    const env = servedEnv({
+      EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_LLAMA_PORT: port,
+    })
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    plane.db
+      .prepare(
+        "INSERT INTO entities (id, kind, name, tag, created_at) VALUES (?, 'personal', ?, 'ME', ?)"
+      )
+      .run("entity-test", "Test Personal", "2030-01-01T00:00:00.000Z")
+    plane.db
+      .prepare("INSERT INTO default_entity (id, entity_id) VALUES (1, ?)")
+      .run("entity-test")
+    ingestBatch(plane.db, {
+      connector: "gmail",
+      stream: "INBOX",
+      documents: [
+        {
+          sha256: "a".repeat(64),
+          source: "gmail",
+          sourceRef: "gm-1",
+          mime: "message/rfc822",
+          entityId: "entity-test",
+          title: "Invoice",
+          body: "The invoice was paid on 2030-01-04.",
+          occurredAt: "2030-01-04T00:00:00.000Z",
+        },
+      ],
+      nextCursor: "{}",
+    })
+    let api: CoreApi | undefined
+    try {
+      api = await serveDataPlane(plane, config.api)
+      const response = await fetch(`http://127.0.0.1:${String(api.port)}/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "When was the invoice paid?" }),
+      })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({
+        status: "answered",
+        answer: "The invoice was paid [M1].",
+        citations: [{ tag: "M1", sourceRef: "gm-1" }],
+        coverage: {
+          searched: 1,
+          matched: 1,
+          readInFull: 1,
+          label: "read 1 of 1 matching messages in full",
+        },
+      })
+    } finally {
+      await api?.close()
+      await plane.close()
+      await model.close()
+    }
+  })
+
   it("serves GET /profile over HTTP from eido-data.db on disk and logs where it listens", async () => {
     const env = servedEnv()
     const config = dataPlaneConfig(env)

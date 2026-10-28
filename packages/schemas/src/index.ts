@@ -46,6 +46,10 @@ export {
   validateProfileEntityInput,
   validateProfileEntityPatch,
   validateProfileUpdate,
+  validateCoreApiAskRequest,
+  validateCoreApiAskResponse,
+  validateAskCoverage,
+  validateAskCitation,
 } from "./generated/validators"
 export { validateConnectorManifest } from "./manifest"
 export {

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiAskResponse",
+  "description": "The ask pipeline result returned by core.",
+  "type": "object",
+  "properties": {
+    "status": { "type": "string", "enum": ["answered", "no_match", "refused"] },
+    "answer": { "type": "string", "maxLength": 100000 },
+    "citations": {
+      "type": "array",
+      "items": { "$ref": "ask-citation.schema.json" },
+      "maxItems": 100
+    },
+    "coverage": { "$ref": "ask-coverage.schema.json" },
+    "facts": {
+      "type": "object",
+      "properties": {
+        "matchCount": {
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        }
+      },
+      "required": ["matchCount"],
+      "additionalProperties": false
+    },
+    "droppedTags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 16 },
+      "maxItems": 100
+    },
+    "possiblyTruncated": { "type": "boolean" },
+    "reason": { "type": "string", "maxLength": 500 }
+  },
+  "required": [
+    "status",
+    "answer",
+    "citations",
+    "coverage",
+    "facts",
+    "droppedTags",
+    "possiblyTruncated"
+  ],
+  "additionalProperties": false
+}

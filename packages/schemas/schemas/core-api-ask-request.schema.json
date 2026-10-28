@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiAskRequest",
+  "description": "Request body for the read-only core Ask endpoint.",
+  "type": "object",
+  "properties": {
+    "question": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    }
+  },
+  "required": ["question"],
+  "additionalProperties": false
+}
