@@ -82,7 +82,7 @@ export async function assertionOptions(
   }
 }
 
-function toAssertion(
+export function toAssertion(
   credential: PublicKeyCredential
 ): GateWebAuthnAssertion | undefined {
   const response = credential.response
