@@ -1,5 +1,4 @@
 import { mkdirSync } from "node:fs"
-import { createECDH } from "node:crypto"
 import type { Server } from "node:http"
 import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
@@ -24,7 +23,11 @@ import type { Handler, LoopbackHost } from "./internal/http"
 import { fileLog } from "./internal/log"
 import { phoneHandler } from "./internal/phone-routes"
 import { createPushNotifier } from "./internal/push-notify"
-import { vapidAuthorization, vapidPublicKey } from "./internal/push-crypto"
+import {
+  generateVapidPrivateKey,
+  vapidAuthorization,
+  vapidPublicKey,
+} from "./internal/push-crypto"
 import { controlHandler, dataPlaneHandler } from "./internal/routes"
 import type { Clock } from "./internal/sessions"
 import { runningGate, startGate, stopGate } from "./internal/runtime"
@@ -238,9 +241,7 @@ export async function runGate(
       if (pushVault === undefined) return undefined
       let key = await pushVault.get(vapidKey)
       if (key === undefined) {
-        const generated = createECDH("prime256v1")
-        generated.generateKeys()
-        key = generated.getPrivateKey().toString("base64url")
+        key = generateVapidPrivateKey()
         await pushVault.set(vapidKey, key)
       }
       vapidPublicKey(key)
