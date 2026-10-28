@@ -451,6 +451,8 @@ describe("listObligations", () => {
       status: "open",
       docId: docA,
       span: { start: 10, end: 25 },
+      injectionSuspected: false,
+      injectionReasons: [],
     })
     expect(listObligations(db).map((o) => o.entity.name)).toEqual([
       "Test Company",
@@ -584,6 +586,8 @@ describe("getObligationSource", () => {
       docId: docA,
       blobPath: "blobs/a.eml",
       span,
+      injectionSuspected: false,
+      injectionReasons: [],
     })
     const noBlob = insertObligation(
       db,
@@ -647,5 +651,72 @@ describe("parameterized statements only", () => {
       }),
     })
     expect(search(db, { text: "O'Brien" }).map((h) => h.sha256)).toEqual([doc])
+  })
+})
+
+describe("injection provenance", () => {
+  test("inconsistent flags and reasons fail before writing, including direct SQL", () => {
+    expect(
+      codeOf(() =>
+        insertObligation(db, obligation({ injectionSuspected: true }))
+      )
+    ).toBe("invalid_injection_provenance")
+    expect(
+      codeOf(() =>
+        insertObligation(db, obligation({ injectionReasons: ["fence-tag"] }))
+      )
+    ).toBe("invalid_injection_provenance")
+    expect(listObligations(db)).toEqual([])
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO obligations (entity_id, action, status, doc_id, source_span, injection_suspected) VALUES (?, 'Pay', 'open', ?, '{"start":0,"end":3}', 1)`
+        )
+        .run(property.id, docA)
+    ).toThrow(/CHECK/)
+  })
+  test("flagged and clean obligations retain their passage flags on both read paths", () => {
+    const flagged = insertObligation(
+      db,
+      obligation({
+        injectionSuspected: true,
+        injectionReasons: ["fence-tag", "hidden-characters"],
+      })
+    )
+    const clean = insertObligation(
+      db,
+      obligation({ injectionSuspected: false, injectionReasons: [] })
+    )
+    expect(
+      listObligations(db).map((row) => [
+        row.injectionSuspected,
+        row.injectionReasons,
+      ])
+    ).toEqual([
+      [true, ["fence-tag", "hidden-characters"]],
+      [false, []],
+    ])
+    expect(getObligationSource(db, flagged)).toMatchObject({
+      injectionSuspected: true,
+      injectionReasons: ["fence-tag", "hidden-characters"],
+    })
+    expect(getObligationSource(db, clean)).toMatchObject({
+      injectionSuspected: false,
+      injectionReasons: [],
+    })
+    expect(() =>
+      db
+        .prepare("UPDATE obligations SET injection_suspected = 0 WHERE id = ?")
+        .run(flagged)
+    ).toThrow(/keeps its source/)
+  })
+  test("malformed stored reasons are reported instead of returned", () => {
+    const id = insertObligation(db, obligation())
+    db.exec("DROP TRIGGER obligations_injection_fixed")
+    db.exec("PRAGMA ignore_check_constraints = ON")
+    db.prepare(
+      "UPDATE obligations SET injection_reasons = '[1]' WHERE id = ?"
+    ).run(id)
+    expect(() => getObligationSource(db, id)).toThrow(/malformed/)
   })
 })

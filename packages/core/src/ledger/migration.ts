@@ -164,6 +164,13 @@ WHEN (NEW.src GLOB 'doc:*' AND NOT EXISTS (SELECT 1 FROM documents WHERE sha256 
   OR (NEW.dst GLOB 'ent:*' AND NOT EXISTS (SELECT 1 FROM entities WHERE id = substr(NEW.dst, 5)))
 BEGIN SELECT RAISE(ABORT, 'link endpoint does not exist'); END;
 `,
+  `
+ALTER TABLE obligations ADD COLUMN injection_suspected INTEGER NOT NULL DEFAULT 0 CHECK (injection_suspected IN (0, 1));
+ALTER TABLE obligations ADD COLUMN injection_reasons TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(injection_reasons) AND json_type(injection_reasons) = 'array' AND injection_suspected = (json_array_length(injection_reasons) > 0));
+CREATE TRIGGER obligations_injection_fixed BEFORE UPDATE OF injection_suspected, injection_reasons ON obligations
+WHEN NEW.injection_suspected IS NOT OLD.injection_suspected OR NEW.injection_reasons IS NOT OLD.injection_reasons
+BEGIN SELECT RAISE(ABORT, 'an obligation keeps its source'); END;
+`,
 ]
 
 export const LEDGER_SCHEMA_VERSION = LEDGER_MIGRATIONS.length
