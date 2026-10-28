@@ -10,8 +10,11 @@ export default async function UnlockPage({
 }: {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }) {
-  const { next } = await searchParams
+  const { next, expired } = await searchParams
   return (
-    <UnlockView next={safeNext(typeof next === "string" ? next : undefined)} />
+    <UnlockView
+      next={safeNext(typeof next === "string" ? next : undefined)}
+      expired={expired === "1"}
+    />
   )
 }

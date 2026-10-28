@@ -8,6 +8,17 @@ async function nextFor(next: string | string[] | undefined) {
 }
 
 describe("unlock page", () => {
+  it("marks the page expired only for expired=1", async () => {
+    const flag = async (expired: string | undefined) =>
+      (
+        (await UnlockPage({ searchParams: Promise.resolve({ expired }) }))
+          .props as { expired: boolean }
+      ).expired
+    expect(await flag("1")).toBe(true)
+    expect(await flag("0")).toBe(false)
+    expect(await flag(undefined)).toBe(false)
+  })
+
   it("passes a same-origin path on", async () => {
     expect(await nextFor("/queue")).toBe("/queue")
   })

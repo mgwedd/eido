@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   checkEnvironment,
+  expiredUnlockUrl,
   loadCredentialStatus,
   safeNext,
   unlock,
@@ -258,5 +259,19 @@ describe("unlock", () => {
     await unlock()
     for (const spy of spies) expect(spy).not.toHaveBeenCalled()
     expect(setItem).not.toHaveBeenCalled()
+  })
+})
+
+describe("expiredUnlockUrl", () => {
+  it("carries the page the user was on, encoded, and the expired flag", () => {
+    expect(expiredUnlockUrl("/queue?intent=a&b=1")).toBe(
+      "/unlock?next=%2Fqueue%3Fintent%3Da%26b%3D1&expired=1"
+    )
+  })
+
+  it("never carries an off-site address", () => {
+    expect(expiredUnlockUrl("//evil.example.invalid")).toBe(
+      "/unlock?next=%2F&expired=1"
+    )
   })
 })

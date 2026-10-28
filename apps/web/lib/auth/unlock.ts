@@ -33,6 +33,11 @@ export function safeNext(next: string | undefined): string {
   return next
 }
 
+/** The unlock page for a session that ended on `from` (a path and query on this origin). */
+export function expiredUnlockUrl(from: string): string {
+  return `/unlock?next=${encodeURIComponent(safeNext(from))}&expired=1`
+}
+
 export type StatusResult =
   | { ok: true; status: GateCredentialStatus }
   | { ok: false; reason: "offline" | "invalid_response" }
