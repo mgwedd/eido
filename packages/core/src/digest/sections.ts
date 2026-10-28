@@ -8,6 +8,7 @@ import {
 } from "../inference/index"
 import type {
   FencedBlock,
+  InjectionFlag,
   MaterialSource,
   PromptPart,
 } from "../inference/index"
@@ -21,6 +22,8 @@ import type { DigestSubject } from "./types"
 // that is itself too large), so every character reaches the model.
 
 interface Segment {
+  ref: string
+  provenance: InjectionFlag
   block: FencedBlock
   /** Code points of the block as the model reads it. */
   chars: number
@@ -30,6 +33,7 @@ export interface SectionPlan {
   /** The content of each model input: material blocks, then the task line. */
   sections: PromptPart[][]
   splitSegments: number
+  provenance: ReadonlyMap<string, InjectionFlag>
 }
 
 /** The last line of every section input, after the material. */
@@ -94,7 +98,9 @@ function segmentsOf(
   const whole = fence(toMaterial(raw, { source, ref }))
   if (blockChars(whole) <= maxChars) {
     return {
-      segments: [{ block: whole, chars: blockChars(whole) }],
+      segments: [
+        { ref, provenance: whole, block: whole, chars: blockChars(whole) },
+      ],
       split: false,
     }
   }
@@ -119,7 +125,7 @@ function segmentsOf(
           part: `${String(i + 1)} of ${String(pieces.length)}`,
         })
       )
-      return { block, chars: blockChars(block) }
+      return { ref, provenance: whole, block, chars: blockChars(block) }
     }),
     split: true,
   }
@@ -209,5 +215,14 @@ export function planSections(
 
   for (const unit of units) add(unit)
   flush()
-  return { sections, splitSegments }
+  const provenance = new Map<string, InjectionFlag>()
+  for (const unit of units) {
+    for (const segment of unit) {
+      provenance.set(segment.ref, {
+        injectionSuspected: segment.provenance.injectionSuspected,
+        reasons: segment.provenance.reasons,
+      })
+    }
+  }
+  return { sections, splitSegments, provenance }
 }
