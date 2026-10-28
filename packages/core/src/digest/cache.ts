@@ -1,3 +1,4 @@
+import { INJECTION_REASONS } from "../inference/index"
 import type { DatabaseSync } from "node:sqlite"
 import type { Cite, Digest, DigestCoverage, DigestLine } from "./types"
 
@@ -43,6 +44,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isCite(value: unknown): value is Cite {
   if (!isRecord(value)) return false
+  const { injectionSuspected, reasons } = value
+  if (
+    typeof injectionSuspected !== "boolean" ||
+    !Array.isArray(reasons) ||
+    !reasons.every((reason: unknown) =>
+      INJECTION_REASONS.some((known) => known === reason)
+    ) ||
+    injectionSuspected !== reasons.length > 0
+  )
+    return false
   if (typeof value["messageId"] === "string") return true
   return (
     typeof value["docSha256"] === "string" &&
