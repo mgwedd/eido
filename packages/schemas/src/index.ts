@@ -37,6 +37,8 @@ export {
   validateGateProposeResult,
   validateGateRejectReason,
   validateGateSession,
+  validateGatePushSubscription,
+  validateGatePushRegistration,
   validateGateWebAuthnAssertion,
   validateIntent,
   validateIntentResult,

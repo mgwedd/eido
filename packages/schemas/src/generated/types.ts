@@ -254,6 +254,7 @@ export type GateDecisionRequest = {
 export interface GateDecisionResult {
   intentId: string
   state: "approved" | "rejected"
+  nudge?: boolean
 }
 
 /** Body of POST /approvals/:id/edit (decided in #85, was #146). Unsigned: it creates a new pending intent with editedFrom set and marks the original rejected (edited). The response is a GatePrepareApproval for the new intent, which the device then signs, so one Face ID prompt covers the edit. An edit that changes the tier is refused with tier_changed, one policy forbids with forbidden. */
@@ -380,6 +381,21 @@ export interface GateProposeResult {
   tier: GateTier
   state: GateIntentState
   reason?: string
+}
+
+export interface GatePushRegistration {
+  subscription: GatePushSubscription
+  approval: {
+    id: string
+    nonce: string
+    assertion: GateWebAuthnAssertion
+  }
+}
+
+export interface GatePushSubscription {
+  endpoint: string
+  p256dh: string
+  auth: string
 }
 
 /** Why the owner rejected an intent; feeds the eval set (decided in #85, was #147). wrong_recipient: the right action addressed to the wrong person or place. wrong_content: what the intent says or does is wrong. wrong_tone: the content is right but the wording is not how the owner would put it. wrong_time: the action is right but not now, or scheduled for the wrong time. not_needed: nothing should have been proposed. other: none of these. */

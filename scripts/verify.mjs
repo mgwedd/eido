@@ -45,6 +45,8 @@ const TASKS = [
   { task: "//#check:invariants" },
   { task: "//#check:no-js", always: true },
   { task: "//#check:no-js-fixture", always: true },
+  { task: "//#check:no-telemetry", always: true },
+  { task: "//#check:no-telemetry-fixture", always: true },
   { task: "//#check:secrets", always: true },
   { task: "//#format:check", always: true },
   { task: "//#check:versions", always: true },
