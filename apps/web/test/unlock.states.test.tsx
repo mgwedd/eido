@@ -31,6 +31,12 @@ describeStates("Unlock states", [
     message: null,
   },
   {
+    state: "session expired",
+    render: card({ status: "expired" }),
+    role: "status",
+    message: "Your session expired. Unlock to continue.",
+  },
+  {
     state: "waiting for Face ID",
     render: card({ status: "waiting" }),
     role: "status",

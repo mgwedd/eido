@@ -19,6 +19,7 @@ type UnlockState =
   | { status: "not-enrolled" }
   | { status: "check-failed"; offline: boolean }
   | { status: "ready" }
+  | { status: "expired" }
   | { status: "waiting" }
   | { status: "cancelled" }
   | { status: "rejected"; message: string }
@@ -67,6 +68,7 @@ function UnlockCard({
   const error = alertMessage(state)
   const canUnlock =
     state.status === "ready" ||
+    state.status === "expired" ||
     state.status === "cancelled" ||
     state.status === "rejected" ||
     state.status === "offline"
@@ -76,7 +78,9 @@ function UnlockCard({
       ? "Checking this device…"
       : waiting
         ? "Waiting for Face ID…"
-        : ""
+        : state.status === "expired"
+          ? "Your session expired. Unlock to continue."
+          : ""
 
   return (
     <div className="flex min-h-svh flex-col items-center justify-center gap-6 p-4">
@@ -156,7 +160,13 @@ const readEnvironment = (): Environment =>
   )
 const readHost = () => window.location.hostname
 
-function UnlockView({ next }: { next: string }) {
+function UnlockView({
+  next,
+  expired = false,
+}: {
+  next: string
+  expired?: boolean
+}) {
   const router = useRouter()
   const environment = React.useSyncExternalStore(
     subscribeNever,
@@ -177,16 +187,20 @@ function UnlockView({ next }: { next: string }) {
           status: "check-failed",
           offline: result.reason === "offline",
         })
-      } else if (result.status.sessionExpiresAt !== null) {
+      } else if (result.status.sessionExpiresAt !== null && !expired) {
         router.replace(next)
       } else {
         setState({
-          status: result.status.enrolled ? "ready" : "not-enrolled",
+          status: !result.status.enrolled
+            ? "not-enrolled"
+            : expired
+              ? "expired"
+              : "ready",
         })
       }
     })
     return () => controller.abort()
-  }, [environment, attempt, next, router])
+  }, [environment, attempt, next, expired, router])
 
   const retry = React.useCallback(() => {
     setState({ status: "checking" })

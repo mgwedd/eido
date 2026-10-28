@@ -75,3 +75,15 @@ test("Retry asks the gate again and shows the list", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(2)
   expect(container.querySelectorAll("li")).toHaveLength(2)
 })
+
+test("a 401 sends the user to Unlock, remembering the page", async () => {
+  const replace = vi.fn()
+  vi.stubGlobal("location", { pathname: "/", search: "?x=1", replace })
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.resolve(new Response(null, { status: 401 })))
+  )
+  await render()
+  expect(replace).toHaveBeenCalledWith("/unlock?next=%2F%3Fx%3D1&expired=1")
+  expect(container.querySelector("[role=alert]")).toBeNull()
+})

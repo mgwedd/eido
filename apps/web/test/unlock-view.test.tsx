@@ -77,9 +77,9 @@ function setup(opts: {
   )
 }
 
-async function render(next = "/queue") {
+async function render(next = "/queue", expired = false) {
   await act(async () => {
-    root.render(<UnlockView next={next} />)
+    root.render(<UnlockView next={next} expired={expired} />)
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
 }
@@ -116,6 +116,17 @@ describe("UnlockView", () => {
     expect(replace).not.toHaveBeenCalled()
     await press()
     expect(replace).toHaveBeenCalledWith("/queue")
+  })
+
+  it("says the session expired and does not skip ahead on a stale live session", async () => {
+    setup({
+      status: { enrolled: true, sessionExpiresAt: "2026-10-27T22:00:00.000Z" },
+    })
+    await render("/queue", true)
+    expect(replace).not.toHaveBeenCalled()
+    expect(container.querySelector("[role=status]")?.textContent).toBe(
+      "Your session expired. Unlock to continue."
+    )
   })
 
   it("shows the host the passkey is used on", async () => {
