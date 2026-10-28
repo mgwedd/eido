@@ -3,6 +3,7 @@ import {
   validateGateDecisionRequest,
   validateGateEditRequest,
   validateGateLoginRequest,
+  validateGatePushRegistration,
 } from "@eido/schemas"
 import type {
   GateCredentialStatus,
@@ -28,6 +29,13 @@ import {
 import type { EditResult } from "./intents"
 import type { Policy } from "./policy"
 import {
+  checkedSubscription,
+  preparePushRegistration,
+  pushSubscriptions,
+  registerPushSubscription,
+  removePushSubscription,
+} from "./push-subscriptions"
+import {
   beginLogin,
   hasCredential,
   login,
@@ -51,6 +59,8 @@ export type PhoneState = {
   db: DatabaseSync
   policy: Policy
   webAuthn: WebAuthnConfig
+  nudge?: { threshold: number; windowMs: number }
+  push?: { publicKey: () => Promise<string>; notifyPending: () => void }
 }
 
 export type PhoneRoute = {
@@ -70,6 +80,11 @@ export const PHONE_ROUTES = [
   { method: "POST", path: "/approvals/:id/nonce", session: true },
   { method: "POST", path: "/approvals/:id/decision", session: true },
   { method: "POST", path: "/approvals/:id/edit", session: true },
+  { method: "GET", path: "/push/key", session: true },
+  { method: "GET", path: "/push/subscriptions", session: true },
+  { method: "POST", path: "/push/prepare", session: true },
+  { method: "POST", path: "/push/subscriptions", session: true },
+  { method: "POST", path: "/push/:id/remove", session: true },
 ] as const satisfies readonly PhoneRoute[]
 
 type RoutePath = (typeof PHONE_ROUTES)[number]["path"]
@@ -230,6 +245,7 @@ async function decision(
   state: PhoneState,
   request: GateRequest,
   id: string,
+  now: Clock,
   execute?: (id: string) => Promise<ExecutionResult>
 ): Promise<Reply> {
   const body = await jsonBody(request)
@@ -241,16 +257,29 @@ async function decision(
     return apiError(400, "invalid_request", "intentId does not match the path")
   }
   if (decided.decision === "approved") {
-    const result = verifyApproval(state.db, state.webAuthn, {
-      intentId: id,
-      nonce: decided.nonce,
-      assertion: decided.assertion,
-    })
+    const result = verifyApproval(
+      state.db,
+      state.webAuthn,
+      {
+        intentId: id,
+        nonce: decided.nonce,
+        assertion: decided.assertion,
+      },
+      {
+        now,
+        threshold: state.nudge?.threshold,
+        windowMs: state.nudge?.windowMs,
+      }
+    )
     if (!result.ok) {
       return apiError(403, "verification_failed", "the approval was refused")
     }
     if (execute !== undefined) await execute(id)
-    const approved: GateDecisionResult = { intentId: id, state: "approved" }
+    const approved: GateDecisionResult = {
+      intentId: id,
+      state: "approved",
+      nudge: result.nudge,
+    }
     return { status: 200, body: approved }
   }
   const result = reject(state.db, id, decided.reasonCode)
@@ -299,7 +328,45 @@ async function edit(
         : message
     return apiError(status, code, detail)
   }
+  state.push?.notifyPending()
   return prepared(state, issueNonce(state.db, result.intentId))
+}
+
+async function preparePush(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  if (state.push === undefined)
+    return apiError(503, "unavailable", "push is not configured")
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  try {
+    checkedSubscription(body.value)
+    return { status: 200, body: preparePushRegistration(state.db, body.value) }
+  } catch {
+    return apiError(400, "invalid_request", "invalid push subscription")
+  }
+}
+
+async function registerPush(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  if (state.push === undefined)
+    return apiError(503, "unavailable", "push is not configured")
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGatePushRegistration(body.value)
+  if (!checked.ok) return invalid("a push registration", checked.errors)
+  try {
+    const id = registerPushSubscription(state.db, checked.value.subscription, {
+      config: state.webAuthn,
+      request: checked.value.approval,
+    })
+    return { status: 201, body: { id } }
+  } catch {
+    return apiError(403, "verification_failed", "push registration refused")
+  }
 }
 
 function route(
@@ -326,9 +393,31 @@ function route(
     case "/approvals/:id/nonce":
       return prepared(state, issueNonce(state.db, matched.id))
     case "/approvals/:id/decision":
-      return decision(state, request, matched.id, execute)
+      return decision(state, request, matched.id, now, execute)
     case "/approvals/:id/edit":
       return edit(state, request, matched.id)
+    case "/push/key":
+      return state.push === undefined
+        ? apiError(503, "unavailable", "push is not configured")
+        : state.push
+            .publicKey()
+            .then((publicKey) => ({ status: 200, body: { publicKey } }))
+    case "/push/subscriptions":
+      return request.method === "GET"
+        ? {
+            status: 200,
+            body: {
+              subscriptions: pushSubscriptions(state.db).map(({ id }) => ({
+                id,
+              })),
+            },
+          }
+        : registerPush(state, request)
+    case "/push/prepare":
+      return preparePush(state, request)
+    case "/push/:id/remove":
+      removePushSubscription(state.db, matched.id)
+      return { status: 200, body: { id: matched.id } }
   }
 }
 

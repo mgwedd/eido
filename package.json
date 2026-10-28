@@ -19,6 +19,8 @@
     "check:invariants": "node scripts/check-invariant-tests.mjs",
     "check:no-js": "node scripts/check-no-js.mjs",
     "check:no-js-fixture": "node scripts/check-no-js.mjs --self-test",
+    "check:no-telemetry": "node scripts/check-no-telemetry.mjs",
+    "check:no-telemetry-fixture": "node scripts/check-no-telemetry.mjs --self-test",
     "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {

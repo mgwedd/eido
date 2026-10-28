@@ -48,6 +48,25 @@ describe("runInChild", { timeout: 60_000 }, () => {
     })
   })
 
+  it("does not return child paths or plaintext emitted to its output streams", async () => {
+    const outcome = await run("secret-output.test-support.ts")
+    expect(outcome).toEqual({
+      ok: false,
+      reason: "crashed",
+      detail: "the parser exited with 7",
+    })
+    expect(JSON.stringify(outcome)).not.toContain("synthetic plaintext marker")
+    expect(JSON.stringify(outcome)).not.toContain(tmp)
+  })
+
+  it("creates the private root, work directory and child job with restrictive modes", async () => {
+    const outcome = await run("modes.test-support.ts")
+    expect(outcome).toEqual({
+      ok: true,
+      value: { root: 0o700, work: 0o700, job: 0o600 },
+    })
+  })
+
   it("is crashed when the child exits without a result", async () => {
     expect(await run("silent.test-support.ts")).toEqual({
       ok: false,

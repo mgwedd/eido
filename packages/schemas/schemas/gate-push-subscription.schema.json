@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePushSubscription",
+  "type": "object",
+  "properties": {
+    "endpoint": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "p256dh": {
+      "type": "string",
+      "minLength": 87,
+      "maxLength": 87
+    },
+    "auth": {
+      "type": "string",
+      "minLength": 22,
+      "maxLength": 22
+    }
+  },
+  "required": ["endpoint", "p256dh", "auth"],
+  "additionalProperties": false
+}

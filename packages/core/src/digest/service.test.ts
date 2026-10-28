@@ -259,7 +259,9 @@ describe("citations", () => {
       "covers m1 to m3",
       "half invented",
     ])
-    expect(digest.lines[1]?.cites).toEqual([{ messageId: "m1" }])
+    expect(digest.lines[1]?.cites).toEqual([
+      { messageId: "m1", injectionSuspected: false, reasons: [] },
+    ])
     expect(digest.coverage.linesDropped).toBe(1)
     expect(digest.coverage.linesKept).toBe(2)
     const real = new Set(["m1", "m2", "m3"])
@@ -289,8 +291,8 @@ describe("citations", () => {
     const digest = service.getDigest(doc)
     if (!isDigest(digest)) throw new Error("digest expected")
     expect(digest.lines[0]?.cites).toEqual([
-      { docSha256, page: 1 },
-      { docSha256, page: 3 },
+      { docSha256, page: 1, injectionSuspected: false, reasons: [] },
+      { docSha256, page: 3, injectionSuspected: false, reasons: [] },
     ])
     // Page 9 does not exist in the document.
     expect(digest.lines.flatMap((l) => l.cites)).not.toContainEqual({
@@ -319,7 +321,7 @@ describe("citations", () => {
     await service.whenIdle()
     const digest = service.getDigest(doc)
     expect(isDigest(digest) && digest.lines[0]?.cites).toEqual([
-      { docSha256: sha("d"), page: 2 },
+      { docSha256: sha("d"), page: 2, injectionSuspected: false, reasons: [] },
     ])
   })
 })

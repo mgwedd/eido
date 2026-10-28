@@ -1,3 +1,5 @@
+import type { InjectionReason } from "../inference/fence"
+
 // Conversation types. The raw transcript (user and assistant turns) is authoritative and kept;
 // `summary` turns exist only in flight, built per request for the model's small context.
 
@@ -11,6 +13,9 @@ export type Turn = {
   at: string
   /** Source tags used in the turn, for example "M3". */
   sources: string[]
+  /** Provenance from fenced model output; summaries carry the union of replaced turns. */
+  injectionSuspected?: boolean
+  injectionReasons?: readonly InjectionReason[]
 }
 
 /** A turn as stored: only the roles a person or the model actually produced. */

@@ -179,6 +179,7 @@ describe("a valid approval", () => {
       ok: true,
       intentId: id,
       state: "approved",
+      nudge: false,
     })
     expect(intentStatus(w.db, id)?.state).toBe("approved")
     expect(approvalRows(w.db)).toEqual([
@@ -562,6 +563,27 @@ describe("signCountAccepted", () => {
     [5, 4, false],
   ])("stored %i, received %i: %s", (stored, received, accepted) => {
     expect(signCountAccepted(stored, received)).toBe(accepted)
+  })
+})
+
+describe("approval burst nudge", () => {
+  it("flags only approvals above the configured rolling threshold", () => {
+    const w = world()
+    let time = new Date("2026-10-25T12:00:00.000Z")
+    const approve = (number: number) => {
+      const id = pendingSend(w, `Burst ${number}`)
+      return verifyApproval(w.db, WEBAUTHN, signed(w.auth, prepare(w.db, id)), {
+        now: () => time,
+        threshold: 5,
+        windowMs: 120_000,
+      })
+    }
+    for (let number = 1; number <= 5; number++) {
+      expect(approve(number)).toMatchObject({ ok: true, nudge: false })
+    }
+    expect(approve(6)).toMatchObject({ ok: true, nudge: true })
+    time = new Date("2026-10-25T12:02:01.000Z")
+    expect(approve(7)).toMatchObject({ ok: true, nudge: false })
   })
 })
 
