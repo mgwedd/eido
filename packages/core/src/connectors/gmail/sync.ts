@@ -102,6 +102,15 @@ async function toDocuments(
       })),
     ],
     addresses: extractAddresses(parsed),
+    mailFacts: {
+      listUnsubscribe: parsed.listUnsubscribe,
+      ...(parsed.autoSubmitted === undefined
+        ? {}
+        : { autoSubmitted: parsed.autoSubmitted }),
+      ...(parsed.precedence === undefined
+        ? {}
+        : { precedence: parsed.precedence }),
+    },
     content: message.raw,
   }
   const attachments: IndexedDocument[] = []
@@ -135,6 +144,8 @@ export type SyncOptions = {
   parser?: Parser
   /** Called after the transaction commits, with documents submitted to that batch. */
   onIngested?: (documents: readonly IndexedDocument[]) => void
+  /** Called after every committed page, including pages that only backfill parsed metadata. */
+  onBatchCommitted?: () => void
 }
 
 type Totals = { inserted: number; skipped: number }
@@ -149,6 +160,7 @@ type LabelRun = {
   totals: Totals
   parser: Parser | undefined
   onIngested: SyncOptions["onIngested"]
+  onBatchCommitted: SyncOptions["onBatchCommitted"]
 }
 
 /**
@@ -158,7 +170,16 @@ type LabelRun = {
  * A message deleted since it was listed is skipped too.
  */
 async function commitBatch(
-  { db, client, label, entityId, totals, parser, onIngested }: LabelRun,
+  {
+    db,
+    client,
+    label,
+    entityId,
+    totals,
+    parser,
+    onIngested,
+    onBatchCommitted,
+  }: LabelRun,
   ids: readonly string[],
   nextCursor: StreamCursor
 ): Promise<void> {
@@ -202,6 +223,7 @@ async function commitBatch(
   totals.inserted += result.inserted
   totals.skipped += result.skipped
   if (result.inserted > 0 || result.pagesStored > 0) onIngested?.(documents)
+  onBatchCommitted?.()
 }
 
 /**
@@ -289,6 +311,7 @@ export async function syncGmailLabel(
     totals,
     parser: options.parser,
     onIngested: options.onIngested,
+    onBatchCommitted: options.onBatchCommitted,
   }
   const cursor = readCursor(db, label)
   if (cursor === undefined) {

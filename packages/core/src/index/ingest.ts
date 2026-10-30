@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { soundex, tokenize } from "./text"
 
-export type MailAddressRole = "from" | "reply_to" | "to" | "cc"
+export type MailAddressRole = "from" | "reply_to" | "to" | "cc" | "bcc"
 
 export interface IndexedDocument {
   sha256: string
@@ -26,6 +26,12 @@ export interface IndexedDocument {
   names?: { role: "from" | "to" | "cc"; name: string }[]
   /** Header addresses of a mail message, in header order within each role. */
   addresses?: { role: MailAddressRole; address: string }[]
+  /** Parsed facts that distinguish known absence from legacy records not parsed with these fields. */
+  mailFacts?: {
+    listUnsubscribe: boolean
+    autoSubmitted?: string
+    precedence?: string
+  }
   /** The canonical bytes the sha256 was computed from. When given, the digest is verified. */
   content?: Uint8Array
 }
@@ -47,6 +53,28 @@ export interface DocumentHeadChange {
   source: string
   sourceRef: string
   sha256: string | null
+}
+
+function storeMailMetadata(db: DatabaseSync, doc: IndexedDocument): void {
+  const insertAddress = db.prepare(
+    "INSERT OR IGNORE INTO mail_addresses (sha256, role, position, address) VALUES (?, ?, ?, ?)"
+  )
+  const positions = new Map<MailAddressRole, number>()
+  for (const { role, address } of doc.addresses ?? []) {
+    const position = positions.get(role) ?? 0
+    positions.set(role, position + 1)
+    insertAddress.run(doc.sha256, role, position, address)
+  }
+  if (doc.mailFacts !== undefined) {
+    db.prepare(
+      "INSERT OR IGNORE INTO mail_message_facts (sha256, list_unsubscribe, auto_submitted, precedence) VALUES (?, ?, ?, ?)"
+    ).run(
+      doc.sha256,
+      doc.mailFacts.listUnsubscribe ? 1 : 0,
+      doc.mailFacts.autoSubmitted ?? null,
+      doc.mailFacts.precedence ?? null
+    )
+  }
 }
 
 export function getCursor(
@@ -92,8 +120,6 @@ function insertDocument(
       doc.blobPath ?? null
     )
   if (changes === 0) {
-    if (doc.pages === undefined || doc.pages.length === 0)
-      return { inserted: false, pagesStored: 0 }
     const stored = db
       .prepare(
         "SELECT source, source_ref, mime, entity_id, blob_path FROM documents WHERE sha256 = ?"
@@ -108,6 +134,12 @@ function insertDocument(
         !(stored["entity_id"] === null && doc.entityId !== undefined)) ||
       stored["blob_path"] !== (doc.blobPath ?? null)
     )
+      return { inserted: false, pagesStored: 0 }
+    // A full connector resync can safely fill metadata absent from a legacy row only when the raw
+    // bytes were supplied and hashed above. Header facts are immutable after their first insert.
+    if (doc.content !== undefined && doc.mime === "message/rfc822")
+      storeMailMetadata(db, doc)
+    if (doc.pages === undefined || doc.pages.length === 0)
       return { inserted: false, pagesStored: 0 }
     const hasPages = db
       .prepare("SELECT 1 FROM document_pages WHERE sha256 = ? LIMIT 1")
@@ -149,15 +181,7 @@ function insertDocument(
       if (key !== null) insertName.run(doc.sha256, role, name, key)
     }
   }
-  const insertAddress = db.prepare(
-    "INSERT INTO mail_addresses (sha256, role, position, address) VALUES (?, ?, ?, ?)"
-  )
-  const positions = new Map<MailAddressRole, number>()
-  for (const { role, address } of doc.addresses ?? []) {
-    const position = positions.get(role) ?? 0
-    positions.set(role, position + 1)
-    insertAddress.run(doc.sha256, role, position, address)
-  }
+  if (doc.mime === "message/rfc822") storeMailMetadata(db, doc)
   return { inserted: true, pagesStored: doc.pages?.length ?? 0 }
 }
 

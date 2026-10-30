@@ -90,6 +90,15 @@ async function toDocuments(
       })),
     ],
     addresses: extractAddresses(parsed),
+    mailFacts: {
+      listUnsubscribe: parsed.listUnsubscribe,
+      ...(parsed.autoSubmitted === undefined
+        ? {}
+        : { autoSubmitted: parsed.autoSubmitted }),
+      ...(parsed.precedence === undefined
+        ? {}
+        : { precedence: parsed.precedence }),
+    },
     content: raw,
   }
   // One document per attachment, keyed off the message's hash so the same file attached to two

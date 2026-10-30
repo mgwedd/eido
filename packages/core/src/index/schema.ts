@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -122,6 +122,19 @@ CREATE TRIGGER document_pages_no_update BEFORE UPDATE ON document_pages
 BEGIN SELECT RAISE(ABORT, 'document pages are immutable'); END;
 CREATE TRIGGER document_pages_no_delete BEFORE DELETE ON document_pages
 BEGIN SELECT RAISE(ABORT, 'document pages are immutable'); END;
+`,
+  // v7: stored delivery headers distinguish automated messages from legacy mail with unknown facts.
+  `
+CREATE TABLE mail_message_facts (
+  sha256 TEXT PRIMARY KEY REFERENCES documents(sha256),
+  list_unsubscribe INTEGER NOT NULL CHECK (list_unsubscribe IN (0, 1)),
+  auto_submitted TEXT,
+  precedence TEXT
+);
+CREATE TRIGGER mail_message_facts_no_update BEFORE UPDATE ON mail_message_facts
+BEGIN SELECT RAISE(ABORT, 'mail message facts are immutable'); END;
+CREATE TRIGGER mail_message_facts_no_delete BEFORE DELETE ON mail_message_facts
+BEGIN SELECT RAISE(ABORT, 'mail message facts are immutable'); END;
 `,
 ]
 

@@ -77,7 +77,7 @@ describe("migrations", () => {
     const defaultEntityId = await createDefaultEntity(path)
     const upgraded = openDataDb(path, { defaultEntityId })
     expect(schemaOf(upgraded)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(upgraded)).toBe(5)
+    expect(ledgerVersion(upgraded)).toBe(7)
     expect(
       upgraded
         .prepare(
@@ -92,7 +92,7 @@ describe("migrations", () => {
 
     const again = openDataDb(path)
     expect(schemaOf(again)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(again)).toBe(5)
+    expect(ledgerVersion(again)).toBe(7)
     expect(
       again.prepare("SELECT * FROM documents ORDER BY sha256").all()
     ).toEqual(documentsBefore)
@@ -148,7 +148,7 @@ describe("migrations", () => {
   test("a database from a newer ledger version is refused", () => {
     const path = tempPath()
     const db = openDataDb(path)
-    db.exec("UPDATE ledger_schema SET version = 6")
+    db.exec("UPDATE ledger_schema SET version = 8")
     db.close()
     expect(codeOf(() => openDataDb(path))).toBe("newer_schema")
   })
@@ -180,7 +180,27 @@ describe("migrations", () => {
     old.close()
 
     const db = openDataDb(path)
-    expect(ledgerVersion(db)).toBe(5)
+    expect(ledgerVersion(db)).toBe(7)
+    expect(
+      db
+        .prepare(
+          "SELECT direction, thread_id, anchor_message_id, resolution_reason FROM obligations ORDER BY id"
+        )
+        .all()
+    ).toEqual([
+      {
+        direction: null,
+        thread_id: null,
+        anchor_message_id: null,
+        resolution_reason: null,
+      },
+      {
+        direction: null,
+        thread_id: null,
+        anchor_message_id: null,
+        resolution_reason: null,
+      },
+    ])
     expect(
       db
         .prepare(
