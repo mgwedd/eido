@@ -93,7 +93,7 @@ export const DATA_PLANE_LOG_FILE = "data-plane.log"
 
 /** Where core's API listens unless EIDO_CORE_HOST and EIDO_CORE_PORT say otherwise. */
 export const DEFAULT_CORE_HOST = "127.0.0.1"
-export const DEFAULT_CORE_PORT = 8787
+export const DEFAULT_CORE_PORT = 8789
 export const ASK_CONTEXT_BUDGET_TOKENS = 3000
 export const ASK_REPLY_TOKENS = 512
 export const GMAIL_SYNC_INTERVAL_MS = 5 * 60_000
