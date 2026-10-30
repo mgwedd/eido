@@ -46,6 +46,10 @@ export interface StubReply {
   status?: number
   /** Content pieces, one SSE chunk each. Default: none. */
   deltas?: string[]
+  /** Optional aligned probability for each generated token spelling. */
+  probabilities?: { token: string; probability: number }[]
+  /** Raw byte variant for malformed UTF-8 metadata cases. */
+  probabilityBytes?: { bytes: number[]; probability: number }[]
   /** Reported `tokens_evaluated`. Default: the prompt's length. Null leaves it out. */
   promptTokens?: number | null
   /** "stop" (eos), "length" (limit), or any other `stop_type` sent as is. Default "stop". */
@@ -234,6 +238,41 @@ export function streamBody(reply: StubReply, promptLength = 0): string {
   return parts.join("")
 }
 
+function completionJson(reply: StubReply, promptLength: number): unknown {
+  const content = (reply.deltas ?? []).join("")
+  const finish = reply.finishReason ?? "stop"
+  return {
+    content,
+    stop: true,
+    stop_type: STOP_TYPE[finish] ?? finish,
+    tokens_evaluated: reply.promptTokens ?? promptLength,
+    ...(reply.probabilities === undefined &&
+    reply.probabilityBytes === undefined
+      ? {}
+      : {
+          completion_probabilities: (
+            reply.probabilityBytes ??
+            reply.probabilities?.map(({ token, probability }) => ({
+              bytes: [...encoder.encode(token)],
+              probability,
+            })) ??
+            []
+          ).map(({ bytes, probability }) => ({
+            bytes,
+            logprob: Math.log(probability),
+            token: new TextDecoder().decode(new Uint8Array(bytes)),
+            top_logprobs: [
+              {
+                token: "decoy",
+                bytes: [100, 101, 99, 111, 121],
+                logprob: -0.0001,
+              },
+            ],
+          })),
+        }),
+  }
+}
+
 /** `bytes` cut after the first byte of the first occurrence of each of `chars`. */
 export function splitBytes(
   bytes: Uint8Array,
@@ -286,11 +325,16 @@ function notFound(res: ServerResponse): void {
 async function writeReply(
   res: ServerResponse,
   reply: StubReply,
-  promptLength: number
+  promptLength: number,
+  streaming: boolean
 ): Promise<void> {
   const status = reply.status ?? 200
   if (status < 200 || status > 299) {
     json(res, status, { error: { code: status, message: "stub error" } })
+    return
+  }
+  if (!streaming) {
+    json(res, status, completionJson(reply, promptLength))
     return
   }
   res.writeHead(status, { "content-type": "text/event-stream" })
@@ -385,7 +429,14 @@ export async function startStubModelServer(
       completions += 1
       const reply = script.replies[index]
       if (reply !== undefined) {
-        await writeReply(res, reply, parseCompletion(body).tokens.length)
+        await writeReply(
+          res,
+          reply,
+          parseCompletion(body).tokens.length,
+          parseCompletion(body).body.stream !== false ||
+            reply.rawBody !== undefined ||
+            reply.hang === true
+        )
         return
       }
     }

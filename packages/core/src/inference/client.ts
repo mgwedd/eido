@@ -143,6 +143,131 @@ async function readStream(
   }
 }
 
+function completionProbabilities(
+  value: unknown,
+  text: string
+): readonly { bytes: readonly number[]; probability: number }[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  const decoder = new TextDecoder("utf-8", { fatal: true })
+  const result: { bytes: number[]; probability: number }[] = []
+  const allBytes: number[] = []
+  try {
+    for (const entry of value) {
+      if (!isRecord(entry)) return undefined
+      const token = entry
+      if (!Array.isArray(token.bytes)) return undefined
+      const bytes: number[] = []
+      for (const byte of token.bytes) {
+        if (
+          typeof byte !== "number" ||
+          !Number.isInteger(byte) ||
+          byte < 0 ||
+          byte > 255
+        )
+          return undefined
+        bytes.push(byte)
+      }
+      if (bytes.length === 0) return undefined
+      const probability =
+        typeof token.logprob === "number" &&
+        Number.isFinite(token.logprob) &&
+        token.logprob <= 0
+          ? Math.exp(token.logprob)
+          : token.prob
+      if (
+        typeof probability !== "number" ||
+        !Number.isFinite(probability) ||
+        probability < 0 ||
+        probability > 1
+      )
+        return undefined
+      allBytes.push(...bytes)
+      result.push({ bytes, probability })
+    }
+  } catch {
+    return undefined
+  }
+  try {
+    return decoder.decode(new Uint8Array(allBytes)) === text
+      ? result
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function readCompletion(
+  response: Response,
+  signal: AbortSignal | undefined
+): Promise<{
+  text: string
+  finishReason: "stop" | "length"
+  promptTokens: number
+  tokenProbabilities?: readonly {
+    bytes: readonly number[]
+    probability: number
+  }[]
+}> {
+  if (response.body === null)
+    throw new InferenceError(
+      "malformed",
+      response.status,
+      "response has no body"
+    )
+  const type = response.headers.get("content-type") ?? ""
+  if (!type.includes("application/json"))
+    return readStream(response, response.body, signal)
+  let answer: unknown
+  try {
+    answer = await response.json()
+  } catch (cause) {
+    if (signal?.aborted === true) throw abortedError(cause)
+    throw new InferenceError(
+      "malformed",
+      response.status,
+      "completion answer is not JSON",
+      { cause }
+    )
+  }
+  if (
+    !isRecord(answer) ||
+    typeof answer.content !== "string" ||
+    typeof answer.tokens_evaluated !== "number" ||
+    !Number.isSafeInteger(answer.tokens_evaluated) ||
+    answer.tokens_evaluated < 0
+  ) {
+    throw new InferenceError(
+      "malformed",
+      response.status,
+      "completion answer is malformed"
+    )
+  }
+  const finish =
+    answer.stop_type === "eos" || answer.stop_type === "word"
+      ? "stop"
+      : answer.stop_type === "limit"
+        ? "length"
+        : undefined
+  if (finish === undefined)
+    throw new InferenceError(
+      "malformed",
+      response.status,
+      "completion stop_type is not handled"
+    )
+  const probabilities = completionProbabilities(
+    answer.completion_probabilities,
+    answer.content
+  )
+  return {
+    text: answer.content,
+    finishReason: finish,
+    promptTokens: answer.tokens_evaluated,
+    ...(probabilities === undefined
+      ? {}
+      : { tokenProbabilities: probabilities }),
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }
@@ -434,16 +559,12 @@ export function createModelClient(
           `model server answered ${String(response.status)}`
         )
       }
-      if (response.body === null) {
-        throw new InferenceError(
-          "malformed",
-          response.status,
-          "response has no body"
-        )
-      }
-      const streamed = await readStream(response, response.body, opts.signal)
+      const streamed = await readCompletion(response, opts.signal)
       return {
         text: streamed.text,
+        ...(streamed.tokenProbabilities === undefined
+          ? {}
+          : { tokenProbabilities: streamed.tokenProbabilities }),
         estimatedPromptTokens,
         reportedPromptTokens: streamed.promptTokens,
         truncationSuspected: truncationSuspected(
