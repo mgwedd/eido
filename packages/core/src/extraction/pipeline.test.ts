@@ -11,7 +11,7 @@ import {
   jsonReply,
 } from "./extraction.test-support"
 import type { Harness } from "./extraction.test-support"
-import { ExtractionError, createExtractor } from "./pipeline"
+import { ExtractionError, createExtractor, quoteProbability } from "./pipeline"
 import { EXTRACTION_SYSTEM_PROMPT, passageMessage } from "./prompt"
 import type { ExtractionLogEvent } from "./types"
 
@@ -197,6 +197,79 @@ describe("verbatim checks", () => {
 })
 
 describe("per-field confidence", () => {
+  test("does not score malformed, partial, or wrong-field reply mappings", () => {
+    const bytes = new TextEncoder().encode(
+      '{"items":[{"action":{"quote":"a quote"}}]}'
+    )
+    const probabilities = [{ bytes: [...bytes], probability: 0.7 }]
+    expect(
+      quoteProbability("[]", "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+    expect(
+      quoteProbability('{"items":{}}', "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[null]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability('{"items":[{}]}', "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":null}]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":3}}]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":"other"}}]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":"a quote"}}]}',
+        "action",
+        "a quote",
+        1,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":"a quote"}}]}',
+        "action",
+        "a quote",
+        0,
+        []
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability("{", "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+  })
+
   test("scores quote tokens in the actual reply and keeps the default when metadata is absent", async () => {
     const payload = {
       nothing_found: false,

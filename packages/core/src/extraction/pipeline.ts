@@ -102,7 +102,7 @@ type Proposed = {
   }[]
 }
 
-function quoteProbability(
+export function quoteProbability(
   reply: string,
   field: string,
   quote: string,
