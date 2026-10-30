@@ -303,6 +303,11 @@ export function syncReplyObligations(
   now: Date,
   cfg: RepliesConfig
 ): { created: number; resolved: number } {
+  if (cfg.db.isTransaction) {
+    throw new Error(
+      "reply obligation sync deferred while a ledger transaction is active"
+    )
+  }
   const messages = getMessages(cfg)
   const found = candidates(now, cfg, messages)
   const byThread = groupedMessages(messages)

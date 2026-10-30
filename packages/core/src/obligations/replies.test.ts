@@ -390,6 +390,23 @@ describe("reply obligations", () => {
     reopened.close()
   })
 
+  test("defers writes while another ledger transaction is active and retries afterward", () => {
+    mail({
+      id: "external-transaction",
+      at: at(1),
+      from: other,
+      to: [own],
+      body: "Please reply.",
+    })
+    fixture.db.exec("BEGIN")
+    expect(() => run(4)).toThrow(
+      "reply obligation sync deferred while a ledger transaction is active"
+    )
+    expect(listObligations(fixture.db)).toEqual([])
+    fixture.db.exec("ROLLBACK")
+    expect(run(4).created).toBe(1)
+  })
+
   test("isolates same RFC thread identifiers across entities", () => {
     mail({
       id: "first",
