@@ -52,6 +52,8 @@ export {
   validateProfileUpdate,
   validateCoreApiAskRequest,
   validateCoreApiAskResponse,
+  validateCoreApiDocumentList,
+  validateCoreApiDocumentView,
   validateCoreApiDefaultEntityRequest,
   validateCoreApiDefaultEntity,
   validateAskCoverage,
