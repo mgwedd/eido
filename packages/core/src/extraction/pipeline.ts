@@ -10,7 +10,6 @@ import type { InjectionReason } from "../inference/fence"
 import type { ChatMessage, ModelClient } from "../inference/types"
 import { insertExtraction, insertObligation } from "../ledger/store"
 import type { Parser } from "../parsers/parse-document"
-import type { ParseSuccess } from "../parsers/types"
 import {
   DEFAULT_MAX_PASSAGES,
   DEFAULT_PHRASES,
@@ -328,7 +327,11 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
       return finish("refused_over_budget", { passagesRead })
     }
 
-    const source: Pick<ParseSuccess, "text" | "offsets"> = normalized
+    const source = {
+      text: normalized.text,
+      offsets: normalized.originalOffsets,
+      normalized,
+    }
     const outcomes: { outcome: ItemOutcome; reasons: InjectionReason[] }[] =
       proposedItems.map(({ item, passage, injectionReasons }) => ({
         outcome: verifyItem(item, passage, source, threshold, scorer),
