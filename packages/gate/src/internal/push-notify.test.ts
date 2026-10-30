@@ -2,6 +2,7 @@ import { createECDH, randomBytes } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { propose } from "./intents"
 import { createPushNotifier, pushPayload } from "./push-notify"
+import { generateVapidPrivateKey } from "./push-crypto"
 import {
   checkedSubscription,
   preparePushRegistration,
@@ -24,9 +25,7 @@ function keys() {
 }
 
 function privateKey(): string {
-  const signer = createECDH("prime256v1")
-  signer.generateKeys()
-  return signer.getPrivateKey().toString("base64url")
+  return generateVapidPrivateKey()
 }
 
 function requestUrl(value: string | URL | Request): string {
