@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -81,6 +81,34 @@ BEGIN SELECT RAISE(ABORT, 'mail addresses are immutable'); END;
 `,
   // v4: the default entity of documents whose account has no assignment
   DEFAULT_ENTITY_MIGRATION_SQL,
+  // v5: invalidate pre-migration Drive visibility and force a full listing. Old change
+  // cursors did not record removals, so even a sole stored version may be stale.
+  `
+CREATE TABLE document_heads (
+  source TEXT NOT NULL,
+  source_ref TEXT NOT NULL,
+  sha256 TEXT REFERENCES documents(sha256),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (source, source_ref)
+);
+CREATE TRIGGER document_heads_source_on_insert BEFORE INSERT ON document_heads
+WHEN NEW.sha256 IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM documents d WHERE d.sha256 = NEW.sha256
+    AND d.source = NEW.source AND d.source_ref = NEW.source_ref
+)
+BEGIN SELECT RAISE(ABORT, 'document head source mismatch'); END;
+CREATE TRIGGER document_heads_source_on_update BEFORE UPDATE ON document_heads
+WHEN NEW.sha256 IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM documents d WHERE d.sha256 = NEW.sha256
+    AND d.source = NEW.source AND d.source_ref = NEW.source_ref
+)
+BEGIN SELECT RAISE(ABORT, 'document head source mismatch'); END;
+INSERT INTO document_heads (source, source_ref, sha256, updated_at)
+SELECT d.source, d.source_ref, NULL, max(d.ingested_at)
+FROM documents d
+WHERE d.source = 'drive' GROUP BY d.source, d.source_ref;
+DELETE FROM cursors WHERE connector = 'drive' AND stream = 'files';
+`,
 ]
 
 /** Open (or create) the index database and bring its schema to the current version. Idempotent. */

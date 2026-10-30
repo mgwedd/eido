@@ -44,7 +44,7 @@ describe("Drive reads", () => {
       nextPageToken: undefined,
     })
     expect(await empty.changes("token")).toEqual({
-      files: [],
+      changes: [],
       nextPageToken: undefined,
       newStartPageToken: "next",
     })
@@ -59,12 +59,14 @@ describe("Drive reads", () => {
     const trashed = createDriveClient(() =>
       Promise.resolve(
         Response.json({
-          changes: [{ file: { trashed: true } }],
+          changes: [{ fileId: "gone", file: { trashed: true } }],
           newStartPageToken: "next",
         })
       )
     )
-    expect((await trashed.changes("token")).files).toEqual([])
+    expect((await trashed.changes("token")).changes).toEqual([
+      { kind: "removed", fileId: "gone" },
+    ])
     const mismatch = createDriveClient(() =>
       Promise.resolve(
         Response.json({

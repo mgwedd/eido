@@ -1,5 +1,6 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
 import { countMatches, search } from "../index/search"
+import { LIVE_DOCUMENT_PREDICATE } from "../index/heads"
 import type { SearchQuery } from "../index/search"
 import { packParts } from "../context/pack-store"
 import type { PackMember } from "../context/pack-store"
@@ -58,18 +59,22 @@ export function countSearched(db: DatabaseSync, plan: SearchPlan): number {
   const conditions: string[] = []
   const params: SQLInputValue[] = []
   if (plan.after !== undefined) {
-    conditions.push("occurred_at >= ?")
+    conditions.push("t.occurred_at >= ?")
     params.push(plan.after)
   }
   if (plan.before !== undefined) {
-    conditions.push("occurred_at < ?")
+    conditions.push("t.occurred_at < ?")
     params.push(plan.before)
   }
   const where =
-    conditions.length === 0 ? "" : ` WHERE ${conditions.join(" AND ")}`
+    conditions.length === 0 ? "" : ` AND ${conditions.join(" AND ")}`
   return Number(
     db
-      .prepare(`SELECT count(*) AS n FROM document_text${where}`)
+      .prepare(
+        `SELECT count(*) AS n FROM document_text t
+         JOIN documents d ON d.sha256 = t.sha256
+         WHERE ${LIVE_DOCUMENT_PREDICATE}${where}`
+      )
       .get(...params)?.["n"] ?? 0
   )
 }
@@ -83,7 +88,8 @@ function citationFor(
   const row = db
     .prepare(
       `SELECT d.source, d.source_ref, t.title, t.occurred_at FROM documents d
-       JOIN document_text t ON t.sha256 = d.sha256 WHERE d.sha256 = ?`
+       JOIN document_text t ON t.sha256 = d.sha256
+       WHERE ${LIVE_DOCUMENT_PREDICATE} AND d.sha256 = ?`
     )
     .get(documentId)
   // Every pack member was read from the index, so its row is there.
