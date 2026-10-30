@@ -150,6 +150,42 @@ describe("searchConversations", () => {
     expect(fixture.store.searchConversations("renew")).toEqual([])
   })
 
+  it("finds one-letter typos after exact matches", () => {
+    fixture = storeFixture()
+    fixture.store.appendTurn("c1", rawTurn(1, "A zebrafish was spotted."))
+    fixture.store.appendTurn("c2", rawTurn(2, "A zebragish was spotted."))
+
+    expect(
+      fixture.store.searchConversations("zebragish").map((hit) => hit.turnId)
+    ).toEqual(["t2", "t1"])
+  })
+
+  it("finds one-letter typos in short words", () => {
+    fixture = storeFixture()
+    fixture.store.appendTurn("c1", rawTurn(1, "The cat is here."))
+
+    expect(
+      fixture.store.searchConversations("hat").map((hit) => hit.turnId)
+    ).toEqual(["t1"])
+  })
+
+  it("matches a sound-alike name", () => {
+    fixture = storeFixture()
+    fixture.store.appendTurn("c1", rawTurn(1, "Please ask Steven to call."))
+
+    expect(
+      fixture.store.searchConversations("Stephen").map((hit) => hit.turnId)
+    ).toEqual(["t1"])
+  })
+
+  it("does not expand typos or sound-alike terms inside quoted phrases", () => {
+    fixture = storeFixture()
+    fixture.store.appendTurn("c1", rawTurn(1, "A zebrafish swam past Steven."))
+
+    expect(fixture.store.searchConversations('"zebragish"')).toEqual([])
+    expect(fixture.store.searchConversations('"Stephen"')).toEqual([])
+  })
+
   it("ranks the best match first", () => {
     seed()
     const hits = fixture.store.searchConversations("lease")
