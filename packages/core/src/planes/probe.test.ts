@@ -19,6 +19,8 @@ function client(overrides: Partial<IntentClient> = {}): IntentClient {
     Promise.reject(new GateUnavailableError("the gate is not reachable"))
   return {
     propose: unavailable,
+    restoreTrash: () =>
+      Promise.reject(new GateUnavailableError("the gate is not reachable")),
     status: unavailable,
     history: unavailable,
     listPending: unavailable,

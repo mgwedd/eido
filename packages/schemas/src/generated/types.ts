@@ -705,6 +705,20 @@ export interface EmailTrashIntent {
   }
 }
 
+/** Restore Gmail messages from Trash to their recorded prior labels. Requires fresh approval. */
+export interface EmailUntrashIntent {
+  kind: "email.untrash"
+  connector?: string
+  args: {
+    sourceIntentId: string
+    messageIds: Array<string>
+    priorLabels: Array<{
+      messageId: string
+      labels: Array<string>
+    }>
+  }
+}
+
 /** Create a file inside an allowed folder. */
 export interface FileCreateIntent {
   kind: "file.create"
@@ -765,7 +779,7 @@ export type IntentResult = {
 }
 
 /** One proposed write. The model never supplies an id; the gate assigns it. */
-export type Intent = EmailDraftIntent | EmailLabelIntent | EmailArchiveIntent | EmailMarkReadIntent | EmailSendIntent | EmailReplyIntent | EmailForwardIntent | EmailTrashIntent | CalendarCreateIntent | CalendarEditIntent | CalendarDeleteIntent | ReminderCreateIntent | FileCreateIntent | FileRenameIntent | FileMoveIntent | FileDeleteIntent
+export type Intent = EmailDraftIntent | EmailLabelIntent | EmailArchiveIntent | EmailMarkReadIntent | EmailSendIntent | EmailReplyIntent | EmailForwardIntent | EmailTrashIntent | EmailUntrashIntent | CalendarCreateIntent | CalendarEditIntent | CalendarDeleteIntent | ReminderCreateIntent | FileCreateIntent | FileRenameIntent | FileMoveIntent | FileDeleteIntent
 
 /** Assign a connector account, calendar or mailbox to an entity. */
 export interface ProfileAccountAssignment {

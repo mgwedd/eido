@@ -17,6 +17,7 @@ const MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 
 const unusedIntents: IntentClient = {
   propose: () => Promise.reject(new Error("not used")),
+  restoreTrash: () => Promise.reject(new Error("not used")),
   status: () => Promise.reject(new Error("not used")),
   history: () => Promise.reject(new Error("not used")),
   listPending: () => Promise.reject(new Error("not used")),
@@ -101,6 +102,7 @@ describe("manifest", () => {
       reply: ["write", "irreversible", "sensitive", false, "approval"],
       forward: ["write", "irreversible", "sensitive", false, "approval"],
       trash: ["write", "reversible", "sensitive", false, "approval"],
+      restore_trash: ["write", "reversible", "sensitive", false, "approval"],
     })
   })
 
@@ -129,6 +131,7 @@ describe("manifest", () => {
       "email.reply",
       "email.forward",
       "email.trash",
+      "email.untrash",
     ])
     for (const op of writes)
       expect(op.defaultTier, op.name).toBe(
@@ -172,7 +175,13 @@ describe("manifest", () => {
       method: "POST",
       pathPattern: "/gmail/v1/users/me/messages/batchModify",
     }
-    for (const name of ["mark_read", "label", "archive", "trash"])
+    for (const name of [
+      "mark_read",
+      "label",
+      "archive",
+      "trash",
+      "restore_trash",
+    ])
       expect(
         manifest.operations.find((op) => op.name === name)?.routes
       ).toEqual([route])

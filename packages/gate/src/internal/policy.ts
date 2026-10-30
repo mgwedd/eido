@@ -179,6 +179,8 @@ export function kindTier(
   if (operation.defaultTier === "forbidden") {
     return forbidden("manifest_forbidden")
   }
+  // Trash restoration is a separate externally visible write, so it always needs fresh approval.
+  if (kind === "email.untrash") return { tier: "approval" }
   const configured: ConfigTier =
     policy.overlay?.tiers[kind] ??
     policy.shipped.tiers[kind] ??
