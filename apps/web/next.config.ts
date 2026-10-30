@@ -8,6 +8,8 @@ const tailnetHost = process.env["EIDO_TAILNET_HOST"]
 const nextConfig: NextConfig = {
   // `next dev` rewrites apps/web/AGENTS.md on every run unless this is off (#377).
   agentRules: false,
+  // `forbidden()` answers refused pages with a real 403 (app/forbidden.tsx, #370).
+  experimental: { authInterrupts: true },
   transpilePackages: ["@eido/ui"],
   allowedDevOrigins: tailnetHost ? [tailnetHost] : [],
   headers() {
