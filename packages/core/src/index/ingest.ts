@@ -39,6 +39,12 @@ export interface Cursor {
   uidvalidity?: string
 }
 
+export interface DocumentHeadChange {
+  source: string
+  sourceRef: string
+  sha256: string | null
+}
+
 export function getCursor(
   db: DatabaseSync,
   connector: string,
@@ -129,6 +135,7 @@ export function ingestBatch(
     connector: string
     stream: string
     documents: IndexedDocument[]
+    heads?: DocumentHeadChange[]
     nextCursor: string
     uidvalidity?: string
   }
@@ -150,6 +157,13 @@ export function ingestBatch(
       if (insertDocument(db, doc, now)) inserted++
       else skipped++
     }
+    const setHead = db.prepare(
+      `INSERT INTO document_heads (source, source_ref, sha256, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (source, source_ref) DO UPDATE SET
+         sha256 = excluded.sha256, updated_at = excluded.updated_at`
+    )
+    for (const head of args.heads ?? [])
+      setHead.run(head.source, head.sourceRef, head.sha256, now)
     db.prepare(
       `INSERT INTO cursors (connector, stream, cursor, uidvalidity, updated_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT (connector, stream) DO UPDATE SET

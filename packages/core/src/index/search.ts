@@ -1,5 +1,6 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
 import { soundex, tokenize, withinOneEdit } from "./text"
+import { LIVE_DOCUMENT_PREDICATE } from "./heads"
 
 export interface SearchQuery {
   text: string
@@ -129,8 +130,10 @@ function snippets(body: string, hitTerms: Set<string>): SearchHit["snippets"] {
 }
 
 const FROM_WITH_MATCH = `FROM document_fts JOIN document_text t ON t.rowid = document_fts.rowid
-  JOIN documents d ON d.sha256 = t.sha256 WHERE document_fts MATCH ?`
-const FROM_NO_MATCH = `FROM document_text t JOIN documents d ON d.sha256 = t.sha256 WHERE 1 = 1`
+  JOIN documents d ON d.sha256 = t.sha256
+  WHERE document_fts MATCH ? AND ${LIVE_DOCUMENT_PREDICATE}`
+const FROM_NO_MATCH = `FROM document_text t JOIN documents d ON d.sha256 = t.sha256
+  WHERE ${LIVE_DOCUMENT_PREDICATE}`
 
 /** Ranked search: BM25 (title weighted over body), ties by newest then sha256. */
 export function search(db: DatabaseSync, q: SearchQuery): SearchHit[] {
