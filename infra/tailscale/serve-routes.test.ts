@@ -5,6 +5,7 @@ import {
   applyCommands,
   blockingProblems,
   checkServeConfig,
+  DEFAULT_CORE_PORT,
   DEFAULT_EIDO_PORT,
   parseDnsName,
   parseEdgeConfig,
@@ -23,7 +24,7 @@ describe("parseEdgeConfig", () => {
     expect(defaults).toEqual({
       port: 8443,
       webPort: 3000,
-      corePort: 8787,
+      corePort: 8789,
       gatePort: 8788,
     })
     expect(DEFAULT_EIDO_PORT).toBe(8443)
@@ -74,7 +75,7 @@ describe("applyCommands", () => {
         "--bg",
         "--https=8443",
         "--set-path=/api/core",
-        "http://127.0.0.1:8787",
+        "http://127.0.0.1:8789",
       ],
       [
         "serve",
@@ -229,5 +230,11 @@ describe("parseDnsName", () => {
     ['{"Self":{"DNSName":""}}', "no Self.DNSName"],
   ])("refuses %s", (text, message) => {
     expect(() => parseDnsName(text)).toThrow(message)
+  })
+})
+
+describe("DEFAULT_CORE_PORT", () => {
+  it("is core's default, 8789, not 8787 which another app on the host uses", () => {
+    expect(DEFAULT_CORE_PORT).toBe(8789)
   })
 })

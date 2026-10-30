@@ -4,7 +4,7 @@
     "node.example.ts.net:8443": {
       "Handlers": {
         "/": { "Proxy": "http://127.0.0.1:3000" },
-        "/api/core": { "Proxy": "http://127.0.0.1:8787" },
+        "/api/core": { "Proxy": "http://127.0.0.1:8789" },
         "/api/gate": { "Proxy": "http://127.0.0.1:8788" },
         "/admin": { "Proxy": "http://127.0.0.1:9999" }
       }

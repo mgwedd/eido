@@ -22,7 +22,7 @@ export interface ApiDeps {
   /** Read-only projection from the gate; no connector credentials or mail payloads. */
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
   /**
-   * Host header values core answers to, such as `127.0.0.1:8787`. A request with any other
+   * Host header values core answers to, such as `127.0.0.1:8789`. A request with any other
    * Host gets 421. Core has no auth, so this stops a page that rebinds its own domain to the
    * listen address (DNS rebinding) from driving core through the owner's browser.
    */

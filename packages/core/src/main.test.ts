@@ -48,6 +48,7 @@ import {
   serveDataPlane,
   startConversationDigestTimer,
   CONVERSATION_DIGEST_SWEEP_INTERVAL_MS,
+  DEFAULT_CORE_PORT,
 } from "./main"
 import type { DataPlaneConfig } from "./main"
 
@@ -93,6 +94,12 @@ describe("the data plane's environment", () => {
   })
 })
 
+describe("DEFAULT_CORE_PORT", () => {
+  it("is 8789, not 8787 which another app on the host uses", () => {
+    expect(DEFAULT_CORE_PORT).toBe(8789)
+  })
+})
+
 describe("dataPlaneConfig", () => {
   it("puts eido-data.db and the log in the data dir", () => {
     expect(
@@ -104,7 +111,7 @@ describe("dataPlaneConfig", () => {
       gateSocket: "/s/gate.sock",
       api: {
         host: "127.0.0.1",
-        port: 8787,
+        port: 8789,
         basePath: "",
         allowedHosts: [],
         conversationDigestIdleTtlMinutes: 60,
@@ -406,7 +413,7 @@ describe("Gmail sync runtime", () => {
       gateSocket: join(dir, "gate.sock"),
       api: {
         host: "127.0.0.1",
-        port: 8787,
+        port: 8789,
         basePath: "",
         allowedHosts: [],
         gmailProxyUrl: "http://127.0.0.1:7801",

@@ -23,7 +23,7 @@ The WebAuthn origin is `https://<host>:8443`. The gate accepts an origin with a 
 
 ## `tailscale serve` routes (ADR 0004)
 
-Eido is served on its own HTTPS port, 8443, at `https://<host>.ts.net:8443`: `/` to Next on `127.0.0.1:3000`, `/api/core` to core on `127.0.0.1:8787` (the stack passes `--core-port 8789`), `/api/gate` to the gate's phone listener on `127.0.0.1:8788`. Routes on other ports belong to other apps and are never read for problems or changed.
+Eido is served on its own HTTPS port, 8443, at `https://<host>.ts.net:8443`: `/` to Next on `127.0.0.1:3000`, `/api/core` to core on `127.0.0.1:8789` (core's default; 8787 belongs to another app on the host), `/api/gate` to the gate's phone listener on `127.0.0.1:8788`. Routes on other ports belong to other apps and are never read for problems or changed.
 
 ```bash
 pnpm --filter @eido/infra serve-routes plan     # print the tailscale commands; changes nothing
