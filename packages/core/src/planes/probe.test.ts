@@ -43,6 +43,7 @@ describe("runProbe", () => {
           port: 8787,
           basePath: "",
           allowedHosts: [],
+          conversationDigestIdleTtlMinutes: 60,
         },
       },
     })

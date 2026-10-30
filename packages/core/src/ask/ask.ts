@@ -4,7 +4,7 @@ import type { SearchQuery } from "../index/search"
 import { packParts } from "../context/pack-store"
 import type { PackMember } from "../context/pack-store"
 import { PromptTooLargeError } from "../inference/errors"
-import { MATERIAL_RULES } from "../inference/fence"
+import { MATERIAL_RULES, fence, toMaterial } from "../inference/fence"
 import type { ModelClient } from "../inference/types"
 import {
   absenceReplacement,
@@ -213,6 +213,28 @@ async function run(
           role: "user",
           // The material first; the owner's question last, unfenced.
           content: [
+            ...(deps.conversation?.length
+              ? [
+                  "Conversation so far (prior turns may help interpret the question):\n",
+                  ...deps.conversation.flatMap((turn) =>
+                    turn.role === "user"
+                      ? [`[user ${turn.at}] ${turn.text}\n`]
+                      : [
+                          `[${turn.role} ${turn.at}]\n`,
+                          fence(
+                            toMaterial(turn.text, {
+                              source:
+                                turn.role === "summary"
+                                  ? "summary"
+                                  : "assistant",
+                            })
+                          ),
+                          "\n",
+                        ]
+                  ),
+                  "\n",
+                ]
+              : []),
             `${facts}\n\nMessages:\n`,
             ...packParts(pack),
             `\n\nQuestion: ${question}`,
@@ -258,14 +280,35 @@ async function run(
       possiblyTruncated,
     }
   }
+  const citations = checked.cited.flatMap((tag) => {
+    const member = byTag.get(tag)
+    if (member === undefined) return []
+    const citation = citationFor(db, tag, member)
+    return [
+      deps.allocateSourceTag === undefined
+        ? citation
+        : { ...citation, tag: deps.allocateSourceTag(citation.sourceRef) },
+    ]
+  })
+  let answer = checked.text
+  if (deps.allocateSourceTag !== undefined) {
+    for (const citation of citations) {
+      const original = checked.cited.find((tag) => {
+        const member = byTag.get(tag)
+        return (
+          member !== undefined &&
+          citationFor(db, tag, member).sourceRef === citation.sourceRef
+        )
+      })
+      if (original !== undefined)
+        answer = answer.replaceAll(`[${original}]`, `[${citation.tag}]`)
+    }
+  }
   return {
     status: "answered",
-    answer: checked.text,
+    answer,
     // `checkTags` keeps only tags in the pack, so every cited tag has a member.
-    citations: checked.cited.flatMap((tag) => {
-      const member = byTag.get(tag)
-      return member === undefined ? [] : [citationFor(db, tag, member)]
-    }),
+    citations,
     coverage,
     facts: { matchCount },
     droppedTags: checked.dropped,
