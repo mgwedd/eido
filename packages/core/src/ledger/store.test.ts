@@ -453,6 +453,10 @@ describe("listObligations", () => {
       span: { start: 10, end: 25 },
       injectionSuspected: false,
       injectionReasons: [],
+      direction: null,
+      threadId: null,
+      anchorMessageId: null,
+      resolutionReason: null,
     })
     expect(listObligations(db).map((o) => o.entity.name)).toEqual([
       "Test Company",
