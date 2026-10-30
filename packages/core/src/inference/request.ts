@@ -83,7 +83,10 @@ export function buildCompletionBody(
   if (req.jsonSchema !== undefined) {
     body.json_schema = canonicalize(req.jsonSchema)
   }
-  body.stream = true
+  body.stream = req.includeTokenProbabilities !== true
+  if (req.includeTokenProbabilities === true) {
+    body.n_probs = 1
+  }
   body.cache_prompt = true
   return JSON.stringify(body)
 }
