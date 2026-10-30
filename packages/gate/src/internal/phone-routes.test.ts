@@ -340,6 +340,134 @@ describe("phoneHandler: authenticated settings reads", () => {
     )
   })
 
+  it("labels executor rows only for matching approved signatures already valid at that row", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const id = pendingSend()
+    const beforeApproval = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: id,
+      detailHash: payloadHash({ result: "before-approval" }),
+      ts: new Date(START.getTime() - 1000).toISOString(),
+    })
+    at = new Date(START.getTime() + 2000)
+    const preparedReply = await call("POST", `/approvals/${id}/nonce`, {
+      cookie,
+    })
+    const prepared = validateGatePrepareApproval(preparedReply.body)
+    if (!prepared.ok)
+      throw new Error(
+        `${JSON.stringify(preparedReply.body)}: ${prepared.errors.join("; ")}`
+      )
+    await call("POST", `/approvals/${id}/decision`, {
+      cookie,
+      body: {
+        intentId: id,
+        decision: "approved",
+        nonce: prepared.value.nonce,
+        assertion: assertion(
+          auth,
+          deviceChallenge(prepared.value.payloadHash, id, prepared.value.nonce)
+        ),
+      },
+    })
+    const afterApproval = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: id,
+      detailHash: payloadHash({ result: "after-approval" }),
+      ts: new Date(at.getTime() + 1000).toISOString(),
+    })
+
+    const otherId = pendingSend()
+    const otherPreparedReply = await call(
+      "POST",
+      `/approvals/${otherId}/nonce`,
+      { cookie }
+    )
+    const otherPrepared = validateGatePrepareApproval(otherPreparedReply.body)
+    if (!otherPrepared.ok) throw new Error(otherPrepared.errors.join("; "))
+    await call("POST", `/approvals/${otherId}/decision`, {
+      cookie,
+      body: {
+        intentId: otherId,
+        decision: "approved",
+        nonce: otherPrepared.value.nonce,
+        assertion: assertion(
+          auth,
+          deviceChallenge(
+            otherPrepared.value.payloadHash,
+            otherId,
+            otherPrepared.value.nonce
+          )
+        ),
+      },
+    })
+    s.db
+      .prepare("UPDATE approvals SET bundle_hash = ? WHERE intent_id = ?")
+      .run("0".repeat(64), otherId)
+    const mismatched = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: otherId,
+      detailHash: payloadHash({ result: "wrong-bundle" }),
+      ts: new Date(at.getTime() + 1000).toISOString(),
+    })
+
+    const reply = await call("GET", "/audit", { cookie })
+    const parsed = validateGateAuditPage(reply.body)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error("audit page is invalid")
+    expect(
+      parsed.value.entries.find((entry) => entry.seq === beforeApproval.seq)
+    ).toMatchObject({ displayActor: "auto" })
+    expect(
+      parsed.value.entries.find((entry) => entry.seq === afterApproval.seq)
+    ).toMatchObject({ displayActor: "you" })
+    expect(
+      parsed.value.entries.find((entry) => entry.seq === mismatched.seq)
+    ).toMatchObject({ displayActor: "auto" })
+  })
+
+  it("does not label a signed rejection's executor row as the owner", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const id = pendingSend()
+    const preparedReply = await call("POST", `/approvals/${id}/nonce`, {
+      cookie,
+    })
+    const prepared = validateGatePrepareApproval(preparedReply.body)
+    if (!prepared.ok) throw new Error(prepared.errors.join("; "))
+    await call("POST", `/approvals/${id}/decision`, {
+      cookie,
+      body: { intentId: id, decision: "rejected" },
+    })
+    const signedAt = new Date().toISOString()
+    s.db
+      .prepare(
+        "UPDATE approvals SET signature = ?, credential_id = ?, sign_count = 0, nonce = ? WHERE intent_id = ?"
+      )
+      .run("synthetic-signature", auth.credentialId, prepared.value.nonce, id)
+    s.db
+      .prepare("UPDATE approval_nonces SET used_at = ? WHERE nonce = ?")
+      .run(signedAt, prepared.value.nonce)
+    const execution = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: id,
+      detailHash: payloadHash({ result: "rejected" }),
+    })
+
+    const reply = await call("GET", "/audit", { cookie })
+    const parsed = validateGateAuditPage(reply.body)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error("audit page is invalid")
+    expect(
+      parsed.value.entries.find((entry) => entry.seq === execution.seq)
+    ).toMatchObject({ displayActor: "auto" })
+  })
+
   it("pages audit rows by seq and derives undo from execution records", async () => {
     enrol(auth)
     const cookie = await signIn()

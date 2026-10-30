@@ -298,39 +298,34 @@ function auditPage(state: PhoneState, request: GateRequest): Reply {
     )
   }
   const { before, limit = 50 } = checked.value
+  const columns = `SELECT a.seq, a.ts, a.actor, a.action, a.target, a.detail_hash,
+      EXISTS (
+        SELECT 1 FROM approvals p
+        JOIN approval_nonces n ON n.nonce = p.nonce AND n.intent_id = p.intent_id
+        JOIN credentials c ON c.credential_id = p.credential_id
+        JOIN intents i ON i.id = p.intent_id
+        WHERE p.intent_id = a.target AND p.decision = 'approved'
+          AND p.signature IS NOT NULL AND p.bundle_hash = i.payload_hash
+          AND n.used_at IS NOT NULL
+          AND (c.revoked_at IS NULL OR c.revoked_at >= p.decided_at)
+          AND p.decided_at <= a.ts
+      ) AS approved,
+      CASE WHEN e.audit_seq = a.seq THEN
+        CASE WHEN u.intent_id IS NOT NULL THEN 'done'
+             WHEN e.inverse_op IS NOT NULL AND i.tier = 'auto' THEN 'available'
+             ELSE 'none' END
+      ELSE 'none' END AS undo
+    FROM audit_log a
+    LEFT JOIN executions e ON e.audit_seq = a.seq
+    LEFT JOIN execution_undos u ON u.intent_id = e.intent_id
+    LEFT JOIN intents i ON i.id = e.intent_id`
   const selected =
     before === undefined
       ? state.db
-          .prepare(
-            `SELECT a.seq, a.ts, a.actor, a.action, a.target, a.detail_hash,
-                EXISTS (SELECT 1 FROM approvals p WHERE p.intent_id = a.target AND p.signature IS NOT NULL) AS approved,
-                CASE WHEN e.audit_seq = a.seq THEN
-                  CASE WHEN u.intent_id IS NOT NULL THEN 'done'
-                       WHEN e.inverse_op IS NOT NULL AND i.tier = 'auto' THEN 'available'
-                       ELSE 'none' END
-                ELSE 'none' END AS undo
-         FROM audit_log a
-         LEFT JOIN executions e ON e.audit_seq = a.seq
-         LEFT JOIN execution_undos u ON u.intent_id = e.intent_id
-         LEFT JOIN intents i ON i.id = e.intent_id
-         ORDER BY a.seq DESC LIMIT ?`
-          )
+          .prepare(`${columns} ORDER BY a.seq DESC LIMIT ?`)
           .all(limit + 1)
       : state.db
-          .prepare(
-            `SELECT a.seq, a.ts, a.actor, a.action, a.target, a.detail_hash,
-                EXISTS (SELECT 1 FROM approvals p WHERE p.intent_id = a.target AND p.signature IS NOT NULL) AS approved,
-                CASE WHEN e.audit_seq = a.seq THEN
-                  CASE WHEN u.intent_id IS NOT NULL THEN 'done'
-                       WHEN e.inverse_op IS NOT NULL AND i.tier = 'auto' THEN 'available'
-                       ELSE 'none' END
-                ELSE 'none' END AS undo
-         FROM audit_log a
-         LEFT JOIN executions e ON e.audit_seq = a.seq
-         LEFT JOIN execution_undos u ON u.intent_id = e.intent_id
-         LEFT JOIN intents i ON i.id = e.intent_id
-         WHERE a.seq < ? ORDER BY a.seq DESC LIMIT ?`
-          )
+          .prepare(`${columns} WHERE a.seq < ? ORDER BY a.seq DESC LIMIT ?`)
           .all(before, limit + 1)
   const hasMore = selected.length > limit
   const pageRows = selected.slice(0, limit)
