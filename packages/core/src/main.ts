@@ -722,6 +722,7 @@ export async function serveDataPlane(
     profile: plane.profile,
     connectorHealth: plane.gate.getConnectorHealth,
     ...(ask === undefined ? {} : { ask }),
+    documents: { db: plane.db },
     ...config,
   })
   const closeApi = api.close.bind(api)
