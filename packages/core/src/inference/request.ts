@@ -49,7 +49,8 @@ export function promptText(req: InferenceRequest, boundary: string): string {
 export function buildTemplateBody(
   req: InferenceRequest,
   boundary: string,
-  span: SpanWriter
+  span: SpanWriter,
+  chatTemplateKwargs?: Readonly<Record<string, unknown>>
 ): string {
   const body: Record<string, unknown> = {}
   if (req.tools !== undefined && req.tools.length > 0) {
@@ -63,6 +64,9 @@ export function buildTemplateBody(
       content: renderContent(m.content, boundary, span),
     })),
   ]
+  if (chatTemplateKwargs !== undefined) {
+    body.chat_template_kwargs = canonicalize(chatTemplateKwargs)
+  }
   return JSON.stringify(body)
 }
 

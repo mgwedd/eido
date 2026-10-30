@@ -2,20 +2,32 @@ import { readFile, readdir, mkdir, writeFile } from "node:fs/promises"
 import { resolve, join } from "node:path"
 import { pathToFileURL } from "node:url"
 import {
-  createModelClient,
-  loopbackBaseUrl,
+  connectModelClient,
   readContextTokens,
+  readModelId,
 } from "../inference/client"
+import { defaultCandidate, parseCandidates, parseCliOptions } from "./config"
+import { startServer } from "./server"
+import type { RunningServer } from "./server"
 import { parseEvalCase, parseVerdicts } from "./validate"
-import { runEval, SEED } from "./run"
-import type { EvalScores } from "./types"
+import { runEval } from "./run"
+import type {
+  CandidateResult,
+  EvalCandidate,
+  EvalCase,
+  EvalResults,
+  EvalScores,
+  Verdicts,
+} from "./types"
 
-interface CliOptions {
-  cases: string
-  verdicts: string
-  out: string
-  enforce: boolean
-}
+// The eval runner (issue #28). It runs the owner's local cases through the real proposal path
+// against one or more local llama-server candidates and writes results.json:
+//
+//   pnpm --filter @eido/core eval -- --cases <dir> [--verdicts <file>] [--out <dir>]
+//     [--candidates <file>] [--seed <n>] [--enforce]
+//
+// Baseline mode (the default) reports every score and exits 0 unless a candidate could not run.
+// `--enforce` also needs the confirmed thresholds.json and exits 1 when any score misses it.
 
 const THRESHOLD_KEYS = [
   "schemaValid",
@@ -25,64 +37,11 @@ const THRESHOLD_KEYS = [
   "editFreeApproval",
 ] as const
 
-function isUnknownArray(value: unknown): value is readonly unknown[] {
-  return Array.isArray(value)
-}
+const MAX_REPLY_TOKENS = 2048
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
+type Env = Readonly<Record<string, string | undefined>>
 
-async function readLocalModelId(baseUrl: string): Promise<string> {
-  const response = await fetch(`${loopbackBaseUrl(baseUrl)}/v1/models`)
-  if (!response.ok)
-    throw new Error(
-      `local model server answered ${String(response.status)} for /v1/models`
-    )
-  let value: unknown
-  try {
-    value = await response.json()
-  } catch {
-    throw new Error("local model server /v1/models response is not JSON")
-  }
-  if (!isRecord(value))
-    throw new Error("local model server /v1/models response is not an object")
-  const data = value["data"]
-  if (!isUnknownArray(data) || data.length === 0)
-    throw new Error("local model server /v1/models has no model")
-  const first: unknown = data[0]
-  const id = isRecord(first) ? first["id"] : undefined
-  if (typeof id !== "string" || id.trim() === "")
-    throw new Error("local model server /v1/models has no model id")
-  return id
-}
-
-function argumentsFrom(argv: string[]): CliOptions {
-  const result: CliOptions = {
-    cases: "eval-local",
-    verdicts: "eval-local/verdicts.json",
-    out: ".eval-results",
-    enforce: false,
-  }
-  for (let i = argv[0] === "--" ? 1 : 0; i < argv.length; i++) {
-    const arg = argv[i]
-    if (arg === "--enforce") {
-      result.enforce = true
-      continue
-    }
-    if (arg !== "--cases" && arg !== "--verdicts" && arg !== "--out")
-      throw new Error(`unknown eval argument ${String(arg)}`)
-    const value = argv[++i]
-    if (value === undefined || value.startsWith("--"))
-      throw new Error(`${arg} requires a value`)
-    if (arg === "--cases") result.cases = value
-    if (arg === "--verdicts") result.verdicts = value
-    if (arg === "--out") result.out = value
-  }
-  return result
-}
-
-async function readCases(directory: string) {
+async function readCases(directory: string): Promise<EvalCase[]> {
   const files = (await readdir(directory))
     .filter((file) => file.endsWith(".json") && file !== "verdicts.json")
     .sort()
@@ -96,32 +55,155 @@ async function readCases(directory: string) {
   )
 }
 
-function printScores(scores: EvalScores): void {
-  console.log("Metric                 Score")
-  console.log(
-    "Schema-valid rate      " + (scores.schemaValid * 100).toFixed(1) + "%"
-  )
-  console.log(
-    "Parameter exact-match " +
-      (scores.parameterExactMatch * 100).toFixed(1) +
-      "%"
-  )
-  console.log(
-    "No-call precision      " + (scores.noCallPrecision * 100).toFixed(1) + "%"
-  )
-  console.log(
-    "Injection noncompliance " +
-      (scores.injectionCompliance * 100).toFixed(1) +
-      "%"
-  )
-  console.log(
-    "Edit-free approval     " + (scores.editFreeApproval * 100).toFixed(1) + "%"
+export function meets(scores: EvalScores, thresholds: EvalScores): boolean {
+  return THRESHOLD_KEYS.every((key) =>
+    key === "injectionCompliance"
+      ? scores[key] <= thresholds[key]
+      : scores[key] >= thresholds[key]
   )
 }
 
-export async function main(argv = process.argv.slice(2)): Promise<void> {
-  const args = argumentsFrom(argv)
+async function runCandidate(
+  candidate: EvalCandidate,
+  cases: EvalCase[],
+  verdicts: Verdicts,
+  seed: number,
+  out: string
+): Promise<CandidateResult> {
+  const info = {
+    name: candidate.name,
+    ...(candidate.quantization === undefined
+      ? {}
+      : { quantization: candidate.quantization }),
+    ...(candidate.chatTemplateKwargs === undefined
+      ? {}
+      : { chatTemplateKwargs: candidate.chatTemplateKwargs }),
+  }
+  let server: RunningServer | undefined
+  try {
+    if (candidate.server !== undefined) {
+      server = await startServer({
+        baseUrl: candidate.baseUrl,
+        command: candidate.server.command,
+        logFile: join(out, `${candidate.name}.server.log`),
+        ...(candidate.server.readyTimeoutSeconds === undefined
+          ? {}
+          : { readyTimeoutSeconds: candidate.server.readyTimeoutSeconds }),
+      })
+    }
+    const [modelId, contextTokens] = await Promise.all([
+      readModelId(candidate.baseUrl),
+      readContextTokens(candidate.baseUrl),
+    ])
+    const model = await connectModelClient({
+      baseUrl: candidate.baseUrl,
+      contextTokens,
+      maxReplyTokens: MAX_REPLY_TOKENS,
+      ...(candidate.chatTemplateKwargs === undefined
+        ? {}
+        : { chatTemplateKwargs: candidate.chatTemplateKwargs }),
+    })
+    const report = await runEval({
+      cases,
+      verdicts,
+      modelId,
+      seed,
+      modelForCase: () => model,
+    })
+    return {
+      ...info,
+      status: "ran",
+      modelId: report.modelId,
+      scores: report.scores,
+      cases: report.cases,
+    }
+  } catch (error) {
+    return {
+      ...info,
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    }
+  } finally {
+    await server?.stop()
+  }
+}
+
+function percent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`
+}
+
+/** The printed table: one row per candidate, then the ids of each candidate's failing cases. */
+export function formatTable(results: EvalResults): string {
+  const header = [
+    "Candidate",
+    "Model",
+    "Schema-valid",
+    "Exact-match",
+    "No-call",
+    "Injection (lower is better)",
+    "Edit-free",
+    ...(results.enforced ? ["Result"] : []),
+  ]
+  const rows = results.candidates.map((c) =>
+    c.status === "failed"
+      ? [c.name, `could not run: ${c.error}`]
+      : [
+          c.name,
+          c.modelId,
+          percent(c.scores.schemaValid),
+          percent(c.scores.parameterExactMatch),
+          percent(c.scores.noCallPrecision),
+          percent(c.scores.injectionCompliance),
+          percent(c.scores.editFreeApproval),
+          ...(c.passed === undefined ? [] : [c.passed ? "pass" : "fail"]),
+        ]
+  )
+  const lines = [header, ...rows].map((row) => row.join(" | "))
+  if (results.thresholds !== undefined) {
+    const t = results.thresholds
+    lines.push(
+      [
+        "Thresholds",
+        "",
+        `>= ${percent(t.schemaValid)}`,
+        `>= ${percent(t.parameterExactMatch)}`,
+        `>= ${percent(t.noCallPrecision)}`,
+        `<= ${percent(t.injectionCompliance)}`,
+        `>= ${percent(t.editFreeApproval)}`,
+        "",
+      ].join(" | ")
+    )
+  }
+  for (const c of results.candidates) {
+    if (c.status !== "ran") continue
+    const failing = c.cases
+      .filter(
+        (d) =>
+          d.exactMatch === false ||
+          d.noCallCorrect === false ||
+          d.injectionCompliant === false ||
+          !d.firstAttemptSchemaValid
+      )
+      .map((d) => d.id)
+    if (failing.length > 0)
+      lines.push(`${c.name}: cases to read: ${failing.join(", ")}`)
+  }
+  return `${lines.join("\n")}\n`
+}
+
+export async function main(
+  argv = process.argv.slice(2),
+  env: Env = process.env
+): Promise<EvalResults> {
+  const args = parseCliOptions(argv, env)
   const thresholds = args.enforce ? await readThresholds() : undefined
+  const candidates =
+    args.candidates === undefined
+      ? [defaultCandidate(env)]
+      : parseCandidates(
+          JSON.parse(await readFile(resolve(args.candidates), "utf8")),
+          args.candidates
+        )
   const cases = await readCases(resolve(args.cases))
   if (cases.length === 0)
     throw new Error(`no case JSON files found in ${args.cases}`)
@@ -133,47 +215,36 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (verdicts[testCase.id] === undefined)
       throw new Error(`${args.verdicts}.${testCase.id}: verdict is required`)
   }
-  const baseUrl =
-    process.env[["EIDO", "MODEL", "BASE", "URL"].join("_")] ??
-    "http://127.0.0.1:8080"
-  const [modelId, contextTokens] = await Promise.all([
-    readLocalModelId(baseUrl),
-    readContextTokens(baseUrl),
-  ])
-  const model = createModelClient({
-    baseUrl,
-    contextTokens,
-    maxReplyTokens: 2048,
-  })
-  const report = await runEval({
-    cases,
-    verdicts,
-    modelId,
-    seed: SEED,
-    modelForCase: () => model,
-  })
-  if (args.enforce) {
-    if (thresholds === undefined)
-      throw new Error("enforce thresholds were not loaded")
-    report.thresholds = thresholds
-    let failed = false
-    for (const key of THRESHOLD_KEYS) {
-      const target = thresholds[key]
-      const actual = report.scores[key]
-      const passed =
-        key === "injectionCompliance" ? actual <= target : actual >= target
-      if (!passed) failed = true
-    }
-    if (failed) process.exitCode = 1
+  const out = resolve(args.out)
+  await mkdir(out, { recursive: true })
+  const ran: CandidateResult[] = []
+  for (const candidate of candidates) {
+    const result = await runCandidate(
+      candidate,
+      cases,
+      verdicts,
+      args.seed,
+      out
+    )
+    if (thresholds !== undefined && result.status === "ran")
+      result.passed = meets(result.scores, thresholds)
+    ran.push(result)
   }
-  await mkdir(resolve(args.out), { recursive: true })
+  const results: EvalResults = {
+    seed: args.seed,
+    temperature: 0,
+    enforced: args.enforce,
+    ...(thresholds === undefined ? {} : { thresholds }),
+    candidates: ran,
+  }
   await writeFile(
-    resolve(args.out, "results.json"),
-    `${JSON.stringify(report, null, 2)}\n`
+    join(out, "results.json"),
+    `${JSON.stringify(results, null, 2)}\n`
   )
-  printScores(report.scores)
-  if (args.enforce && process.exitCode === 1)
-    console.error("Eval thresholds failed")
+  process.stdout.write(formatTable(results))
+  if (ran.some((c) => c.status === "failed" || c.passed === false))
+    process.exitCode = 1
+  return results
 }
 
 async function readThresholds(): Promise<EvalScores> {
@@ -189,21 +260,25 @@ async function readThresholds(): Promise<EvalScores> {
       )
     throw error
   }
+  return parseThresholds(parsed)
+}
+
+/** The five targets, each a share from 0 to 1; any other key is refused. */
+export function parseThresholds(parsed: unknown): EvalScores {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     throw new Error("thresholds.json must be an object")
-  const thresholds: EvalScores = {
+  const allowed = new Set<string>(THRESHOLD_KEYS)
+  for (const key of Object.keys(parsed)) {
+    if (!allowed.has(key))
+      throw new Error(`thresholds.${key} is not a supported score`)
+  }
+  return {
     schemaValid: threshold(parsed, "schemaValid"),
     parameterExactMatch: threshold(parsed, "parameterExactMatch"),
     noCallPrecision: threshold(parsed, "noCallPrecision"),
     injectionCompliance: threshold(parsed, "injectionCompliance"),
     editFreeApproval: threshold(parsed, "editFreeApproval"),
   }
-  const allowed = new Set<string>(THRESHOLD_KEYS)
-  for (const key of Object.keys(parsed)) {
-    if (!allowed.has(key))
-      throw new Error(`thresholds.${key} is not a supported score`)
-  }
-  return thresholds
 }
 
 function threshold(value: object, key: keyof EvalScores): number {
