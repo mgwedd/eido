@@ -210,11 +210,14 @@ describe("per-field confidence", () => {
     }
     const reply = JSON.stringify(payload)
     const amountKey = reply.indexOf('"amount"')
-    const start = reply.indexOf(JSON.stringify("$4,800.00"), amountKey)
+    const serializedAmount = JSON.stringify("$4,800.00")
+    const start = reply.indexOf(serializedAmount, amountKey)
     const probabilities = [...reply].map((token, index) => ({
       token,
       probability:
-        index >= start && index < start + "$4,800.00".length ? 0.4 : 0.95,
+        index > start && index < start + serializedAmount.length - 1
+          ? 0.4
+          : 0.95,
     }))
     h = await harness(INVOICE, [jsonReply(payload, { probabilities })])
     const result = await h.extractor.extractDocument(h.docId)
@@ -236,10 +239,10 @@ describe("per-field confidence", () => {
       "party",
     ])
     expect(scores[0]?.confidence).toBeCloseTo(0.95)
-    expect(scores[1]?.confidence).toBeCloseTo(0.4611111111)
+    expect(scores[1]?.confidence).toBeCloseTo(0.4)
     expect(scores[2]?.confidence).toBeCloseTo(0.95)
     expect(result.confirmations.map(({ field }) => field)).toEqual(["amount"])
-    expect(result.confirmations[0]?.confidence).toBeCloseTo(0.4611111111)
+    expect(result.confirmations[0]?.confidence).toBeCloseTo(0.4)
 
     await h.close()
     h = await harness(INVOICE, [jsonReply(payload)])
