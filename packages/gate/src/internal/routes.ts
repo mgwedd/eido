@@ -154,6 +154,7 @@ const SIDES = {
   "obligation.done": { before: "present", after: "present" },
   "obligation.resolve": { before: "present", after: "present" },
   "obligation.reopen": { before: "present", after: "present" },
+  defaultEntity: { before: "either", after: "either" },
 } as const satisfies Record<
   GateAuditRecordRequest["action"],
   { before: Side; after: Side }

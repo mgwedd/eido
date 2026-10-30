@@ -305,12 +305,19 @@ describe("POST /audit", () => {
       beforeHash: BEFORE,
       afterHash: null,
     })
+    await audit.record({
+      action: "defaultEntity",
+      subjectHash: SUBJECT,
+      beforeHash: null,
+      afterHash: AFTER,
+    })
     expect(actions()).toEqual([
       "audit.profile.entity.create",
       "audit.profile.entity.update",
       "audit.profile.entity.delete",
       "audit.profile.account.assign",
       "audit.profile.account.unassign",
+      "audit.profile.defaultEntity",
     ])
     expect(s.db.prepare("SELECT COUNT(*) AS n FROM intents").get()).toEqual({
       n: 0,
@@ -416,7 +423,7 @@ describe("POST /audit", () => {
     [
       "an intent kind as the action",
       { ...created, action: "email.send" },
-      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen"',
+      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen", "defaultEntity"',
     ],
   ])(
     "refuses %s with 400 and writes no profile row",

@@ -14,7 +14,8 @@
         "account.unassign",
         "obligation.done",
         "obligation.resolve",
-        "obligation.reopen"
+        "obligation.reopen",
+        "defaultEntity"
       ],
       "maxLength": 32
     },

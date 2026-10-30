@@ -54,6 +54,8 @@ export {
   validateCoreApiAskResponse,
   validateCoreApiDocumentList,
   validateCoreApiDocumentView,
+  validateCoreApiDefaultEntityRequest,
+  validateCoreApiDefaultEntity,
   validateAskCoverage,
   validateAskCitation,
 } from "./generated/validators"

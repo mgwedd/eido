@@ -771,7 +771,7 @@ describe("audit record request and result", () => {
         validateGateAuditRecordRequest({ ...entry, action: "email.send" })
       )
     ).toEqual([
-      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen"',
+      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen", "defaultEntity"',
     ])
   })
 

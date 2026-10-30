@@ -7,6 +7,7 @@ import {
   validateProfileUpdate,
 } from "@eido/schemas"
 import { ProfileError } from "./errors"
+import { activateDataLedger } from "../ledger/db"
 import type {
   AccountAssignment,
   Entity,
@@ -369,7 +370,7 @@ export function createProfileStore(
   }
 
   async function setDefaultEntityId(id: string | null): Promise<string | null> {
-    return transaction(() => {
+    const result = await transaction(async () => {
       const before = readDefaultEntityId(db)
       if (id === before) return before
       if (id === null) {
@@ -384,8 +385,20 @@ export function createProfileStore(
         )
       }
       record("profile.defaultEntityId", before, id)
+      await audit("defaultEntity", id ?? before, before, id)
       return id
     })
+    const ledgerExists =
+      one(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_schema'"
+      ) !== undefined
+    const unassignedDocuments =
+      one("SELECT 1 FROM documents WHERE entity_id IS NULL LIMIT 1") !==
+      undefined
+    if (result !== null && !ledgerExists && unassignedDocuments) {
+      activateDataLedger(db, { defaultEntityId: result })
+    }
+    return result
   }
 
   function assignmentOf(
