@@ -684,15 +684,26 @@ describe("errors", () => {
   })
 
   test("aborting mid-stream rejects as aborted and is not retried", async () => {
+    let streamStarted: (() => void) | undefined
+    const streaming = new Promise<void>((resolve) => {
+      streamStarted = resolve
+    })
     const server = await start({
-      replies: [{ deltas: ["partial"], hang: true }],
+      replies: [
+        {
+          deltas: ["partial"],
+          hang: true,
+          onFirstChunk: () => streamStarted?.(),
+        },
+      ],
     })
     const controller = new AbortController()
     const pending = createModelClient(config(server)).complete(
       { system: "", messages: [userOf(1)] },
       { signal: controller.signal }
     )
-    setTimeout(() => controller.abort(), 50)
+    await streaming
+    controller.abort()
     const error = await rejection(pending)
     expect(error).toBeInstanceOf(InferenceError)
     expect(error).toMatchObject({ kind: "aborted", status: null })
