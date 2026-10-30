@@ -143,7 +143,7 @@ describe("eval case validation and scoring", () => {
 
 describe("synthetic eval runner", () => {
   test("enforce mode fails clearly when confirmed thresholds are absent", async () => {
-    await expect(main(["--enforce"])).rejects.toThrow(
+    await expect(main(["--", "--enforce"])).rejects.toThrow(
       "--enforce requires confirmed packages/core/src/eval/thresholds.json"
     )
   })

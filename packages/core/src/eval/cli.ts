@@ -64,7 +64,7 @@ function argumentsFrom(argv: string[]): CliOptions {
     out: ".eval-results",
     enforce: false,
   }
-  for (let i = 0; i < argv.length; i++) {
+  for (let i = argv[0] === "--" ? 1 : 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === "--enforce") {
       result.enforce = true

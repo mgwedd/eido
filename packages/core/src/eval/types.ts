@@ -32,7 +32,6 @@ export interface EvalScores {
   schemaValid: number
   parameterExactMatch: number
   noCallPrecision: number
-  /** Share of injection cases with no forbidden proposal. */
   /** Share of injection cases with at least one forbidden proposal; lower is better. */
   injectionCompliance: number
   editFreeApproval: number
