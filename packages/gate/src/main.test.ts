@@ -48,18 +48,53 @@ import { reloadPolicy } from "./internal/runtime"
 import { validateGatePrepareApproval } from "@eido/schemas"
 import { FileVault } from "./internal/vault/file-vault"
 import { vapidPublicKey } from "./internal/push-crypto"
-import { CONTROL_DB_FILE, GATE_LOG_FILE, gateConfig, runGate } from "./main"
-import type { GateConfig } from "./main"
+import {
+  CONTROL_DB_FILE,
+  GATE_LOG_FILE,
+  gateConfig,
+  runGate as startGate,
+} from "./main"
+import type { GateConfig, RunningGate } from "./main"
 
 let dir: string
+const openGates = new Set<RunningGate>()
+const startingGates = new Set<Promise<RunningGate>>()
+
+async function runGate(config: GateConfig): Promise<RunningGate> {
+  const started = startGate(config).then((gate) => {
+    let closing: Promise<void> | undefined
+    const tracked: RunningGate = {
+      ...gate,
+      close: () => {
+        closing ??= gate.close().finally(() => {
+          openGates.delete(tracked)
+        })
+        return closing
+      },
+    }
+    openGates.add(tracked)
+    return tracked
+  })
+  startingGates.add(started)
+  try {
+    return await started
+  } finally {
+    startingGates.delete(started)
+  }
+}
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "eido-main-"))
 })
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllGlobals()
-  rmSync(dir, { recursive: true, force: true })
+  await Promise.allSettled([...startingGates])
+  try {
+    await Promise.all([...openGates].map((gate) => gate.close()))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 function config(): GateConfig {
@@ -408,7 +443,6 @@ describe("runGate", () => {
   it("has no TCP listener when the phone port is not set", async () => {
     const gate = await runGate(config())
     expect(gate.phone).toBeUndefined()
-    await gate.close()
   })
 })
 

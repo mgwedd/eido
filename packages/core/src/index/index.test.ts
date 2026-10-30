@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { DatabaseSync } from "node:sqlite"
+import { DatabaseSync } from "node:sqlite"
 import { beforeEach, describe, expect, test } from "vitest"
 import {
   SCHEMA_VERSION,
@@ -14,6 +14,7 @@ import {
 } from "./index"
 import type { IndexedDocument } from "./index"
 import { soundex, tokenize, withinOneEdit } from "./text"
+import { MIGRATIONS } from "./schema"
 
 const sha = (s: string): string => createHash("sha256").update(s).digest("hex")
 
@@ -71,6 +72,90 @@ describe("schema", () => {
     b.close()
   })
 
+  test("migration hides legacy Drive rows until a fresh listing rebuilds their heads", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "eido-idx-")), "legacy.db")
+    const legacy = new DatabaseSync(path)
+    legacy.exec("PRAGMA foreign_keys = ON")
+    for (const migration of MIGRATIONS.slice(0, 4)) legacy.exec(migration)
+    legacy.exec("PRAGMA user_version = 4")
+    const insert = legacy.prepare(
+      `INSERT INTO documents (sha256, source, source_ref, mime, ingested_at)
+       VALUES (?, ?, ?, 'text/plain', ?)`
+    )
+    const text = legacy.prepare(
+      "INSERT INTO document_text (sha256, body) VALUES (?, ?)"
+    )
+    for (const [id, source, ref, body] of [
+      ["old", "drive", "file-1", "oldmarker"],
+      ["new", "drive", "file-1", "newmarker"],
+      ["mail", "gmail", "msg-1", "mailmarker"],
+    ] as const) {
+      const digest = sha(id)
+      insert.run(digest, source, ref, "2025-01-01T00:00:00.000Z")
+      text.run(digest, body)
+    }
+    legacy
+      .prepare(
+        "INSERT INTO cursors (connector, stream, cursor, updated_at) VALUES ('drive', 'files', 'stale', ?)"
+      )
+      .run("2025-01-01T00:00:00.000Z")
+    legacy.close()
+
+    const migrated = openIndex(path)
+    expect(countMatches(migrated, { text: "oldmarker" })).toBe(0)
+    expect(countMatches(migrated, { text: "newmarker" })).toBe(0)
+    expect(countMatches(migrated, { text: "mailmarker" })).toBe(1)
+    expect(getCursor(migrated, "drive", "files")).toBeNull()
+    expect(
+      migrated
+        .prepare(
+          "SELECT sha256 FROM document_heads WHERE source = 'drive' AND source_ref = 'file-1'"
+        )
+        .get()?.["sha256"]
+    ).toBeNull()
+    migrated.close()
+  })
+
+  test("current Drive heads and tombstones survive restart", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "eido-idx-")), "heads.db")
+    const first = openIndex(path)
+    const old = doc("drive-old", {
+      source: "drive",
+      sourceRef: "file-1",
+      body: "oldmarker",
+    })
+    const current = doc("drive-current", {
+      source: "drive",
+      sourceRef: "file-1",
+      body: "currentmarker",
+    })
+    ingestBatch(first, {
+      connector: "drive",
+      stream: "files",
+      documents: [old, current],
+      heads: [{ source: "drive", sourceRef: "file-1", sha256: current.sha256 }],
+      nextCursor: "current",
+    })
+    first.close()
+
+    const reopened = openIndex(path)
+    expect(countMatches(reopened, { text: "oldmarker" })).toBe(0)
+    expect(countMatches(reopened, { text: "currentmarker" })).toBe(1)
+    ingestBatch(reopened, {
+      connector: "drive",
+      stream: "files",
+      documents: [],
+      heads: [{ source: "drive", sourceRef: "file-1", sha256: null }],
+      nextCursor: "removed",
+    })
+    reopened.close()
+
+    const removed = openIndex(path)
+    expect(countMatches(removed, { text: "currentmarker" })).toBe(0)
+    expect(getCursor(removed, "drive", "files")?.cursor).toBe("removed")
+    removed.close()
+  })
+
   test("documents are immutable", () => {
     ingest([doc("a", { body: "x" })])
     expect(() => db.exec("UPDATE documents SET mime = 'x'")).toThrow(
@@ -120,6 +205,28 @@ describe("ingestBatch and cursors", () => {
       1
     )
     expect(countMatches(db, { text: "lost" })).toBe(0)
+    expect(getCursor(db, "gmail", "inbox")?.cursor).toBe("c1")
+  })
+
+  test("a bad head rolls back its document and cursor together", () => {
+    ingest([doc("kept", { body: "keptmarker" })], "c1")
+    const added = doc("new", {
+      source: "drive",
+      sourceRef: "file-1",
+      body: "newmarker",
+    })
+    expect(() =>
+      ingestBatch(db, {
+        connector: "gmail",
+        stream: "inbox",
+        documents: [added],
+        heads: [
+          { source: "drive", sourceRef: "wrong-file", sha256: added.sha256 },
+        ],
+        nextCursor: "c2",
+      })
+    ).toThrow("document head source mismatch")
+    expect(countMatches(db, { text: "newmarker" })).toBe(0)
     expect(getCursor(db, "gmail", "inbox")?.cursor).toBe("c1")
   })
 

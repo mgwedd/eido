@@ -5,6 +5,8 @@ import {
   applyDigestMigration,
   readDigest,
   readLatestDigest,
+  readSection,
+  writeSection,
   writeDigest,
 } from "./cache"
 import type { StoredDigest } from "./cache"
@@ -54,6 +56,11 @@ export interface DigestService {
   keyFor(subject: DigestSubject): string
 }
 
+const pendingByDatabase = new WeakMap<
+  DatabaseSync,
+  Map<string, Promise<void>>
+>()
+
 function positiveInteger(name: string, value: number): number {
   if (!Number.isInteger(value) || value < 1) {
     throw new RangeError(`${name} must be an integer of at least 1`)
@@ -93,20 +100,63 @@ export function createDigestService(
   const now = options.now ?? (() => new Date())
   applyDigestMigration(db)
 
-  const pending = new Map<string, Promise<void>>()
+  const pending = pendingByDatabase.get(db) ?? new Map<string, Promise<void>>()
+  pendingByDatabase.set(db, pending)
 
   const keyFor = (subject: DigestSubject): string =>
-    digestKey(promptVersion, modelId, rawFingerprint(subject))
+    sha256Hex(
+      `${digestKey(promptVersion, modelId, rawFingerprint(subject))}\0sections:${config.sectionTokens}`
+    )
 
   async function build(subject: DigestSubject, key: string): Promise<void> {
-    const { lines, coverage } = await buildDigestLines(queue, subject, config)
+    const fingerprint = rawFingerprint(subject)
+    const resume = {
+      load(identity: string) {
+        const sectionKey = sha256Hex(
+          `${fingerprint}\0${identity}\0${promptVersion}\0${modelId}`
+        )
+        const saved = readSection(db, sectionKey)
+        if (
+          saved === undefined ||
+          saved.sourceFingerprint !== fingerprint ||
+          saved.sectionIdentity !== identity ||
+          saved.promptVersion !== promptVersion ||
+          saved.modelId !== modelId
+        )
+          return undefined
+        return { lines: saved.lines, dropped: saved.dropped }
+      },
+      save(
+        identity: string,
+        result: { lines: { text: string; refs: string[] }[]; dropped: number }
+      ) {
+        const sectionKey = sha256Hex(
+          `${fingerprint}\0${identity}\0${promptVersion}\0${modelId}`
+        )
+        writeSection(db, {
+          key: sectionKey,
+          sourceFingerprint: fingerprint,
+          sectionIdentity: identity,
+          promptVersion,
+          modelId,
+          ...result,
+          createdAt: now().toISOString(),
+        })
+      },
+    }
+    const { lines, coverage } = await buildDigestLines(
+      queue,
+      subject,
+      config,
+      resume
+    )
     const row: StoredDigest = {
       key,
       kind: subject.kind,
       subjectRef: subjectRef(subject),
       promptVersion,
       modelId,
-      fingerprint: rawFingerprint(subject),
+      fingerprint,
       lines,
       coverage,
       createdAt: now().toISOString(),

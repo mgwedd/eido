@@ -11,6 +11,7 @@ import type {
   ModelClient,
 } from "../inference/types"
 import { openConversationIndex } from "./search-index"
+import { CONVERSATION_SCHEMA_SQL } from "./schema"
 import { createConversationStore } from "./store"
 import type { ConversationStore } from "./store"
 import type { RawTurn, Turn } from "./types"
@@ -104,6 +105,7 @@ export function storeFixture(
   const dbPath = join(dir, "eido-data.db")
   const indexPath = join(dir, "conversation-index.db")
   const db = new DatabaseSync(dbPath)
+  db.exec(CONVERSATION_SCHEMA_SQL)
   const index = openConversationIndex(indexPath)
   const store = createConversationStore({ db, index, now: () => clock.now })
   let closed = false

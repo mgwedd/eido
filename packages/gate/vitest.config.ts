@@ -4,6 +4,9 @@ import { defineConfig } from "vitest/config"
 // Exclusions are explicit and short, one reason each. Logic is never excluded.
 export default defineConfig({
   test: {
+    // Gate tests start local servers and generate ephemeral TLS certificates. Keep
+    // Windows CI from running many such files at once on its small runner.
+    maxWorkers: process.platform === "win32" ? 2 : undefined,
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],

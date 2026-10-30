@@ -2,10 +2,11 @@ import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
+import type { DocumentHeadChange } from "../../index/index"
 import { ingestEntityId } from "../ingest-entity"
 import type { IngestAccount } from "../ingest-entity"
 import { DriveError } from "./client"
-import type { DriveClient, DriveFile } from "./client"
+import type { DriveChange, DriveClient, DriveFile } from "./client"
 
 type Cursor = { phase: "list" | "changes"; token: string; page?: string }
 function cursor(raw: string): Cursor {
@@ -45,34 +46,64 @@ export async function syncDrive(options: {
     saved === null
       ? { phase: "list", token: await options.client.startPageToken() }
       : cursor(saved.cursor)
-  const commit = (documents: IndexedDocument[], next: Cursor) =>
+  const commit = (
+    documents: IndexedDocument[],
+    heads: DocumentHeadChange[],
+    next: Cursor
+  ) =>
     ingestBatch(options.db, {
       connector: "drive",
       stream: "files",
       documents,
+      heads,
       nextCursor: JSON.stringify(next),
     })
-  if (saved === null) commit([], current)
+  if (saved === null) commit([], [], current)
   let inserted = 0
   let skipped = 0
   for (;;) {
-    const page =
-      current.phase === "list"
-        ? await options.client.listFiles(
-            current.page === undefined ? {} : { pageToken: current.page }
-          )
-        : await options.client.changes(current.token)
+    let events: DriveChange[]
+    let nextPageToken: string | undefined
+    let newStartPageToken: string | undefined
+    if (current.phase === "list") {
+      const page = await options.client.listFiles(
+        current.page === undefined ? {} : { pageToken: current.page }
+      )
+      events = page.files.map((file) => ({ kind: "upsert", file }))
+      nextPageToken = page.nextPageToken
+    } else {
+      const page = await options.client.changes(current.token)
+      events = page.changes
+      nextPageToken = page.nextPageToken
+      newStartPageToken = page.newStartPageToken
+    }
+    // A change page can mention the same file more than once. Only its final state
+    // matters, and a removed file cannot be fetched after the removal.
+    const latest = new Map<string, DriveChange>()
+    for (const event of events) {
+      const id = event.kind === "removed" ? event.fileId : event.file.id
+      latest.delete(id)
+      latest.set(id, event)
+    }
     const documents: IndexedDocument[] = []
-    for (const file of page.files) {
+    const heads: DocumentHeadChange[] = []
+    for (const event of latest.values()) {
+      if (event.kind === "removed") {
+        heads.push({ source: "drive", sourceRef: event.fileId, sha256: null })
+        continue
+      }
+      const { file } = event
       if (!supported(file)) {
         skipped += 1
+        heads.push({ source: "drive", sourceRef: file.id, sha256: null })
         continue
       }
       const content = await options.client.getFileText(file.id)
+      const sha256 = createHash("sha256")
+        .update(`${file.id}\0${file.name}\0${file.mimeType}\0${content.text}`)
+        .digest("hex")
       documents.push({
-        sha256: createHash("sha256")
-          .update(`${file.id}\0${content.text}`)
-          .digest("hex"),
+        sha256,
         source: "drive",
         sourceRef: file.id,
         mime: file.mimeType,
@@ -80,24 +111,23 @@ export async function syncDrive(options: {
         body: content.text,
         entityId,
       })
+      heads.push({ source: "drive", sourceRef: file.id, sha256 })
     }
     let next: Cursor
     if (current.phase === "list")
       next =
-        page.nextPageToken === undefined
+        nextPageToken === undefined
           ? { phase: "changes", token: current.token }
-          : { ...current, page: page.nextPageToken }
+          : { ...current, page: nextPageToken }
     else {
-      const token =
-        page.nextPageToken ??
-        ("newStartPageToken" in page ? page.newStartPageToken : undefined)
+      const token = nextPageToken ?? newStartPageToken
       if (typeof token !== "string") throw new DriveError("invalid_response")
       next = { phase: "changes", token }
     }
-    const result = commit(documents, next)
+    const result = commit(documents, heads, next)
     inserted += result.inserted
     skipped += result.skipped
-    const done = current.phase === "changes" && page.nextPageToken === undefined
+    const done = current.phase === "changes" && nextPageToken === undefined
     current = next
     if (done) return { inserted, skipped }
   }

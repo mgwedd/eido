@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
+import { LIVE_DOCUMENT_PREDICATE } from "../index/heads"
 import { fence, plainContent, toMaterial } from "../inference/fence"
 import { COMPACTION_LEGEND, compactMessage } from "./compact"
 import {
@@ -117,7 +118,7 @@ function neighbours(
   const msgIds = present(frontier.map((d) => d.messageId))
   return db
     .prepare(
-      `${SELECT_DOC} WHERE d.sha256 NOT IN ${list} AND (
+      `${SELECT_DOC} WHERE ${LIVE_DOCUMENT_PREDICATE} AND d.sha256 NOT IN ${list} AND (
         t.message_id IN ${list}
         OR t.in_reply_to IN ${list}
         OR EXISTS (SELECT 1 FROM json_each(t.references_json) r WHERE r.value IN ${list})
@@ -235,7 +236,9 @@ export function packEntry(
   tag: string,
   charsPerToken: number
 ): { entry: PackBlock; member: PackMember } {
-  const row = db.prepare(`${SELECT_DOC} WHERE d.sha256 = ?`).get(sha256)
+  const row = db
+    .prepare(`${SELECT_DOC} WHERE ${LIVE_DOCUMENT_PREDICATE} AND d.sha256 = ?`)
+    .get(sha256)
   if (row === undefined) throw new Error("a pack entry is not in the index")
   const entry = entryFor(db, toDoc(row), tag)
   const tokens = entryTokens(entry, charsPerToken)
@@ -269,7 +272,9 @@ export function assembleContext(
   options: AssembleOptions = {}
 ): Promise<ContextPack | ContextRefusal> {
   const charsPerToken = options.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
-  const row = db.prepare(`${SELECT_DOC} WHERE d.sha256 = ?`).get(args.seed)
+  const row = db
+    .prepare(`${SELECT_DOC} WHERE ${LIVE_DOCUMENT_PREDICATE} AND d.sha256 = ?`)
+    .get(args.seed)
   if (row === undefined)
     return Promise.reject(new Error("context seed is not in the index"))
   const seed = toDoc(row)
