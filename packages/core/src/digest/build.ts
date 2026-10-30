@@ -204,7 +204,10 @@ export async function buildDigestLines(
 
   let lines: RefLine[] = []
   for (const [index, section] of plan.sections.entries()) {
-    const identity = JSON.stringify([index, section])
+    const identity = JSON.stringify([
+      index,
+      plainContent(section, ESTIMATE_BOUNDARY),
+    ])
     const cached = resume?.load(identity)
     if (cached !== undefined) {
       dropped += cached.dropped
