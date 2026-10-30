@@ -5,7 +5,9 @@ import type { AddressInfo } from "node:net"
 // Test support, not a runtime fallback: production code never starts or falls back to this.
 // It speaks the subset of llama-server the client uses, so tests and Windows development run
 // with no model:
+// - `GET /health`, answering ready;
 // - `GET /props` with `default_generation_settings.n_ctx`;
+// - `GET /v1/models` with one model id;
 // - `POST /apply-template`, rendering a ChatML template (tools in the system turn);
 // - `POST /tokenize`, a byte tokenizer: ids 0-255 are UTF-8 bytes, and with `parse_special`
 //   the control-token strings of common chat formats become ids from 256 up;
@@ -64,6 +66,10 @@ export interface StubReply {
 }
 
 export interface StubScript {
+  /** Listen on this 127.0.0.1 port. Default: a free one. */
+  port?: number
+  /** `/v1/models` reports this id. Default "local". */
+  modelId?: string
   /** `/props` reports this as `default_generation_settings.n_ctx`. Default 4096. */
   contextTokens?: number
   /** Request n gets reply n; requests past the end get the last one. */
@@ -343,6 +349,10 @@ export async function startStubModelServer(
     const body = await readBody(req)
     const path = req.url ?? "/"
     requests.push({ method: req.method ?? "", path, body })
+    if (req.method === "GET" && path === "/health") {
+      json(res, 200, { status: "ok" })
+      return
+    }
     if (req.method === "GET" && path === "/props") {
       json(res, 200, {
         default_generation_settings: { n_ctx: script.contextTokens ?? 4096 },
@@ -356,7 +366,7 @@ export async function startStubModelServer(
         json(res, 503, { error: { message: "metadata unavailable" } })
         return
       }
-      json(res, 200, { data: [{ id: "local" }] })
+      json(res, 200, { data: [{ id: script.modelId ?? "local" }] })
       return
     }
     if (req.method !== "POST") return notFound(res)
@@ -402,7 +412,9 @@ export async function startStubModelServer(
     })
   })
   server.on("connection", (socket) => socket.setNoDelay(true))
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  await new Promise<void>((resolve) =>
+    server.listen(script.port ?? 0, "127.0.0.1", resolve)
+  )
   const { port } = server.address() as AddressInfo
   return {
     url: `http://127.0.0.1:${String(port)}`,
