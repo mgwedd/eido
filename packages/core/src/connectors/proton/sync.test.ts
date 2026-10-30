@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite"
 import { GateUnavailableError } from "@eido/gate"
 import { beforeEach, describe, expect, test } from "vitest"
-import { getCursor } from "../../index/index"
+import { getCursor, search } from "../../index/index"
 import { openDataDb } from "../../ledger/db"
 import { createProfileStore } from "../../profile/store"
 import type { ProfileStore } from "../../profile/store"
@@ -227,6 +227,47 @@ describe("syncFolder", () => {
         "SELECT count(*) FROM document_text WHERE attachment_of IS NOT NULL"
       )
     ).toBe(2)
+  })
+
+  test("searching attachment-only text returns the parent message and attachment", async () => {
+    source.addFolder("INBOX", "1", [
+      {
+        uid: 1,
+        raw: raw([
+          "From: Ada Example <ada@example.com>",
+          "Subject: quarterly report",
+          "Message-ID: <report@example.com>",
+          'Content-Type: multipart/mixed; boundary="b"',
+          "",
+          "--b",
+          "Content-Type: text/plain",
+          "",
+          "Please see attached.",
+          "--b",
+          "Content-Type: text/plain",
+          'Content-Disposition: attachment; filename="report.txt"',
+          "",
+          "zirconium ledger anomaly",
+          "--b--",
+        ]),
+      },
+    ])
+
+    await syncFolder(db, source, "INBOX", 10, account)
+
+    expect(
+      search(db, { text: "zirconium ledger anomaly", source: "proton" })
+    ).toMatchObject([
+      {
+        sourceRef: "<report@example.com>#0",
+        parentSourceRef: "<report@example.com>",
+      },
+    ])
+    expect(
+      db
+        .prepare("SELECT body FROM document_text WHERE message_id = ?")
+        .get("<report@example.com>")?.["body"]
+    ).toBe("Please see attached.")
   })
 })
 
