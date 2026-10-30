@@ -6,6 +6,7 @@ import type { NextConfig } from "next"
 const tailnetHost = process.env["EIDO_TAILNET_HOST"]
 
 const nextConfig: NextConfig = {
+  agentRules: false,
   transpilePackages: ["@eido/ui"],
   allowedDevOrigins: tailnetHost ? [tailnetHost] : [],
   headers() {
