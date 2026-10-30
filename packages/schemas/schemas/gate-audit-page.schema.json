@@ -26,6 +26,14 @@
           "actor": {
             "$ref": "gate-audit-actor.schema.json"
           },
+          "displayActor": {
+            "type": "string",
+            "enum": ["you", "auto", "gate"]
+          },
+          "undo": {
+            "type": "string",
+            "enum": ["available", "done", "none"]
+          },
           "action": {
             "type": "string",
             "minLength": 1,
@@ -44,7 +52,16 @@
             "description": "Lowercase hex SHA-256 of the entry detail."
           }
         },
-        "required": ["seq", "ts", "actor", "action", "target", "detailHash"],
+        "required": [
+          "seq",
+          "ts",
+          "actor",
+          "displayActor",
+          "action",
+          "target",
+          "detailHash",
+          "undo"
+        ],
         "additionalProperties": false
       }
     },

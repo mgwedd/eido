@@ -23,12 +23,10 @@ export const READ_PATHS = {
   history: `${USER}/history`,
 } as const
 
-/**
- * Write endpoints the gate's executor may call. These operations share the same batchModify
- * route; their validated request bodies distinguish the approved intent.
- */
+/** Write endpoints pinned for the gate's approved Gmail API calls. */
 export const WRITE_PATHS = {
   batchModify: `${USER}/messages/batchModify`,
+  messageSend: `${USER}/messages/send`,
 } as const
 
 export const GMAIL_PATH_PREFIX = USER

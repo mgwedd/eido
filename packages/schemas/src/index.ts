@@ -18,6 +18,7 @@ export {
   validateGateAuditRecordRequest,
   validateGateAuditRecordResult,
   validateGateConnectorHealth,
+  validateGateConnectorSettings,
   validateGateCredentialStatus,
   validateGateDecisionRequest,
   validateGateDecisionResult,
@@ -32,6 +33,8 @@ export {
   validateGateMailMessagePage,
   validateGateOwnerConfiguration,
   validateGatePendingIntentList,
+  validateGatePasskeyList,
+  validateGatePermissionList,
   validateGatePrepareApproval,
   validateGateProposeRefusal,
   validateGateProposeResult,
@@ -53,6 +56,7 @@ export {
   validateAskCitation,
 } from "./generated/validators"
 export { validateConnectorManifest } from "./manifest"
+export { gateAuditDisplayActor } from "./gate-audit-display"
 export {
   parseMoney,
   parseDate,

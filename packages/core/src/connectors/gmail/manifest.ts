@@ -59,6 +59,11 @@ const batchModify: Route = {
   method: "POST",
   pathPattern: WRITE_PATHS.batchModify,
 }
+const messageSend: Route = {
+  host: GMAIL_HOST,
+  method: "POST",
+  pathPattern: WRITE_PATHS.messageSend,
+}
 
 // Sync's reads are pinned under the read verb they serve, so the proxy allows only these paths.
 const OPERATIONS: readonly Op[] = [
@@ -76,8 +81,8 @@ const OPERATIONS: readonly Op[] = [
   write("archive", "email.archive", "reversible", "auto", [batchModify]),
   write("mark_read", "email.markRead", "reversible", "auto", [batchModify]),
   write("send", "email.send", "irreversible", "approval"),
-  write("reply", "email.reply", "irreversible", "approval"),
-  write("forward", "email.forward", "irreversible", "approval"),
+  write("reply", "email.reply", "irreversible", "approval", [messageSend]),
+  write("forward", "email.forward", "irreversible", "approval", [messageSend]),
   write("trash", "email.trash", "reversible", "approval", [batchModify]),
 ]
 
