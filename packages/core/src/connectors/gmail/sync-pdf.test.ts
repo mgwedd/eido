@@ -72,6 +72,7 @@ function addWithPdf(id: string, pdf: Uint8Array) {
 }
 
 const noIntents: IntentClient = {
+  restoreTrash: () => Promise.reject(new Error("not used")),
   propose: () => Promise.reject(new Error("not used")),
   status: () => Promise.reject(new Error("not used")),
   history: () => Promise.reject(new Error("not used")),

@@ -581,13 +581,38 @@ export function gmailWriteTransport(options: Options): WriteTransport {
         return { upstreamRef: null, result: { previouslyUnread } }
       }
       case "email.label":
-      case "email.archive": {
+      case "email.archive":
+      case "email.trash": {
         const priorLabels = await labelsBefore(options, request.connector, ids)
         await write()
         return { upstreamRef: null, result: { priorLabels } }
       }
+      case "email.untrash": {
+        const body: unknown = JSON.parse(request.body)
+        if (!isRecord(body) || !Array.isArray(body["restores"]))
+          throw new Error("invalid Gmail untrash request")
+        for (const entry of body["restores"]) {
+          if (
+            !isRecord(entry) ||
+            typeof entry["messageId"] !== "string" ||
+            !Array.isArray(entry["labels"]) ||
+            !entry["labels"].every((label) => typeof label === "string")
+          )
+            throw new Error("invalid Gmail untrash request")
+          const labels = entry["labels"]
+          const wasTrashed = labels.includes("TRASH")
+          await call(options, request.url, request.connector, {
+            method: "POST",
+            body: JSON.stringify({
+              ids: [entry["messageId"]],
+              addLabelIds: labels,
+              ...(wasTrashed ? {} : { removeLabelIds: ["TRASH"] }),
+            }),
+          })
+        }
+        return { upstreamRef: null, result: {} }
+      }
       default:
-        // Trash: approval tier, so no undo is recorded and no prior state is read.
         await write()
         return { upstreamRef: null, result: {} }
     }
