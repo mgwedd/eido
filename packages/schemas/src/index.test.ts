@@ -16,6 +16,7 @@ import {
   SCHEMA_VERSION,
   validateIntent,
   validateIntentResult,
+  validateCoreApiAskResponse,
 } from "./index"
 import type { JsonSchema } from "./index"
 import { validate } from "./validate"
@@ -26,6 +27,55 @@ const codegen = join(pkgRoot, "scripts", "codegen.mjs")
 
 const ISO = "2030-01-02T09:00:00Z"
 const ISO_END = "2030-01-02T10:00:00+01:00"
+
+describe("Core API Ask response metadata", () => {
+  const response = {
+    status: "answered",
+    answer: "Found it [M1].",
+    citations: [],
+    coverage: {
+      searched: 4,
+      matched: 1,
+      readInFull: 1,
+      label: "read 1 of 1 matching messages in full",
+    },
+    facts: { matchCount: 1 },
+    figures: [
+      { key: "matched", value: 1, location: "/coverage/matched" },
+      { key: "searched", value: 4, location: "/coverage/searched" },
+      { key: "readInFull", value: 1, location: "/coverage/readInFull" },
+    ],
+    followUps: [
+      {
+        label: "Archive email",
+        intent: {
+          kind: "email.archive",
+          args: { messageIds: ["fake-message"] },
+        },
+      },
+    ],
+    droppedTags: [],
+    possiblyTruncated: false,
+  }
+
+  test("accepts code-valued figures and a schema-valid intent candidate", () => {
+    expect(validateCoreApiAskResponse(response).ok).toBe(true)
+  })
+
+  test("rejects a malformed candidate intent", () => {
+    expect(
+      validateCoreApiAskResponse({
+        ...response,
+        followUps: [
+          {
+            label: "Archive email",
+            intent: { kind: "email.archive", args: { messageIds: [] } },
+          },
+        ],
+      }).ok
+    ).toBe(false)
+  })
+})
 
 // Synthetic payloads: example.com addresses and fake ids only.
 const VALID: Record<string, unknown> = {

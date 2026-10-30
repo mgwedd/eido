@@ -15,6 +15,8 @@ import {
 } from "../inference/fence"
 import type { PromptPart } from "../inference/fence"
 import type { ModelClient } from "../inference/types"
+import { validateIntent } from "@eido/schemas"
+import type { AskFigure, AskFollowUp, Intent } from "@eido/schemas"
 import {
   absenceReplacement,
   checkTags,
@@ -56,10 +58,59 @@ function refused(
       label: coverageLabel(0, matched),
     },
     facts: { matchCount },
+    figures: [],
+    followUps: [],
     droppedTags: [],
     possiblyTruncated,
     reason,
   }
+}
+
+function figures(
+  searched: number,
+  matched: number,
+  readInFull: number
+): AskFigure[] {
+  return [
+    { key: "matched", value: matched, location: "/coverage/matched" },
+    { key: "searched", value: searched, location: "/coverage/searched" },
+    { key: "readInFull", value: readInFull, location: "/coverage/readInFull" },
+  ]
+}
+
+const ACTION_LABELS: Record<Intent["kind"], string> = {
+  "email.draft": "Draft an email",
+  "email.label": "Update email labels",
+  "email.archive": "Archive email",
+  "email.markRead": "Mark email as read",
+  "email.send": "Send an email",
+  "email.reply": "Reply to an email",
+  "email.forward": "Forward an email",
+  "email.trash": "Move email to trash",
+  "calendar.create": "Create a calendar event",
+  "calendar.edit": "Edit a calendar event",
+  "calendar.delete": "Delete a calendar event",
+  "reminder.create": "Create a reminder",
+  "file.create": "Create a file",
+  "file.rename": "Rename a file",
+  "file.move": "Move a file",
+  "file.delete": "Delete a file",
+}
+
+function validatedFollowUps(
+  candidates: readonly unknown[] | undefined
+): AskFollowUp[] {
+  if (candidates === undefined) return []
+  const results: AskFollowUp[] = []
+  for (const candidate of candidates.slice(0, 10)) {
+    const checked = validateIntent(candidate)
+    if (checked.ok)
+      results.push({
+        label: ACTION_LABELS[checked.value.kind],
+        intent: checked.value,
+      })
+  }
+  return results
 }
 
 /** Indexed documents inside the plan's date filters, whatever their text. */
@@ -218,6 +269,8 @@ async function run(
         label: coverageLabel(0, 0),
       },
       facts: { matchCount },
+      figures: figures(searched, 0, 0),
+      followUps: [],
       droppedTags: [],
       possiblyTruncated: truncatedPlan,
     }
@@ -324,6 +377,8 @@ async function run(
       citations: [],
       coverage,
       facts: { matchCount },
+      figures: figures(searched, matchCount, readInFull),
+      followUps: [],
       droppedTags: checked.dropped,
       possiblyTruncated,
     }
@@ -359,6 +414,8 @@ async function run(
     citations,
     coverage,
     facts: { matchCount },
+    figures: figures(searched, matchCount, readInFull),
+    followUps: validatedFollowUps(deps.followUpCandidates),
     droppedTags: checked.dropped,
     possiblyTruncated,
   }

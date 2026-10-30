@@ -8,6 +8,7 @@ import type { IntentClient } from "@eido/gate"
 import { ask } from "./ask/ask"
 import type { AskDeps } from "./ask/types"
 import { coverageLabel } from "./ask/answer"
+import type { AskFigure } from "@eido/schemas"
 import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
 import { openIndex } from "./index/schema"
@@ -463,6 +464,12 @@ function compactAskResult(answer: string) {
       label: coverageLabel(0, 0),
     },
     facts: { matchCount: 0 },
+    figures: [
+      { key: "matched", value: 0, location: "/coverage/matched" },
+      { key: "searched", value: 0, location: "/coverage/searched" },
+      { key: "readInFull", value: 0, location: "/coverage/readInFull" },
+    ] satisfies AskFigure[],
+    followUps: [],
     droppedTags: [],
     possiblyTruncated: false,
   }

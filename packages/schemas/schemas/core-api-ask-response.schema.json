@@ -22,6 +22,16 @@
       "required": ["matchCount"],
       "additionalProperties": false
     },
+    "figures": {
+      "type": "array",
+      "items": { "$ref": "ask-figure.schema.json" },
+      "maxItems": 3
+    },
+    "followUps": {
+      "type": "array",
+      "items": { "$ref": "ask-follow-up.schema.json" },
+      "maxItems": 10
+    },
     "droppedTags": {
       "type": "array",
       "items": { "type": "string", "minLength": 1, "maxLength": 16 },
@@ -36,6 +46,8 @@
     "citations",
     "coverage",
     "facts",
+    "figures",
+    "followUps",
     "droppedTags",
     "possiblyTruncated"
   ],

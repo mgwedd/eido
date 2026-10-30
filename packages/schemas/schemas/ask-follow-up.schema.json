@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskFollowUp",
+  "description": "A validated intent offered for the owner to submit through the proposal API.",
+  "type": "object",
+  "properties": {
+    "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "intent": { "$ref": "intent.schema.json" }
+  },
+  "required": ["label", "intent"],
+  "additionalProperties": false
+}

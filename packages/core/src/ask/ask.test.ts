@@ -128,6 +128,38 @@ describe("code-computed facts", () => {
     expect(result.coverage.label).toBe(
       `read ${String(result.coverage.readInFull)} of 37 matching messages in full`
     )
+    expect(result.figures).toEqual([
+      { key: "matched", value: 37, location: "/coverage/matched" },
+      { key: "searched", value: 42, location: "/coverage/searched" },
+      {
+        key: "readInFull",
+        value: result.coverage.readInFull,
+        location: "/coverage/readInFull",
+      },
+    ])
+  })
+
+  test("follow-ups include only valid candidate intents and label them by intent kind", async () => {
+    ingestMatching(db, 1, "invoice")
+    model = await scripted([
+      planReply(INVOICE_PLAN),
+      answerReply("Invoice found [M1]."),
+    ])
+    const result = await ask(
+      "Find invoice",
+      deps(model.queue, {
+        followUpCandidates: [
+          { kind: "email.archive", args: { messageIds: ["msg-1"] } },
+          { kind: "email.archive", args: { messageIds: [] } },
+        ],
+      })
+    )
+    expect(result.followUps).toEqual([
+      {
+        label: "Archive email",
+        intent: { kind: "email.archive", args: { messageIds: ["msg-1"] } },
+      },
+    ])
   })
 
   test("the pack holds the hits that fit the budget, and readInFull counts them", async () => {
@@ -182,7 +214,14 @@ describe("zero matches and absence", () => {
       planReply({ terms: ["zebra", "crossing"], wants: "find" }),
       answerReply("must not be used"),
     ])
-    const result = await ask("Any zebra crossing?", deps(model.queue))
+    const result = await ask(
+      "Any zebra crossing?",
+      deps(model.queue, {
+        followUpCandidates: [
+          { kind: "email.archive", args: { messageIds: ["msg-1"] } },
+        ],
+      })
+    )
     expect(model.completions()).toBe(1)
     expect(result).toEqual({
       status: "no_match",
@@ -195,6 +234,12 @@ describe("zero matches and absence", () => {
         label: "read 0 of 0 matching messages in full",
       },
       facts: { matchCount: 0 },
+      figures: [
+        { key: "matched", value: 0, location: "/coverage/matched" },
+        { key: "searched", value: 4, location: "/coverage/searched" },
+        { key: "readInFull", value: 0, location: "/coverage/readInFull" },
+      ],
+      followUps: [],
       droppedTags: [],
       possiblyTruncated: false,
     })
