@@ -1,18 +1,20 @@
 import { DatabaseSync } from "node:sqlite"
 import type { SQLInputValue } from "node:sqlite"
-import { tokenize } from "../index/text"
+import { soundex, tokenize, withinOneEdit } from "../index/text"
 import type { SearchHit, SearchKind } from "./types"
 
 // Full-text search over the raw transcript and the digests, as a rebuildable cache in its own
 // SQLite file, separate from the authoritative tables. One FTS5 row per passage (a paragraph of
 // a turn, or of a digest); a hit maps back to (conversation id, turn id). Ranked by BM25.
-// Whole words, quoted phrases as consecutive words, trailing `*` for prefixes. Typo and
-// sound-alike matching are not part of this index.
+// Whole words, quoted phrases as consecutive words, trailing `*` for prefixes, plus typo and
+// sound-alike matching for unquoted single terms.
 
 /** Bump to make every existing index file rebuild from the raw tables. */
 export const INDEX_VERSION = 1
 
 const DEFAULT_LIMIT = 20
+const FUZZY_MIN_LENGTH = 4
+const SOUNDEX_MIN_LENGTH = 3
 
 /** Open (or create) the search index file. It holds nothing that is not rebuilt from the raw tables. */
 export function openConversationIndex(path: string): DatabaseSync {
@@ -144,13 +146,65 @@ export function buildMatch(query: string): string | null {
   return clauses.length === 0 ? null : clauses.join(" AND ")
 }
 
-export function searchIndex(
+/** Expand unquoted single terms from the words actually present in the index. */
+function buildFuzzyMatch(index: DatabaseSync, query: string): string | null {
+  const vocabulary = new Set<string>()
+  for (const row of index.prepare("SELECT text FROM passages").all()) {
+    for (const word of tokenize(String(row["text"]))) vocabulary.add(word)
+  }
+  const clauses: string[] = []
+  for (const m of query.matchAll(/"([^"]*)"|([^\s"]+)/g)) {
+    const quoted = m[1] !== undefined
+    const raw = m[1] ?? m[2] ?? ""
+    const words = tokenize(raw)
+    if (words.length === 0) continue
+    const prefix = !quoted && raw.endsWith("*")
+    const exact = `"${words.join(" ")}"${prefix ? " *" : ""}`
+    const term = words.at(0)
+    if (
+      quoted ||
+      prefix ||
+      words.length !== 1 ||
+      term === undefined ||
+      term.length < FUZZY_MIN_LENGTH
+    ) {
+      clauses.push(exact)
+      continue
+    }
+
+    const variants = new Set([term])
+    for (const candidate of vocabulary) {
+      if (
+        candidate !== term &&
+        Math.abs(candidate.length - term.length) <= 1 &&
+        withinOneEdit(term, candidate)
+      ) {
+        variants.add(candidate)
+      }
+    }
+    if (term.length >= SOUNDEX_MIN_LENGTH) {
+      const key = soundex(term)
+      if (key !== null && !vocabulary.has(term)) {
+        for (const candidate of vocabulary) {
+          if (candidate !== term && soundex(candidate) === key)
+            variants.add(candidate)
+        }
+      }
+    }
+    clauses.push(
+      variants.size === 1
+        ? exact
+        : `(${[...variants].map((variant) => `"${variant}"`).join(" OR ")})`
+    )
+  }
+  return clauses.length === 0 ? null : clauses.join(" AND ")
+}
+
+function searchMatch(
   index: DatabaseSync,
-  query: string,
-  opts: { limit?: number; kind?: SearchKind | "any" } = {}
+  match: string,
+  opts: { limit?: number; kind?: SearchKind | "any" }
 ): SearchHit[] {
-  const match = buildMatch(query)
-  if (match === null) return []
   const kind = opts.kind ?? "any"
   const params: SQLInputValue[] = [match]
   let where = "passages MATCH ?"
@@ -179,4 +233,29 @@ export function searchIndex(
       score: Number(r["score"]),
     }
   })
+}
+
+export function searchIndex(
+  index: DatabaseSync,
+  query: string,
+  opts: { limit?: number; kind?: SearchKind | "any" } = {}
+): SearchHit[] {
+  const match = buildMatch(query)
+  if (match === null) return []
+  const exactHits = searchMatch(index, match, opts)
+  const fuzzyMatch = buildFuzzyMatch(index, query)
+  if (fuzzyMatch === null || fuzzyMatch === match) return exactHits
+  const fuzzyHits = searchMatch(index, fuzzyMatch, opts)
+  const seen = new Set(
+    exactHits.map(
+      (hit) => `${hit.kind}:${hit.conversationId}:${hit.turnId ?? ""}`
+    )
+  )
+  const additions = fuzzyHits.filter((hit) => {
+    const key = `${hit.kind}:${hit.conversationId}:${hit.turnId ?? ""}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  return [...exactHits, ...additions].slice(0, opts.limit ?? DEFAULT_LIMIT)
 }
