@@ -190,10 +190,10 @@ function party(
   direction: ObligationDirection,
   own: ReadonlySet<string>
 ): string | null {
-  const role = direction === "owed" ? "from" : "to"
+  const roles = direction === "owed" ? ["from"] : ["to", "cc"]
   return (
     addresses.find(
-      (entry) => entry.role === role && !own.has(lower(entry.address))
+      (entry) => roles.includes(entry.role) && !own.has(lower(entry.address))
     )?.address ?? null
   )
 }
@@ -244,14 +244,7 @@ function candidates(
       const recipients = last.addresses
         .filter((address) => address.role === "to" || address.role === "cc")
         .map((address) => lower(address.address))
-      const bcc = last.addresses
-        .filter((address) => address.role === "bcc")
-        .map((address) => lower(address.address))
-      if (
-        !recipients.some((recipient) => own.has(recipient)) ||
-        bcc.some((address) => own.has(address))
-      )
-        continue
+      if (!recipients.some((recipient) => own.has(recipient))) continue
       direction = "owed"
       days = cfg.repliesOwed.afterDays
     }
