@@ -30,6 +30,7 @@ export {
   validateGateMailFolderList,
   validateGateMailFolderState,
   validateGateMailMessagePage,
+  validateGateOwnerConfiguration,
   validateGatePendingIntentList,
   validateGatePrepareApproval,
   validateGateProposeRefusal,

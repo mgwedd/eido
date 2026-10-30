@@ -8,6 +8,8 @@ import { payloadHash } from "./canonical"
 import { checkDrift } from "./connectors"
 import {
   OVERLAY_FILE,
+  ownerConfigOwnershipError,
+  ownershipError,
   SHIPPED_DEFAULT_PATH,
   intentTier,
   kindTier,
@@ -29,6 +31,33 @@ import {
 import type { Setup } from "./test-fixtures"
 
 let current: Setup | undefined
+
+describe("owner-only config metadata", () => {
+  it("checks POSIX access bits and ownership independently of the host platform", () => {
+    expect(ownerConfigOwnershipError(0o600, 42, "linux", 42)).toBeUndefined()
+    expect(ownerConfigOwnershipError(0o640, 42, "linux", 42)).toContain(
+      "accessible by group or others"
+    )
+    expect(ownerConfigOwnershipError(0o600, 43, "linux", 42)).toContain(
+      "not owned by the gate user"
+    )
+    expect(ownerConfigOwnershipError(0o600, 43, "linux", null)).toBeUndefined()
+    expect(ownerConfigOwnershipError(0o777, 43, "win32", 42)).toBeUndefined()
+  })
+
+  it("preserves the permissions overlay's write-only group restriction", () => {
+    expect(ownershipError(0o600, 42, "linux", 42)).toBeUndefined()
+    expect(ownershipError(0o620, 42, "linux", 42)).toContain(
+      "writable by group or others"
+    )
+    expect(ownershipError(0o640, 42, "linux", 42)).toBeUndefined()
+    expect(ownershipError(0o600, 43, "linux", 42)).toContain(
+      "not owned by the gate user"
+    )
+    expect(ownershipError(0o600, 43, "linux", null)).toBeUndefined()
+    expect(ownershipError(0o777, 43, "win32", 42)).toBeUndefined()
+  })
+})
 
 function shippedTiers(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || !("tiers" in value)) {
