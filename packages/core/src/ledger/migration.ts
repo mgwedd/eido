@@ -1,3 +1,5 @@
+import { CONVERSATION_SCHEMA_SQL } from "../conversation/schema"
+
 /**
  * Ledger schema of eido-data.db, applied by `openDataDb` on top of the index schema (`openIndex`).
  * Versioned in `ledger_schema`, separate from the index's `user_version`, so `openIndex` keeps
@@ -171,6 +173,7 @@ CREATE TRIGGER obligations_injection_fixed BEFORE UPDATE OF injection_suspected,
 WHEN NEW.injection_suspected IS NOT OLD.injection_suspected OR NEW.injection_reasons IS NOT OLD.injection_reasons
 BEGIN SELECT RAISE(ABORT, 'an obligation keeps its source'); END;
 `,
+  CONVERSATION_SCHEMA_SQL,
 ]
 
 export const LEDGER_SCHEMA_VERSION = LEDGER_MIGRATIONS.length

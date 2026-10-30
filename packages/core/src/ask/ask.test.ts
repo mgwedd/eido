@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import { ingest, mail, sha } from "../context/context.test-support"
+import { estimateTokens } from "../inference/budget"
 import { plainContent } from "../inference/fence"
 import { createInferenceQueue } from "../inference/queue"
 import type {
@@ -10,6 +11,7 @@ import type {
 } from "../inference/types"
 import { openIndex } from "../index/schema"
 import { ask, countSearched } from "./ask"
+import { buildAskPack } from "./pack"
 import type { Scripted } from "./ask.test-support"
 import {
   answerReply,
@@ -213,17 +215,90 @@ describe("zero matches and absence", () => {
 })
 
 describe("refusals", () => {
+  test("conversation context reduces the document pack's share of the ask budget", async () => {
+    ingestMatching(db, 1, "invoice")
+    const standalonePack = await buildAskPack(db, {
+      hits: [sha("m-0")],
+      budgetTokens: 200,
+    })
+    expect("refused" in standalonePack).toBe(false)
+
+    model = await scripted([planReply(INVOICE_PLAN), answerReply("unused")])
+    const result = await ask(
+      "invoice?",
+      deps(model.queue, {
+        budgetTokens: 200,
+        conversation: [
+          {
+            id: "prior",
+            role: "user",
+            text: "x".repeat(450),
+            at: "2030-05-31T00:00:00Z",
+            sources: [],
+          },
+        ],
+      })
+    )
+
+    expect(result.status).toBe("refused")
+    expect(result.reason).toMatch(
+      /^the conversation and question need \d+ tokens, over the 200 ask budget$/
+    )
+    expect(model.completions()).toBe(1)
+  })
+
+  test("prior conversation is in the prompt once and the current question stays last", async () => {
+    ingestMatching(db, 1, "invoice")
+    model = await scripted([
+      planReply(INVOICE_PLAN),
+      answerReply("The invoice was paid [M1]."),
+    ])
+    const result = await ask(
+      "What about the invoice?",
+      deps(model.queue, {
+        conversation: [
+          {
+            id: "prior",
+            role: "user",
+            text: "Earlier we discussed an invoice.",
+            at: "2030-05-31T00:00:00Z",
+            sources: [],
+          },
+        ],
+      })
+    )
+    expect(result.status).toBe("answered")
+    const answerPrompt =
+      model.server
+        .completions()[1]
+        ?.turns.map((turn) => turn.content)
+        .join("\n") ?? ""
+    expect(answerPrompt).toContain("Earlier we discussed an invoice.")
+    expect(
+      answerPrompt.match(/Question: What about the invoice\?/g)
+    ).toHaveLength(1)
+    expect(
+      estimateTokens(
+        model.server
+          .completions()[1]
+          ?.turns.filter((turn) => turn.role === "user")
+          .map((turn) => turn.content)
+          .join("\n") ?? ""
+      )
+    ).toBeLessThanOrEqual(3000)
+  })
+
   test("an oversize seed is refused with a reason and no step 2", async () => {
     ingestMatching(db, 3, "invoice")
     model = await scripted([planReply(INVOICE_PLAN), answerReply("unused")])
     const result = await ask(
       "invoice?",
-      deps(model.queue, { budgetTokens: 10 })
+      deps(model.queue, { budgetTokens: 50 })
     )
     expect(model.completions()).toBe(1)
     expect(result.status).toBe("refused")
     expect(result.reason).toMatch(
-      /^the top matching message needs \d+ tokens and the ask budget is 10$/
+      /^the top matching message needs \d+ tokens; the conversation and question leave \d+ of 50 ask tokens for messages$/
     )
     expect(result.answer).toBe("")
     expect(result.facts.matchCount).toBe(3)

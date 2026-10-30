@@ -77,7 +77,14 @@ describe("migrations", () => {
     const defaultEntityId = await createDefaultEntity(path)
     const upgraded = openDataDb(path, { defaultEntityId })
     expect(schemaOf(upgraded)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(upgraded)).toBe(3)
+    expect(ledgerVersion(upgraded)).toBe(4)
+    expect(
+      upgraded
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'conversation_turns'"
+        )
+        .get()
+    ).toBeDefined()
     const documentsBefore = upgraded
       .prepare("SELECT * FROM documents ORDER BY sha256")
       .all()
@@ -85,7 +92,7 @@ describe("migrations", () => {
 
     const again = openDataDb(path)
     expect(schemaOf(again)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(again)).toBe(3)
+    expect(ledgerVersion(again)).toBe(4)
     expect(
       again.prepare("SELECT * FROM documents ORDER BY sha256").all()
     ).toEqual(documentsBefore)
@@ -141,7 +148,7 @@ describe("migrations", () => {
   test("a database from a newer ledger version is refused", () => {
     const path = tempPath()
     const db = openDataDb(path)
-    db.exec("UPDATE ledger_schema SET version = 4")
+    db.exec("UPDATE ledger_schema SET version = 5")
     db.close()
     expect(codeOf(() => openDataDb(path))).toBe("newer_schema")
   })
@@ -173,7 +180,7 @@ describe("migrations", () => {
     old.close()
 
     const db = openDataDb(path)
-    expect(ledgerVersion(db)).toBe(3)
+    expect(ledgerVersion(db)).toBe(4)
     expect(
       db
         .prepare(

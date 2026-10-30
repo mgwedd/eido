@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdirSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { createAuditClient, createIntentClient } from "@eido/gate"
 import type { IntentClient } from "@eido/gate"
 import { ask } from "./ask/ask"
+import type { AskDeps } from "./ask/types"
+import { coverageLabel } from "./ask/answer"
 import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
 import { openIndex } from "./index/schema"
@@ -16,6 +19,15 @@ import {
   createInferenceQueue,
 } from "./inference/index"
 import { LedgerError } from "./ledger/errors"
+import { createConversationStore } from "./conversation/store"
+import type { ConversationStore } from "./conversation/store"
+import { openConversationIndex } from "./conversation/search-index"
+import {
+  compactConversation,
+  dispatchCommand,
+  runDigestSweep,
+} from "./conversation/index"
+import { DEFAULT_DIGEST_IDLE_TTL_MINUTES } from "./conversation/digest"
 import { createProfileStore, readDefaultEntityId } from "./profile/store"
 import type { ProfileStore } from "./profile/store"
 import type { InferenceQueue } from "./inference/queue"
@@ -39,6 +51,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_CORE_PORT",
   "EIDO_CORE_BASE_PATH",
   "EIDO_CORE_ALLOWED_HOSTS",
+  "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
 ] as const
 
 /**
@@ -59,8 +72,21 @@ export const DEFAULT_CORE_HOST = "127.0.0.1"
 export const DEFAULT_CORE_PORT = 8787
 export const ASK_CONTEXT_BUDGET_TOKENS = 3000
 export const ASK_REPLY_TOKENS = 512
+export const CONVERSATION_DIGEST_SWEEP_INTERVAL_MS = 60_000
 
 type Env = Readonly<Record<string, string | undefined>>
+
+/** Start the periodic idle conversation compaction job and return its stop function. */
+export function startConversationDigestTimer(
+  sweep: () => Promise<void>
+): () => void {
+  const timer = setInterval(
+    () => void sweep(),
+    CONVERSATION_DIGEST_SWEEP_INTERVAL_MS
+  )
+  timer.unref()
+  return () => clearInterval(timer)
+}
 
 /** The allowlisted, non-empty variables of `env`. */
 export function dataPlaneEnv(env: Env): Record<string, string> {
@@ -89,6 +115,7 @@ export type CoreApiConfig = {
   allowedHosts: string[]
   /** Present only when a local llama-server host and port are configured. */
   modelBaseUrl?: string
+  conversationDigestIdleTtlMinutes: number
 }
 
 export type DataPlaneConfig = {
@@ -139,8 +166,21 @@ export function coreApiConfig(env: Env): CoreApiConfig {
       .split(",")
       .map((host) => host.trim())
       .filter((host) => host !== ""),
+    conversationDigestIdleTtlMinutes: positiveInteger(
+      env["EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES"] ??
+        String(DEFAULT_DIGEST_IDLE_TTL_MINUTES),
+      "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES"
+    ),
     ...(modelBaseUrl === undefined ? {} : { modelBaseUrl }),
   }
+}
+
+function positiveInteger(value: string, name: string): number {
+  const parsed = Number(value)
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer`)
+  }
+  return parsed
 }
 
 export function dataPlaneConfig(env: Env): DataPlaneConfig {
@@ -164,6 +204,8 @@ export function dataPlaneConfig(env: Env): DataPlaneConfig {
 
 export type DataPlane = {
   db: DatabaseSync
+  conversation?: ConversationStore
+  conversationIndex: DatabaseSync
   gate: IntentClient
   /** The owner profile and entities; each entity or assignment change is audited by the gate. */
   profile: ProfileStore
@@ -217,6 +259,18 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     )
   }
   const db = openDataPlaneDb(config.dbPath, log)
+  const conversationIndex = openConversationIndex(
+    join(dirname(config.dbPath), "conversation-index.db")
+  )
+  const conversationTables = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_turns'"
+    )
+    .get()
+  const conversation =
+    conversationTables === undefined
+      ? undefined
+      : createConversationStore({ db, index: conversationIndex })
   const gate = createIntentClient({ socketPath: config.gateSocket })
   const audit = createAuditClient({ socketPath: config.gateSocket })
   const profile = createProfileStore(db, { audit: audit.record })
@@ -228,11 +282,14 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   })
   return {
     db,
+    ...(conversation === undefined ? {} : { conversation }),
+    conversationIndex,
     gate,
     profile,
     log,
     close: async () => {
       await profile.drain()
+      conversationIndex.close()
       db.close()
       log("stopped")
     },
@@ -245,7 +302,9 @@ export async function serveDataPlane(
   config: CoreApiConfig
 ): Promise<CoreApi> {
   const modelBaseUrl = config.modelBaseUrl
+  const conversation = plane.conversation
   let queuePromise: Promise<InferenceQueue> | undefined
+  let modelContextTokens = 0
   const getQueue = async (): Promise<InferenceQueue> => {
     if (modelBaseUrl === undefined)
       throw new Error("local model is not configured")
@@ -253,6 +312,7 @@ export async function serveDataPlane(
       queuePromise = (async () => {
         try {
           const contextTokens = await readContextTokens(modelBaseUrl)
+          modelContextTokens = contextTokens
           const client = await connectModelClient({
             baseUrl: modelBaseUrl,
             contextTokens,
@@ -270,14 +330,102 @@ export async function serveDataPlane(
   const ask =
     modelBaseUrl === undefined
       ? undefined
-      : async (question: string) =>
-          askPipeline(question, plane.db, await getQueue())
+      : async (question: string) => {
+          if (conversation === undefined) {
+            if (question.trim() === "/compact") {
+              return compactAskResult("Nothing to compact yet")
+            }
+            return askPipeline(question, plane.db, await getQueue())
+          }
+          const queue = await getQueue()
+          const conversationId = "ask"
+          const askBudgetTokens = Math.max(
+            1,
+            Math.min(
+              ASK_CONTEXT_BUDGET_TOKENS,
+              Math.floor(modelContextTokens / 2)
+            )
+          )
+          const compactOptions = {
+            thresholdTokens: Math.max(1, Math.floor(askBudgetTokens / 2)),
+            keepRecentTokens: Math.max(1, Math.floor(askBudgetTokens / 4)),
+          }
+          const command = await dispatchCommand(question, conversationId, {
+            store: conversation,
+            queue,
+            options: compactOptions,
+          })
+          if (command.handled) {
+            return compactAskResult(command.reply)
+          }
+          const priorTurns = conversation.getTurns(conversationId)
+          conversation.appendTurn(conversationId, {
+            id: randomUUID(),
+            role: "user",
+            text: question,
+            at: new Date().toISOString(),
+            sources: [],
+          })
+          const compacted = await compactConversation(
+            priorTurns,
+            compactOptions,
+            { queue }
+          )
+          const result = await askPipeline(question, plane.db, queue, {
+            budgetTokens: askBudgetTokens,
+            conversation: compacted.turns,
+            allocateSourceTag: (sourceRef) =>
+              conversation.allocateSourceTag(conversationId, sourceRef),
+          })
+          conversation.appendTurn(conversationId, {
+            id: randomUUID(),
+            role: "assistant",
+            text: result.answer,
+            at: new Date().toISOString(),
+            sources: result.citations.map((citation) => citation.tag),
+          })
+          return result
+        }
+  let sweeping = false
+  const sweep = async (): Promise<void> => {
+    if (
+      sweeping ||
+      modelBaseUrl === undefined ||
+      plane.conversation === undefined
+    )
+      return
+    sweeping = true
+    try {
+      const result = await runDigestSweep(plane.conversation, {
+        queue: await getQueue(),
+        now: () => new Date(),
+        config: {
+          digestIdleTtlMinutes: config.conversationDigestIdleTtlMinutes,
+        },
+      })
+      if (result.failed.length > 0) {
+        plane.log("conversation_digest_sweep_failed", {
+          count: String(result.failed.length),
+        })
+      }
+    } catch {
+      plane.log("conversation_digest_sweep_failed", { count: "unknown" })
+    } finally {
+      sweeping = false
+    }
+  }
+  const stopDigestTimer = startConversationDigestTimer(sweep)
   const api = await listenCoreApi({
     profile: plane.profile,
     connectorHealth: plane.gate.getConnectorHealth,
     ...(ask === undefined ? {} : { ask }),
     ...config,
   })
+  const closeApi = api.close.bind(api)
+  api.close = async () => {
+    stopDigestTimer()
+    await closeApi()
+  }
   plane.log("listening", {
     host: api.host,
     port: String(api.port),
@@ -290,13 +438,34 @@ export async function serveDataPlane(
 function askPipeline(
   question: string,
   db: DatabaseSync,
-  queue: ReturnType<typeof createInferenceQueue>
+  queue: ReturnType<typeof createInferenceQueue>,
+  conversation: Partial<
+    Pick<AskDeps, "budgetTokens" | "conversation" | "allocateSourceTag">
+  > = {}
 ) {
   return ask(question, {
     db,
     queue,
-    budgetTokens: ASK_CONTEXT_BUDGET_TOKENS,
+    budgetTokens: conversation.budgetTokens ?? ASK_CONTEXT_BUDGET_TOKENS,
+    ...conversation,
   })
+}
+
+function compactAskResult(answer: string) {
+  return {
+    status: "answered" as const,
+    answer,
+    citations: [],
+    coverage: {
+      searched: 0,
+      matched: 0,
+      readInFull: 0,
+      label: coverageLabel(0, 0),
+    },
+    facts: { matchCount: 0 },
+    droppedTags: [],
+    possiblyTruncated: false,
+  }
 }
 
 const SIGNALS = ["SIGTERM", "SIGINT"] as const

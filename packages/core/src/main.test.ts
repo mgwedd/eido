@@ -17,7 +17,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { GateUnavailableError } from "@eido/gate"
 import { DatabaseSync } from "node:sqlite"
-import { afterEach, beforeEach, describe, expect, it, test } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest"
 import type { CoreApi } from "./api/index"
 import { ingestBatch } from "./index/ingest"
 import { startStubModelServer } from "./inference/stub-server"
@@ -37,6 +37,8 @@ import {
   outsideAllowlist,
   runDataPlane,
   serveDataPlane,
+  startConversationDigestTimer,
+  CONVERSATION_DIGEST_SWEEP_INTERVAL_MS,
 } from "./main"
 
 function field(value: unknown, name: string): unknown {
@@ -93,6 +95,7 @@ describe("dataPlaneConfig", () => {
         port: 8787,
         basePath: "",
         allowedHosts: [],
+        conversationDigestIdleTtlMinutes: 60,
       },
     })
   })
@@ -101,6 +104,23 @@ describe("dataPlaneConfig", () => {
     expect(() => dataPlaneConfig({ EIDO_GATE_SOCKET: "" })).toThrow(
       "the data plane needs EIDO_DATA_DIR, EIDO_GATE_SOCKET"
     )
+  })
+})
+
+describe("conversation digest timer", () => {
+  it("runs the sweep on its interval and stops when closed", async () => {
+    vi.useFakeTimers()
+    const sweep = vi.fn(() => Promise.resolve())
+    try {
+      const stop = startConversationDigestTimer(sweep)
+      await vi.advanceTimersByTimeAsync(CONVERSATION_DIGEST_SWEEP_INTERVAL_MS)
+      expect(sweep).toHaveBeenCalledTimes(1)
+      stop()
+      await vi.advanceTimersByTimeAsync(CONVERSATION_DIGEST_SWEEP_INTERVAL_MS)
+      expect(sweep).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -118,6 +138,7 @@ describe("coreApiConfig", () => {
       port: 0,
       basePath: "/api/core",
       allowedHosts: ["eido.example.invalid", "127.0.0.1:9000"],
+      conversationDigestIdleTtlMinutes: 60,
     })
   })
 
@@ -125,6 +146,19 @@ describe("coreApiConfig", () => {
     expect(
       coreApiConfig({ EIDO_LLAMA_HOST: "::1", EIDO_LLAMA_PORT: "8080" })
     ).toMatchObject({ modelBaseUrl: "http://[::1]:8080" })
+  })
+
+  test("reads a positive conversation digest TTL, defaulting to 60 minutes", () => {
+    expect(
+      coreApiConfig({
+        EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES: "25",
+      }).conversationDigestIdleTtlMinutes
+    ).toBe(25)
+    expect(() =>
+      coreApiConfig({ EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES: "0" })
+    ).toThrow(
+      "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES must be a positive integer"
+    )
   })
 
   test("requires a paired loopback model host and valid port", () => {
@@ -379,6 +413,8 @@ describe("serveDataPlane", () => {
       replies: [
         { deltas: [JSON.stringify({ terms: ["invoice"], wants: "find" })] },
         { deltas: ["The invoice was paid [M1]."] },
+        { deltas: [JSON.stringify({ terms: ["invoice"], wants: "find" })] },
+        { deltas: ["It was paid on January 4 [M1]."] },
       ],
     })
     const port = new URL(model.url).port
@@ -387,7 +423,7 @@ describe("serveDataPlane", () => {
       EIDO_LLAMA_PORT: port,
     })
     const config = dataPlaneConfig(env)
-    const plane = runDataPlane(config, env)
+    let plane = runDataPlane(config, env)
     plane.db
       .prepare(
         "INSERT INTO entities (id, kind, name, tag, created_at) VALUES (?, 'personal', ?, 'ME', ?)"
@@ -433,6 +469,47 @@ describe("serveDataPlane", () => {
           label: "read 1 of 1 matching messages in full",
         },
       })
+      const followup = await fetch(`http://127.0.0.1:${String(api.port)}/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "What day was it?" }),
+      })
+      expect(await followup.json()).toMatchObject({
+        status: "answered",
+        answer: "It was paid on January 4 [M1].",
+      })
+      const followupPrompt =
+        model
+          .completions()[3]
+          ?.turns.map((turn) => turn.content)
+          .join("\n") ?? ""
+      expect(followupPrompt).toContain("When was the invoice paid?")
+      expect(followupPrompt.match(/Question: What day was it\?/g)).toHaveLength(
+        1
+      )
+      const compact = await fetch(`http://127.0.0.1:${String(api.port)}/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "/compact" }),
+      })
+      expect(await compact.json()).toMatchObject({
+        status: "answered",
+        answer: "Nothing to compact yet",
+      })
+      expect(plane.conversation?.sourceTags("ask")).toEqual([
+        { tag: "M1", sourceRef: "gm-1" },
+      ])
+      await api.close()
+      api = undefined
+      await plane.close()
+      plane = runDataPlane(config, env)
+      expect(plane.conversation?.getTurns("ask")).toHaveLength(4)
+      expect(plane.conversation?.sourceTags("ask")).toEqual([
+        { tag: "M1", sourceRef: "gm-1" },
+      ])
+      expect(
+        plane.conversation?.searchConversations("invoice", { kind: "raw" })
+      ).toHaveLength(2)
     } finally {
       await api?.close()
       await plane.close()

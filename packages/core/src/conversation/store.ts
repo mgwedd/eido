@@ -1,7 +1,6 @@
 import type { DatabaseSync } from "node:sqlite"
 import { deriveDigestFingerprint, fingerprintTurns } from "./fingerprint"
 import type { SummaryStart } from "./compact"
-import { ensureConversationSchema } from "./schema"
 import {
   ensureIndex,
   indexTurn,
@@ -107,8 +106,6 @@ export function createConversationStore(
 ): ConversationStore {
   const { db, index } = deps
   const now = deps.now ?? ((): Date => new Date())
-  ensureConversationSchema(db)
-
   function getTurns(conversationId: string): RawTurn[] {
     return db
       .prepare(

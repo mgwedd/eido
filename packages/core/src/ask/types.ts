@@ -5,6 +5,7 @@ import type {
   CoreApiAskResponse,
 } from "@eido/schemas"
 import type { InferenceQueue } from "../inference/queue"
+import type { Turn } from "../conversation/types"
 
 /** What the model's first step asks code to run. Code runs it; the model never counts. */
 export interface SearchPlan {
@@ -33,4 +34,8 @@ export interface AskDeps {
   searchLimit?: number
   /** The clock the plan's relative dates are resolved against. Default `new Date()`. */
   now?: () => Date
+  /** Compacted turns from this Ask conversation, included to resolve follow-up questions. */
+  conversation?: readonly Turn[]
+  /** Maps a document source to its stable tag in this conversation. */
+  allocateSourceTag?: (sourceRef: string) => string
 }

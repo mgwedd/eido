@@ -5,7 +5,15 @@ import type { SearchQuery } from "../index/search"
 import { packParts } from "../context/pack-store"
 import type { PackMember } from "../context/pack-store"
 import { PromptTooLargeError } from "../inference/errors"
-import { MATERIAL_RULES } from "../inference/fence"
+import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
+import {
+  ESTIMATE_BOUNDARY,
+  MATERIAL_RULES,
+  fence,
+  plainContent,
+  toMaterial,
+} from "../inference/fence"
+import type { PromptPart } from "../inference/fence"
 import type { ModelClient } from "../inference/types"
 import {
   absenceReplacement,
@@ -113,6 +121,42 @@ function citationFor(
 
 const isoDate = (d: Date): string => d.toISOString().slice(0, 10)
 
+function factsText(
+  plan: SearchPlan,
+  matched: number,
+  searched: number,
+  readInFull: number
+): string {
+  return [
+    "Facts (computed by code):",
+    `matched: ${String(matched)}`,
+    `searched: ${String(searched)}`,
+    `readInFull: ${String(readInFull)}`,
+    `wants: ${plan.wants}`,
+  ].join("\n")
+}
+
+function conversationParts(turns: AskDeps["conversation"]): PromptPart[] {
+  if (turns === undefined || turns.length === 0) return []
+  return [
+    "Conversation so far (prior turns may help interpret the question):\n",
+    ...turns.flatMap((turn) =>
+      turn.role === "user"
+        ? [`[user ${turn.at}] ${turn.text}\n`]
+        : [
+            `[${turn.role} ${turn.at}]\n`,
+            fence(
+              toMaterial(turn.text, {
+                source: turn.role === "summary" ? "summary" : "assistant",
+              })
+            ),
+            "\n",
+          ]
+    ),
+    "\n",
+  ]
+}
+
 async function run(
   question: string,
   deps: AskDeps,
@@ -183,16 +227,41 @@ async function run(
     ...query,
     limit: deps.searchLimit ?? DEFAULT_SEARCH_LIMIT,
   })
+  const historyParts = conversationParts(deps.conversation)
+  const contextHeaderParts: PromptPart[] = [
+    `${factsText(
+      plan,
+      matchCount,
+      searched,
+      Number.MAX_SAFE_INTEGER
+    )}\n\nMessages:\n`,
+    `\n\nQuestion: ${question}`,
+  ]
+  const charsPerToken = deps.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
+  const fixedContextTokens = estimateTokens(
+    plainContent([...historyParts, ...contextHeaderParts], ESTIMATE_BOUNDARY),
+    charsPerToken
+  )
+  const packBudgetTokens = deps.budgetTokens - fixedContextTokens
+  if (packBudgetTokens <= 0) {
+    return refused(
+      `the conversation and question need ${String(fixedContextTokens)} tokens, over the ${String(deps.budgetTokens)} ask budget`,
+      matchCount,
+      searched,
+      matchCount,
+      truncatedPlan
+    )
+  }
   const pack = await buildAskPack(db, {
     hits: hits.map((h) => h.sha256),
-    budgetTokens: deps.budgetTokens,
+    budgetTokens: packBudgetTokens,
     ...(deps.charsPerToken === undefined
       ? {}
       : { charsPerToken: deps.charsPerToken }),
   })
   if ("refused" in pack) {
     return refused(
-      `the top matching message needs ${String(pack.seedTokens)} tokens and the ask budget is ${String(pack.budgetTokens)}`,
+      `the top matching message needs ${String(pack.seedTokens)} tokens; the conversation and question leave ${String(pack.budgetTokens)} of ${String(deps.budgetTokens)} ask tokens for messages`,
       matchCount,
       searched,
       matchCount,
@@ -201,13 +270,7 @@ async function run(
   }
 
   const readInFull = pack.members.length
-  const facts = [
-    "Facts (computed by code):",
-    `matched: ${String(matchCount)}`,
-    `searched: ${String(searched)}`,
-    `readInFull: ${String(readInFull)}`,
-    `wants: ${plan.wants}`,
-  ].join("\n")
+  const facts = factsText(plan, matchCount, searched, readInFull)
 
   // Step 2: the model answers from the pack.
   let answered
@@ -219,6 +282,7 @@ async function run(
           role: "user",
           // The material first; the owner's question last, unfenced.
           content: [
+            ...historyParts,
             `${facts}\n\nMessages:\n`,
             ...packParts(pack),
             `\n\nQuestion: ${question}`,
@@ -264,14 +328,35 @@ async function run(
       possiblyTruncated,
     }
   }
+  const citations = checked.cited.flatMap((tag) => {
+    const member = byTag.get(tag)
+    if (member === undefined) return []
+    const citation = citationFor(db, tag, member)
+    return [
+      deps.allocateSourceTag === undefined
+        ? citation
+        : { ...citation, tag: deps.allocateSourceTag(citation.sourceRef) },
+    ]
+  })
+  let answer = checked.text
+  if (deps.allocateSourceTag !== undefined) {
+    for (const citation of citations) {
+      const original = checked.cited.find((tag) => {
+        const member = byTag.get(tag)
+        return (
+          member !== undefined &&
+          citationFor(db, tag, member).sourceRef === citation.sourceRef
+        )
+      })
+      if (original !== undefined)
+        answer = answer.replaceAll(`[${original}]`, `[${citation.tag}]`)
+    }
+  }
   return {
     status: "answered",
-    answer: checked.text,
+    answer,
     // `checkTags` keeps only tags in the pack, so every cited tag has a member.
-    citations: checked.cited.flatMap((tag) => {
-      const member = byTag.get(tag)
-      return member === undefined ? [] : [citationFor(db, tag, member)]
-    }),
+    citations,
     coverage,
     facts: { matchCount },
     droppedTags: checked.dropped,
