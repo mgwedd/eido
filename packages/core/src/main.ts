@@ -148,6 +148,16 @@ export function coreApiConfig(env: Env): CoreApiConfig {
         })()
       : undefined
   const gmailProxyUrl = env["EIDO_GMAIL_PROXY_URL"]
+  const configuredGmailProxyUrl =
+    gmailProxyUrl === undefined || gmailProxyUrl === ""
+      ? undefined
+      : (() => {
+          try {
+            return loopbackBaseUrl(gmailProxyUrl)
+          } catch {
+            throw new Error("EIDO_GMAIL_PROXY_URL must be a loopback HTTP URL")
+          }
+        })()
   return {
     host: loopbackHost(env["EIDO_CORE_HOST"] || DEFAULT_CORE_HOST),
     port: portOf(env["EIDO_CORE_PORT"] || String(DEFAULT_CORE_PORT)),
@@ -157,9 +167,9 @@ export function coreApiConfig(env: Env): CoreApiConfig {
       .map((host) => host.trim())
       .filter((host) => host !== ""),
     ...(modelBaseUrl === undefined ? {} : { modelBaseUrl }),
-    ...(gmailProxyUrl === undefined || gmailProxyUrl === ""
+    ...(configuredGmailProxyUrl === undefined
       ? {}
-      : { gmailProxyUrl: loopbackBaseUrl(gmailProxyUrl) }),
+      : { gmailProxyUrl: configuredGmailProxyUrl }),
   }
 }
 
@@ -285,6 +295,10 @@ export function openDataPlaneDb(
  * POST /audit, and logs the configuration and variable names.
  */
 export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
+  const parser =
+    config.api.gmailProxyUrl === undefined
+      ? undefined
+      : gmailParser(config.dataDir)
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
   const log: DataPlane["log"] = (event, fields = {}) => {
     appendFileSync(
@@ -293,10 +307,6 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       { mode: 0o600 }
     )
   }
-  const parser =
-    config.api.gmailProxyUrl === undefined
-      ? undefined
-      : gmailParser(config.dataDir)
   const db = openDataPlaneDb(config.dbPath, log)
   const gate = createIntentClient({ socketPath: config.gateSocket })
   const audit = createAuditClient({ socketPath: config.gateSocket })

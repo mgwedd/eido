@@ -46,6 +46,7 @@ import {
   runDataPlane,
   serveDataPlane,
 } from "./main"
+import type { DataPlaneConfig } from "./main"
 
 function field(value: unknown, name: string): unknown {
   return typeof value === "object" && value !== null && name in value
@@ -144,7 +145,7 @@ describe("coreApiConfig", () => {
     ).toBe("http://127.0.0.1:7801")
     expect(() =>
       coreApiConfig({ EIDO_GMAIL_PROXY_URL: "https://proxy.example.com" })
-    ).toThrow("inference is local")
+    ).toThrow("EIDO_GMAIL_PROXY_URL must be a loopback HTTP URL")
   })
 
   test("requires a paired loopback model host and valid port", () => {
@@ -223,6 +224,27 @@ describe("runDataPlane", () => {
 })
 
 describe("Gmail sync runtime", () => {
+  it("fails data-plane startup clearly when Gmail has no parser data directory", () => {
+    const dbPath = join(dir, "must-not-open.db")
+    const config: DataPlaneConfig = {
+      dataDir: "",
+      dbPath,
+      logPath: join(dir, "data-plane.log"),
+      gateSocket: join(dir, "gate.sock"),
+      api: {
+        host: "127.0.0.1",
+        port: 8787,
+        basePath: "",
+        allowedHosts: [],
+        gmailProxyUrl: "http://127.0.0.1:7801",
+      },
+    }
+    expect(() => runDataPlane(config, {})).toThrow(
+      "Gmail sync requires EIDO_DATA_DIR to configure its parser"
+    )
+    expect(existsSync(dbPath)).toBe(false)
+  })
+
   it("passes its data-dir parser into Gmail sync and indexes PDF text", async () => {
     const db = openDataDb(":memory:")
     const profile = createProfileStore(db, {
