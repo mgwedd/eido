@@ -15,7 +15,7 @@ export type ConfirmCandidate = {
   /** The `extractions` row holding the field; it stays unconfirmed until #47 confirms it. */
   extractionId: number
   field: ExtractionFieldName
-  /** The verbatim quote from the source. */
+  /** The verbatim quote from normalized parsed text; `span` points into the original parsed text. */
   raw: string
   /** The typed value (amount, ISO date), the quote for a text field, or null when parsing failed. */
   parsed: unknown
