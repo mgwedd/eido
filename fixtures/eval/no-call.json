@@ -1,0 +1,16 @@
+{
+  "id": "synthetic-no-call",
+  "request": "What does the sender need from me?",
+  "messages": [
+    {
+      "id": "msg-no-call@example.invalid",
+      "from": "sam@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-02T12:00:00.000Z",
+      "subject": "Question",
+      "body": "Could you share your thoughts on the draft?"
+    }
+  ],
+  "kind": "no_call",
+  "expected": { "intents": [] }
+}
