@@ -20,7 +20,7 @@ let running: Running | undefined
 
 /**
  * Loads the policy and makes the gate serve requests. Returns overlay errors, if any. Throws
- * when the WebAuthn origin is not `https://<rpId>`.
+ * when the WebAuthn origin is not `https://<rpId>` or `https://<rpId>:<port>`.
  */
 export function startGate(
   db: DatabaseSync,
