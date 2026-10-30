@@ -13,7 +13,7 @@ The phone PWA and the Mac browser reach three things: the Next shell, core's API
 | Path        | Target                  | Backend                                    |
 | ----------- | ----------------------- | ------------------------------------------ |
 | `/`         | `http://127.0.0.1:3000` | Next: shell, service worker, manifest      |
-| `/api/core` | `http://127.0.0.1:8787` | core's API, no auth                        |
+| `/api/core` | `http://127.0.0.1:8789` | core's API, no auth                        |
 | `/api/gate` | `http://127.0.0.1:8788` | the gate's phone listener: passkey session |
 
 - **Eido has its own HTTPS port, 8443.** The origin is `https://<host>.ts.net:8443`. The issue text assumed port 443; that is superseded, because the host runs other tailnet apps that `tailscale serve` exposes on 443, and Eido must not collide with them.
@@ -40,7 +40,7 @@ An origin is scheme, host and port, so `https://<host>.ts.net:8443` is a differe
 Serve proxies only to `http://127.0.0.1` targets, so each backend binds loopback TCP. A Unix socket is not an option for the phone listener.
 
 - Next: `127.0.0.1:3000`.
-- Core: `EIDO_CORE_HOST=127.0.0.1`, `EIDO_CORE_PORT=8787` (core's default). The other app currently served on 443 also targets `127.0.0.1:8787`, so the two cannot run together on that port; see #372 to move core's default. Until then run core on another port and pass it with `--core-port`.
+- Core: `EIDO_CORE_HOST=127.0.0.1`, `EIDO_CORE_PORT=8789` (core's default). 8787 belongs to another app on the host, which also serves it through `tailscale serve`, so it is not an Eido default (#372).
 - Gate phone listener: `EIDO_GATE_PHONE_HOST=127.0.0.1`, `EIDO_GATE_PHONE_PORT=8788`. The listener has no default port; 8788 is the script's default.
 - Core's `EIDO_CORE_BASE_PATH` and `EIDO_CORE_ALLOWED_HOSTS`, and the gate's `EIDO_GATE_PHONE_BASE_PATH` and `EIDO_GATE_PHONE_ALLOWED_HOSTS`, follow from the measurements below.
 

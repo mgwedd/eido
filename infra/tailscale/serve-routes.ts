@@ -9,7 +9,7 @@
 export const DEFAULT_EIDO_PORT = 8443
 export const DEFAULT_WEB_PORT = 3000
 /** Core's own default (`DEFAULT_CORE_PORT` in packages/core/src/main.ts). */
-export const DEFAULT_CORE_PORT = 8787
+export const DEFAULT_CORE_PORT = 8789
 /** The gate's phone listener has no default; EIDO_GATE_PHONE_PORT must be set to this. */
 export const DEFAULT_GATE_PORT = 8788
 
