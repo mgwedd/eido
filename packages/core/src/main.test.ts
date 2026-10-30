@@ -23,6 +23,7 @@ import { ingestBatch } from "./index/ingest"
 import { startStubModelServer } from "./inference/stub-server"
 import { openIndex } from "./index/schema"
 import { openDataDb } from "./ledger/db"
+import { listObligations } from "./ledger/store"
 import { createProfileStore } from "./profile/store"
 import { createGmailClient } from "./connectors/gmail/client"
 import {
@@ -75,6 +76,7 @@ describe("the data plane's environment", () => {
     EIDO_LLAMA_HOST: "127.0.0.1",
     EIDO_LLAMA_PORT: "",
     EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801",
+    EIDO_REPLIES_CONFIG: '{"me":["owner@example.com"]}',
     GMAIL_REFRESH_TOKEN: "synthetic",
     __CF_USER_TEXT_ENCODING: "0x0:0:0",
     HOME: "/home/someone",
@@ -86,6 +88,7 @@ describe("the data plane's environment", () => {
       EIDO_GATE_SOCKET: "/d/gate.sock",
       EIDO_LLAMA_HOST: "127.0.0.1",
       EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801",
+      EIDO_REPLIES_CONFIG: '{"me":["owner@example.com"]}',
     })
   })
 
@@ -199,6 +202,27 @@ describe("coreApiConfig", () => {
     expect(() => coreApiConfig({ EIDO_DIGEST_SECTION_TOKENS: "0" })).toThrow(
       "EIDO_DIGEST_SECTION_TOKENS must be a positive integer"
     )
+  })
+
+  test("enables reply tracking only with configured owner addresses and supplies starting delays", () => {
+    expect(
+      coreApiConfig({
+        EIDO_REPLIES_CONFIG: JSON.stringify({ me: ["owner@example.com"] }),
+      }).replies
+    ).toEqual({
+      me: ["owner@example.com"],
+      repliesOwed: { afterDays: 2 },
+      waitingOn: { afterDays: 5 },
+      excludeSenders: [],
+    })
+    expect(() =>
+      coreApiConfig({
+        EIDO_REPLIES_CONFIG: JSON.stringify({
+          me: ["owner@example.com"],
+          excludeSenders: ["["],
+        }),
+      })
+    ).toThrow("invalid regular expression")
   })
 
   test("requires a paired loopback model host and valid port", () => {
@@ -456,6 +480,7 @@ describe("Gmail sync runtime", () => {
     })
     const parser = createParser({ dataDir: join(dir, "parser-data") })
     const scheduleDigest = vi.fn()
+    const scheduleReplies = vi.fn()
     const sync = createGmailSyncRuntime({
       db,
       gate: { getConnectorHealth: () => Promise.resolve([]) },
@@ -464,6 +489,7 @@ describe("Gmail sync runtime", () => {
       parser,
       onIngested: (documents) =>
         scheduleIngestedDigests(db, { scheduleDigest }, documents),
+      onBatchCommitted: scheduleReplies,
       log: () => undefined,
     })
 
@@ -483,6 +509,13 @@ describe("Gmail sync runtime", () => {
       { page: 1, text: "Report page one" },
       { page: 2, text: "Report page two" },
     ])
+    expect(
+      db
+        .prepare(
+          "SELECT mailbox_id FROM mail_message_mailboxes WHERE sha256 = (SELECT sha256 FROM documents WHERE source_ref = ?)"
+        )
+        .get("gm-runtime")?.["mailbox_id"]
+    ).toBe("owner@example.com")
     expect(scheduleDigest).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "document",
@@ -492,6 +525,7 @@ describe("Gmail sync runtime", () => {
         ],
       })
     )
+    expect(scheduleReplies).toHaveBeenCalledTimes(1)
     expect(scheduleDigest).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "thread",
@@ -1024,6 +1058,89 @@ describe("starting the data plane", () => {
     },
     15_000
   )
+
+  it("schedules configured reply tracking at startup and after ingested sync batches", async () => {
+    const env = servedEnv({
+      EIDO_REPLIES_CONFIG: JSON.stringify({ me: ["owner@example.com"] }),
+    })
+    mkdirSync(env.EIDO_DATA_DIR, { recursive: true })
+    const path = join(env.EIDO_DATA_DIR, DATA_DB_FILE)
+    const seed = openDataDb(path)
+    const seedProfile = createProfileStore(seed, {
+      audit: () => Promise.resolve(),
+    })
+    const owner = await seedProfile.createEntity({
+      kind: "personal",
+      name: "Owner",
+      tag: "ME",
+    })
+    await seedProfile.setDefaultEntityId(owner.id)
+    ingestBatch(seed, {
+      connector: "gmail",
+      stream: "seed",
+      nextCursor: "1",
+      documents: [
+        {
+          sha256: "c".repeat(64),
+          source: "gmail",
+          sourceRef: "startup-message",
+          mime: "message/rfc822",
+          entityId: owner.id,
+          title: "Startup",
+          body: "Please reply to me.",
+          occurredAt: "2026-01-01T00:00:00.000Z",
+          headers: {
+            messageId: "<startup@example.invalid>",
+            threadId: "startup",
+          },
+          addresses: [
+            { role: "from", address: "partner@example.invalid" },
+            { role: "to", address: "owner@example.com" },
+          ],
+          mailFacts: { listUnsubscribe: false },
+        },
+      ],
+    })
+    await seedProfile.drain()
+    seed.close()
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+      expect(listObligations(plane.db, { entityId: owner.id })).toHaveLength(1)
+      ingestBatch(plane.db, {
+        connector: "gmail",
+        stream: "after-startup",
+        nextCursor: "2",
+        documents: [
+          {
+            sha256: "d".repeat(64),
+            source: "gmail",
+            sourceRef: "batch-message",
+            mime: "message/rfc822",
+            entityId: owner.id,
+            title: "Batch",
+            body: "Please reply to this.",
+            occurredAt: "2026-01-02T00:00:00.000Z",
+            headers: {
+              messageId: "<batch@example.invalid>",
+              threadId: "batch",
+            },
+            addresses: [
+              { role: "from", address: "vendor@example.invalid" },
+              { role: "to", address: "owner@example.com" },
+            ],
+            mailFacts: { listUnsubscribe: false },
+          },
+        ],
+      })
+      plane.scheduleReplyObligations()
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+      expect(listObligations(plane.db, { entityId: owner.id })).toHaveLength(2)
+    } finally {
+      await plane.close()
+    }
+  })
 })
 
 describe("holdUntilStopped", () => {

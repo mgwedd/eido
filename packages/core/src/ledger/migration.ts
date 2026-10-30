@@ -201,6 +201,17 @@ CREATE TABLE digest_sections (
 );
 CREATE INDEX digest_sections_source ON digest_sections(source_fingerprint);
 `,
+  `
+ALTER TABLE obligations ADD COLUMN direction TEXT CHECK (direction IS NULL OR direction IN ('owed', 'waiting'));
+ALTER TABLE obligations ADD COLUMN thread_id TEXT;
+ALTER TABLE obligations ADD COLUMN anchor_message_id TEXT;
+CREATE UNIQUE INDEX obligations_reply_anchor
+  ON obligations(entity_id, direction, anchor_message_id)
+  WHERE direction IS NOT NULL AND anchor_message_id IS NOT NULL;
+`,
+  `
+ALTER TABLE obligations ADD COLUMN resolution_reason TEXT CHECK (resolution_reason IS NULL OR resolution_reason = 'replied');
+`,
 ]
 
 export const LEDGER_SCHEMA_VERSION = LEDGER_MIGRATIONS.length

@@ -15,6 +15,7 @@ export function extractAddresses(email: ParsedMessage): StoredAddress[] {
     ["reply_to", email.replyTo],
     ["to", email.to],
     ["cc", email.cc],
+    ["bcc", email.bcc],
   ] as const
   return roles.flatMap(([role, list]) =>
     list
@@ -65,7 +66,8 @@ export function storedAddresses(
         (role === "from" ||
           role === "reply_to" ||
           role === "to" ||
-          role === "cc") &&
+          role === "cc" ||
+          role === "bcc") &&
         typeof row["address"] === "string"
       )
         return [{ role, address: row["address"] }]

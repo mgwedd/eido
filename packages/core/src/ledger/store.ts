@@ -217,8 +217,8 @@ export function insertObligation(
   }
   const { lastInsertRowid } = db
     .prepare(
-      `INSERT INTO obligations (entity_id, party, action, due_at, status, doc_id, source_span, injection_suspected, injection_reasons)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO obligations (entity_id, party, action, due_at, status, doc_id, source_span, injection_suspected, injection_reasons, direction, thread_id, anchor_message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.entityId,
@@ -229,7 +229,10 @@ export function insertObligation(
       input.docId,
       JSON.stringify(input.span),
       input.injectionSuspected ? 1 : 0,
-      JSON.stringify(input.injectionReasons ?? [])
+      JSON.stringify(input.injectionReasons ?? []),
+      input.direction ?? null,
+      input.threadId ?? null,
+      input.anchorMessageId ?? null
     )
   return Number(lastInsertRowid)
 }
@@ -253,6 +256,13 @@ function toObligation(row: Row): Obligation {
     span: parseSpan(text(row, "source_span")),
     injectionSuspected: row["injection_suspected"] === 1,
     injectionReasons: parseReasons(text(row, "injection_reasons")),
+    direction:
+      row["direction"] === "owed" || row["direction"] === "waiting"
+        ? row["direction"]
+        : null,
+    threadId: optionalText(row, "thread_id"),
+    anchorMessageId: optionalText(row, "anchor_message_id"),
+    resolutionReason: row["resolution_reason"] === "replied" ? "replied" : null,
   }
 }
 
@@ -264,7 +274,8 @@ export function listObligations(
   return db
     .prepare(
       `SELECT o.id, o.entity_id, e.kind AS entity_kind, e.name AS entity_name, e.tag AS entity_tag,
-              o.party, o.action, o.due_at, o.status, o.doc_id, o.source_span, o.injection_suspected, o.injection_reasons
+              o.party, o.action, o.due_at, o.status, o.doc_id, o.source_span, o.injection_suspected, o.injection_reasons,
+              o.direction, o.thread_id, o.anchor_message_id, o.resolution_reason
        FROM obligations o JOIN entities e ON e.id = o.entity_id
        WHERE ($entityId IS NULL OR o.entity_id = $entityId)
          AND ($status IS NULL OR o.status = $status)
