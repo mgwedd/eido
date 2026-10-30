@@ -298,6 +298,7 @@ const profileFiles = [...schemas.keys()].filter(
     file.startsWith("profile-") ||
     file.startsWith("gate-") ||
     file.startsWith("core-api-ask-") ||
+    file.startsWith("core-api-document-") ||
     file === "ask-coverage.schema.json" ||
     file === "ask-citation.schema.json" ||
     file === "extraction-candidates.schema.json" ||

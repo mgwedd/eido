@@ -174,6 +174,143 @@ describe("refuse, don't truncate", () => {
 })
 
 describe("truncation tripwire", () => {
+  test("rejects malformed non-streaming completion fields", async () => {
+    const server = await start({ replies: [] })
+    for (const payload of [
+      { content: "x", stop_type: "eos" },
+      { content: "x", stop_type: "unknown", tokens_evaluated: 1 },
+    ]) {
+      const client = createModelClient(config(server), {
+        fetch: fetchWithCompletion(() => Response.json(payload)),
+      })
+      const error = await rejection(
+        client.complete({
+          system: "",
+          messages: [userOf(1)],
+          includeTokenProbabilities: true,
+        })
+      )
+      expect(error).toMatchObject({ kind: "malformed", status: 200 })
+    }
+  })
+
+  test("returns aligned token probabilities from llama-server logprob metadata", async () => {
+    const server = await start({
+      replies: [
+        {
+          deltas: ["hello"],
+          probabilities: [
+            { token: "hel", probability: 0.7 },
+            { token: "lo", probability: 0.9 },
+          ],
+        },
+      ],
+    })
+    const result = await createModelClient(config(server)).complete({
+      system: "",
+      messages: [userOf(1)],
+      includeTokenProbabilities: true,
+    })
+    expect(result.tokenProbabilities).toEqual([
+      { bytes: [104, 101, 108], probability: 0.7 },
+      { bytes: [108, 111], probability: 0.9 },
+    ])
+  })
+
+  test("ignores incomplete or misaligned probability metadata", async () => {
+    const server = await start({
+      replies: [
+        {
+          deltas: ["hello"],
+          probabilities: [{ token: "hell", probability: 0.7 }],
+        },
+      ],
+    })
+    const result = await createModelClient(config(server)).complete({
+      system: "",
+      messages: [userOf(1)],
+      includeTokenProbabilities: true,
+    })
+    expect(result).not.toHaveProperty("tokenProbabilities")
+  })
+
+  test("treats invalid UTF-8 probability metadata as unavailable", async () => {
+    const server = await start({
+      replies: [
+        {
+          deltas: ["x"],
+          probabilityBytes: [{ bytes: [0xc3], probability: 0.7 }],
+        },
+      ],
+    })
+    const result = await createModelClient(config(server)).complete({
+      system: "",
+      messages: [userOf(1)],
+      includeTokenProbabilities: true,
+    })
+    expect(result).not.toHaveProperty("tokenProbabilities")
+  })
+
+  test("treats out-of-range byte and probability metadata as unavailable", async () => {
+    const server = await start({
+      replies: [
+        {
+          deltas: ["x"],
+          probabilityBytes: [{ bytes: [256], probability: 0.7 }],
+        },
+        {
+          deltas: ["x"],
+          probabilities: [{ token: "x", probability: 1.2 }],
+        },
+      ],
+    })
+    for (let i = 0; i < 2; i += 1) {
+      const result = await createModelClient(config(server)).complete({
+        system: "",
+        messages: [userOf(1)],
+        includeTokenProbabilities: true,
+      })
+      expect(result).not.toHaveProperty("tokenProbabilities")
+    }
+  })
+
+  test("keeps UTF-8 bytes split across probability tokens aligned", async () => {
+    const server = await start({
+      replies: [
+        {
+          deltas: ["é"],
+          probabilityBytes: [
+            { bytes: [0xc3], probability: 0.4 },
+            { bytes: [0xa9], probability: 0.8 },
+          ],
+        },
+      ],
+    })
+    const result = await createModelClient(config(server)).complete({
+      system: "",
+      messages: [userOf(1)],
+      includeTokenProbabilities: true,
+    })
+    expect(result.tokenProbabilities).toEqual([
+      { bytes: [0xc3], probability: 0.4 },
+      { bytes: [0xa9], probability: 0.8 },
+    ])
+  })
+
+  test("ignores empty probability entries", async () => {
+    const server = await start({
+      replies: [
+        { deltas: [""], probabilityBytes: [{ bytes: [], probability: 0.8 }] },
+      ],
+    })
+    const result = await createModelClient(config(server)).complete({
+      system: "",
+      messages: [userOf(1)],
+      includeTokenProbabilities: true,
+    })
+    expect(result).not.toHaveProperty("tokenProbabilities")
+  })
+
   test("fires when the server reports under 60% of an estimate over 500", async () => {
     const server = await start({
       replies: [{ deltas: ["ok"], promptTokens: 599 }],
@@ -498,6 +635,36 @@ describe("server features", () => {
       feature: "parse_special",
     })
     expect(server.completions()).toEqual([])
+  })
+
+  test("sends the configured chat template kwargs with every /apply-template request", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    const kwargs = { enable_thinking: false, b: { y: 1, x: 2 } }
+    const client = await connectModelClient(
+      config(server, { chatTemplateKwargs: kwargs })
+    )
+    await client.complete({ system: "", messages: [userOf(1)] })
+    const probe = bodyAt(server, "/apply-template", 0)
+    const request = bodyAt(server, "/apply-template", 1)
+    expect(probe.chat_template_kwargs).toEqual(kwargs)
+    expect(request.chat_template_kwargs).toEqual(kwargs)
+    expect(
+      server.requests.filter((r) => r.path === "/apply-template")[1]?.body
+    ).toContain(
+      '"chat_template_kwargs":{"b":{"x":2,"y":1},"enable_thinking":false}'
+    )
+  })
+
+  test("sends no chat template kwargs when none are configured", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    const client = await connectModelClient(config(server))
+    await client.complete({ system: "", messages: [userOf(1)] })
+    expect(bodyAt(server, "/apply-template", 0)).not.toHaveProperty(
+      "chat_template_kwargs"
+    )
+    expect(bodyAt(server, "/apply-template", 1)).not.toHaveProperty(
+      "chat_template_kwargs"
+    )
   })
 
   test("connectModelClient returns a working client for a capable server", async () => {

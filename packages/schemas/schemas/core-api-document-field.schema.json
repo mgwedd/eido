@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiDocumentField",
+  "description": "One extracted field of a document. `value` is the typed value (money in minor units, an ISO date) or null for a text field or one that did not parse. `line` is the 1-based line of `lines` holding the span start, null when the span lies outside the stored text. `verified` is true only when the quote equals the stored text at its span, a money or date field parsed, and the confidence meets the threshold or the extraction was confirmed.",
+  "type": "object",
+  "properties": {
+    "field": {
+      "enum": ["action", "party", "reference_number", "amount", "due_date"]
+    },
+    "raw": { "type": "string", "minLength": 1 },
+    "value": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string" },
+        {
+          "type": "object",
+          "properties": {
+            "amount_minor": { "type": "integer", "minimum": 0 },
+            "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+          },
+          "required": ["amount_minor", "currency"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "span": { "$ref": "source-span.schema.json" },
+    "line": {
+      "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "verified": { "type": "boolean" }
+  },
+  "required": [
+    "field",
+    "raw",
+    "value",
+    "span",
+    "line",
+    "confidence",
+    "verified"
+  ],
+  "additionalProperties": false
+}

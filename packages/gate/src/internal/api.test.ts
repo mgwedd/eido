@@ -127,6 +127,16 @@ function actions(): string[] {
 }
 
 describe("POST /intents", () => {
+  it("exposes restore-trash as a typed proposal call and refuses unknown receipts", async () => {
+    await expect(client.restoreTrash("missing-trash-id")).rejects.toMatchObject(
+      {
+        name: "GateRequestError",
+        status: 409,
+        code: "unavailable",
+      }
+    )
+  })
+
   it("stores an approval-tier intent as pending and audits one proposal row with its sources", async () => {
     const result = await client.propose(proposal)
     expect(result).toEqual({

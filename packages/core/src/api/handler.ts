@@ -14,6 +14,8 @@ import type {
 import { validateCoreApiAskRequest } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
 import type { ObligationStateStore } from "../ledger/obligation-state"
+import { documentsRoute } from "./documents-route"
+import type { DocumentsDeps } from "./documents-route"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
 import type { ProfileStore } from "../profile/store"
@@ -42,6 +44,8 @@ export interface ApiDeps {
   ask?: (question: string) => Promise<AskResult>
   /** Local obligation state changes (#104). When absent, `/obligations/...` is not served. */
   obligations?: ObligationStateStore
+  /** The data DB the Documents list and viewer read. When absent, `/documents` is not served. */
+  documents?: DocumentsDeps
 }
 
 export type ApiHandler = (request: Request) => Promise<Response>
@@ -325,6 +329,21 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return new Response(null, { status: 204 })
       }
       return notAllowed("GET", "PUT", "DELETE")
+    }
+
+    if (deps.documents !== undefined) {
+      const result = documentsRoute(
+        method,
+        path,
+        url.searchParams,
+        deps.documents
+      )
+      if (result !== null) {
+        if (result.ok) return json(result.body)
+        if (result.code === "method_not_allowed") return notAllowed("GET")
+        const { code, message, fields } = result
+        return failure(code, message, fields ? { fields } : {})
+      }
     }
 
     return failure("not_found", "no such route")

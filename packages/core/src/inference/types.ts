@@ -19,6 +19,12 @@ export interface ModelServerConfig {
   tripwireRatio?: number
   /** The tripwire only fires above this estimate. Default 500. */
   tripwireMinPromptTokens?: number
+  /**
+   * Sent as `chat_template_kwargs` with every `/apply-template` request, where llama-server merges
+   * it over its own `--chat-template-kwargs`. For example `{ "enable_thinking": false }` renders a
+   * hybrid-thinking template (Qwen 3) with its reasoning turned off. Default: none sent.
+   */
+  chatTemplateKwargs?: Readonly<Record<string, unknown>>
 }
 
 export interface ChatMessage {
@@ -53,6 +59,8 @@ export interface InferenceRequest {
   maxTokens?: number
   temperature?: number
   seed?: number
+  /** Return token probability metadata; uses llama-server's non-streaming completion response. */
+  includeTokenProbabilities?: boolean
 }
 
 export type FinishReason = "stop" | "length"
@@ -60,6 +68,11 @@ export type FinishReason = "stop" | "length"
 export interface InferenceResult {
   /** Decoded from the accumulated response bytes. */
   text: string
+  /** Per-token probabilities, present only when the server returned complete aligned metadata. */
+  tokenProbabilities?: readonly {
+    bytes: readonly number[]
+    probability: number
+  }[]
   estimatedPromptTokens: number
   /** `tokens_evaluated` from `/completion`, which includes tokens served from the prompt cache. */
   reportedPromptTokens: number

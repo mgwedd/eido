@@ -124,6 +124,66 @@ export interface CoreApiAssignmentList {
   assignments: Array<ProfileAccountAssignment>
 }
 
+/** One extracted field of a document. `value` is the typed value (money in minor units, an ISO date) or null for a text field or one that did not parse. `line` is the 1-based line of `lines` holding the span start, null when the span lies outside the stored text. `verified` is true only when the quote equals the stored text at its span, a money or date field parsed, and the confidence meets the threshold or the extraction was confirmed. */
+export interface CoreApiDocumentField {
+  field: "action" | "party" | "reference_number" | "amount" | "due_date"
+  raw: string
+  value: null | string | {
+    amount_minor: number
+    currency: string
+  }
+  span: SourceSpan
+  line: number | null
+  confidence: number
+  verified: boolean
+}
+
+/** Response of GET /documents?entity=&type=&source=&q=&limit=&offset=. Newest ingested first; with `q`, best text match first. No match is an empty list. `nextOffset` is the offset of the next page, or null on the last page. */
+export interface CoreApiDocumentList {
+  documents: Array<CoreApiDocumentSummary>
+  nextOffset: number | null
+}
+
+/** One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored MIME type. */
+export interface CoreApiDocumentSummary {
+  sha256: string
+  name: string | null
+  source: string
+  sourceRef: string
+  type: string
+  entity: {
+    id: string
+    kind: "personal" | "property" | "company"
+    name: string
+    tag: string
+  }
+  ingestedAt: string
+  occurredAt: string | null
+}
+
+/** Response of GET /documents/:sha256?start=&end=. `lines` is the stored text split on newlines; `start` is each line's UTF-16 offset in that text. `highlight` is the requested [start, end) range, or null when none was asked. `extractions` lists the document's extracted rows, oldest first. Text is data only: the client renders it as plain text. */
+export interface CoreApiDocumentView {
+  document: CoreApiDocumentSummary
+  lines: Array<{
+    n: number
+    start: number
+    text: string
+  }>
+  highlight: null | {
+    start: number
+    end: number
+    text: string
+    fromLine: number
+    toLine: number
+  }
+  extractions: Array<{
+    id: number
+    createdAt: string
+    confirmedAt: string | null
+    fields: Array<CoreApiDocumentField>
+  }>
+}
+
 /** Response of GET /entities, ordered by name. */
 export interface CoreApiEntityList {
   entities: Array<CoreApiEntity>
@@ -651,6 +711,20 @@ export interface EmailTrashIntent {
   }
 }
 
+/** Restore Gmail messages from Trash to their recorded prior labels. Requires fresh approval. */
+export interface EmailUntrashIntent {
+  kind: "email.untrash"
+  connector?: string
+  args: {
+    sourceIntentId: string
+    messageIds: Array<string>
+    priorLabels: Array<{
+      messageId: string
+      labels: Array<string>
+    }>
+  }
+}
+
 /** Create a file inside an allowed folder. */
 export interface FileCreateIntent {
   kind: "file.create"
@@ -711,7 +785,7 @@ export type IntentResult = {
 }
 
 /** One proposed write. The model never supplies an id; the gate assigns it. */
-export type Intent = EmailDraftIntent | EmailLabelIntent | EmailArchiveIntent | EmailMarkReadIntent | EmailSendIntent | EmailReplyIntent | EmailForwardIntent | EmailTrashIntent | CalendarCreateIntent | CalendarEditIntent | CalendarDeleteIntent | ReminderCreateIntent | FileCreateIntent | FileRenameIntent | FileMoveIntent | FileDeleteIntent
+export type Intent = EmailDraftIntent | EmailLabelIntent | EmailArchiveIntent | EmailMarkReadIntent | EmailSendIntent | EmailReplyIntent | EmailForwardIntent | EmailTrashIntent | EmailUntrashIntent | CalendarCreateIntent | CalendarEditIntent | CalendarDeleteIntent | ReminderCreateIntent | FileCreateIntent | FileRenameIntent | FileMoveIntent | FileDeleteIntent
 
 /** Assign a connector account, calendar or mailbox to an entity. */
 export interface ProfileAccountAssignment {

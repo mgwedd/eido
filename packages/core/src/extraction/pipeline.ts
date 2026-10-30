@@ -92,12 +92,140 @@ export type Extractor = {
 
 type Proposed = {
   item: CandidateItem
+  itemIndex: number
+  replyText: string
   passage: Passage
   injectionReasons: InjectionReason[]
+  tokenProbabilities?: readonly {
+    bytes: readonly number[]
+    probability: number
+  }[]
+}
+
+export function quoteProbability(
+  reply: string,
+  field: string,
+  quote: string,
+  itemIndex: number,
+  probabilities: readonly { bytes: readonly number[]; probability: number }[]
+): number | undefined {
+  type JsonNode =
+    | { kind: "string"; value: string; start: number; end: number }
+    | { kind: "object"; properties: Map<string, JsonNode> }
+    | { kind: "array"; items: JsonNode[] }
+    | { kind: "other" }
+  let cursor = 0
+  const whitespace = (): void => {
+    while (cursor < reply.length && /\s/u.test(reply.charAt(cursor)))
+      cursor += 1
+  }
+  const stringNode = (): JsonNode => {
+    const start = cursor
+    if (reply.charAt(cursor) !== '"') throw new Error("JSON string expected")
+    cursor += 1
+    let closed = false
+    while (cursor < reply.length) {
+      const char = reply.charAt(cursor)
+      cursor += 1
+      if (char === "\\") cursor += 1
+      else if (char === '"') {
+        closed = true
+        break
+      }
+    }
+    if (!closed) throw new Error("JSON string is unterminated")
+    const raw: unknown = JSON.parse(reply.slice(start, cursor))
+    if (typeof raw !== "string") throw new Error("JSON string expected")
+    return { kind: "string", value: raw, start, end: cursor }
+  }
+  const parseNode = (): JsonNode => {
+    whitespace()
+    const char = reply.charAt(cursor)
+    if (char === '"') return stringNode()
+    if (char === "{") {
+      cursor += 1
+      const properties = new Map<string, JsonNode>()
+      whitespace()
+      while (cursor < reply.length && reply.charAt(cursor) !== "}") {
+        whitespace()
+        const key = stringNode()
+        if (key.kind !== "string") throw new Error("JSON object key expected")
+        whitespace()
+        if (reply.charAt(cursor) !== ":") throw new Error("JSON colon expected")
+        cursor += 1
+        properties.set(key.value, parseNode())
+        whitespace()
+        if (reply.charAt(cursor) !== ",") break
+        cursor += 1
+      }
+      if (reply.charAt(cursor) !== "}") throw new Error("JSON object expected")
+      cursor += 1
+      return { kind: "object", properties }
+    }
+    if (char === "[") {
+      cursor += 1
+      const items: JsonNode[] = []
+      whitespace()
+      while (cursor < reply.length && reply.charAt(cursor) !== "]") {
+        items.push(parseNode())
+        whitespace()
+        if (reply.charAt(cursor) !== ",") break
+        cursor += 1
+      }
+      if (reply.charAt(cursor) !== "]") throw new Error("JSON array expected")
+      cursor += 1
+      return { kind: "array", items }
+    }
+    const start = cursor
+    while (cursor < reply.length && !/[\s,}\]]/u.test(reply.charAt(cursor)))
+      cursor += 1
+    if (start === cursor) throw new Error("unexpected JSON character")
+    return { kind: "other" }
+  }
+  let quoteStart: number | undefined
+  let quoteEnd: number | undefined
+  try {
+    const root = parseNode()
+    if (root.kind !== "object") return undefined
+    const items = root.properties.get("items")
+    if (items?.kind !== "array") return undefined
+    const item = items.items[itemIndex]
+    if (item === undefined || item.kind !== "object") return undefined
+    const fieldNode = item.properties.get(field)
+    if (fieldNode?.kind !== "object") return undefined
+    const quoteNode = fieldNode.properties.get("quote")
+    if (quoteNode?.kind !== "string" || quoteNode.value !== quote)
+      return undefined
+    quoteStart = quoteNode.start + 1
+    quoteEnd = quoteNode.end - 1
+  } catch {
+    return undefined
+  }
+  if (quoteStart === undefined || quoteEnd === undefined) return undefined
+  const encoder = new TextEncoder()
+  const start = encoder.encode(reply.slice(0, quoteStart)).length
+  const end = encoder.encode(reply.slice(0, quoteEnd)).length
+  let offset = 0
+  const scores: number[] = []
+  for (const part of probabilities) {
+    const next = offset + part.bytes.length
+    if (offset < end && next > start) scores.push(part.probability)
+    offset = next
+  }
+  if (scores.length === 0) return undefined
+  return scores.reduce((sum, score) => sum + score, 0) / scores.length
 }
 
 type AskOutcome =
-  | { kind: "read"; items: CandidateItem[] }
+  | {
+      kind: "read"
+      items: CandidateItem[]
+      replyText: string
+      tokenProbabilities?: readonly {
+        bytes: readonly number[]
+        probability: number
+      }[]
+    }
   | { kind: "skipped" }
   | { kind: "rejected" }
 
@@ -280,7 +408,9 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
               messages,
               jsonSchema: { ...extractionCandidatesJsonSchema },
               maxTokens: maxReplyTokens,
-              temperature: 0,
+              // llama.cpp reports greedy raw-softmax probabilities for temperatures below zero.
+              temperature: -1,
+              includeTokenProbabilities: true,
             },
             { signal: opts.signal }
           )
@@ -290,7 +420,13 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         }
         remaining -= cost
         const outcome = checkReply(reply)
-        if (outcome.ok) return { kind: "read", items: outcome.candidates.items }
+        if (outcome.ok)
+          return {
+            kind: "read",
+            items: outcome.candidates.items,
+            replyText: reply.text,
+            tokenProbabilities: reply.tokenProbabilities,
+          }
         log({
           event: "reply_failed_check",
           docId,
@@ -319,8 +455,17 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         return finish("model_output_rejected", { passagesRead })
       }
       passagesRead += 1
-      for (const item of outcome.items) {
-        proposedItems.push({ item, passage, injectionReasons })
+      for (const [itemIndex, item] of outcome.items.entries()) {
+        proposedItems.push({
+          item,
+          itemIndex,
+          replyText: outcome.replyText,
+          passage,
+          injectionReasons,
+          ...(outcome.tokenProbabilities === undefined
+            ? {}
+            : { tokenProbabilities: outcome.tokenProbabilities }),
+        })
       }
     }
     if (passagesRead === 0) {
@@ -333,10 +478,35 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
       normalized,
     }
     const outcomes: { outcome: ItemOutcome; reasons: InjectionReason[] }[] =
-      proposedItems.map(({ item, passage, injectionReasons }) => ({
-        outcome: verifyItem(item, passage, source, threshold, scorer),
-        reasons: injectionReasons,
-      }))
+      proposedItems.map(
+        ({
+          item,
+          itemIndex,
+          replyText,
+          passage,
+          injectionReasons,
+          tokenProbabilities,
+        }) => ({
+          outcome: verifyItem(
+            item,
+            passage,
+            source,
+            threshold,
+            deps.fieldConfidence ??
+              (tokenProbabilities === undefined
+                ? scorer
+                : (input) =>
+                    quoteProbability(
+                      replyText,
+                      input.field,
+                      input.quote,
+                      itemIndex,
+                      tokenProbabilities
+                    ) ?? scorer(input))
+          ),
+          reasons: injectionReasons,
+        })
+      )
     const confirmations: ConfirmCandidate[] = []
     const obligationIds: number[] = []
     let verified = 0

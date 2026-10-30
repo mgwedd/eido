@@ -725,6 +725,18 @@ describe("phoneHandler: session", () => {
     }
   )
 
+  // The web app's Auth0 sign-in (apps/web) sets its own `__session` cookie. It proves who
+  // opened the web app, not who may decide; the gate must still demand its passkey session.
+  it.each(gated)(
+    "401s %s %s with only the web app's sign-in cookie",
+    async (method, path) => {
+      const reply = await call(method, path, {
+        cookie: `__session=${"A".repeat(200)}`,
+      })
+      expect([reply.status, code(reply)]).toEqual([401, "unauthenticated"])
+    }
+  )
+
   it("sets the session cookie with its attributes and returns when it ends", async () => {
     enrol(auth)
     const options = await call("POST", "/auth/login/options")

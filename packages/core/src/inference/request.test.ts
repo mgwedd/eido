@@ -126,4 +126,18 @@ describe("buildCompletionBody", () => {
       "cache_prompt",
     ])
   })
+
+  test("uses the non-streaming probability response only when requested", () => {
+    const body: unknown = JSON.parse(
+      buildCompletionBody(
+        { system: "S", messages: [], includeTokenProbabilities: true },
+        [1],
+        8
+      )
+    )
+    expect(body).toMatchObject({
+      stream: false,
+      n_probs: 1,
+    })
+  })
 })

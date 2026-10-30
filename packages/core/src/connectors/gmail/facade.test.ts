@@ -29,7 +29,16 @@ function gmailDoc(
 /** A fake intent API that records each proposal and answers like the gate would. */
 function fakeIntents() {
   const proposals: IntentProposal[] = []
+  const restoreRequests: string[] = []
   const client: IntentClient = {
+    restoreTrash: (trashIntentId) => {
+      restoreRequests.push(trashIntentId)
+      return Promise.resolve({
+        id: `restore-${trashIntentId}`,
+        tier: "approval",
+        state: "pending",
+      })
+    },
     propose: (proposal) => {
       proposals.push(proposal)
       return Promise.resolve({
@@ -43,7 +52,7 @@ function fakeIntents() {
     listPending: () => Promise.reject(new Error("not used")),
     getConnectorHealth: () => Promise.resolve([]),
   }
-  return { client, proposals }
+  return { client, proposals, restoreRequests }
 }
 
 let db: DatabaseSync
@@ -177,7 +186,17 @@ describe("write verbs", () => {
     const writes = gmailManifest(resolveGmailConfig())
       .operations.filter((op) => op.effect === "write")
       .map((op) => op.name)
-    expect(WRITES.map(([verb]) => verb).sort()).toEqual(writes.sort())
+    expect([...WRITES.map(([verb]) => verb), "restore_trash"].sort()).toEqual(
+      writes.sort()
+    )
+  })
+
+  test("restore_trash requests a fresh gate proposal from the prior trash receipt", async () => {
+    expect(await facade.restore_trash({ sourceIntentId: "trash-1" })).toEqual({
+      intentId: "restore-trash-1",
+    })
+    expect(intents.restoreRequests).toEqual(["trash-1"])
+    expect(intents.proposals).toEqual([])
   })
 
   test("proposes with the configured origin", async () => {
@@ -220,7 +239,9 @@ describe("rationale", () => {
     const writes = gmailManifest(resolveGmailConfig())
       .operations.filter((op) => op.effect === "write")
       .map((op) => op.name)
-    expect(WITH_NOTE.map(([verb]) => verb).sort()).toEqual(writes.sort())
+    expect(WITH_NOTE.map(([verb]) => verb).sort()).toEqual(
+      writes.filter((name) => name !== "restore_trash").sort()
+    )
   })
 
   test("the rationale is not part of the intent", async () => {

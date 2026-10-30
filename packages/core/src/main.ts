@@ -52,6 +52,8 @@ import {
 import type { GmailClient } from "./connectors/gmail/client"
 import type { GmailConfig } from "./connectors/gmail/config"
 import type { ConnectorHealthReader } from "./connectors/health-aware-sync"
+import { syncReplyObligations } from "./obligations/replies"
+import type { RepliesConfig } from "./obligations/replies"
 
 // The data-plane process (ADR 0003). It owns eido-data.db, serves core's API on loopback, and
 // reaches the gate only through the intent and audit clients on the gate's data-plane socket.
@@ -75,6 +77,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_GMAIL_PROXY_URL",
   "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
   "EIDO_DIGEST_SECTION_TOKENS",
+  "EIDO_REPLIES_CONFIG",
 ] as const
 
 /**
@@ -143,6 +146,7 @@ export type CoreApiConfig = {
   gmailProxyUrl?: string
   conversationDigestIdleTtlMinutes: number
   digest: { sectionTokens: number }
+  replies?: Omit<RepliesConfig, "db">
 }
 
 export type DataPlaneConfig = {
@@ -215,10 +219,64 @@ export function coreApiConfig(env: Env): CoreApiConfig {
         "EIDO_DIGEST_SECTION_TOKENS"
       ),
     },
+    ...(env["EIDO_REPLIES_CONFIG"] === undefined ||
+    env["EIDO_REPLIES_CONFIG"] === ""
+      ? {}
+      : { replies: parseRepliesConfig(env["EIDO_REPLIES_CONFIG"]) }),
     ...(modelBaseUrl === undefined ? {} : { modelBaseUrl }),
     ...(configuredGmailProxyUrl === undefined
       ? {}
       : { gmailProxyUrl: configuredGmailProxyUrl }),
+  }
+}
+
+function parseRepliesConfig(raw: string): Omit<RepliesConfig, "db"> {
+  const parsed: unknown = JSON.parse(raw)
+  if (typeof parsed !== "object" || parsed === null)
+    throw new Error("EIDO_REPLIES_CONFIG must be a JSON object")
+  const read = (key: string): unknown => Reflect.get(parsed, key)
+  const me = read("me")
+  const repliesOwed = read("repliesOwed") ?? { afterDays: 2 }
+  const waitingOn = read("waitingOn") ?? { afterDays: 5 }
+  const excludeSenders = read("excludeSenders") ?? []
+  const ownerEntityId = read("ownerEntityId")
+  const days = (value: unknown): value is { afterDays: number } =>
+    typeof value === "object" &&
+    value !== null &&
+    Number.isSafeInteger(Reflect.get(value, "afterDays")) &&
+    Number(Reflect.get(value, "afterDays")) >= 0 &&
+    Number(Reflect.get(value, "afterDays")) <= 3650
+  if (
+    !Array.isArray(me) ||
+    !me.every(
+      (address) => typeof address === "string" && address.includes("@")
+    ) ||
+    me.length === 0 ||
+    !days(repliesOwed) ||
+    !days(waitingOn) ||
+    !Array.isArray(excludeSenders) ||
+    !excludeSenders.every((pattern) => typeof pattern === "string") ||
+    (ownerEntityId !== undefined && typeof ownerEntityId !== "string")
+  ) {
+    throw new Error(
+      "EIDO_REPLIES_CONFIG requires me, repliesOwed.afterDays, waitingOn.afterDays, and excludeSenders"
+    )
+  }
+  for (const pattern of excludeSenders) {
+    try {
+      new RegExp(pattern, "i")
+    } catch {
+      throw new Error(
+        "EIDO_REPLIES_CONFIG excludeSenders contains an invalid regular expression"
+      )
+    }
+  }
+  return {
+    me,
+    ...(ownerEntityId === undefined ? {} : { ownerEntityId }),
+    repliesOwed,
+    waitingOn,
+    excludeSenders,
   }
 }
 
@@ -266,6 +324,8 @@ export type DataPlane = {
   getModelContextTokens: () => number
   /** Schedule digests for documents committed by a connector batch. */
   scheduleIngestedDocuments: (documents: readonly IndexedDocument[]) => void
+  /** Schedule deterministic reply lifecycle detection after a committed sync batch. */
+  scheduleReplyObligations: () => void
 }
 
 type GmailSyncRuntime = {
@@ -276,6 +336,7 @@ type GmailSyncRuntime = {
   parser?: Parser
   config?: GmailConfig
   onIngested?: (documents: readonly IndexedDocument[]) => void
+  onBatchCommitted?: () => void
   log: DataPlane["log"]
 }
 
@@ -304,7 +365,11 @@ export function createGmailSyncRuntime(
           input.client,
           config,
           { accountRef: account.emailAddress, entities: input.profile },
-          { parser: input.parser, onIngested: input.onIngested }
+          {
+            parser: input.parser,
+            onIngested: input.onIngested,
+            onBatchCommitted: input.onBatchCommitted,
+          }
         )
       } catch (error) {
         input.log("gmail_sync_failed", {
@@ -462,6 +527,29 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     return digestServicePromise
   }
   let digestScheduling = Promise.resolve()
+  let replyScheduling = Promise.resolve()
+  const scheduleReplies = (): void => {
+    const repliesConfig = config.api.replies
+    if (repliesConfig === undefined) return
+    replyScheduling = replyScheduling.then(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      try {
+        const result = syncReplyObligations(new Date(), {
+          ...repliesConfig,
+          db,
+        })
+        if (result.created > 0 || result.resolved > 0)
+          log("reply_obligations_synced", {
+            created: String(result.created),
+            resolved: String(result.resolved),
+          })
+      } catch (error) {
+        log("reply_obligations_sync_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        })
+      }
+    })
+  }
   const onIngested = (documents: readonly IndexedDocument[]): void => {
     digestScheduling = digestScheduling.then(async () => {
       try {
@@ -490,6 +578,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       ),
       parser,
       onIngested,
+      onBatchCommitted: scheduleReplies,
       log,
     })
     const runSync = (): void => {
@@ -505,6 +594,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     stopGmailSync = () => clearInterval(timer)
     runSync()
   }
+  scheduleReplies()
   log("started", {
     dataDir: config.dataDir,
     db: config.dbPath,
@@ -523,10 +613,12 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     getInferenceQueue: model.getQueue,
     getModelContextTokens: model.getContextTokens,
     scheduleIngestedDocuments: onIngested,
+    scheduleReplyObligations: scheduleReplies,
     close: async () => {
       stopGmailSync()
       await gmailSyncInFlight
       await digestScheduling
+      await replyScheduling
       await digestService?.whenIdle()
       await profile.drain()
       await obligations.drain()
@@ -638,6 +730,7 @@ export async function serveDataPlane(
     obligations: plane.obligations,
     connectorHealth: plane.gate.getConnectorHealth,
     ...(ask === undefined ? {} : { ask }),
+    documents: { db: plane.db },
     ...config,
   })
   const closeApi = api.close.bind(api)

@@ -111,6 +111,10 @@ function parse(text: string): unknown {
   return JSON.parse(text)
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 function checkedIntent(value: unknown, expectedHash: string): Intent {
   const checked = validateIntent(value)
   if (!checked.ok || payloadHash(checked.value) !== expectedHash) {
@@ -165,6 +169,18 @@ function recorded(
   )
     throw new Error("record_mismatch")
   return { value: { upstreamRef, result }, inverse }
+}
+
+/** The authenticated successful execution receipt used to derive a fresh restore proposal. */
+export function executionReceipt(
+  db: DatabaseSync,
+  id: string
+): UpstreamResult | undefined {
+  try {
+    return recorded(db, id, "execute")?.value
+  } catch {
+    return undefined
+  }
 }
 
 /** Rebuild the destination from a pinned write route, never from an unvalidated authority. */
@@ -367,6 +383,12 @@ export function createExecutor(
     } catch {
       return fail(id, direction, "hash_mismatch")
     }
+    if (
+      direction === "execute" &&
+      intent.kind === "email.untrash" &&
+      stored.tier !== "approval"
+    )
+      return refuse(id, direction, "invalid_state")
     if (direction === "execute" && stored.tier === "approval") {
       const approval = db
         .prepare(
@@ -399,6 +421,47 @@ export function createExecutor(
       )
         return refuse(id, direction, "invalid_inverse")
       intent = inverse.value
+    }
+    if (direction === "execute" && intent.kind === "email.untrash") {
+      const source = readIntent(db, intent.args.sourceIntentId)
+      let original: Intent | undefined
+      let receipt: UpstreamResult | undefined
+      try {
+        if (source !== undefined)
+          original = checkedIntent(parse(source.json), source.hash)
+        receipt = executionReceipt(db, intent.args.sourceIntentId)
+      } catch {
+        return refuse(id, direction, "invalid_restore_source")
+      }
+      const prior = isRecord(receipt?.result)
+        ? receipt.result["priorLabels"]
+        : undefined
+      const supplied = intent.args.priorLabels
+      if (
+        source?.kind !== "email.trash" ||
+        source.state !== "executed" ||
+        original?.kind !== "email.trash" ||
+        !("connector" in original) ||
+        original.connector !== intent.connector ||
+        !isRecord(prior) ||
+        !Array.isArray(original.args.messageIds) ||
+        original.args.messageIds.length !== supplied.length ||
+        intent.args.messageIds.length !== original.args.messageIds.length ||
+        !original.args.messageIds.every(
+          (messageId, index) => intent.args.messageIds[index] === messageId
+        ) ||
+        !original.args.messageIds.every((messageId, index) => {
+          const row = supplied[index]
+          const labels = prior[messageId]
+          return (
+            row?.messageId === messageId &&
+            Array.isArray(labels) &&
+            labels.length === row.labels.length &&
+            labels.every((label, i) => label === row.labels[i])
+          )
+        })
+      )
+        return refuse(id, direction, "invalid_restore_source")
     }
     // Stored pre-binding email intents have no authenticated destination; refuse rather than
     // redirect them after another connector is pinned or the original is disabled.

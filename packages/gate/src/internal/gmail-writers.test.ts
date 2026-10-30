@@ -58,6 +58,7 @@ function pinnedGmail(): Setup {
     "email.label",
     "email.archive",
     "email.trash",
+    "email.untrash",
   ]) {
     const operation = gmail.operations.find((op) => op.intentKind === kind)
     if (operation === undefined) throw new Error(`fixture lacks ${kind}`)
@@ -715,6 +716,7 @@ describe("the Gmail writers", () => {
       "gmail:email.label",
       "gmail:email.archive",
       "gmail:email.trash",
+      "gmail:email.untrash",
       "gmail:email.draft",
       "gmail:email.send",
       "gmail:email.reply",

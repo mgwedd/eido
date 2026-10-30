@@ -5,7 +5,8 @@ import { simpleParser } from "mailparser"
 import type { UpstreamRequest, UpstreamWriter } from "./executor"
 
 // Gmail write adapters for the executor. They hold no token: the gate's write transport adds the
-// compose client's (gmail.modify) credential. Mark read, label, archive and trash are all one
+// compose client's (gmail.modify) credential. Mark read, label, archive, trash and untrash use
+// Gmail's batchModify route.
 // users.messages.batchModify call that adds or removes labels; the executor lets these operations
 // share that one pinned route. Draft and send are #248, reply and forward #249.
 //
@@ -36,7 +37,8 @@ type BatchModify = { ids: string[]; add?: string[]; remove?: string[] }
 /** Parses a batchModify request strictly: its exact URL and method, and only its three fields. */
 function batchModify(
   request: Readonly<UpstreamRequest>,
-  what: string
+  what: string,
+  extraFields: readonly string[] = []
 ): BatchModify {
   const refuse = () => new Error(`not a Gmail ${what} request`)
   const { body } = request
@@ -49,7 +51,12 @@ function batchModify(
   const fields: Record<string, unknown> = Object.fromEntries(
     Object.entries(body)
   )
-  const allowed = new Set(["ids", "addLabelIds", "removeLabelIds"])
+  const allowed = new Set([
+    "ids",
+    "addLabelIds",
+    "removeLabelIds",
+    ...extraFields,
+  ])
   if (Object.keys(fields).some((key) => !allowed.has(key))) throw refuse()
   const ids = fields["ids"]
   const added = fields["addLabelIds"]
@@ -327,6 +334,63 @@ export const gmailTrashWriter = {
   inverse: noInverse,
 } satisfies UpstreamWriter
 
+function untrashIntent(
+  request: Readonly<UpstreamRequest>,
+  connector?: string
+): Intent {
+  const parsed = batchModify(request, "untrash", ["restores", "sourceIntentId"])
+  if (
+    parsed.add !== undefined ||
+    !just(parsed.remove, TRASH) ||
+    !isRecord(request.body)
+  )
+    throw new Error("not a Gmail untrash request")
+  const restores = request.body["restores"]
+  if (!Array.isArray(restores) || restores.length !== parsed.ids.length)
+    throw new Error("not a Gmail untrash request")
+  const priorLabels = restores.map((entry, index) => {
+    const messageId = parsed.ids[index]
+    if (
+      messageId === undefined ||
+      !isRecord(entry) ||
+      entry["messageId"] !== messageId ||
+      !isStringArray(entry["labels"])
+    )
+      throw new Error("not a Gmail untrash request")
+    return { messageId, labels: entry["labels"] }
+  })
+  const sourceIntentId = request.body["sourceIntentId"]
+  if (typeof sourceIntentId !== "string" || connector !== GMAIL_CONNECTOR)
+    throw new Error("not a Gmail untrash request")
+  return {
+    kind: "email.untrash",
+    connector,
+    args: { sourceIntentId, messageIds: parsed.ids, priorLabels },
+  }
+}
+
+/** A fresh approval restores only the exact prior label sets recorded by the trash write. */
+export const gmailUntrashWriter = {
+  connector: GMAIL_CONNECTOR,
+  kind: "email.untrash",
+  buildRequest(intent) {
+    if (intent.kind !== "email.untrash") throw new Error("wrong intent kind")
+    const { sourceIntentId, messageIds, priorLabels } = intent.args
+    return {
+      method: "POST",
+      url: BATCH_MODIFY_URL,
+      body: {
+        ids: messageIds,
+        removeLabelIds: [TRASH],
+        restores: priorLabels,
+        sourceIntentId,
+      },
+    }
+  },
+  intentFromRequest: untrashIntent,
+  inverse: noInverse,
+} satisfies UpstreamWriter
+
 function mailIntent(
   request: Readonly<UpstreamRequest>,
   kind: "email.draft" | "email.send",
@@ -517,6 +581,7 @@ export const GMAIL_WRITERS: readonly UpstreamWriter[] = [
   gmailLabelWriter,
   gmailArchiveWriter,
   gmailTrashWriter,
+  gmailUntrashWriter,
   gmailDraftWriter,
   gmailSendWriter,
   gmailReplyWriter,

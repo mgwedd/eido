@@ -3,6 +3,7 @@ import type { GateConnectorHealth } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
 import type { ObligationStateStore } from "../ledger/obligation-state"
 import type { ProfileStore } from "../profile/store"
+import type { DocumentsDeps } from "./documents-route"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
 import { createApiServer } from "./server"
@@ -61,6 +62,8 @@ export type CoreApiOptions = {
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
   ask?: (question: string) => Promise<AskResult>
   obligations?: ObligationStateStore
+  /** The data DB behind `/documents`. */
+  documents?: DocumentsDeps
   host: LoopbackHost
   /** 0 picks a free port. */
   port: number
@@ -87,6 +90,7 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
       connectorHealth: options.connectorHealth,
       ask: options.ask,
       obligations: options.obligations,
+      documents: options.documents,
       allowedHosts,
       basePath: options.basePath,
     })
