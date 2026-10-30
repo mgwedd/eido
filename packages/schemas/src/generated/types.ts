@@ -124,6 +124,16 @@ export interface CoreApiAssignmentList {
   assignments: Array<ProfileAccountAssignment>
 }
 
+/** Request body for setting or clearing the profile default entity. */
+export interface CoreApiDefaultEntityRequest {
+  entityId: string | null
+}
+
+/** The current profile default entity, or null when cleared. */
+export interface CoreApiDefaultEntity {
+  entityId: string | null
+}
+
 /** Response of GET /entities, ordered by name. */
 export interface CoreApiEntityList {
   entities: Array<CoreApiEntity>
@@ -271,7 +281,7 @@ export interface GateAuditPage {
 
 /** Body of POST /audit on the data-plane listener (#181): one profile change for the gate to append to its audit log as an audit.profile.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector or account reference is sent in clear. The gate also checks that beforeHash and afterHash are null or set as the action requires. */
 export interface GateAuditRecordRequest {
-  action: "entity.create" | "entity.update" | "entity.delete" | "account.assign" | "account.unassign"
+  action: "entity.create" | "entity.update" | "entity.delete" | "account.assign" | "account.unassign" | "defaultEntity"
   subjectHash: string
   beforeHash: string | null
   afterHash: string | null

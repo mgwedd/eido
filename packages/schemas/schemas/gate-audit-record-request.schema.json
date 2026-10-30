@@ -11,7 +11,8 @@
         "entity.update",
         "entity.delete",
         "account.assign",
-        "account.unassign"
+        "account.unassign",
+        "defaultEntity"
       ],
       "maxLength": 32
     },

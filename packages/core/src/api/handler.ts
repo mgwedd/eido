@@ -5,13 +5,17 @@ import type {
   CoreApiAskResponse,
   CoreApiEntity,
   CoreApiEntityList,
+  CoreApiDefaultEntity,
   CoreApiError,
   CoreApiProfile,
   CoreApiProfileResponse,
   GateConnectorHealth,
   ProfileAccountAssignment,
 } from "@eido/schemas"
-import { validateCoreApiAskRequest } from "@eido/schemas"
+import {
+  validateCoreApiAskRequest,
+  validateCoreApiDefaultEntityRequest,
+} from "@eido/schemas"
 import type { AskResult } from "../ask/types"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
@@ -199,6 +203,30 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return json(body)
       }
       return notAllowed("GET", "PATCH")
+    }
+
+    if (path === "/default-entity") {
+      if (method === "GET") {
+        const body: CoreApiDefaultEntity = {
+          entityId: await profile.getDefaultEntityId(),
+        }
+        return json(body)
+      }
+      if (method === "PUT") {
+        const validation = validateCoreApiDefaultEntityRequest(
+          await readJson(request)
+        )
+        if (!validation.ok) {
+          return failure("invalid", "invalid input", {
+            fields: toFieldErrors(validation.errors),
+          })
+        }
+        const body: CoreApiDefaultEntity = {
+          entityId: await profile.setDefaultEntityId(validation.value.entityId),
+        }
+        return json(body)
+      }
+      return notAllowed("GET", "PUT")
     }
 
     if (path === "/connectors/health") {
