@@ -52,6 +52,8 @@ export {
   validateProfileUpdate,
   validateCoreApiAskRequest,
   validateCoreApiAskResponse,
+  validateCoreApiDocumentList,
+  validateCoreApiDocumentView,
   validateAskCoverage,
   validateAskCitation,
 } from "./generated/validators"
