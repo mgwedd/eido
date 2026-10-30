@@ -6,6 +6,8 @@ import type { NextConfig } from "next"
 const tailnetHost = process.env["EIDO_TAILNET_HOST"]
 
 const nextConfig: NextConfig = {
+  // `next dev` rewrites apps/web/AGENTS.md on every run unless this is off (#377).
+  agentRules: false,
   transpilePackages: ["@eido/ui"],
   allowedDevOrigins: tailnetHost ? [tailnetHost] : [],
   headers() {
