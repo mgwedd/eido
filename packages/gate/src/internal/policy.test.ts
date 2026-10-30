@@ -90,6 +90,7 @@ describe("the default tier table", () => {
     ["email.reply", "approval"],
     ["email.forward", "approval"],
     ["email.trash", "approval"],
+    ["email.untrash", "approval"],
     ["calendar.create", "auto"],
     ["calendar.edit", "auto"],
     ["calendar.delete", "auto"],
@@ -244,6 +245,17 @@ describe("the default tier table", () => {
 })
 
 describe("the overlay", () => {
+  it("keeps email.untrash approval tier even when a signed overlay requests auto", () => {
+    const s = fresh()
+    const overlay = { version: 1, tiers: { "email.untrash": "auto" } }
+    s.writeOverlay(overlay)
+    signedPolicy(s.db, overlay)
+    const { policy, errors } = loadPolicy(s.db, s.options, s.policy)
+    expect(errors).toEqual([])
+    expect(intentTier(s.db, policy, sample("email.untrash"))).toEqual({
+      tier: "approval",
+    })
+  })
   it("tightens email.archive to approval and loosens email.trash to auto", () => {
     const s = fresh()
     s.writeOverlay({

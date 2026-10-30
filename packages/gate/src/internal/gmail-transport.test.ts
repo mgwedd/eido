@@ -16,6 +16,7 @@ import {
   gmailMarkReadWriter,
 } from "./gmail-writers"
 import { propose } from "./intents"
+import { dataPlaneHandler } from "./routes"
 import { MAIL_OPS, manifest, setup, signedPin } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 import { InMemoryVault } from "./vault/vault"
@@ -57,6 +58,7 @@ function pinnedGmail(withRead: boolean): Setup {
     "email.label",
     "email.archive",
     "email.trash",
+    "email.untrash",
   ]) {
     const operation = gmail.operations.find((op) => op.intentKind === kind)
     if (operation === undefined) throw new Error(`fixture lacks ${kind}`)
@@ -527,15 +529,22 @@ describe("Gmail write transport: mark read", () => {
 
 /** Records a consumed signed approval for an approval-tier intent, as the approval flow would. */
 function approve({ db }: Setup, id: string): void {
+  const approvalNo =
+    Number(
+      db.prepare("SELECT count(*) AS count FROM approvals").get()?.["count"] ??
+        0
+    ) + 1
+  const credentialId = `credential-${approvalNo}`
+  const nonce = `nonce-${approvalNo}`
   db.exec(
-    "INSERT INTO credentials(credential_id,public_key,sign_count,created_at) VALUES ('credential','synthetic-public-key',0,'now')"
+    `INSERT INTO credentials(credential_id,public_key,sign_count,created_at) VALUES ('${credentialId}','synthetic-public-key',0,'now')`
   )
   db.prepare(
-    "INSERT INTO approval_nonces(nonce,intent_id,issued_at,used_at) VALUES ('nonce',?,'then','now')"
-  ).run(id)
+    "INSERT INTO approval_nonces(nonce,intent_id,issued_at,used_at) VALUES (?,?,'then','now')"
+  ).run(nonce, id)
   db.prepare(
-    "INSERT INTO approvals(intent_id,bundle_hash,decision,signature,credential_id,sign_count,nonce,decided_at) SELECT id,payload_hash,'approved','synthetic-signature','credential',0,'nonce','now' FROM intents WHERE id=?"
-  ).run(id)
+    "INSERT INTO approvals(intent_id,bundle_hash,decision,signature,credential_id,sign_count,nonce,decided_at) SELECT id,payload_hash,'approved','synthetic-signature',?,0,?,'now' FROM intents WHERE id=?"
+  ).run(credentialId, nonce, id)
   db.prepare("UPDATE intents SET state='approved' WHERE id=?").run(id)
 }
 
@@ -1149,14 +1158,18 @@ describe("Gmail write transport: label, archive and trash against a fake Gmail",
     expect(gmail.labels("elsewhere")).toEqual(["Label_7"])
   })
 
-  it("trashes only with a signed approval, by the TRASH label, and records no undo", async () => {
+  it("restores trashed messages from their authenticated prior labels with a fresh approval", async () => {
     const setUp = pinnedGmail(true)
-    const gmail = fakeGmailApi({ m: ["INBOX"] })
+    const gmail = fakeGmailApi({
+      m: ["INBOX", "UNREAD"],
+      elsewhere: ["Label_7"],
+      already: ["TRASH", "Label_9"],
+    })
     const executor = await gmailExecutor(setUp, gmail)
     const { intentId, tier } = proposeIntent(setUp, {
       kind: "email.trash",
       connector: "gmail",
-      args: { messageIds: ["m"] },
+      args: { messageIds: ["m", "elsewhere", "already"] },
     })
     expect(tier).toBe("approval")
     setUp.db
@@ -1171,16 +1184,292 @@ describe("Gmail write transport: label, archive and trash against a fake Gmail",
     expect(await executor.execute(intentId)).toEqual({
       ok: true,
       upstreamRef: null,
-      result: {},
+      result: {
+        priorLabels: {
+          m: ["INBOX", "UNREAD"],
+          elsewhere: ["Label_7"],
+          already: ["TRASH", "Label_9"],
+        },
+      },
     })
-    expect(gmail.labels("m")).toEqual(["INBOX", "TRASH"])
-    // Trash reads nothing first: the one call is the write.
-    expect(gmail.calls.map((call) => call.method)).toEqual(["POST"])
+    expect(gmail.labels("m")).toEqual(["INBOX", "TRASH", "UNREAD"])
+    expect(gmail.calls.map((call) => call.method)).toEqual([
+      "GET",
+      "GET",
+      "GET",
+      "POST",
+    ])
     expect(inverseOp(setUp, intentId)).toBeNull()
     expect(await executor.undo(intentId)).toEqual({
       ok: false,
       code: "undo_not_allowed",
     })
+    let pendingNotifications = 0
+    const response = await dataPlaneHandler(() => ({
+      db: setUp.db,
+      policy: setUp.policy,
+      notifyPending: () => {
+        pendingNotifications += 1
+      },
+    }))({
+      method: "POST",
+      path: `/intents/${intentId}/restore`,
+      query: new URLSearchParams(),
+      headers: {},
+      body: () => Promise.resolve({ ok: true, text: "{}" }),
+    })
+    expect(response.status).toBe(201)
+    expect(pendingNotifications).toBe(1)
+    if (!isRecord(response.body) || typeof response.body["id"] !== "string")
+      throw new Error("restore route did not propose an intent")
+    const restoreId = response.body["id"]
+    const restoreRow = setUp.db
+      .prepare("SELECT payload_json, tier FROM intents WHERE id=?")
+      .get(restoreId)
+    expect(restoreRow?.["tier"]).toBe("approval")
+    expect(JSON.parse(String(restoreRow?.["payload_json"]))).toMatchObject({
+      kind: "email.untrash",
+      connector: "gmail",
+      args: {
+        sourceIntentId: intentId,
+        messageIds: ["m", "elsewhere", "already"],
+        priorLabels: [
+          { messageId: "m", labels: ["INBOX", "UNREAD"] },
+          { messageId: "elsewhere", labels: ["Label_7"] },
+          { messageId: "already", labels: ["TRASH", "Label_9"] },
+        ],
+      },
+    })
+    expect(await executor.execute(restoreId)).toEqual({
+      ok: false,
+      code: "invalid_state",
+    })
+    setUp.db
+      .prepare("UPDATE intents SET tier='auto', state='proposed' WHERE id=?")
+      .run(restoreId)
+    expect(await executor.execute(restoreId)).toEqual({
+      ok: false,
+      code: "invalid_state",
+    })
+    setUp.db
+      .prepare("UPDATE intents SET tier='approval', state='pending' WHERE id=?")
+      .run(restoreId)
+    expect(gmail.labels("m")).toContain("TRASH")
+    approve(setUp, restoreId)
+    expect(await executor.execute(restoreId)).toEqual({
+      ok: true,
+      upstreamRef: null,
+      result: {},
+    })
+    expect(gmail.labels("m")).toEqual(["INBOX", "UNREAD"])
+    expect(gmail.labels("elsewhere")).toEqual(["Label_7"])
+    expect(gmail.labels("already")).toEqual(["Label_9", "TRASH"])
+    expect(gmail.calls.slice(-3).map((call) => call.method)).toEqual([
+      "POST",
+      "POST",
+      "POST",
+    ])
+    expect(
+      setUp.db.prepare("SELECT count(*) AS count FROM approvals").get()?.[
+        "count"
+      ]
+    ).toBe(2)
+    const forged = proposeIntent(setUp, {
+      kind: "email.untrash",
+      connector: "gmail",
+      args: {
+        sourceIntentId: intentId,
+        messageIds: ["m", "elsewhere", "already"],
+        priorLabels: [
+          { messageId: "m", labels: ["INBOX"] },
+          { messageId: "elsewhere", labels: ["Label_7"] },
+          { messageId: "already", labels: ["TRASH", "Label_9"] },
+        ],
+      },
+    })
+    approve(setUp, forged.intentId)
+    const callsBeforeForgery = gmail.calls.length
+    expect(await executor.execute(forged.intentId)).toEqual({
+      ok: false,
+      code: "invalid_restore_source",
+    })
+    expect(gmail.calls).toHaveLength(callsBeforeForgery)
+    const wrongMessages = proposeIntent(setUp, {
+      kind: "email.untrash",
+      connector: "gmail",
+      args: {
+        sourceIntentId: intentId,
+        messageIds: ["m", "elsewhere", "invented"],
+        priorLabels: [
+          { messageId: "m", labels: ["INBOX", "UNREAD"] },
+          { messageId: "elsewhere", labels: ["Label_7"] },
+          { messageId: "invented", labels: [] },
+        ],
+      },
+    })
+    approve(setUp, wrongMessages.intentId)
+    expect(await executor.execute(wrongMessages.intentId)).toEqual({
+      ok: false,
+      code: "invalid_restore_source",
+    })
+    expect(gmail.calls).toHaveLength(callsBeforeForgery)
+    const wrongSource = proposeIntent(setUp, {
+      kind: "email.untrash",
+      connector: "gmail",
+      args: {
+        sourceIntentId: "unknown-trash-id",
+        messageIds: ["m", "elsewhere", "already"],
+        priorLabels: [
+          { messageId: "m", labels: ["INBOX", "UNREAD"] },
+          { messageId: "elsewhere", labels: ["Label_7"] },
+          { messageId: "already", labels: ["TRASH", "Label_9"] },
+        ],
+      },
+    })
+    approve(setUp, wrongSource.intentId)
+    expect(await executor.execute(wrongSource.intentId)).toEqual({
+      ok: false,
+      code: "invalid_restore_source",
+    })
+    expect(gmail.calls).toHaveLength(callsBeforeForgery)
+    const sourcePayload = String(
+      setUp.db
+        .prepare("SELECT payload_json FROM intents WHERE id=?")
+        .get(intentId)?.["payload_json"]
+    )
+    const unavailableHandler = dataPlaneHandler(() => ({
+      db: setUp.db,
+      policy: setUp.policy,
+    }))
+    const missingReport = proposeIntent(setUp, {
+      kind: "email.trash",
+      connector: "gmail",
+      args: { messageIds: ["unreported"] },
+    })
+    approve(setUp, missingReport.intentId)
+    const emptyReportExecutor = createExecutor(setUp.db, GMAIL_WRITERS, () =>
+      Promise.resolve({ upstreamRef: null, result: { priorLabels: {} } })
+    )
+    expect((await emptyReportExecutor.execute(missingReport.intentId)).ok).toBe(
+      true
+    )
+    expect(
+      (
+        await unavailableHandler({
+          method: "POST",
+          path: `/intents/${missingReport.intentId}/restore`,
+          query: new URLSearchParams(),
+          headers: {},
+          body: () => Promise.resolve({ ok: true, text: "{}" }),
+        })
+      ).status
+    ).toBe(409)
+    const oversizedPrior = proposeIntent(setUp, {
+      kind: "email.trash",
+      connector: "gmail",
+      args: { messageIds: ["many-labels"] },
+    })
+    approve(setUp, oversizedPrior.intentId)
+    const manyLabels = Array.from(
+      { length: 101 },
+      (_, index) => `Label_${index}`
+    )
+    const oversizedReceiptExecutor = createExecutor(
+      setUp.db,
+      GMAIL_WRITERS,
+      () =>
+        Promise.resolve({
+          upstreamRef: null,
+          result: { priorLabels: { "many-labels": manyLabels } },
+        })
+    )
+    expect(
+      (await oversizedReceiptExecutor.execute(oversizedPrior.intentId)).ok
+    ).toBe(true)
+    expect(
+      (
+        await unavailableHandler({
+          method: "POST",
+          path: `/intents/${oversizedPrior.intentId}/restore`,
+          query: new URLSearchParams(),
+          headers: {},
+          body: () => Promise.resolve({ ok: true, text: "{}" }),
+        })
+      ).status
+    ).toBe(409)
+    setUp.db
+      .prepare("UPDATE intents SET payload_json='{' WHERE id=?")
+      .run(intentId)
+    expect(
+      (
+        await unavailableHandler({
+          method: "POST",
+          path: `/intents/${intentId}/restore`,
+          query: new URLSearchParams(),
+          headers: {},
+          body: () => Promise.resolve({ ok: true, text: "{}" }),
+        })
+      ).status
+    ).toBe(409)
+    setUp.db
+      .prepare("UPDATE intents SET payload_json=? WHERE id=?")
+      .run(sourcePayload, intentId)
+    const sourceObject: unknown = JSON.parse(sourcePayload)
+    if (!isRecord(sourceObject) || !isRecord(sourceObject["args"]))
+      throw new Error("trash proposal payload missing args")
+    const changedSource = JSON.stringify({
+      ...sourceObject,
+      connector: "proton-mail",
+    })
+    setUp.db
+      .prepare("UPDATE intents SET payload_json=? WHERE id=?")
+      .run(changedSource, intentId)
+    expect(
+      (
+        await unavailableHandler({
+          method: "POST",
+          path: `/intents/${intentId}/restore`,
+          query: new URLSearchParams(),
+          headers: {},
+          body: () => Promise.resolve({ ok: true, text: "{}" }),
+        })
+      ).status
+    ).toBe(409)
+    setUp.db
+      .prepare("UPDATE intents SET payload_json=? WHERE id=?")
+      .run(sourcePayload, intentId)
+    setUp.db
+      .prepare("UPDATE executions SET result='{}' WHERE intent_id=?")
+      .run(intentId)
+    const corruptedReceipt = await unavailableHandler({
+      method: "POST",
+      path: `/intents/${intentId}/restore`,
+      query: new URLSearchParams(),
+      headers: {},
+      body: () => Promise.resolve({ ok: true, text: "{}" }),
+    })
+    expect(corruptedReceipt.status).toBe(409)
+    const unexecutedSource = proposeIntent(setUp, {
+      kind: "email.trash",
+      connector: "gmail",
+      args: { messageIds: ["still-in-inbox"] },
+    })
+    const prematureRestore = proposeIntent(setUp, {
+      kind: "email.untrash",
+      connector: "gmail",
+      args: {
+        sourceIntentId: unexecutedSource.intentId,
+        messageIds: ["still-in-inbox"],
+        priorLabels: [{ messageId: "still-in-inbox", labels: ["INBOX"] }],
+      },
+    })
+    approve(setUp, prematureRestore.intentId)
+    const callsBeforePremature = gmail.calls.length
+    expect(await executor.execute(prematureRestore.intentId)).toEqual({
+      ok: false,
+      code: "invalid_restore_source",
+    })
+    expect(gmail.calls).toHaveLength(callsBeforePremature)
   })
 
   it("sends no DELETE and calls no delete endpoint across every write and undo", async () => {

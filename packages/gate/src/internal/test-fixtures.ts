@@ -100,6 +100,7 @@ export const MAIL_OPS: readonly Op[] = [
   op("reply", "email.reply", "irreversible", "approval"),
   op("forward", "email.forward", "irreversible", "approval"),
   op("trash", "email.trash", "reversible", "approval"),
+  op("restore_trash", "email.untrash", "reversible", "approval"),
 ]
 
 export const CALENDAR_OPS: readonly Op[] = [
@@ -142,6 +143,11 @@ const ARGS = {
     to: ["someone@example.com"],
   },
   "email.trash": { messageIds: ["msg-1"] },
+  "email.untrash": {
+    sourceIntentId: "trash-intent",
+    messageIds: ["msg-1"],
+    priorLabels: [{ messageId: "msg-1", labels: ["INBOX"] }],
+  },
   "calendar.create": {
     entity: "personal",
     title: BODY_MARKER,
