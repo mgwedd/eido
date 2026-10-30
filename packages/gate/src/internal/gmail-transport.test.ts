@@ -127,9 +127,10 @@ function fakeGmailApi(
   labels: Record<string, string[]>,
   originals: Record<
     string,
-    { id?: string; threadId?: string; raw?: string }
+    { id?: string; threadId?: unknown; raw?: unknown }
   > = {},
-  profileEmail: string | null = "signed-sender@example.invalid"
+  profileEmail: string | null = "signed-sender@example.invalid",
+  sendResponseId: string | null = "sent-message-1"
 ) {
   const mailbox = new Map(
     Object.entries(labels).map(([id, list]) => [id, new Set(list)])
@@ -218,7 +219,9 @@ function fakeGmailApi(
         return Promise.resolve(
           Response.json({ id: "draft-1", message: { id: "message-1" } })
         )
-      return Promise.resolve(Response.json({ id: "sent-message-1" }))
+      return Promise.resolve(
+        Response.json(sendResponseId === null ? {} : { id: sendResponseId })
+      )
     }
     return Promise.resolve(new Response("{}", { status: 404 }))
   })
@@ -720,6 +723,50 @@ describe("Gmail draft and send through fake Gmail", () => {
     expect(parsed.text?.trim()).toBe("Approved reply body.")
   })
 
+  it("preserves multiple RFC References headers when replying", async () => {
+    const setUp = pinnedGmail(true)
+    const original = Buffer.from(
+      "From: sender@example.invalid\r\nTo: signed-sender@example.invalid\r\n" +
+        "Message-ID: <original@example.invalid>\r\n" +
+        "References: <earlier@example.invalid>\r\n" +
+        "References: <another@example.invalid>\r\n\r\nOriginal body.\r\n"
+    )
+    const gmail = fakeGmailApi(
+      {},
+      {
+        "original-249": {
+          threadId: "thread-249",
+          raw: original.toString("base64url"),
+        },
+      }
+    )
+    const executor = await gmailExecutor(setUp, gmail)
+    const { intentId } = proposeIntent(setUp, {
+      kind: "email.reply",
+      connector: "gmail",
+      args: {
+        messageId: "original-249",
+        messageSha256: sha256(original),
+        replyAll: false,
+        to: ["sender@example.invalid"],
+        body: "Approved reply body.",
+      },
+    })
+    approve(setUp, intentId)
+    expect((await executor.execute(intentId)).ok).toBe(true)
+    const sent = gmail.postedBodies[0]
+    if (typeof sent !== "object" || sent === null || !("raw" in sent))
+      throw new Error("fake Gmail did not receive reply MIME")
+    const parsed = await simpleParser(
+      Buffer.from(String(sent.raw), "base64url")
+    )
+    expect(parsed.headers.get("references")).toEqual([
+      "<earlier@example.invalid>",
+      "<another@example.invalid>",
+      "<original@example.invalid>",
+    ])
+  })
+
   it("forwards the exact verified original RFC message, including attachments, without file access", async () => {
     const setUp = pinnedGmail(true)
     const original = await originalMessageBytes()
@@ -965,6 +1012,56 @@ describe("Gmail draft and send through fake Gmail", () => {
       args: {
         messageId: "original-249",
         messageSha256: sha256(original),
+        to: ["colleague@example.invalid"],
+      },
+    })
+    approve(setUp, intentId)
+    expect((await executor.execute(intentId)).ok).toBe(false)
+    expect(gmail.postedBodies).toEqual([])
+  })
+
+  it("rejects a Gmail send response without a message id", async () => {
+    const setUp = pinnedGmail(true)
+    const original = await originalMessageBytes()
+    const gmail = fakeGmailApi(
+      {},
+      {
+        "original-249": {
+          threadId: "thread-249",
+          raw: original.toString("base64url"),
+        },
+      },
+      "signed-sender@example.invalid",
+      null
+    )
+    const executor = await gmailExecutor(setUp, gmail)
+    const { intentId } = proposeIntent(setUp, {
+      kind: "email.forward",
+      connector: "gmail",
+      args: {
+        messageId: "original-249",
+        messageSha256: sha256(original),
+        to: ["colleague@example.invalid"],
+      },
+    })
+    approve(setUp, intentId)
+    expect((await executor.execute(intentId)).ok).toBe(false)
+    expect(gmail.postedBodies).toHaveLength(1)
+  })
+
+  it.each([
+    ["a non-string raw message", { threadId: "thread-249", raw: 23 }],
+    ["a non-string thread id", { threadId: 23, raw: "not-used" }],
+  ])("refuses %s from Gmail", async (_description, source) => {
+    const setUp = pinnedGmail(true)
+    const gmail = fakeGmailApi({}, { "original-249": source })
+    const executor = await gmailExecutor(setUp, gmail)
+    const { intentId } = proposeIntent(setUp, {
+      kind: "email.forward",
+      connector: "gmail",
+      args: {
+        messageId: "original-249",
+        messageSha256: sha256(Buffer.from("verified original")),
         to: ["colleague@example.invalid"],
       },
     })
