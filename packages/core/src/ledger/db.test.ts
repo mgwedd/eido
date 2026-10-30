@@ -266,6 +266,7 @@ describe("every document has exactly one entity", () => {
     expect(ingest()).toEqual({
       inserted: 0,
       skipped: 1,
+      pagesStored: 0,
       uidvalidityChanged: false,
     })
     expect(

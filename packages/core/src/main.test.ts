@@ -440,7 +440,10 @@ describe("Gmail sync runtime", () => {
       })
     )
     expect(scheduleDigest).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: "thread", threadId: "th-runtime" })
+      expect.objectContaining({
+        kind: "thread",
+        threadId: JSON.stringify(["gmail", entity.id, "th-runtime"]),
+      })
     )
     db.close()
   }, 60_000)

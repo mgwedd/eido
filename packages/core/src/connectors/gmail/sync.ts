@@ -152,9 +152,10 @@ type LabelRun = {
 }
 
 /**
- * Fetches and parses the messages not yet in the index, then commits them with `nextCursor` in one
- * transaction. Ids already indexed are skipped before any fetch, so a repeated batch costs no
- * duplicate document; a message deleted since it was listed is skipped too.
+ * Fetches and parses messages not yet in the index, then commits them with `nextCursor` in one
+ * transaction. Indexed messages are skipped unless a PDF attachment lacks stored parser pages;
+ * that bounded full-sync reparse can add provenance without replacing the immutable document.
+ * A message deleted since it was listed is skipped too.
  */
 async function commitBatch(
   { db, client, label, entityId, totals, parser, onIngested }: LabelRun,
@@ -164,9 +165,22 @@ async function commitBatch(
   const known = db.prepare(
     "SELECT 1 FROM documents WHERE source = ? AND source_ref = ? LIMIT 1"
   )
+  const missingPdfPages = db.prepare(
+    `SELECT 1 FROM documents d
+     JOIN document_text t ON t.sha256 = d.sha256
+     WHERE d.source = ? AND t.attachment_of = ? AND d.mime = 'application/pdf'
+       AND NOT EXISTS (
+         SELECT 1 FROM document_pages p WHERE p.sha256 = d.sha256
+       )
+     LIMIT 1`
+  )
   const documents: IndexedDocument[] = []
   for (const id of new Set(ids)) {
-    if (known.get(GMAIL_SOURCE, id) !== undefined) {
+    if (
+      known.get(GMAIL_SOURCE, id) !== undefined &&
+      (parser === undefined ||
+        missingPdfPages.get(GMAIL_SOURCE, id) === undefined)
+    ) {
       totals.skipped++
       continue
     }
@@ -187,7 +201,7 @@ async function commitBatch(
   })
   totals.inserted += result.inserted
   totals.skipped += result.skipped
-  if (result.inserted > 0) onIngested?.(documents)
+  if (result.inserted > 0 || result.pagesStored > 0) onIngested?.(documents)
 }
 
 /**

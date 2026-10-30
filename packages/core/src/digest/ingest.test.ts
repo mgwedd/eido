@@ -57,6 +57,14 @@ describe("ingested digest triggers", () => {
       body: "The second stored message.",
       headers: { threadId: "thread-real", inReplyTo: "one@example.invalid" },
     })
+    const unrelated = testDoc("other-provider-mail", {
+      source: "proton",
+      entityId: fixture.company.id,
+      headers: {
+        threadId: "thread-real",
+        messageId: "other-provider@example.invalid",
+      },
+    })
     ingestBatch(fixture.db, {
       connector: "gmail",
       stream: "inbox",
@@ -69,13 +77,19 @@ describe("ingested digest triggers", () => {
       documents: [added],
       nextCursor: "c2",
     })
+    ingestBatch(fixture.db, {
+      connector: "proton",
+      stream: "inbox",
+      documents: [unrelated],
+      nextCursor: "c1",
+    })
     const scheduleDigest = vi.fn<(subject: DigestSubject) => void>()
 
     scheduleIngestedDigests(fixture.db, { scheduleDigest }, [added])
 
     expect(scheduleDigest).toHaveBeenCalledWith({
       kind: "thread",
-      threadId: "thread-real",
+      threadId: JSON.stringify(["gmail", fixture.property.id, "thread-real"]),
       messages: [
         { id: "one@example.invalid", body: first.body },
         {

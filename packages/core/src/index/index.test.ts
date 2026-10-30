@@ -175,17 +175,60 @@ describe("ingestBatch and cursors", () => {
     expect(ingest(batch)).toEqual({
       inserted: 2,
       skipped: 0,
+      pagesStored: 0,
       uidvalidityChanged: false,
     })
     expect(ingest(batch, "c2")).toEqual({
       inserted: 0,
       skipped: 2,
+      pagesStored: 0,
       uidvalidityChanged: false,
     })
     expect(db.prepare("SELECT COUNT(*) AS n FROM documents").get()?.["n"]).toBe(
       2
     )
     expect(getCursor(db, "gmail", "inbox")?.cursor).toBe("c2")
+  })
+
+  test("backfills parser-confirmed pages on a matching reparse, once", () => {
+    const legacy = doc("legacy-pdf", {
+      mime: "application/pdf",
+      body: "page one\npage two",
+    })
+    expect(ingest([legacy]).pagesStored).toBe(0)
+    const reparsed = {
+      ...legacy,
+      pages: [
+        { page: 1, text: "page one" },
+        { page: 2, text: "page two" },
+      ],
+    }
+
+    expect(ingest([reparsed])).toEqual({
+      inserted: 0,
+      skipped: 1,
+      pagesStored: 2,
+      uidvalidityChanged: false,
+    })
+    expect(ingest([reparsed]).pagesStored).toBe(0)
+    expect(
+      db
+        .prepare(
+          "SELECT page, text FROM document_pages WHERE sha256 = ? ORDER BY page"
+        )
+        .all(legacy.sha256)
+    ).toEqual([
+      { page: 1, text: "page one" },
+      { page: 2, text: "page two" },
+    ])
+
+    const mismatchedSource = { ...reparsed, sourceRef: "different-source" }
+    expect(ingest([mismatchedSource]).pagesStored).toBe(0)
+    expect(
+      db
+        .prepare("SELECT COUNT(*) AS n FROM document_pages WHERE sha256 = ?")
+        .get(legacy.sha256)?.["n"]
+    ).toBe(2)
   })
 
   test("returns null cursor when none stored", () => {
@@ -252,7 +295,12 @@ describe("ingestBatch and cursors", () => {
       nextCursor: "9",
       uidvalidity: "2",
     })
-    expect(r).toEqual({ inserted: 0, skipped: 0, uidvalidityChanged: true })
+    expect(r).toEqual({
+      inserted: 0,
+      skipped: 0,
+      pagesStored: 0,
+      uidvalidityChanged: true,
+    })
     expect(getCursor(db, "p", "inbox")).toEqual({
       cursor: "7",
       uidvalidity: "1",

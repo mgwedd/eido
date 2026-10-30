@@ -9,14 +9,27 @@ export function scheduleIngestedDigests(
   service: Pick<DigestService, "scheduleDigest">,
   documents: readonly IndexedDocument[]
 ): void {
-  const threadIds = new Set<string>()
+  const threads = new Map<
+    string,
+    { source: string; entityId: string | null; threadId: string }
+  >()
   const pagesQuery = db.prepare(
     "SELECT page, text FROM document_pages WHERE sha256 = ? ORDER BY page"
   )
 
   for (const document of documents) {
     const threadId = document.headers?.threadId
-    if (threadId !== undefined) threadIds.add(threadId)
+    if (threadId !== undefined) {
+      const source = {
+        source: document.source,
+        entityId: document.entityId ?? null,
+        threadId,
+      }
+      threads.set(
+        JSON.stringify([source.source, source.entityId, source.threadId]),
+        source
+      )
+    }
 
     const rows = pagesQuery.all(document.sha256)
     const pages = rows.flatMap((row) => {
@@ -41,12 +54,13 @@ export function scheduleIngestedDigests(
   const messages = db.prepare(
     `SELECT d.sha256, d.source_ref, t.message_id, t.body, t.in_reply_to FROM documents d
      JOIN document_text t ON t.sha256 = d.sha256
-     WHERE t.thread_id = ? AND d.mime = 'message/rfc822'
+     WHERE d.source = ? AND d.entity_id IS ? AND t.thread_id = ?
+       AND d.mime = 'message/rfc822'
      ORDER BY COALESCE(t.occurred_at, ''), d.ingested_at, d.sha256`
   )
-  for (const threadId of threadIds) {
+  for (const [subjectThreadId, thread] of threads) {
     const threadMessages: ThreadMessage[] = messages
-      .all(threadId)
+      .all(thread.source, thread.entityId, thread.threadId)
       .flatMap((row) => {
         const id =
           typeof row["message_id"] === "string" && row["message_id"] !== ""
@@ -68,7 +82,7 @@ export function scheduleIngestedDigests(
     if (threadMessages.length === 0) continue
     service.scheduleDigest({
       kind: "thread",
-      threadId,
+      threadId: subjectThreadId,
       messages: threadMessages,
     })
   }
