@@ -36,6 +36,11 @@ export interface ConnectorManifest {
       methods: Array<"GET" | "POST" | "PUT" | "PATCH" | "DELETE">
       pathPrefixes: Array<string>
     }>
+    local?: Array<{
+      protocol: "imap" | "smtp"
+      host: string
+      port: number
+    }>
   }
   operations: Array<ConnectorOperation>
   triggers: Array<{

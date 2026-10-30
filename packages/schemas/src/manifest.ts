@@ -72,6 +72,16 @@ function semanticErrors(manifest: ConnectorManifest): string[] {
   for (const host of duplicates(manifest.egress.hosts.map((h) => h.host))) {
     errors.push(`$.egress.hosts: duplicate host ${host}`)
   }
+  const localEndpoints = manifest.egress.local ?? []
+  localEndpoints.forEach((endpoint, index) => {
+    const path = `$.egress.local[${index}]`
+    if (!["localhost", "127.0.0.1", "::1"].includes(endpoint.host)) {
+      errors.push(`${path}.host: must be a loopback host`)
+    }
+  })
+  for (const protocol of duplicates(localEndpoints.map((e) => e.protocol))) {
+    errors.push(`$.egress.local: duplicate protocol ${protocol}`)
+  }
 
   for (const name of duplicates(manifest.operations.map((op) => op.name))) {
     errors.push(`$.operations: duplicate operation ${JSON.stringify(name)}`)
