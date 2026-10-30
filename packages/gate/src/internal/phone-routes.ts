@@ -1,11 +1,18 @@
 import type { DatabaseSync } from "node:sqlite"
+import { createHash } from "node:crypto"
 import {
+  INTENT_KINDS,
+  gateAuditDisplayActor,
+  validateGateAuditPageRequest,
   validateGateDecisionRequest,
   validateGateEditRequest,
   validateGateLoginRequest,
   validateGatePushRegistration,
 } from "@eido/schemas"
 import type {
+  GateAuditActor,
+  GateAuditPage,
+  GateConnectorSettings,
   GateCredentialStatus,
   GateDecisionResult,
   GateIntentHistory,
@@ -13,6 +20,8 @@ import type {
   GatePendingIntentList,
   GatePrepareApproval,
   GateSession,
+  GatePasskeyList,
+  GatePermissionList,
 } from "@eido/schemas"
 import { issueNonce, reject, verifyApproval } from "./approvals"
 import type { PreparedApproval } from "./approvals"
@@ -28,6 +37,10 @@ import {
 } from "./intents"
 import type { EditResult } from "./intents"
 import type { Policy } from "./policy"
+import { kindTier } from "./policy"
+import { verifyChain } from "./audit"
+import { getConnectorHealth } from "./connector-health"
+import { getConnectorState } from "./connectors"
 import {
   checkedSubscription,
   preparePushRegistration,
@@ -76,6 +89,11 @@ export const PHONE_ROUTES = [
   { method: "POST", path: "/auth/login/options", session: false },
   { method: "POST", path: "/auth/login", session: false },
   { method: "GET", path: "/approvals", session: true },
+  { method: "GET", path: "/audit", session: true },
+  { method: "GET", path: "/audit/chain", session: true },
+  { method: "GET", path: "/connector-settings", session: true },
+  { method: "GET", path: "/passkeys", session: true },
+  { method: "GET", path: "/permissions", session: true },
   { method: "GET", path: "/approvals/:id/history", session: true },
   { method: "POST", path: "/approvals/:id/nonce", session: true },
   { method: "POST", path: "/approvals/:id/decision", session: true },
@@ -241,6 +259,172 @@ function history(state: PhoneState, id: string): Reply {
   return { status: 200, body }
 }
 
+function auditActor(value: string): GateAuditActor {
+  switch (value) {
+    case "data-plane":
+    case "policy":
+    case "approver":
+    case "executor":
+    case "system":
+    case "owner":
+    case "gate":
+      return value
+    default:
+      throw new Error("stored audit actor is not recognized")
+  }
+}
+
+function auditPage(state: PhoneState, request: GateRequest): Reply {
+  const raw: Record<string, unknown> = {}
+  for (const key of new Set([...request.query.keys()])) {
+    if (
+      (key !== "before" && key !== "limit") ||
+      request.query.getAll(key).length !== 1
+    ) {
+      return apiError(400, "invalid_request", "invalid audit page query")
+    }
+    const value = request.query.get(key)
+    if (value === null || !/^\d+$/.test(value)) {
+      return apiError(400, "invalid_request", "invalid audit page query")
+    }
+    raw[key] = Number(value)
+  }
+  const checked = validateGateAuditPageRequest(raw)
+  if (!checked.ok) {
+    return apiError(
+      400,
+      "invalid_request",
+      checked.errors[0] ?? "invalid audit page query"
+    )
+  }
+  const { before, limit = 50 } = checked.value
+  const columns = `SELECT a.seq, a.ts, a.actor, a.action, a.target, a.detail_hash,
+      EXISTS (
+        SELECT 1 FROM approvals p
+        JOIN approval_nonces n ON n.nonce = p.nonce AND n.intent_id = p.intent_id
+        JOIN credentials c ON c.credential_id = p.credential_id
+        JOIN intents i ON i.id = p.intent_id
+        WHERE p.intent_id = a.target AND p.decision = 'approved'
+          AND p.signature IS NOT NULL AND p.bundle_hash = i.payload_hash
+          AND n.used_at IS NOT NULL
+          AND (c.revoked_at IS NULL OR c.revoked_at >= p.decided_at)
+          AND p.decided_at <= a.ts
+      ) AS approved,
+      CASE WHEN e.audit_seq = a.seq THEN
+        CASE WHEN u.intent_id IS NOT NULL THEN 'done'
+             WHEN e.inverse_op IS NOT NULL AND i.tier = 'auto' THEN 'available'
+             ELSE 'none' END
+      ELSE 'none' END AS undo
+    FROM audit_log a
+    LEFT JOIN executions e ON e.audit_seq = a.seq
+    LEFT JOIN execution_undos u ON u.intent_id = e.intent_id
+    LEFT JOIN intents i ON i.id = e.intent_id`
+  const selected =
+    before === undefined
+      ? state.db
+          .prepare(`${columns} ORDER BY a.seq DESC LIMIT ?`)
+          .all(limit + 1)
+      : state.db
+          .prepare(`${columns} WHERE a.seq < ? ORDER BY a.seq DESC LIMIT ?`)
+          .all(before, limit + 1)
+  const hasMore = selected.length > limit
+  const pageRows = selected.slice(0, limit)
+  const entries: GateAuditPage["entries"] = pageRows.map((row) => {
+    const actor = auditActor(String(row["actor"]))
+    const approved = Number(row["approved"]) === 1
+    const undo = row["undo"]
+    if (undo !== "available" && undo !== "done" && undo !== "none") {
+      throw new Error("stored undo state is not recognized")
+    }
+    return {
+      seq: Number(row["seq"]),
+      ts: String(row["ts"]),
+      actor,
+      displayActor: gateAuditDisplayActor(actor, approved),
+      action: String(row["action"]),
+      target: String(row["target"]),
+      detailHash: String(row["detail_hash"]),
+      undo,
+    }
+  })
+  const lastEntry = entries.at(-1)
+  const body: GateAuditPage = {
+    entries,
+    ...(hasMore && lastEntry !== undefined
+      ? { nextBefore: lastEntry.seq }
+      : {}),
+  }
+  return { status: 200, body }
+}
+
+function connectorSettings(state: PhoneState): Reply {
+  const health = new Map(
+    getConnectorHealth(state.db).map((connector) => [connector.name, connector])
+  )
+  const connectors: GateConnectorSettings["connectors"] = state.db
+    .prepare("SELECT name, pinned_at FROM connectors ORDER BY name")
+    .all()
+    .map((row) => {
+      const name = String(row["name"])
+      const stored = getConnectorState(state.db, name)
+      const current = health.get(name)
+      if (stored === undefined || current === undefined) {
+        throw new Error("stored connector state is incomplete")
+      }
+      return {
+        name,
+        enabled: stored.enabled,
+        pinnedAt: String(row["pinned_at"]),
+        scopes: [...stored.manifest.auth.scopes],
+        health: current.health,
+        consecutiveFailures: current.consecutiveFailures,
+        ...(current.lastError === undefined
+          ? {}
+          : { lastError: current.lastError }),
+        ...(current.nextAttemptAt === undefined
+          ? {}
+          : { nextAttemptAt: current.nextAttemptAt }),
+      }
+    })
+  const body: GateConnectorSettings = { connectors }
+  return { status: 200, body }
+}
+
+function passkeyList(state: PhoneState): Reply {
+  const body: GatePasskeyList = {
+    passkeys: state.db
+      .prepare(
+        "SELECT credential_id, created_at, revoked_at FROM credentials ORDER BY created_at, credential_id"
+      )
+      .all()
+      .map((row) => ({
+        fingerprint: createHash("sha256")
+          .update(String(row["credential_id"]), "utf8")
+          .digest("hex"),
+        createdAt: String(row["created_at"]),
+        revokedAt:
+          typeof row["revoked_at"] === "string" ? row["revoked_at"] : null,
+      })),
+  }
+  return { status: 200, body }
+}
+
+function permissionList(state: PhoneState): Reply {
+  const tiers: GatePermissionList["tiers"] = INTENT_KINDS.map((kind) => {
+    const decision = kindTier(state.db, state.policy, kind)
+    return decision.tier === "forbidden"
+      ? { kind, tier: decision.tier, reason: decision.reason }
+      : { kind, tier: decision.tier }
+  })
+  const body: GatePermissionList = {
+    tiers,
+    forbiddenKinds: tiers
+      .filter((entry) => entry.tier === "forbidden")
+      .map((entry) => entry.kind),
+  }
+  return { status: 200, body }
+}
+
 async function decision(
   state: PhoneState,
   request: GateRequest,
@@ -388,6 +572,16 @@ function route(
       const list: GatePendingIntentList = { intents: pendingIntents(state.db) }
       return { status: 200, body: list }
     }
+    case "/audit":
+      return auditPage(state, request)
+    case "/audit/chain":
+      return { status: 200, body: verifyChain(state.db) }
+    case "/connector-settings":
+      return connectorSettings(state)
+    case "/passkeys":
+      return passkeyList(state)
+    case "/permissions":
+      return permissionList(state)
     case "/approvals/:id/history":
       return history(state, matched.id)
     case "/approvals/:id/nonce":

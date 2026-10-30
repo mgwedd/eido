@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateConnectorSettings",
+  "description": "Authenticated phone view of each pinned connector's live health, declared auth scopes and pin timestamp. It contains no credentials.",
+  "type": "object",
+  "properties": {
+    "connectors": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "title": "GateConnectorSetting",
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "enabled": { "type": "boolean" },
+          "pinnedAt": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 20,
+            "maxLength": 40
+          },
+          "scopes": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+          },
+          "health": {
+            "type": "string",
+            "enum": ["healthy", "degraded", "open"]
+          },
+          "consecutiveFailures": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          },
+          "lastError": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "nextAttemptAt": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 20,
+            "maxLength": 40
+          }
+        },
+        "required": [
+          "name",
+          "enabled",
+          "pinnedAt",
+          "scopes",
+          "health",
+          "consecutiveFailures"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["connectors"],
+  "additionalProperties": false
+}

@@ -397,8 +397,8 @@ describe("runGate", () => {
         }
       )
       expect(misdirected.status).toBe(421)
-      const admin = await send(phone.port, "GET", "/api/gate/audit/chain", json)
-      expect(admin.status).toBe(404)
+      const audit = await send(phone.port, "GET", "/api/gate/audit/chain", json)
+      expect(audit.status).toBe(401)
       const gated = await send(phone.port, "GET", "/api/gate/approvals", json)
       expect(gated.status).toBe(401)
 

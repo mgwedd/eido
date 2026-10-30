@@ -25,6 +25,7 @@ import {
   validateGateProposeResult,
   validateGateRejectReason,
   validateGateSession,
+  gateAuditDisplayActor,
 } from "./index"
 import type { ValidationResult } from "./index"
 
@@ -181,7 +182,7 @@ describe("intent history", () => {
         })
       )
     ).toEqual([
-      '$.entries[0].actor: must be one of "data-plane", "policy", "approver", "executor", "system"',
+      '$.entries[0].actor: must be one of "data-plane", "policy", "approver", "executor", "system", "owner", "gate"',
     ])
   })
 })
@@ -442,6 +443,8 @@ describe("audit page", () => {
     seq: 7,
     ts: AT,
     actor: "executor",
+    displayActor: "auto",
+    undo: "none",
     action: "intent.transition",
     target: "i-1",
     detailHash: HASH,
@@ -505,6 +508,17 @@ describe("audit page", () => {
     expect(errorsOf(validateGateAuditPageRequest({ limit: 51 }))).toEqual([
       "$.limit: must be at most 50",
     ])
+  })
+})
+
+describe("audit display actors", () => {
+  test("covers stored actor types and distinguishes signed executor actions", () => {
+    expect(gateAuditDisplayActor("approver")).toBe("you")
+    expect(gateAuditDisplayActor("policy")).toBe("auto")
+    expect(gateAuditDisplayActor("data-plane")).toBe("auto")
+    expect(gateAuditDisplayActor("executor")).toBe("auto")
+    expect(gateAuditDisplayActor("executor", true)).toBe("you")
+    expect(gateAuditDisplayActor("system")).toBe("gate")
   })
 })
 

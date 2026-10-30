@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePasskeyList",
+  "description": "Passkey metadata returned by the authenticated phone read API. Credential ids are represented by SHA-256 fingerprints; public keys and sign counters stay inside the gate.",
+  "type": "object",
+  "properties": {
+    "passkeys": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "title": "GatePasskey",
+        "type": "object",
+        "properties": {
+          "fingerprint": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 20,
+            "maxLength": 40
+          },
+          "revokedAt": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "minLength": 20,
+                "maxLength": 40
+              },
+              { "type": "null" }
+            ]
+          }
+        },
+        "required": ["fingerprint", "createdAt", "revokedAt"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["passkeys"],
+  "additionalProperties": false
+}

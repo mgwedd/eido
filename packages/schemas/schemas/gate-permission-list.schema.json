@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePermissionList",
+  "description": "Effective kind-level permission tiers from the gate's shipped defaults, signed overrides and active pinned connectors. Payload-specific guards can still raise a tier or forbid an individual intent.",
+  "type": "object",
+  "properties": {
+    "tiers": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "title": "GatePermissionTier",
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "tier": {
+            "type": "string",
+            "enum": ["auto", "approval", "forbidden"]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "unknown_kind",
+              "no_operation",
+              "ambiguous_operation",
+              "manifest_forbidden",
+              "root_not_allowed",
+              "connector_disabled"
+            ]
+          }
+        },
+        "required": ["kind", "tier"],
+        "additionalProperties": false
+      }
+    },
+    "forbiddenKinds": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+    }
+  },
+  "required": ["tiers", "forbiddenKinds"],
+  "additionalProperties": false
+}

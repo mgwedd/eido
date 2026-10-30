@@ -235,8 +235,8 @@ export interface GateApiError {
   message: string
 }
 
-/** Actor recorded on an audit_log row and on intent history entries (#9, #11). Display labels such as you, auto and gate are derived from this by the web app. */
-export type GateAuditActor = "data-plane" | "policy" | "approver" | "executor" | "system"
+/** Actor recorded on an audit_log row and on intent history entries (#9, #11). Display labels are derived with gateAuditDisplayActor. */
+export type GateAuditActor = "data-plane" | "policy" | "approver" | "executor" | "system" | "owner" | "gate"
 
 /** Result of the gate's verifyChain() (#9). When the gate cannot run the check, the endpoint returns GateApiError instead. */
 export type GateAuditChainStatus = {
@@ -260,6 +260,8 @@ export interface GateAuditPage {
     seq: number
     ts: string
     actor: GateAuditActor
+    displayActor: "you" | "auto" | "gate"
+    undo: "available" | "done" | "none"
     action: string
     target: string
     detailHash: string
@@ -284,6 +286,20 @@ export interface GateAuditRecordResult {
 export interface GateConnectorHealth {
   connectors: Array<{
     name: string
+    health: "healthy" | "degraded" | "open"
+    consecutiveFailures: number
+    lastError?: string
+    nextAttemptAt?: string
+  }>
+}
+
+/** Authenticated phone view of each pinned connector's live health, declared auth scopes and pin timestamp. It contains no credentials. */
+export interface GateConnectorSettings {
+  connectors: Array<{
+    name: string
+    enabled: boolean
+    pinnedAt: string
+    scopes: Array<string>
     health: "healthy" | "degraded" | "open"
     consecutiveFailures: number
     lastError?: string
@@ -399,6 +415,15 @@ export interface GateOwnerConfiguration {
   allowedRoots: Array<string>
 }
 
+/** Passkey metadata returned by the authenticated phone read API. Credential ids are represented by SHA-256 fingerprints; public keys and sign counters stay inside the gate. */
+export interface GatePasskeyList {
+  passkeys: Array<{
+    fingerprint: string
+    createdAt: string
+    revokedAt: string | null
+  }>
+}
+
 /** Response of the pending-approvals list: intents in state pending, without payload bodies (#11 listPendingIntents, plus origin, which #33 needs). */
 export interface GatePendingIntentList {
   intents: Array<{
@@ -411,6 +436,16 @@ export interface GatePendingIntentList {
     editedFrom?: string
     rationale?: string
   }>
+}
+
+/** Effective kind-level permission tiers from the gate's shipped defaults, signed overrides and active pinned connectors. Payload-specific guards can still raise a tier or forbid an individual intent. */
+export interface GatePermissionList {
+  tiers: Array<{
+    kind: string
+    tier: "auto" | "approval" | "forbidden"
+    reason?: "unknown_kind" | "no_operation" | "ambiguous_operation" | "manifest_forbidden" | "root_not_allowed" | "connector_disabled"
+  }>
+  forbiddenKinds: Array<string>
 }
 
 /** Response of POST /approvals/:id/nonce on the phone listener (#15 issueNonce, consumed by #32 prepareApproval), and of POST /approvals/:id/edit for the new intent. Each call issues a new nonce and invalidates the previous one. The response has no challenge: the device builds it from payloadHash, intentId and nonce as decided in #85 (vectors/approval-challenge-vectors.json), so a compromised core cannot hand the device a challenge for a different payload. */
