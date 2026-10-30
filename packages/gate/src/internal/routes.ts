@@ -31,8 +31,9 @@ import {
 import type { Policy } from "./policy"
 
 // The gate's routes. The data-plane listener serves the intent API (propose, and three
-// read-only views without payload bodies), connector health, and POST /audit, which appends one hash-only
-// audit.profile.* row for a profile change in core (#181). The control listener is a separate socket that the
+// read-only views without payload bodies), connector health, and POST /audit, which appends one
+// hash-only audit.profile.* row for a profile change in core (#181) or audit.ledger.* row for an
+// obligation state change (#104). The control listener is a separate socket that the
 // data plane is never given; it serves the same reads plus the audit chain check. The phone
 // listener (#85) and the Mac-local admin listener (#78) are further handlers over the same
 // server wrapper, each on its own listener.
@@ -142,13 +143,17 @@ async function proposeRoute(
 const HEX64 = /^[0-9a-f]{64}$/
 
 // Which sides of a change each action has: create and assign add a record (assign may replace
-// one), delete and unassign remove one, update replaces one.
+// one), delete and unassign remove one, update replaces one. An obligation state change (#104)
+// replaces the obligation's state record.
 const SIDES = {
   "entity.create": { before: "absent", after: "present" },
   "entity.update": { before: "present", after: "present" },
   "entity.delete": { before: "present", after: "absent" },
   "account.assign": { before: "either", after: "present" },
   "account.unassign": { before: "present", after: "absent" },
+  "obligation.done": { before: "present", after: "present" },
+  "obligation.resolve": { before: "present", after: "present" },
+  "obligation.reopen": { before: "present", after: "present" },
   defaultEntity: { before: "either", after: "either" },
 } as const satisfies Record<
   GateAuditRecordRequest["action"],
@@ -189,6 +194,11 @@ function auditRequestRefusal(db: DatabaseSync, reason: string): void {
   })
 }
 
+// Obligation state changes are ledger rows; entity and account changes are profile rows.
+function auditGroup(action: GateAuditRecordRequest["action"]): string {
+  return action.startsWith("obligation.") ? "audit.ledger" : "audit.profile"
+}
+
 // Appends the change as one row: the action names it, the target is the subject's hash and the
 // detail hash covers the whole entry. Nothing in clear text reaches the log.
 async function auditRoute(
@@ -222,7 +232,7 @@ async function auditRoute(
   const entry = checked.value
   const { seq } = append(gate.db, {
     actor: "data-plane",
-    action: `audit.profile.${entry.action}`,
+    action: `${auditGroup(entry.action)}.${entry.action}`,
     target: entry.subjectHash,
     detailHash: payloadHash({
       action: entry.action,

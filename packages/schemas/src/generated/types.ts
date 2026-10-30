@@ -208,10 +208,10 @@ export interface CoreApiEntity {
   createdAt: string
 }
 
-/** Body of a non-2xx response from core's HTTP API. `fields` carries one entry per invalid field for code invalid; `referencedBy` names the tables that reference an entity for code entity_in_use. */
+/** Body of a non-2xx response from core's HTTP API. `fields` carries one entry per invalid field for code invalid; `referencedBy` names the tables that reference an entity for code entity_in_use. invalid_transition: the obligation is not in a state the requested change applies to. */
 export interface CoreApiError {
   error: {
-    code: "invalid" | "duplicate_name" | "duplicate_tag" | "not_found" | "entity_in_use" | "bad_request" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "misdirected_request" | "busy" | "gate_unavailable" | "internal"
+    code: "invalid" | "duplicate_name" | "duplicate_tag" | "not_found" | "entity_in_use" | "invalid_transition" | "bad_request" | "unsupported_media_type" | "payload_too_large" | "method_not_allowed" | "misdirected_request" | "busy" | "gate_unavailable" | "internal"
     message: string
     fields?: Array<{
       field: string
@@ -219,6 +219,12 @@ export interface CoreApiError {
     }>
     referencedBy?: Array<string>
   }
+}
+
+/** Response of core's local obligation state changes (#104): POST /obligations/:id/done and /resolve move an open obligation to done; POST /obligations/:id/reopen moves a done one back to open. None is an external write. */
+export interface CoreApiObligationState {
+  id: number
+  status: "open" | "done" | "dismissed"
 }
 
 /** Response of GET /profile. The profile is absent until the first write sets displayName and timezone. */
@@ -339,9 +345,9 @@ export interface GateAuditPage {
   nextBefore?: number
 }
 
-/** Body of POST /audit on the data-plane listener (#181): one profile change for the gate to append to its audit log as an audit.profile.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector or account reference is sent in clear. The gate also checks that beforeHash and afterHash are null or set as the action requires. */
+/** Body of POST /audit on the data-plane listener (#181): one profile change (entity.*, account.*), appended to the gate's audit log as an audit.profile.* row, or one local obligation state change (obligation.*, #104), appended as an audit.ledger.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector, account reference or obligation text is sent in clear. The gate also checks that beforeHash and afterHash are null or set as the action requires. */
 export interface GateAuditRecordRequest {
-  action: "entity.create" | "entity.update" | "entity.delete" | "account.assign" | "account.unassign" | "defaultEntity"
+  action: "entity.create" | "entity.update" | "entity.delete" | "account.assign" | "account.unassign" | "obligation.done" | "obligation.resolve" | "obligation.reopen" | "defaultEntity"
   subjectHash: string
   beforeHash: string | null
   afterHash: string | null

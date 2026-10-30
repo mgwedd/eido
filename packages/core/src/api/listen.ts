@@ -1,6 +1,7 @@
 import type { AddressInfo } from "node:net"
 import type { GateConnectorHealth } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
+import type { ObligationStateStore } from "../ledger/obligation-state"
 import type { ProfileStore } from "../profile/store"
 import type { DocumentsDeps } from "./documents-route"
 import { createApiHandler } from "./handler"
@@ -60,6 +61,7 @@ export type CoreApiOptions = {
   /** Gate-owned read-only connector health projection for the Today page. */
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
   ask?: (question: string) => Promise<AskResult>
+  obligations?: ObligationStateStore
   /** The data DB behind `/documents`. */
   documents?: DocumentsDeps
   host: LoopbackHost
@@ -87,6 +89,7 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
       profile: options.profile,
       connectorHealth: options.connectorHealth,
       ask: options.ask,
+      obligations: options.obligations,
       documents: options.documents,
       allowedHosts,
       basePath: options.basePath,

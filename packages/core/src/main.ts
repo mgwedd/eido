@@ -21,6 +21,8 @@ import {
   createInferenceQueue,
 } from "./inference/index"
 import { LedgerError } from "./ledger/errors"
+import { createObligationStateStore } from "./ledger/obligation-state"
+import type { ObligationStateStore } from "./ledger/obligation-state"
 import { createConversationStore } from "./conversation/store"
 import type { ConversationStore } from "./conversation/store"
 import { openConversationIndex } from "./conversation/search-index"
@@ -341,6 +343,8 @@ export type DataPlane = {
   gate: IntentClient
   /** The owner profile and entities; each entity or assignment change is audited by the gate. */
   profile: ProfileStore
+  /** Local obligation state changes (#104); each is audited by the gate. */
+  obligations: ObligationStateStore
   log: (event: string, fields?: Readonly<Record<string, string>>) => void
   /** Waits for the profile store's queued calls to settle, then closes eido-data.db. */
   close: () => Promise<void>
@@ -531,6 +535,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   const gate = createIntentClient({ socketPath: config.gateSocket })
   const audit = createAuditClient({ socketPath: config.gateSocket })
   const profile = createProfileStore(db, { audit: audit.record })
+  const obligations = createObligationStateStore(db, { audit: audit.record })
   let digestService: DigestService | undefined
   let digestServicePromise: Promise<DigestService> | undefined
   const getDigestService = async (): Promise<DigestService> => {
@@ -638,6 +643,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     conversationIndex,
     gate,
     profile,
+    obligations,
     log,
     stopGmailSync,
     getInferenceQueue: model.getQueue,
@@ -651,6 +657,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       await replyScheduling
       await digestService?.whenIdle()
       await profile.drain()
+      await obligations.drain()
       conversationIndex.close()
       db.close()
       log("stopped")
@@ -756,6 +763,7 @@ export async function serveDataPlane(
   const stopDigestTimer = startConversationDigestTimer(sweep)
   const api = await listenCoreApi({
     profile: plane.profile,
+    obligations: plane.obligations,
     connectorHealth: plane.gate.getConnectorHealth,
     ...(ask === undefined ? {} : { ask }),
     documents: { db: plane.db },
