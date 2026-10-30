@@ -20,7 +20,98 @@ CREATE TABLE IF NOT EXISTS digests (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS digests_subject ON digests(kind, subject_ref, created_at);
+CREATE TABLE IF NOT EXISTS digest_sections (
+  key TEXT PRIMARY KEY,
+  source_fingerprint TEXT NOT NULL,
+  section_identity TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  lines_json TEXT NOT NULL,
+  dropped INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS digest_sections_source ON digest_sections(source_fingerprint);
 `
+
+export interface StoredSection {
+  key: string
+  sourceFingerprint: string
+  sectionIdentity: string
+  promptVersion: string
+  modelId: string
+  lines: { text: string; refs: string[] }[]
+  dropped: number
+  createdAt: string
+}
+
+export function readSection(
+  db: DatabaseSync,
+  key: string
+): StoredSection | undefined {
+  const row = db.prepare("SELECT * FROM digest_sections WHERE key = ?").get(key)
+  if (row === undefined || typeof row["lines_json"] !== "string")
+    return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(row["lines_json"])
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(parsed)) return undefined
+  const lines: { text: string; refs: string[] }[] = []
+  for (const entry of parsed) {
+    if (
+      !isRecord(entry) ||
+      typeof entry["text"] !== "string" ||
+      !Array.isArray(entry["refs"]) ||
+      entry["refs"].length === 0 ||
+      !entry["refs"].every((ref: unknown) => typeof ref === "string")
+    )
+      return undefined
+    lines.push({ text: entry["text"], refs: entry["refs"] })
+  }
+  if (
+    typeof row["dropped"] !== "number" ||
+    !Number.isInteger(row["dropped"]) ||
+    row["dropped"] < 0
+  )
+    return undefined
+  return {
+    key,
+    sourceFingerprint: String(row["source_fingerprint"]),
+    sectionIdentity: String(row["section_identity"]),
+    promptVersion: String(row["prompt_version"]),
+    modelId: String(row["model_id"]),
+    lines,
+    dropped: row["dropped"],
+    createdAt: String(row["created_at"]),
+  }
+}
+
+export function writeSection(db: DatabaseSync, row: StoredSection): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO digest_sections
+    (key, source_fingerprint, section_identity, prompt_version, model_id, lines_json, dropped, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    row.key,
+    row.sourceFingerprint,
+    row.sectionIdentity,
+    row.promptVersion,
+    row.modelId,
+    JSON.stringify(row.lines),
+    row.dropped,
+    row.createdAt
+  )
+}
+
+/** Deletes old partial work only when explicitly called; returns the number of rows removed. */
+export function pruneSections(db: DatabaseSync, before: string): number {
+  return Number(
+    db.prepare("DELETE FROM digest_sections WHERE created_at < ?").run(before)
+      .changes
+  )
+}
 
 export function applyDigestMigration(db: DatabaseSync): void {
   db.exec(DIGEST_MIGRATION_SQL)

@@ -81,6 +81,11 @@ const LINES_SCHEMA = {
 
 const MAX_MERGE_ROUNDS = 8
 
+export interface SectionResume {
+  load(identity: string): { lines: RefLine[]; dropped: number } | undefined
+  save(identity: string, result: { lines: RefLine[]; dropped: number }): void
+}
+
 interface RefLine {
   text: string
   refs: string[]
@@ -162,7 +167,8 @@ function toCite(
 export async function buildDigestLines(
   queue: InferenceQueue,
   subject: DigestSubject,
-  config: DigestConfig
+  config: DigestConfig,
+  resume?: SectionResume
 ): Promise<{ lines: DigestLine[]; coverage: DigestCoverage }> {
   const validRefs = validRefsOf(subject)
   const plan = planSections(subject, config.sectionTokens)
@@ -171,7 +177,7 @@ export async function buildDigestLines(
   const summarize = async (
     system: string,
     inputs: PromptPart[][]
-  ): Promise<RefLine[][]> => {
+  ): Promise<{ lines: RefLine[]; dropped: number }[]> => {
     const done = await queue.runBatched(
       inputs,
       {
@@ -193,13 +199,25 @@ export async function buildDigestLines(
     if (done.oversize.length > 0) {
       throw new DigestBuildError("a model input exceeds the section budget")
     }
-    return done.batches.map((b) => {
-      dropped += b.output.dropped
-      return b.output.lines
-    })
+    return done.batches.map((b) => b.output)
   }
 
-  let lines = (await summarize(SECTION_SYSTEM, plan.sections)).flat()
+  let lines: RefLine[] = []
+  for (const [index, section] of plan.sections.entries()) {
+    const identity = JSON.stringify([index, section])
+    const cached = resume?.load(identity)
+    if (cached !== undefined) {
+      dropped += cached.dropped
+      lines.push(...cached.lines)
+      continue
+    }
+    const [result] = await summarize(SECTION_SYSTEM, [section])
+    if (result === undefined)
+      throw new DigestBuildError("a section produced no result")
+    dropped += result.dropped
+    resume?.save(identity, result)
+    lines.push(...result.lines)
+  }
 
   if (plan.sections.length > 1) {
     for (let round = 0; ; round += 1) {
@@ -223,7 +241,9 @@ export async function buildDigestLines(
         group.push(rendered)
       }
       if (group.length > 0) groups.push(mergeContent(group))
-      lines = (await summarize(MERGE_SYSTEM, groups)).flat()
+      const merged = await summarize(MERGE_SYSTEM, groups)
+      dropped += merged.reduce((total, result) => total + result.dropped, 0)
+      lines = merged.flatMap((result) => result.lines)
       if (groups.length <= 1) break
     }
   }
