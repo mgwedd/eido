@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { describe, expect, it } from "vitest"
 import { estimateTokens } from "../inference/index"
-import { readDigest } from "./cache"
+import { pruneSections, readDigest } from "./cache"
 import {
   digestKey,
   fingerprintDocument,
@@ -24,6 +24,125 @@ function isDigest(value: Digest | { status: string }): value is Digest {
 }
 
 describe("cache", () => {
+  it("resumes after a section failure and invalidates partial work when the prompt changes", async () => {
+    let sectionCalls = 0
+    let interrupted = false
+    const dbHarness = harness(
+      fakeModel({
+        gate: (call) => {
+          if (call.kind === "section" && ++sectionCalls === 2 && !interrupted) {
+            interrupted = true
+            throw new Error("simulated process interruption")
+          }
+          return Promise.resolve()
+        },
+      }),
+      { config: { sectionTokens: 100 } }
+    )
+    const thread = syntheticThread(6)
+    const baselineModel = fakeModel()
+    const baseline = harness(baselineModel, { config: { sectionTokens: 100 } })
+    baseline.service.scheduleDigest(thread)
+    await baseline.service.whenIdle()
+    const plannedSections = baselineModel.calls.filter(
+      (call) => call.kind === "section"
+    ).length
+    dbHarness.service.scheduleDigest(thread)
+    await dbHarness.service.whenIdle()
+    expect(dbHarness.service.getDigest(thread)).toEqual({ status: "absent" })
+
+    let boundaryInterrupted = false
+    const changedBoundaryModel = fakeModel({
+      gate: (call) => {
+        if (call.kind === "section" && !boundaryInterrupted) {
+          boundaryInterrupted = true
+          throw new Error("simulated boundary restart")
+        }
+        return Promise.resolve()
+      },
+    })
+    const changedBoundary = harness(changedBoundaryModel, {
+      db: dbHarness.db,
+      config: { sectionTokens: 4000 },
+    })
+    changedBoundary.service.scheduleDigest(thread)
+    await changedBoundary.service.whenIdle()
+    expect(
+      changedBoundaryModel.calls.filter((call) => call.kind === "section")
+    ).toHaveLength(1)
+    expect(changedBoundary.service.getDigest(thread)).toEqual({
+      status: "absent",
+    })
+
+    const resumedModel = fakeModel()
+    const resumed = harness(resumedModel, {
+      db: dbHarness.db,
+      config: { sectionTokens: 100 },
+    })
+    resumed.service.scheduleDigest(thread)
+    await resumed.service.whenIdle()
+    expect(
+      resumedModel.calls.filter((call) => call.kind === "section")
+    ).toHaveLength(plannedSections - 1)
+    expect(isDigest(resumed.service.getDigest(thread))).toBe(true)
+
+    const completedBoundaryModel = fakeModel()
+    const completedBoundary = harness(completedBoundaryModel, {
+      db: dbHarness.db,
+      config: { sectionTokens: 4000 },
+    })
+    expect(completedBoundary.service.getDigest(thread)).toEqual({
+      status: "absent",
+    })
+    completedBoundary.service.scheduleDigest(thread)
+    await completedBoundary.service.whenIdle()
+    expect(
+      completedBoundaryModel.calls.filter((call) => call.kind === "section")
+    ).toHaveLength(1)
+    expect(isDigest(completedBoundary.service.getDigest(thread))).toBe(true)
+
+    const changedPromptModel = fakeModel()
+    const changedPrompt = harness(changedPromptModel, {
+      db: dbHarness.db,
+      config: { sectionTokens: 100 },
+      promptVersion: "digest-next",
+    })
+    changedPrompt.service.scheduleDigest(thread)
+    await changedPrompt.service.whenIdle()
+    expect(
+      changedPromptModel.calls.filter((call) => call.kind === "section")
+    ).toHaveLength(plannedSections)
+
+    const changedSource = syntheticThread(6, (i) => `Changed message ${i}.`)
+    const changedSourceModel = fakeModel()
+    const sourceService = harness(changedSourceModel, {
+      db: dbHarness.db,
+      config: { sectionTokens: 100 },
+    })
+    sourceService.service.scheduleDigest(changedSource)
+    await sourceService.service.whenIdle()
+    expect(
+      changedSourceModel.calls.filter((call) => call.kind === "section")
+    ).toHaveLength(plannedSections)
+
+    const changedModel = fakeModel()
+    const modelService = harness(changedModel, {
+      db: dbHarness.db,
+      config: { sectionTokens: 100 },
+      modelId: "other-test-model",
+    })
+    modelService.service.scheduleDigest(thread)
+    await modelService.service.whenIdle()
+    expect(
+      changedModel.calls.filter((call) => call.kind === "section")
+    ).toHaveLength(plannedSections)
+
+    expect(
+      pruneSections(dbHarness.db, "9999-01-01T00:00:00.000Z")
+    ).toBeGreaterThan(0)
+    expect(pruneSections(dbHarness.db, "9999-01-01T00:00:00.000Z")).toBe(0)
+  })
+
   it("a second build for the same content makes zero model calls", async () => {
     const model = fakeModel()
     const { service } = harness(model)
@@ -41,7 +160,7 @@ describe("cache", () => {
     expect(isDigest(hit) && hit.lines[0]?.text).toBe("covers m1 to m3")
   })
 
-  it("the key is the documented hash of prompt version, model id and raw thread fingerprint", () => {
+  it("the key also isolates the configured section boundary", () => {
     const { service } = harness(fakeModel(), { promptVersion: "pv" })
     const thread = syntheticThread(2)
     const expected = digestKey(
@@ -58,7 +177,7 @@ describe("cache", () => {
         )}`
       )
     )
-    expect(service.keyFor(thread)).toBe(expected)
+    expect(service.keyFor(thread)).toBe(sha(`${expected}\0sections:2000`))
   })
 
   it("a different prompt version or model id is a miss that schedules a rebuild", async () => {
@@ -152,7 +271,9 @@ describe("cache", () => {
       pages: [{ page: 1, text: "x" }],
     }
     expect(service.keyFor(doc)).toBe(
-      digestKey("pv", "test-model", fingerprintDocument(sha("doc")))
+      sha(
+        `${digestKey("pv", "test-model", fingerprintDocument(sha("doc")))}\0sections:2000`
+      )
     )
     expect(fingerprintThread([])).not.toBe(sha("doc"))
   })
@@ -242,6 +363,32 @@ describe("getDigest", () => {
     service.scheduleDigest(thread)
     await service.whenIdle()
     expect(model.calls.length).toBe(1)
+  })
+
+  it("shares pending work across foreground and background service instances", async () => {
+    let release: () => void = () => undefined
+    const model = fakeModel({
+      gate: () => new Promise<void>((resolve) => (release = resolve)),
+    })
+    const first = harness(model)
+    const thread = syntheticThread(3)
+    first.service.scheduleDigest(thread)
+    await Promise.resolve()
+    const { createDigestService } = await import("./service")
+    const second = createDigestService({
+      db: first.db,
+      queue: first.queue,
+      modelId: "test-model",
+    })
+    second.scheduleDigest(thread)
+    expect(second.getDigest(thread)).toEqual({ status: "pending" })
+    release()
+    await first.service.whenIdle()
+    await second.whenIdle()
+    expect(model.calls.filter((call) => call.kind === "section")).toHaveLength(
+      1
+    )
+    expect(isDigest(second.getDigest(thread))).toBe(true)
   })
 })
 

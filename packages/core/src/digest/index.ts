@@ -1,5 +1,9 @@
 export { DIGEST_PROMPT_VERSION } from "./build"
-export { DIGEST_MIGRATION_SQL, applyDigestMigration } from "./cache"
+export {
+  DIGEST_MIGRATION_SQL,
+  applyDigestMigration,
+  pruneSections,
+} from "./cache"
 export {
   deriveDigestFingerprint,
   digestKey,
