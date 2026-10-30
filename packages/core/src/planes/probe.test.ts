@@ -19,6 +19,8 @@ function client(overrides: Partial<IntentClient> = {}): IntentClient {
     Promise.reject(new GateUnavailableError("the gate is not reachable"))
   return {
     propose: unavailable,
+    restoreTrash: () =>
+      Promise.reject(new GateUnavailableError("the gate is not reachable")),
     status: unavailable,
     history: unavailable,
     listPending: unavailable,
@@ -40,7 +42,7 @@ describe("runProbe", () => {
         gateSocket: "/s/gate.sock",
         api: {
           host: "127.0.0.1",
-          port: 8787,
+          port: 8789,
           basePath: "",
           allowedHosts: [],
           conversationDigestIdleTtlMinutes: 60,

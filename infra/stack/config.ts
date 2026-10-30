@@ -16,7 +16,7 @@ export const DEFAULTS = {
   /** The HTTPS port `tailscale serve` listens on for Eido (ADR 0004). */
   edgePort: 8443,
   webPort: 3000,
-  /** Not 8787: another app on the Mac uses it (#372). */
+  /** Same as core's default; 8787 belongs to another app on the Mac (#372). */
   corePort: 8789,
   gatePort: 8788,
 } as const

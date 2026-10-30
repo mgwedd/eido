@@ -8,7 +8,12 @@ import {
 import { InferenceError, UnsupportedModelServerError } from "./errors"
 import type { RequiredServerFeature } from "./errors"
 import { newBoundary } from "./fence"
-import { buildCompletionBody, buildTemplateBody, promptText } from "./request"
+import {
+  buildCompletionBody,
+  buildTemplateBody,
+  canonicalize,
+  promptText,
+} from "./request"
 import {
   applyEvent,
   finishStream,
@@ -382,6 +387,7 @@ export function createModelClient(
   const tripwireMin =
     config.tripwireMinPromptTokens ?? DEFAULT_TRIPWIRE_MIN_PROMPT_TOKENS
   const doFetch = deps.fetch ?? fetch
+  const chatTemplateKwargs = config.chatTemplateKwargs
 
   return {
     async complete(
@@ -400,11 +406,16 @@ export function createModelClient(
 
       const nonce = newBoundary()
       const spans: string[] = []
-      const templateBody = buildTemplateBody(req, boundary, (span) => {
-        const mark = placeholder(nonce, spans.length)
-        spans.push(span)
-        return mark
-      })
+      const templateBody = buildTemplateBody(
+        req,
+        boundary,
+        (span) => {
+          const mark = placeholder(nonce, spans.length)
+          spans.push(span)
+          return mark
+        },
+        chatTemplateKwargs
+      )
       const rendered = await applyTemplate(
         doFetch,
         baseUrl,
@@ -480,6 +491,9 @@ export async function connectModelClient(
         { role: "system", content: PROBE_TEXT },
         { role: "user", content: PROBE_TEXT },
       ],
+      ...(config.chatTemplateKwargs === undefined
+        ? {}
+        : { chat_template_kwargs: canonicalize(config.chatTemplateKwargs) }),
     }),
     deps.signal
   )

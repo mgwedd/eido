@@ -84,6 +84,9 @@ const OPERATIONS: readonly Op[] = [
   write("reply", "email.reply", "irreversible", "approval", [messageSend]),
   write("forward", "email.forward", "irreversible", "approval", [messageSend]),
   write("trash", "email.trash", "reversible", "approval", [batchModify]),
+  write("restore_trash", "email.untrash", "reversible", "approval", [
+    batchModify,
+  ]),
 ]
 
 export function gmailManifest(config: GmailConfig): ConnectorManifest {

@@ -19,6 +19,12 @@ export interface ModelServerConfig {
   tripwireRatio?: number
   /** The tripwire only fires above this estimate. Default 500. */
   tripwireMinPromptTokens?: number
+  /**
+   * Sent as `chat_template_kwargs` with every `/apply-template` request, where llama-server merges
+   * it over its own `--chat-template-kwargs`. For example `{ "enable_thinking": false }` renders a
+   * hybrid-thinking template (Qwen 3) with its reasoning turned off. Default: none sent.
+   */
+  chatTemplateKwargs?: Readonly<Record<string, unknown>>
 }
 
 export interface ChatMessage {
