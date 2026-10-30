@@ -24,11 +24,19 @@ import { startStubModelServer } from "./inference/stub-server"
 import { openIndex } from "./index/schema"
 import { openDataDb } from "./ledger/db"
 import { createProfileStore } from "./profile/store"
+import { createGmailClient } from "./connectors/gmail/client"
+import {
+  createFakeGmail,
+  rfc822,
+} from "./connectors/gmail/fake-gmail.test-support"
+import { createParser } from "./parsers/index"
+import { textPdf } from "./parsers/fixtures.test-support"
 import {
   DATA_DB_FILE,
   DATA_PLANE_LOG_FILE,
   SCRUBBED_FLAG,
   coreApiConfig,
+  createGmailSyncRuntime,
   dataPlaneConfig,
   dataPlaneEnv,
   forwardTo,
@@ -40,6 +48,7 @@ import {
   startConversationDigestTimer,
   CONVERSATION_DIGEST_SWEEP_INTERVAL_MS,
 } from "./main"
+import type { DataPlaneConfig } from "./main"
 
 function field(value: unknown, name: string): unknown {
   return typeof value === "object" && value !== null && name in value
@@ -63,6 +72,7 @@ describe("the data plane's environment", () => {
     EIDO_GATE_SOCKET: "/d/gate.sock",
     EIDO_LLAMA_HOST: "127.0.0.1",
     EIDO_LLAMA_PORT: "",
+    EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801",
     GMAIL_REFRESH_TOKEN: "synthetic",
     __CF_USER_TEXT_ENCODING: "0x0:0:0",
     HOME: "/home/someone",
@@ -73,6 +83,7 @@ describe("the data plane's environment", () => {
       EIDO_DATA_DIR: "/d",
       EIDO_GATE_SOCKET: "/d/gate.sock",
       EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801",
     })
   })
 
@@ -146,6 +157,16 @@ describe("coreApiConfig", () => {
     expect(
       coreApiConfig({ EIDO_LLAMA_HOST: "::1", EIDO_LLAMA_PORT: "8080" })
     ).toMatchObject({ modelBaseUrl: "http://[::1]:8080" })
+  })
+
+  test("accepts only a loopback Gmail egress proxy URL", () => {
+    expect(
+      coreApiConfig({ EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801/" })
+        .gmailProxyUrl
+    ).toBe("http://127.0.0.1:7801")
+    expect(() =>
+      coreApiConfig({ EIDO_GMAIL_PROXY_URL: "https://proxy.example.com" })
+    ).toThrow("EIDO_GMAIL_PROXY_URL must be a loopback HTTP URL")
   })
 
   test("reads a positive conversation digest TTL, defaulting to 60 minutes", () => {
@@ -233,6 +254,94 @@ describe("runDataPlane", () => {
       },
       { event: "stopped" },
     ])
+  })
+})
+
+describe("Gmail sync runtime", () => {
+  it("fails data-plane startup clearly when Gmail has no parser data directory", () => {
+    const dbPath = join(dir, "must-not-open.db")
+    const config: DataPlaneConfig = {
+      dataDir: "",
+      dbPath,
+      logPath: join(dir, "data-plane.log"),
+      gateSocket: join(dir, "gate.sock"),
+      api: {
+        host: "127.0.0.1",
+        port: 8787,
+        basePath: "",
+        allowedHosts: [],
+        gmailProxyUrl: "http://127.0.0.1:7801",
+        conversationDigestIdleTtlMinutes: 60,
+      },
+    }
+    expect(() => runDataPlane(config, {})).toThrow(
+      "Gmail sync requires EIDO_DATA_DIR to configure its parser"
+    )
+    expect(existsSync(dbPath)).toBe(false)
+  })
+
+  it("passes its data-dir parser into Gmail sync and indexes PDF text", async () => {
+    const db = openDataDb(":memory:")
+    const profile = createProfileStore(db, {
+      audit: () => Promise.resolve(),
+    })
+    const entity = await profile.createEntity({
+      kind: "personal",
+      name: "Test Personal",
+      tag: "ME",
+    })
+    await profile.setDefaultEntityId(entity.id)
+    const gmail = createFakeGmail()
+    gmail.add({
+      id: "gm-runtime",
+      threadId: "th-runtime",
+      labelIds: ["INBOX"],
+      raw: rfc822({
+        messageId: "runtime@mail.example.invalid",
+        subject: "Attached report",
+        body: "See attached.",
+        attachment: {
+          filename: "report.pdf",
+          mime: "application/pdf",
+          content: textPdf([["Report body from the PDF"]]),
+        },
+      }),
+    })
+    const parser = createParser({ dataDir: join(dir, "parser-data") })
+    const sync = createGmailSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      profile,
+      client: createGmailClient(gmail.transport),
+      parser,
+      log: () => undefined,
+    })
+
+    await sync()
+    const attachment = db
+      .prepare(
+        "SELECT t.body FROM document_text t JOIN documents d ON d.sha256 = t.sha256 WHERE t.attachment_of = ? AND d.source_ref = ?"
+      )
+      .get("gm-runtime", "gm-runtime#0")
+    expect(attachment?.["body"]).toBe("Report body from the PDF")
+    db.close()
+  }, 60_000)
+
+  it("fails clearly when configured without a parser", () => {
+    const db = openDataDb(":memory:")
+    const profile = createProfileStore(db, {
+      audit: () => Promise.resolve(),
+    })
+    expect(() =>
+      createGmailSyncRuntime({
+        db,
+        gate: { getConnectorHealth: () => Promise.resolve([]) },
+        profile,
+        client: createGmailClient(createFakeGmail().transport),
+        log: () => undefined,
+      })
+    ).toThrow("Gmail sync requires a configured sandboxed document parser")
+    db.close()
   })
 })
 

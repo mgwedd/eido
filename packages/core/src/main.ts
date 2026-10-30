@@ -31,6 +31,18 @@ import { DEFAULT_DIGEST_IDLE_TTL_MINUTES } from "./conversation/digest"
 import { createProfileStore, readDefaultEntityId } from "./profile/store"
 import type { ProfileStore } from "./profile/store"
 import type { InferenceQueue } from "./inference/queue"
+import { createParser } from "./parsers/index"
+import type { Parser } from "./parsers/index"
+import {
+  createGmailClient,
+  createGmailEgressTransport,
+  GMAIL_DEFAULTS,
+  resolveGmailConfig,
+  syncGmailWithHealth,
+} from "./connectors/gmail/index"
+import type { GmailClient } from "./connectors/gmail/client"
+import type { GmailConfig } from "./connectors/gmail/config"
+import type { ConnectorHealthReader } from "./connectors/health-aware-sync"
 
 // The data-plane process (ADR 0003). It owns eido-data.db, serves core's API on loopback, and
 // reaches the gate only through the intent and audit clients on the gate's data-plane socket.
@@ -51,6 +63,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_CORE_PORT",
   "EIDO_CORE_BASE_PATH",
   "EIDO_CORE_ALLOWED_HOSTS",
+  "EIDO_GMAIL_PROXY_URL",
   "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
 ] as const
 
@@ -72,6 +85,7 @@ export const DEFAULT_CORE_HOST = "127.0.0.1"
 export const DEFAULT_CORE_PORT = 8787
 export const ASK_CONTEXT_BUDGET_TOKENS = 3000
 export const ASK_REPLY_TOKENS = 512
+export const GMAIL_SYNC_INTERVAL_MS = 5 * 60_000
 export const CONVERSATION_DIGEST_SWEEP_INTERVAL_MS = 60_000
 
 type Env = Readonly<Record<string, string | undefined>>
@@ -115,6 +129,8 @@ export type CoreApiConfig = {
   allowedHosts: string[]
   /** Present only when a local llama-server host and port are configured. */
   modelBaseUrl?: string
+  /** Gate egress proxy URL. Gmail sync is disabled when this is not configured. */
+  gmailProxyUrl?: string
   conversationDigestIdleTtlMinutes: number
 }
 
@@ -158,6 +174,17 @@ export function coreApiConfig(env: Env): CoreApiConfig {
           return loopbackBaseUrl(`http://${host}:${String(port)}`)
         })()
       : undefined
+  const gmailProxyUrl = env["EIDO_GMAIL_PROXY_URL"]
+  const configuredGmailProxyUrl =
+    gmailProxyUrl === undefined || gmailProxyUrl === ""
+      ? undefined
+      : (() => {
+          try {
+            return loopbackBaseUrl(gmailProxyUrl)
+          } catch {
+            throw new Error("EIDO_GMAIL_PROXY_URL must be a loopback HTTP URL")
+          }
+        })()
   return {
     host: loopbackHost(env["EIDO_CORE_HOST"] || DEFAULT_CORE_HOST),
     port: portOf(env["EIDO_CORE_PORT"] || String(DEFAULT_CORE_PORT)),
@@ -172,6 +199,9 @@ export function coreApiConfig(env: Env): CoreApiConfig {
       "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES"
     ),
     ...(modelBaseUrl === undefined ? {} : { modelBaseUrl }),
+    ...(configuredGmailProxyUrl === undefined
+      ? {}
+      : { gmailProxyUrl: configuredGmailProxyUrl }),
   }
 }
 
@@ -212,6 +242,63 @@ export type DataPlane = {
   log: (event: string, fields?: Readonly<Record<string, string>>) => void
   /** Waits for the profile store's queued calls to settle, then closes eido-data.db. */
   close: () => Promise<void>
+  stopGmailSync: () => void
+}
+
+type GmailSyncRuntime = {
+  db: DatabaseSync
+  gate: ConnectorHealthReader
+  profile: ProfileStore
+  client: GmailClient
+  parser?: Parser
+  config?: GmailConfig
+  log: DataPlane["log"]
+}
+
+/** A Gmail runtime must always have a sandboxed document parser. */
+export function createGmailSyncRuntime(
+  input: Omit<GmailSyncRuntime, "config"> & { config?: GmailConfig }
+): () => Promise<void> {
+  if (input.parser === undefined) {
+    throw new Error(
+      "Gmail sync requires a configured sandboxed document parser"
+    )
+  }
+  const config = resolveGmailConfig(input.config ?? GMAIL_DEFAULTS)
+  let running: Promise<void> | undefined
+  return async () => {
+    if (running !== undefined) return running
+    running = (async () => {
+      try {
+        const account = await input.client.getProfile()
+        if (account.emailAddress === undefined || account.emailAddress === "") {
+          throw new Error("Gmail profile did not provide an account address")
+        }
+        await syncGmailWithHealth(
+          input.gate,
+          input.db,
+          input.client,
+          config,
+          { accountRef: account.emailAddress, entities: input.profile },
+          { parser: input.parser }
+        )
+      } catch (error) {
+        input.log("gmail_sync_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        })
+      } finally {
+        running = undefined
+      }
+    })()
+    return running
+  }
+}
+
+function gmailParser(dataDir: string | undefined): Parser {
+  if (dataDir === undefined || dataDir === "") {
+    throw new Error("Gmail sync requires EIDO_DATA_DIR to configure its parser")
+  }
+  return createParser({ dataDir })
 }
 
 /**
@@ -250,6 +337,10 @@ export function openDataPlaneDb(
  * POST /audit, and logs the configuration and variable names.
  */
 export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
+  const parser =
+    config.api.gmailProxyUrl === undefined
+      ? undefined
+      : gmailParser(config.dataDir)
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
   const log: DataPlane["log"] = (event, fields = {}) => {
     appendFileSync(
@@ -274,6 +365,37 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   const gate = createIntentClient({ socketPath: config.gateSocket })
   const audit = createAuditClient({ socketPath: config.gateSocket })
   const profile = createProfileStore(db, { audit: audit.record })
+  let stopGmailSync: () => void = () => {}
+  let gmailSyncInFlight: Promise<void> | undefined
+  if (config.api.gmailProxyUrl !== undefined) {
+    if (parser === undefined) {
+      throw new Error(
+        "Gmail sync requires a configured sandboxed document parser"
+      )
+    }
+    const sync = createGmailSyncRuntime({
+      db,
+      gate,
+      profile,
+      client: createGmailClient(
+        createGmailEgressTransport({ proxyUrl: config.api.gmailProxyUrl })
+      ),
+      parser,
+      log,
+    })
+    const runSync = (): void => {
+      const current = sync()
+      gmailSyncInFlight = current
+      const clear = (): void => {
+        if (gmailSyncInFlight === current) gmailSyncInFlight = undefined
+      }
+      void current.then(clear, clear)
+    }
+    const timer = setInterval(runSync, GMAIL_SYNC_INTERVAL_MS)
+    timer.unref()
+    stopGmailSync = () => clearInterval(timer)
+    runSync()
+  }
   log("started", {
     dataDir: config.dataDir,
     db: config.dbPath,
@@ -287,7 +409,10 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     gate,
     profile,
     log,
+    stopGmailSync,
     close: async () => {
+      stopGmailSync()
+      await gmailSyncInFlight
       await profile.drain()
       conversationIndex.close()
       db.close()
