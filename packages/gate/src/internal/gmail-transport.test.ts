@@ -127,7 +127,7 @@ function fakeGmailApi(
   labels: Record<string, string[]>,
   originals: Record<
     string,
-    { id?: string; threadId?: string; raw: string }
+    { id?: string; threadId?: string; raw?: string }
   > = {},
   profileEmail: string | null = "signed-sender@example.invalid"
 ) {
@@ -171,7 +171,7 @@ function fakeGmailApi(
             ...(original.threadId === undefined
               ? {}
               : { threadId: original.threadId }),
-            raw: original.raw,
+            ...(original.raw === undefined ? {} : { raw: original.raw }),
           })
         )
       const labelIds = mailbox.get(decodeURIComponent(read[1]))
@@ -942,6 +942,30 @@ describe("Gmail draft and send through fake Gmail", () => {
         replyAll: false,
         to: ["replies@example.invalid"],
         body: "Approved reply body.",
+      },
+    })
+    approve(setUp, intentId)
+    expect((await executor.execute(intentId)).ok).toBe(false)
+    expect(gmail.postedBodies).toEqual([])
+  })
+
+  it("refuses malformed raw-message data from Gmail", async () => {
+    const setUp = pinnedGmail(true)
+    const original = await originalMessageBytes()
+    const gmail = fakeGmailApi(
+      {},
+      {
+        "original-249": { threadId: "thread-249" },
+      }
+    )
+    const executor = await gmailExecutor(setUp, gmail)
+    const { intentId } = proposeIntent(setUp, {
+      kind: "email.forward",
+      connector: "gmail",
+      args: {
+        messageId: "original-249",
+        messageSha256: sha256(original),
+        to: ["colleague@example.invalid"],
       },
     })
     approve(setUp, intentId)
