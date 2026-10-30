@@ -72,7 +72,7 @@ describe("plan", () => {
     expect(await main(["plan"], run.deps)).toBe(0)
     expect(run.out).toEqual([
       "tailscale serve --bg --https=8443 --set-path=/ http://127.0.0.1:3000",
-      "tailscale serve --bg --https=8443 --set-path=/api/core http://127.0.0.1:8787",
+      "tailscale serve --bg --https=8443 --set-path=/api/core http://127.0.0.1:8789",
       "tailscale serve --bg --https=8443 --set-path=/api/gate http://127.0.0.1:8788",
     ])
     expect(fake.calls).toEqual([])
@@ -187,7 +187,7 @@ function serveFetch(
       : pathname.startsWith("/api/gate")
         ? "/api/gate"
         : "/"
-    const port = { "/": 3000, "/api/core": 8787, "/api/gate": 8788 }[mount]
+    const port = { "/": 3000, "/api/core": 8789, "/api/gate": 8788 }[mount]
     const forwarded =
       strip && mount !== "/" ? pathname.slice(mount.length) || "/" : pathname
     return new Promise((resolve, reject) => {
@@ -218,9 +218,9 @@ function serveFetch(
 
 describe("measure", () => {
   const applied = () => fakeTailscale(parseServeConfig(fixture("eido-only")))
-  // Free high ports for the echo servers, so the test never needs 3000, 8787 or 8788.
+  // Free high ports for the echo servers, so the test never needs 3000, 8789 or 8788.
   const flags = ["--web-port=39300", "--core-port=39301", "--gate-port=39302"]
-  const ports = () => ({ "3000": 39300, "8787": 39301, "8788": 39302 })
+  const ports = () => ({ "3000": 39300, "8789": 39301, "8788": 39302 })
   const withPorts = (fake: ReturnType<typeof applied>) => {
     const handlers =
       fake.state.Web?.["node.example.ts.net:8443"]?.Handlers ?? {}

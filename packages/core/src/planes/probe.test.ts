@@ -42,7 +42,7 @@ describe("runProbe", () => {
         gateSocket: "/s/gate.sock",
         api: {
           host: "127.0.0.1",
-          port: 8787,
+          port: 8789,
           basePath: "",
           allowedHosts: [],
           conversationDigestIdleTtlMinutes: 60,
