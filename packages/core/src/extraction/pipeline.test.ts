@@ -11,7 +11,7 @@ import {
   jsonReply,
 } from "./extraction.test-support"
 import type { Harness } from "./extraction.test-support"
-import { ExtractionError, createExtractor } from "./pipeline"
+import { ExtractionError, createExtractor, quoteProbability } from "./pipeline"
 import { EXTRACTION_SYSTEM_PROMPT, passageMessage } from "./prompt"
 import type { ExtractionLogEvent } from "./types"
 
@@ -197,6 +197,215 @@ describe("verbatim checks", () => {
 })
 
 describe("per-field confidence", () => {
+  test("does not score malformed, partial, or wrong-field reply mappings", () => {
+    const bytes = new TextEncoder().encode(
+      '{"items":[{"action":{"quote":"a quote"}}]}'
+    )
+    const probabilities = [{ bytes: [...bytes], probability: 0.7 }]
+    expect(
+      quoteProbability("[]", "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+    expect(
+      quoteProbability('{"items":{}}', "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[null]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability('{"items":[{}]}', "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":null}]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":3}}]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":"other"}}]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":"a quote"}}]}',
+        "action",
+        "a quote",
+        1,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":"a quote"}}]}',
+        "action",
+        "a quote",
+        0,
+        []
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability("{", "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+  })
+
+  test("scores quote tokens in the actual reply and keeps the default when metadata is absent", async () => {
+    const payload = {
+      nothing_found: false,
+      items: [
+        {
+          action: { quote: "Payment of $4,800.00 is due" },
+          party: { quote: "Example Supply Co." },
+          amount: { quote: "$4,800.00" },
+        },
+      ],
+    }
+    const reply = JSON.stringify(payload)
+    const amountKey = reply.indexOf('"amount"')
+    const serializedAmount = JSON.stringify("$4,800.00")
+    const start = reply.indexOf(serializedAmount, amountKey)
+    const probabilities = [...reply].map((token, index) => ({
+      token,
+      probability:
+        index > start && index < start + serializedAmount.length - 1
+          ? 0.4
+          : 0.95,
+    }))
+    h = await harness(INVOICE, [jsonReply(payload, { probabilities })])
+    const result = await h.extractor.extractDocument(h.docId)
+    expect(h.server.completions()[0]?.body).toMatchObject({
+      stream: false,
+      n_predict: 1024,
+      n_probs: 1,
+      temperature: -1,
+    })
+    const [row] = extractionRows(h)
+    const scores = h.db
+      .prepare(
+        "SELECT field, confidence FROM extraction_field_confidence WHERE extraction_id = ? ORDER BY field"
+      )
+      .all(row?.["id"] ?? -1)
+    expect(scores.map((score) => score.field)).toEqual([
+      "action",
+      "amount",
+      "party",
+    ])
+    expect(scores[0]?.confidence).toBeCloseTo(0.95)
+    expect(scores[1]?.confidence).toBeCloseTo(0.4)
+    expect(scores[2]?.confidence).toBeCloseTo(0.95)
+    expect(result.confirmations.map(({ field }) => field)).toEqual(["amount"])
+    expect(result.confirmations[0]?.confidence).toBeCloseTo(0.4)
+
+    await h.close()
+    h = await harness(INVOICE, [jsonReply(payload)])
+    await h.extractor.extractDocument(h.docId)
+    const [fallbackRow] = extractionRows(h)
+    const fallback = h.db
+      .prepare(
+        "SELECT field, confidence FROM extraction_field_confidence WHERE extraction_id = ? ORDER BY field"
+      )
+      .all(fallbackRow?.["id"] ?? -1)
+    expect(fallback).toEqual([
+      { field: "action", confidence: 1 },
+      { field: "amount", confidence: 1 },
+      { field: "party", confidence: 1 },
+    ])
+  })
+
+  test("maps an escaped quote string by its field and item position", async () => {
+    const partyQuote = 'Terms: "Net 30" apply to this notice.'
+    const payload = {
+      nothing_found: false,
+      items: [
+        {
+          action: { quote: "Payment of $4,800.00 is due" },
+          party: { quote: partyQuote },
+        },
+      ],
+    }
+    const reply = JSON.stringify(payload)
+    const serializedQuote = JSON.stringify(partyQuote)
+    const start = reply.indexOf(serializedQuote)
+    const probabilities = [...reply].map((token, index) => ({
+      token,
+      probability:
+        index > start && index < start + serializedQuote.length - 1
+          ? 0.3
+          : index === start || index === start + serializedQuote.length - 1
+            ? 0.1
+            : 0.9,
+    }))
+    h = await harness(INVOICE, [jsonReply(payload, { probabilities })])
+    await h.extractor.extractDocument(h.docId)
+    const [row] = extractionRows(h)
+    const scores = h.db
+      .prepare(
+        "SELECT field, confidence FROM extraction_field_confidence WHERE extraction_id = ? ORDER BY field"
+      )
+      .all(row?.["id"] ?? -1)
+    expect(scores.map((score) => score.field)).toEqual(["action", "party"])
+    expect(scores[1]?.confidence).toBeCloseTo(0.3)
+  })
+
+  test("scores repeated non-ASCII quote values against their own item tokens", async () => {
+    const quote = "Please pay café."
+    const payload = {
+      nothing_found: false,
+      items: [{ action: { quote } }, { action: { quote } }],
+    }
+    const reply = JSON.stringify(payload)
+    const needle = JSON.stringify(quote)
+    const first = reply.indexOf(needle)
+    const second = reply.indexOf(needle, first + needle.length)
+    const encoder = new TextEncoder()
+    const replyBytes = encoder.encode(reply)
+    const firstByte = encoder.encode(reply.slice(0, first)).length
+    const secondByte = encoder.encode(reply.slice(0, second)).length
+    const needleBytes = encoder.encode(needle).length
+    const probabilityBytes = [...replyBytes].map((byte, index) => ({
+      bytes: [byte],
+      probability:
+        index >= firstByte && index < firstByte + needleBytes
+          ? 0.2
+          : index >= secondByte && index < secondByte + needleBytes
+            ? 0.8
+            : 0.9,
+    }))
+    h = await harness(`${INVOICE}\n${quote}`, [
+      jsonReply(payload, { probabilityBytes }),
+    ])
+    await h.extractor.extractDocument(h.docId)
+    const rows = h.db
+      .prepare(
+        "SELECT field, confidence FROM extraction_field_confidence WHERE field = 'action' ORDER BY extraction_id"
+      )
+      .all()
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.confidence).toBeCloseTo(0.2)
+    expect(rows[1]?.confidence).toBeCloseTo(0.8)
+  })
+
   test("stores one confidence row per field; a low amount is a candidate and a confident party is not", async () => {
     h = await harness(
       INVOICE,
