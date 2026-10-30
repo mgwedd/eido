@@ -110,6 +110,11 @@ const VALID: Record<string, unknown> = {
     note: "FYI",
   },
   "email.trash": { messageIds: ["m1"] },
+  "email.untrash": {
+    sourceIntentId: "trash-1",
+    messageIds: ["m1"],
+    priorLabels: [{ messageId: "m1", labels: ["INBOX"] }],
+  },
   "calendar.create": {
     entity: "personal",
     category: "health",
@@ -432,6 +437,7 @@ describe("schema walk", () => {
     expect([...removal].sort()).toEqual([
       "calendar.delete",
       "email.trash",
+      "email.untrash",
       "file.delete",
     ])
   })

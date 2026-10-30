@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite"
 import {
   validateGateAuditRecordRequest,
   validateGateIntentProposal,
+  validateIntent,
 } from "@eido/schemas"
 import type {
   GateAuditRecordRequest,
@@ -19,6 +20,7 @@ import type { MailReads } from "./bridge/mail-routes"
 import { payloadHash } from "./canonical"
 import { apiError, NOT_FOUND } from "./http"
 import type { GateRequest, Handler, Reply } from "./http"
+import { executionReceipt } from "./executor"
 import type { ExecutionResult } from "./executor"
 import {
   intentHistory,
@@ -58,6 +60,14 @@ function trimmed(errors: readonly string[]): string[] {
   return errors
     .slice(0, MAX_ERRORS)
     .map((error) => error.slice(0, MAX_ERROR_LENGTH))
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
 }
 
 async function proposeRoute(
@@ -225,6 +235,77 @@ async function auditRoute(
 }
 
 const INTENT_PATH = /^\/intents\/([^/]+)(\/history)?$/
+const RESTORE_PATH = /^\/intents\/([^/]+)\/restore$/
+
+/** Create a fresh approval proposal from an executed Gmail trash's authenticated prior labels. */
+function restoreTrashRoute(
+  request: GateRequest,
+  gate: GateState
+): Reply | undefined {
+  if (request.method !== "POST") return undefined
+  const match = RESTORE_PATH.exec(request.path)
+  if (match === null) return undefined
+  const sourceId = decodeURIComponent(match[1] ?? "")
+  const source = gate.db
+    .prepare(
+      "SELECT kind, payload_json, payload_hash, state FROM intents WHERE id=?"
+    )
+    .get(sourceId)
+  const receipt = executionReceipt(gate.db, sourceId)
+  if (
+    source === undefined ||
+    source["kind"] !== "email.trash" ||
+    source["state"] !== "executed" ||
+    receipt === undefined
+  ) {
+    return apiError(409, "unavailable", "this trash action cannot be restored")
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(String(source["payload_json"]))
+  } catch {
+    return apiError(409, "unavailable", "this trash action cannot be restored")
+  }
+  const checked = validateIntent(parsed)
+  const result = receipt.result
+  const prior = isRecord(result) ? result["priorLabels"] : undefined
+  if (
+    !checked.ok ||
+    checked.value.kind !== "email.trash" ||
+    checked.value.connector !== "gmail" ||
+    payloadHash(checked.value) !== String(source["payload_hash"]) ||
+    !isRecord(prior)
+  ) {
+    return apiError(409, "unavailable", "this trash action cannot be restored")
+  }
+  const priorLabels = checked.value.args.messageIds.map((messageId) => {
+    const labels = prior[messageId]
+    return isStringArray(labels) ? { messageId, labels } : undefined
+  })
+  if (priorLabels.some((entry) => entry === undefined))
+    return apiError(409, "unavailable", "this trash action cannot be restored")
+  const proposed = propose(gate.db, gate.policy, {
+    intent: {
+      kind: "email.untrash",
+      connector: "gmail",
+      args: {
+        sourceIntentId: sourceId,
+        messageIds: checked.value.args.messageIds,
+        priorLabels,
+      },
+    },
+    origin: "reactive",
+  })
+  if (!proposed.ok) {
+    auditRefusal(gate.db, "restore_unavailable")
+    return apiError(409, "unavailable", "this trash action cannot be restored")
+  }
+  if (proposed.state === "pending") gate.notifyPending?.()
+  return {
+    status: 201,
+    body: { id: proposed.intentId, tier: proposed.tier, state: proposed.state },
+  }
+}
 
 function connectorHealthRoute(
   request: GateRequest,
@@ -278,6 +359,8 @@ export function dataPlaneHandler(
 ): Handler {
   return (request) => {
     const state = gate()
+    const restore = restoreTrashRoute(request, state)
+    if (restore !== undefined) return restore
     if (request.method === "POST" && request.path === "/intents") {
       return proposeRoute(request, state, execute)
     }

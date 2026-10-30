@@ -87,6 +87,7 @@ const ACTION_LABELS: Record<Intent["kind"], string> = {
   "email.reply": "Reply to an email",
   "email.forward": "Forward an email",
   "email.trash": "Move email to trash",
+  "email.untrash": "Restore email from trash",
   "calendar.create": "Create a calendar event",
   "calendar.edit": "Edit a calendar event",
   "calendar.delete": "Delete a calendar event",

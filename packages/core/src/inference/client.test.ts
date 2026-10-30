@@ -637,6 +637,36 @@ describe("server features", () => {
     expect(server.completions()).toEqual([])
   })
 
+  test("sends the configured chat template kwargs with every /apply-template request", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    const kwargs = { enable_thinking: false, b: { y: 1, x: 2 } }
+    const client = await connectModelClient(
+      config(server, { chatTemplateKwargs: kwargs })
+    )
+    await client.complete({ system: "", messages: [userOf(1)] })
+    const probe = bodyAt(server, "/apply-template", 0)
+    const request = bodyAt(server, "/apply-template", 1)
+    expect(probe.chat_template_kwargs).toEqual(kwargs)
+    expect(request.chat_template_kwargs).toEqual(kwargs)
+    expect(
+      server.requests.filter((r) => r.path === "/apply-template")[1]?.body
+    ).toContain(
+      '"chat_template_kwargs":{"b":{"x":2,"y":1},"enable_thinking":false}'
+    )
+  })
+
+  test("sends no chat template kwargs when none are configured", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    const client = await connectModelClient(config(server))
+    await client.complete({ system: "", messages: [userOf(1)] })
+    expect(bodyAt(server, "/apply-template", 0)).not.toHaveProperty(
+      "chat_template_kwargs"
+    )
+    expect(bodyAt(server, "/apply-template", 1)).not.toHaveProperty(
+      "chat_template_kwargs"
+    )
+  })
+
   test("connectModelClient returns a working client for a capable server", async () => {
     const server = await start({ replies: [{ deltas: ["ok"] }] })
     const client = await connectModelClient(config(server))

@@ -11,7 +11,6 @@ import { createProposalLimiter } from "../propose/limiter"
 import { caseDiff, scores } from "./score"
 import type { EvalCase, EvalOptions, EvalReport, EvalVerdict } from "./types"
 
-const SEED = 329
 const EMPTY_RESULT = {
   estimatedPromptTokens: 1,
   reportedPromptTokens: 1,
@@ -132,7 +131,6 @@ export async function runEval(options: EvalOptions): Promise<EvalReport> {
   }
 }
 
-export { SEED }
 export type { EvalVerdict }
 export const emptyInferenceResult = (text: string) => ({
   ...EMPTY_RESULT,
