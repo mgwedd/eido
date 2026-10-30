@@ -26,6 +26,7 @@ type Address = { role: string; address: string }
 type Message = {
   sha: string
   entity: string
+  source: string
   title: string
   body: string
   occurred: number
@@ -34,6 +35,7 @@ type Message = {
   threadId: string
   references: string[]
   addresses: Address[]
+  mailboxes: string[]
   listUnsubscribe: boolean | null
   autoSubmitted: string | null
   precedence: string | null
@@ -51,7 +53,7 @@ function getMessages(cfg: RepliesConfig): Message[] {
   const rows = cfg.db
     .prepare(
       `
-    SELECT d.sha256, d.entity_id, t.title, t.body, t.occurred_at,
+      SELECT d.sha256, d.entity_id, d.source, t.title, t.body, t.occurred_at,
       t.message_id, t.in_reply_to, t.thread_id, t.references_json,
       f.list_unsubscribe, f.auto_submitted, f.precedence
     FROM documents d JOIN document_text t ON t.sha256 = d.sha256
@@ -66,6 +68,7 @@ function getMessages(cfg: RepliesConfig): Message[] {
     const row: Row = raw
     const sha = string(row, "sha256")
     const entity = string(row, "entity_id") ?? cfg.ownerEntityId ?? null
+    const source = string(row, "source")
     const occurredText = string(row, "occurred_at")
     const occurred =
       occurredText === null ? Number.NaN : Date.parse(occurredText)
@@ -75,6 +78,7 @@ function getMessages(cfg: RepliesConfig): Message[] {
     if (
       sha === null ||
       entity === null ||
+      source === null ||
       !Number.isFinite(occurred) ||
       messageId === null ||
       threadId === null ||
@@ -105,10 +109,20 @@ function getMessages(cfg: RepliesConfig): Message[] {
       const address = string(addressRow, "address")
       return role === null || address === null ? [] : [{ role, address }]
     })
+    const mailboxRows = cfg.db
+      .prepare(
+        "SELECT mailbox_id FROM mail_message_mailboxes WHERE sha256 = ? ORDER BY mailbox_id"
+      )
+      .all(sha)
+    const mailboxes = mailboxRows.flatMap((mailboxRow) => {
+      const mailboxId = string(mailboxRow, "mailbox_id")
+      return mailboxId === null ? [] : [mailboxId]
+    })
     const flag = number(row, "list_unsubscribe")
     messages.push({
       sha,
       entity,
+      source,
       title: string(row, "title") ?? "",
       body,
       occurred,
@@ -116,6 +130,7 @@ function getMessages(cfg: RepliesConfig): Message[] {
       threadId,
       references,
       addresses,
+      mailboxes,
       inReplyTo: string(row, "in_reply_to"),
       listUnsubscribe: flag === null ? null : flag === 1,
       autoSubmitted: string(row, "auto_submitted"),
@@ -155,6 +170,16 @@ function groupedMessages(messages: readonly Message[]): Map<string, Message[]> {
       join(own, key(message.entity, reference))
     if (message.inReplyTo !== null)
       join(own, key(message.entity, message.inReplyTo))
+  }
+  const nativeThreads = new Map<string, string>()
+  for (const message of messages) {
+    const own = key(message.entity, message.messageId)
+    for (const mailboxId of message.mailboxes) {
+      const nativeKey = `${message.entity}\u0000${message.source}\u0000${mailboxId}\u0000${message.threadId}`
+      const prior = nativeThreads.get(nativeKey)
+      if (prior === undefined) nativeThreads.set(nativeKey, own)
+      else join(own, prior)
+    }
   }
   const groups = new Map<string, Message[]>()
   for (const message of messages) {

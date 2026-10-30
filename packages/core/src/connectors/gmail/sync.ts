@@ -58,7 +58,8 @@ function readCursor(db: DatabaseSync, label: string): StreamCursor | undefined {
 async function toDocuments(
   message: RawMessage,
   entityId: string,
-  parser: Parser | undefined
+  parser: Parser | undefined,
+  mailboxId: string
 ): Promise<IndexedDocument[]> {
   const parsed = await parseMessage(message.raw)
   const contentHash = sha256(message.raw)
@@ -102,6 +103,7 @@ async function toDocuments(
       })),
     ],
     addresses: extractAddresses(parsed),
+    mailboxId,
     mailFacts: {
       listUnsubscribe: parsed.listUnsubscribe,
       ...(parsed.autoSubmitted === undefined
@@ -157,6 +159,7 @@ type LabelRun = {
   label: string
   config: GmailConfig
   entityId: string
+  mailboxId: string
   totals: Totals
   parser: Parser | undefined
   onIngested: SyncOptions["onIngested"]
@@ -175,6 +178,7 @@ async function commitBatch(
     client,
     label,
     entityId,
+    mailboxId,
     totals,
     parser,
     onIngested,
@@ -184,7 +188,8 @@ async function commitBatch(
   nextCursor: StreamCursor
 ): Promise<void> {
   const known = db.prepare(
-    "SELECT 1 FROM documents WHERE source = ? AND source_ref = ? LIMIT 1"
+    `SELECT 1 FROM documents d JOIN mail_message_mailboxes m ON m.sha256 = d.sha256
+     WHERE d.source = ? AND d.source_ref = ? AND m.mailbox_id = ? LIMIT 1`
   )
   const missingPdfPages = db.prepare(
     `SELECT 1 FROM documents d
@@ -198,7 +203,8 @@ async function commitBatch(
   const documents: IndexedDocument[] = []
   for (const id of new Set(ids)) {
     if (
-      known.get(GMAIL_SOURCE, id) !== undefined &&
+      known.get(GMAIL_SOURCE, id, mailboxId.trim().toLowerCase()) !==
+        undefined &&
       (parser === undefined ||
         missingPdfPages.get(GMAIL_SOURCE, id) === undefined)
     ) {
@@ -212,7 +218,7 @@ async function commitBatch(
       if (error instanceof GmailError && error.code === "not_found") continue
       throw error
     }
-    documents.push(...(await toDocuments(message, entityId, parser)))
+    documents.push(...(await toDocuments(message, entityId, parser, mailboxId)))
   }
   const result = ingestBatch(db, {
     connector: GMAIL_CONNECTOR,
@@ -301,6 +307,7 @@ export async function syncGmailLabel(
   options: SyncOptions = {}
 ): Promise<LabelSyncResult> {
   const entityId = await ingestEntityId(GMAIL_CONNECTOR, account)
+  const mailboxId = account.accountRef
   const totals: Totals = { inserted: 0, skipped: 0 }
   const run: LabelRun = {
     db,
@@ -308,6 +315,7 @@ export async function syncGmailLabel(
     label,
     config,
     entityId,
+    mailboxId,
     totals,
     parser: options.parser,
     onIngested: options.onIngested,

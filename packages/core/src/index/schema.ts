@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 7
+export const SCHEMA_VERSION = 8
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -135,6 +135,19 @@ CREATE TRIGGER mail_message_facts_no_update BEFORE UPDATE ON mail_message_facts
 BEGIN SELECT RAISE(ABORT, 'mail message facts are immutable'); END;
 CREATE TRIGGER mail_message_facts_no_delete BEFORE DELETE ON mail_message_facts
 BEGIN SELECT RAISE(ABORT, 'mail message facts are immutable'); END;
+`,
+  // v8: connector-native thread IDs are only unique within a mailbox. Keep that identity beside
+  // each stored message so equal IDs in different accounts cannot merge unrelated conversations.
+  `
+CREATE TABLE mail_message_mailboxes (
+  sha256 TEXT NOT NULL REFERENCES documents(sha256),
+  mailbox_id TEXT NOT NULL CHECK (length(mailbox_id) > 0),
+  PRIMARY KEY (sha256, mailbox_id)
+);
+CREATE TRIGGER mail_message_mailboxes_no_update BEFORE UPDATE ON mail_message_mailboxes
+BEGIN SELECT RAISE(ABORT, 'mail message mailbox identities are immutable'); END;
+CREATE TRIGGER mail_message_mailboxes_no_delete BEFORE DELETE ON mail_message_mailboxes
+BEGIN SELECT RAISE(ABORT, 'mail message mailbox identities are immutable'); END;
 `,
 ]
 

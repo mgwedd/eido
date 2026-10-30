@@ -509,6 +509,13 @@ describe("Gmail sync runtime", () => {
       { page: 1, text: "Report page one" },
       { page: 2, text: "Report page two" },
     ])
+    expect(
+      db
+        .prepare(
+          "SELECT mailbox_id FROM mail_message_mailboxes WHERE sha256 = (SELECT sha256 FROM documents WHERE source_ref = ?)"
+        )
+        .get("gm-runtime")?.["mailbox_id"]
+    ).toBe("owner@example.com")
     expect(scheduleDigest).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: "document",

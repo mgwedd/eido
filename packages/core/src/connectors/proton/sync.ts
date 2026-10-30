@@ -49,7 +49,8 @@ async function toDocuments(
   folder: string,
   uidValidity: string,
   uid: number,
-  entityId: string
+  entityId: string,
+  mailboxId: string
 ): Promise<IndexedDocument[]> {
   const parsed = await parseMessage(raw)
   const contentHash = sha256(raw)
@@ -90,6 +91,7 @@ async function toDocuments(
       })),
     ],
     addresses: extractAddresses(parsed),
+    mailboxId,
     mailFacts: {
       listUnsubscribe: parsed.listUnsubscribe,
       ...(parsed.autoSubmitted === undefined
@@ -152,7 +154,9 @@ export async function syncFolder(
   }
   let covered = resynced || stored === null ? 0 : Number(stored.cursor)
   const known = db.prepare(
-    "SELECT 1 FROM document_text WHERE message_id = ? LIMIT 1"
+    `SELECT 1 FROM document_text t JOIN documents d ON d.sha256 = t.sha256
+     JOIN mail_message_mailboxes m ON m.sha256 = d.sha256
+     WHERE t.message_id = ? AND d.source = ? AND m.mailbox_id = ? LIMIT 1`
   )
   let inserted = 0
   let skipped = 0
@@ -176,10 +180,16 @@ export async function syncFolder(
         folder,
         state.uidValidity,
         message.uid,
-        entityId
+        entityId,
+        account.accountRef
       )
       const id = docs[0]?.headers?.messageId
-      if (id !== undefined && (seen.has(id) || known.get(id) !== undefined)) {
+      if (
+        id !== undefined &&
+        (seen.has(id) ||
+          known.get(id, CONNECTOR, account.accountRef.trim().toLowerCase()) !==
+            undefined)
+      ) {
         duplicates++
         continue
       }

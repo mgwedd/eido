@@ -46,6 +46,8 @@ function mail(input: {
   precedence?: string
   entity?: string
   source?: string
+  mailboxId?: string
+  threadId?: string
 }) {
   const source = input.source ?? "gmail"
   const sha = `${input.id}-${source}`.padEnd(64, "0").slice(0, 64)
@@ -65,7 +67,7 @@ function mail(input: {
         occurredAt: input.at,
         headers: {
           messageId: `<${input.id}@example.com>`,
-          threadId: input.id,
+          threadId: input.threadId ?? input.id,
           ...(input.replyTo === undefined ? {} : { inReplyTo: input.replyTo }),
           references: input.refs ?? [],
         },
@@ -91,6 +93,7 @@ function mail(input: {
             ? {}
             : { precedence: input.precedence }),
         },
+        mailboxId: input.mailboxId ?? `${source}-account@example.invalid`,
       },
     ],
   })
@@ -390,6 +393,7 @@ describe("reply obligations", () => {
   test("isolates same RFC thread identifiers across entities", () => {
     mail({
       id: "first",
+      threadId: "same-thread",
       at: at(1),
       from: other,
       to: [own],
@@ -397,11 +401,57 @@ describe("reply obligations", () => {
     })
     mail({
       id: "second",
+      threadId: "same-thread",
       at: at(1),
       from: other,
       to: [own],
       body: "Please reply.",
       entity: fixture.company.id,
+    })
+    expect(run(4).created).toBe(2)
+  })
+
+  test("groups connector-native thread IDs when RFC ancestry headers are absent", () => {
+    mail({
+      id: "native-first",
+      threadId: "gmail-thread-1",
+      at: at(1),
+      from: other,
+      to: [own],
+      body: "Please reply.",
+    })
+    mail({
+      id: "native-last",
+      threadId: "gmail-thread-1",
+      at: at(2),
+      from: other,
+      to: [own],
+      body: "Following up.",
+    })
+    expect(run(4).created).toBe(1)
+    expect(listObligations(fixture.db)[0]?.anchorMessageId).toBe(
+      "<native-last@example.com>"
+    )
+  })
+
+  test("does not merge equal connector-native thread IDs from different mailbox accounts", () => {
+    mail({
+      id: "account-one",
+      threadId: "shared-thread-id",
+      mailboxId: "one@example.invalid",
+      at: at(1),
+      from: other,
+      to: [own],
+      body: "Please reply.",
+    })
+    mail({
+      id: "account-two",
+      threadId: "shared-thread-id",
+      mailboxId: "two@example.invalid",
+      at: at(1),
+      from: other,
+      to: [own],
+      body: "Please reply.",
     })
     expect(run(4).created).toBe(2)
   })

@@ -32,6 +32,8 @@ export interface IndexedDocument {
     autoSubmitted?: string
     precedence?: string
   }
+  /** Account identity used to scope connector-native mail thread ids. */
+  mailboxId?: string
   /** The canonical bytes the sha256 was computed from. When given, the digest is verified. */
   content?: Uint8Array
 }
@@ -56,6 +58,11 @@ export interface DocumentHeadChange {
 }
 
 function storeMailMetadata(db: DatabaseSync, doc: IndexedDocument): void {
+  if (doc.mailboxId !== undefined) {
+    db.prepare(
+      "INSERT OR IGNORE INTO mail_message_mailboxes (sha256, mailbox_id) VALUES (?, ?)"
+    ).run(doc.sha256, doc.mailboxId.trim().toLowerCase())
+  }
   const insertAddress = db.prepare(
     "INSERT OR IGNORE INTO mail_addresses (sha256, role, position, address) VALUES (?, ?, ?, ?)"
   )
