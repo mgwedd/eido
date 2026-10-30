@@ -13,7 +13,7 @@ import type { SearchHit, SearchKind } from "./types"
 export const INDEX_VERSION = 1
 
 const DEFAULT_LIMIT = 20
-const FUZZY_MIN_LENGTH = 4
+const FUZZY_MIN_LENGTH = 2
 const SOUNDEX_MIN_LENGTH = 3
 
 /** Open (or create) the search index file. It holds nothing that is not rebuilt from the raw tables. */

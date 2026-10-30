@@ -160,6 +160,15 @@ describe("searchConversations", () => {
     ).toEqual(["t2", "t1"])
   })
 
+  it("finds one-letter typos in short words", () => {
+    fixture = storeFixture()
+    fixture.store.appendTurn("c1", rawTurn(1, "The cat is here."))
+
+    expect(
+      fixture.store.searchConversations("hat").map((hit) => hit.turnId)
+    ).toEqual(["t1"])
+  })
+
   it("matches a sound-alike name", () => {
     fixture = storeFixture()
     fixture.store.appendTurn("c1", rawTurn(1, "Please ask Steven to call."))
