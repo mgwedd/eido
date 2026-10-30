@@ -1155,6 +1155,37 @@ export const CONNECTOR_MANIFEST_JSON_SCHEMA: JsonSchema = {
             ],
             "additionalProperties": false
           }
+        },
+        "local": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "properties": {
+              "protocol": {
+                "enum": [
+                  "imap",
+                  "smtp"
+                ]
+              },
+              "host": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 39
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              }
+            },
+            "required": [
+              "protocol",
+              "host",
+              "port"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
