@@ -68,6 +68,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_GATE_SOCKET",
   "EIDO_LLAMA_HOST",
   "EIDO_LLAMA_PORT",
+  "EIDO_LLAMA_CHAT_TEMPLATE_KWARGS",
   "EIDO_CORE_HOST",
   "EIDO_CORE_PORT",
   "EIDO_CORE_BASE_PATH",
@@ -140,6 +141,12 @@ export type CoreApiConfig = {
   allowedHosts: string[]
   /** Present only when a local llama-server host and port are configured. */
   modelBaseUrl?: string
+  /**
+   * The pinned model's chat template kwargs (`EIDO_LLAMA_CHAT_TEMPLATE_KWARGS`, a JSON object),
+   * sent as `chat_template_kwargs` on every `/apply-template` call, as the eval does for its
+   * candidate. Absent when unset, which leaves request bodies unchanged.
+   */
+  chatTemplateKwargs?: Record<string, unknown>
   /** Gate egress proxy URL. Gmail sync is disabled when this is not configured. */
   gmailProxyUrl?: string
   conversationDigestIdleTtlMinutes: number
@@ -187,6 +194,9 @@ export function coreApiConfig(env: Env): CoreApiConfig {
           return loopbackBaseUrl(`http://${host}:${String(port)}`)
         })()
       : undefined
+  const chatTemplateKwargs = chatTemplateKwargsOf(
+    env["EIDO_LLAMA_CHAT_TEMPLATE_KWARGS"]
+  )
   const gmailProxyUrl = env["EIDO_GMAIL_PROXY_URL"]
   const configuredGmailProxyUrl =
     gmailProxyUrl === undefined || gmailProxyUrl === ""
@@ -222,10 +232,29 @@ export function coreApiConfig(env: Env): CoreApiConfig {
       ? {}
       : { replies: parseRepliesConfig(env["EIDO_REPLIES_CONFIG"]) }),
     ...(modelBaseUrl === undefined ? {} : { modelBaseUrl }),
+    ...(chatTemplateKwargs === undefined ? {} : { chatTemplateKwargs }),
     ...(configuredGmailProxyUrl === undefined
       ? {}
       : { gmailProxyUrl: configuredGmailProxyUrl }),
   }
+}
+
+function chatTemplateKwargsOf(
+  value: string | undefined
+): Record<string, unknown> | undefined {
+  if (value === undefined || value === "") return undefined
+  const invalid = new Error(
+    'EIDO_LLAMA_CHAT_TEMPLATE_KWARGS must be a JSON object, such as {"enable_thinking": false}'
+  )
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    throw invalid
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    throw invalid
+  return parsed as Record<string, unknown>
 }
 
 function parseRepliesConfig(raw: string): Omit<RepliesConfig, "db"> {
@@ -386,7 +415,10 @@ function gmailParser(dataDir: string | undefined): Parser {
   return createParser({ dataDir })
 }
 
-function createModelQueueProvider(modelBaseUrl: string | undefined): {
+function createModelQueueProvider(
+  modelBaseUrl: string | undefined,
+  chatTemplateKwargs?: Readonly<Record<string, unknown>>
+): {
   getQueue: () => Promise<InferenceQueue>
   getModelId: () => Promise<string>
   getContextTokens: () => number
@@ -405,6 +437,7 @@ function createModelQueueProvider(modelBaseUrl: string | undefined): {
             baseUrl: modelBaseUrl,
             contextTokens,
             maxReplyTokens: ASK_REPLY_TOKENS,
+            ...(chatTemplateKwargs === undefined ? {} : { chatTemplateKwargs }),
           })
           modelContextTokens = contextTokens
           return createInferenceQueue(client)
@@ -466,7 +499,10 @@ export function openDataPlaneDb(
  * POST /audit, and logs the configuration and variable names.
  */
 export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
-  const model = createModelQueueProvider(config.api.modelBaseUrl)
+  const model = createModelQueueProvider(
+    config.api.modelBaseUrl,
+    config.api.chatTemplateKwargs
+  )
   const parser =
     config.api.gmailProxyUrl === undefined
       ? undefined

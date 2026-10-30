@@ -172,6 +172,30 @@ describe("coreApiConfig", () => {
     ).toMatchObject({ modelBaseUrl: "http://[::1]:8080" })
   })
 
+  test("reads the pinned model's chat template kwargs as a JSON object", () => {
+    expect(
+      coreApiConfig({
+        EIDO_LLAMA_CHAT_TEMPLATE_KWARGS: '{"enable_thinking": false}',
+      }).chatTemplateKwargs
+    ).toEqual({ enable_thinking: false })
+  })
+
+  test("leaves chat template kwargs out when unset or empty", () => {
+    expect(coreApiConfig({})).not.toHaveProperty("chatTemplateKwargs")
+    expect(
+      coreApiConfig({ EIDO_LLAMA_CHAT_TEMPLATE_KWARGS: "" })
+    ).not.toHaveProperty("chatTemplateKwargs")
+  })
+
+  test.each(["not json", "[1]", '"x"', "null", "3"])(
+    "stops startup when the chat template kwargs are %s, not a JSON object",
+    (value) => {
+      expect(() =>
+        coreApiConfig({ EIDO_LLAMA_CHAT_TEMPLATE_KWARGS: value })
+      ).toThrow("EIDO_LLAMA_CHAT_TEMPLATE_KWARGS must be a JSON object")
+    }
+  )
+
   test("accepts only a loopback Gmail egress proxy URL", () => {
     expect(
       coreApiConfig({ EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801/" })
@@ -808,6 +832,43 @@ describe("serveDataPlane", () => {
     } finally {
       await api.close()
       await plane.close()
+    }
+  })
+
+  it.each([
+    [
+      "sends the configured chat template kwargs on every /apply-template",
+      '{"enable_thinking": false}',
+    ],
+    ["sends no chat_template_kwargs when none are configured", undefined],
+  ])("%s", async (_name, kwargs) => {
+    const model = await startStubModelServer({
+      contextTokens: 8192,
+      replies: [],
+    })
+    const env = servedEnv({
+      EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_LLAMA_PORT: new URL(model.url).port,
+      ...(kwargs === undefined
+        ? {}
+        : { EIDO_LLAMA_CHAT_TEMPLATE_KWARGS: kwargs }),
+    })
+    const plane = runDataPlane(dataPlaneConfig(env), env)
+    try {
+      await plane.getInferenceQueue()
+      const bodies = model.requests
+        .filter((request) => request.path === "/apply-template")
+        .map((request) => JSON.parse(request.body) as Record<string, unknown>)
+      expect(bodies.length).toBeGreaterThan(0)
+      for (const body of bodies) {
+        if (kwargs === undefined)
+          expect(body).not.toHaveProperty("chat_template_kwargs")
+        else
+          expect(body.chat_template_kwargs).toEqual({ enable_thinking: false })
+      }
+    } finally {
+      await plane.close()
+      await model.close()
     }
   })
 
