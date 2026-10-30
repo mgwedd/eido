@@ -1,14 +1,20 @@
 import { beforeEach, describe, expect, test } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { GateUnavailableError } from "@eido/gate"
 import type {
   CoreApiAssignmentList,
   CoreApiEntity,
   CoreApiEntityList,
+  CoreApiDefaultEntity,
   CoreApiError,
   CoreApiProfile,
   CoreApiProfileResponse,
 } from "@eido/schemas"
+import type { ProfileAuditEntry } from "../profile/index"
 import { openIndex } from "../index/schema"
+import { activateDataLedger } from "../ledger/db"
 import { createProfileStore } from "../profile/index"
 import { createApiHandler, routePath, toFieldErrors } from "./handler"
 import type { ApiHandler } from "./handler"
@@ -26,7 +32,8 @@ type Body = CoreApiError &
   CoreApiAssignmentList &
   CoreApiProfileResponse &
   CoreApiProfile &
-  CoreApiEntity
+  CoreApiEntity &
+  CoreApiDefaultEntity
 
 let handle: ApiHandler
 let db: ReturnType<typeof openIndex>
@@ -159,6 +166,109 @@ describe("profile", () => {
     expect(res.status).toBe(405)
     expect(res.headers.get("allow")).toBe("GET, PATCH")
     expect(res.json.error.code).toBe("method_not_allowed")
+  })
+})
+
+describe("default entity", () => {
+  test("GET starts clear; PUT sets, clears, validates and audits the change", async () => {
+    const entries: ProfileAuditEntry[] = []
+    const audited = createProfileStore(db, {
+      audit: (entry) => {
+        entries.push(entry)
+        return Promise.resolve()
+      },
+    })
+    handle = createApiHandler({ profile: audited, allowedHosts: ["core.test"] })
+    const entity = await audited.createEntity({
+      kind: "personal",
+      name: "Default",
+      tag: "default",
+    })
+    expect((await call("GET", "/default-entity")).json.entityId).toBeNull()
+    expect(
+      await call("PUT", "/default-entity", { entityId: entity.id })
+    ).toMatchObject({
+      status: 200,
+      json: { entityId: entity.id },
+    })
+    await call("PUT", "/default-entity", { entityId: entity.id })
+    expect((await call("GET", "/default-entity")).json.entityId).toBe(entity.id)
+    expect(
+      await call("PUT", "/default-entity", { entityId: "missing" })
+    ).toMatchObject({
+      status: 404,
+      json: { error: { code: "not_found" } },
+    })
+    expect(
+      await call("PUT", "/default-entity", { entityId: null })
+    ).toMatchObject({
+      status: 200,
+      json: { entityId: null },
+    })
+    expect(entries.map((entry) => entry.action)).toEqual([
+      "entity.create",
+      "defaultEntity",
+      "defaultEntity",
+    ])
+    const setAudit = entries[1]
+    const clearAudit = entries[2]
+    expect(setAudit?.beforeHash).toBeNull()
+    expect(setAudit?.subjectHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(setAudit?.afterHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(clearAudit?.beforeHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(clearAudit?.subjectHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(clearAudit?.afterHash).toBeNull()
+    expect(JSON.stringify(entries)).not.toContain(entity.id)
+  })
+
+  test("setting the default through the API activates a pending ledger and backfills once", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "eido-default-api-"))
+    const path = join(directory, "data.db")
+    try {
+      db.close()
+      db = openIndex(path)
+      const profile = createProfileStore(db, { audit: () => Promise.resolve() })
+      const entity = await profile.createEntity({
+        kind: "company",
+        name: "Existing",
+        tag: "existing",
+      })
+      db.prepare(
+        `INSERT INTO documents (sha256, source, source_ref, mime, entity_id, ingested_at, blob_path)
+         VALUES (?, 'gmail', 'message-1', 'text/plain', NULL, ?, NULL)`
+      ).run("a".repeat(64), new Date().toISOString())
+      handle = createApiHandler({ profile, allowedHosts: ["core.test"] })
+      expect(
+        db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_schema'"
+          )
+          .get()
+      ).toBeUndefined()
+      expect(
+        await call("PUT", "/default-entity", { entityId: entity.id })
+      ).toMatchObject({
+        status: 200,
+        json: { entityId: entity.id },
+      })
+      expect(
+        db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_schema'"
+          )
+          .get()
+      ).toBeDefined()
+      expect(
+        db.prepare("SELECT entity_id FROM documents").get()?.["entity_id"]
+      ).toBe(entity.id)
+      activateDataLedger(db, { defaultEntityId: entity.id })
+      expect(
+        db.prepare("SELECT entity_id FROM documents").get()?.["entity_id"]
+      ).toBe(entity.id)
+    } finally {
+      db.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })
 

@@ -124,6 +124,16 @@ export interface CoreApiAssignmentList {
   assignments: Array<ProfileAccountAssignment>
 }
 
+/** Request body for setting or clearing the profile default entity. */
+export interface CoreApiDefaultEntityRequest {
+  entityId: string | null
+}
+
+/** The current profile default entity, or null when cleared. */
+export interface CoreApiDefaultEntity {
+  entityId: string | null
+}
+
 /** One extracted field of a document. `value` is the typed value (money in minor units, an ISO date) or null for a text field or one that did not parse. `line` is the 1-based line of `lines` holding the span start, null when the span lies outside the stored text. `verified` is true only when the quote equals the stored text at its span, a money or date field parsed, and the confidence meets the threshold or the extraction was confirmed. */
 export interface CoreApiDocumentField {
   field: "action" | "party" | "reference_number" | "amount" | "due_date"
@@ -331,7 +341,7 @@ export interface GateAuditPage {
 
 /** Body of POST /audit on the data-plane listener (#181): one profile change for the gate to append to its audit log as an audit.profile.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector or account reference is sent in clear. The gate also checks that beforeHash and afterHash are null or set as the action requires. */
 export interface GateAuditRecordRequest {
-  action: "entity.create" | "entity.update" | "entity.delete" | "account.assign" | "account.unassign"
+  action: "entity.create" | "entity.update" | "entity.delete" | "account.assign" | "account.unassign" | "defaultEntity"
   subjectHash: string
   beforeHash: string | null
   afterHash: string | null

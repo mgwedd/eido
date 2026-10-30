@@ -149,6 +149,7 @@ const SIDES = {
   "entity.delete": { before: "present", after: "absent" },
   "account.assign": { before: "either", after: "present" },
   "account.unassign": { before: "present", after: "absent" },
+  defaultEntity: { before: "either", after: "either" },
 } as const satisfies Record<
   GateAuditRecordRequest["action"],
   { before: Side; after: Side }
