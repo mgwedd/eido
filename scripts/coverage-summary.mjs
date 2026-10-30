@@ -13,6 +13,7 @@ const packages = [
   "packages/schemas",
   "packages/ui",
   "apps/web",
+  "infra",
 ]
 const metrics = ["lines", "statements", "functions", "branches"]
 

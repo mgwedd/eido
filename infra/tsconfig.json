@@ -1,0 +1,11 @@
+{
+  "extends": "@eido/typescript-config/base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "lib": ["es2022"],
+    "types": ["node"]
+  },
+  "include": ["tailscale", "vitest.config.ts"]
+}
