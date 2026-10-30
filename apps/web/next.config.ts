@@ -1,7 +1,13 @@
 import type { NextConfig } from "next"
 
+// `next dev` serves HMR and dev assets only to localhost and the host it binds (127.0.0.1) unless
+// the origin is listed. The stack (`pnpm stack:dev`, #374) sets EIDO_TAILNET_HOST so the app also
+// reloads when opened at https://<host>.ts.net:8443. Only the hostname is matched, not the port.
+const tailnetHost = process.env["EIDO_TAILNET_HOST"]
+
 const nextConfig: NextConfig = {
   transpilePackages: ["@eido/ui"],
+  allowedDevOrigins: tailnetHost ? [tailnetHost] : [],
   headers() {
     return Promise.resolve([
       {

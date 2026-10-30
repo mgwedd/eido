@@ -21,7 +21,11 @@
     "check:no-js-fixture": "node scripts/check-no-js.mjs --self-test",
     "check:no-telemetry": "node scripts/check-no-telemetry.mjs",
     "check:no-telemetry-fixture": "node scripts/check-no-telemetry.mjs --self-test",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "stack:dev": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts dev",
+    "stack:prod": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts prod",
+    "stack:stop": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts stop",
+    "stack:status": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts status"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
