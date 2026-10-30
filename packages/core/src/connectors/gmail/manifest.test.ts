@@ -185,6 +185,17 @@ describe("manifest", () => {
         pathPattern: "/gmail/v1/users/me/messages/{id}",
       },
     ])
+    const sendRoute = [
+      {
+        host: "gmail.googleapis.com",
+        method: "POST",
+        pathPattern: "/gmail/v1/users/me/messages/send",
+      },
+    ]
+    for (const name of ["reply", "forward"])
+      expect(
+        manifest.operations.find((op) => op.name === name)?.routes
+      ).toEqual(sendRoute)
   })
 
   test("does not pin any permanent delete route", () => {
