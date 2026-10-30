@@ -1,6 +1,9 @@
 import { createECDH, createHash, randomBytes } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
+  validateGateAuditChainStatus,
+  validateGateAuditPage,
+  validateGateConnectorSettings,
   validateGateCredentialStatus,
   validateGateDecisionResult,
   validateGateIntentHistory,
@@ -8,8 +11,12 @@ import {
   validateGatePendingIntentList,
   validateGatePrepareApproval,
   validateGateSession,
+  validateGatePasskeyList,
+  validateGatePermissionList,
 } from "@eido/schemas"
 import type { Body, GateRequest, Reply } from "./http"
+import { append } from "./audit"
+import { payloadHash } from "./canonical"
 import { propose } from "./intents"
 import { matchRoute, phoneHandler, routePath } from "./phone-routes"
 import { preparePushRegistration } from "./push-subscriptions"
@@ -41,6 +48,7 @@ type Options = {
   raw?: Body
   contentType?: string | null
   basePath?: string
+  query?: URLSearchParams
 }
 
 async function call(
@@ -64,8 +72,8 @@ async function call(
       : { ok: true, text: JSON.stringify(options.body) })
   const request: GateRequest = {
     method,
-    path,
-    query: new URLSearchParams(),
+    path: path.split("?")[0] ?? path,
+    query: options.query ?? new URLSearchParams(path.split("?")[1] ?? ""),
     headers: {
       ...(host === null ? {} : { host }),
       ...(options.cookie === undefined ? {} : { cookie: options.cookie }),
@@ -256,6 +264,190 @@ describe("phoneHandler: push subscriptions", () => {
   })
 })
 
+describe("phoneHandler: authenticated settings reads", () => {
+  it("rejects every settings read without a valid session cookie", async () => {
+    for (const path of [
+      "/audit",
+      "/audit/chain",
+      "/connector-settings",
+      "/passkeys",
+      "/permissions",
+    ]) {
+      expect((await call("GET", path)).status, path).toBe(401)
+    }
+  })
+
+  it("returns live connector, passkey, policy and chain state after login", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const connectors = await call("GET", "/connector-settings", { cookie })
+    const checkedConnectors = validateGateConnectorSettings(connectors.body)
+    expect(checkedConnectors.ok).toBe(true)
+    if (!checkedConnectors.ok) throw new Error("connector settings are invalid")
+    const mail = checkedConnectors.value.connectors.find(
+      (connector) => connector.name === "mail"
+    )
+    expect(mail).toMatchObject({ enabled: true, scopes: ["write"] })
+    expect(Date.parse(mail?.pinnedAt ?? "")).not.toBeNaN()
+
+    const passkeys = await call("GET", "/passkeys", { cookie })
+    const checkedPasskeys = validateGatePasskeyList(passkeys.body)
+    expect(checkedPasskeys.ok).toBe(true)
+    if (!checkedPasskeys.ok) throw new Error("passkey list is invalid")
+    expect(checkedPasskeys.value.passkeys).toContainEqual({
+      fingerprint: createHash("sha256").update(auth.credentialId).digest("hex"),
+      createdAt: START.toISOString(),
+      revokedAt: null,
+    })
+
+    const permissions = await call("GET", "/permissions", { cookie })
+    const checkedPermissions = validateGatePermissionList(permissions.body)
+    expect(checkedPermissions.ok).toBe(true)
+    if (!checkedPermissions.ok) throw new Error("permission list is invalid")
+    expect(checkedPermissions.value.tiers).toContainEqual({
+      kind: "email.archive",
+      tier: "auto",
+    })
+    expect(checkedPermissions.value.tiers).toContainEqual({
+      kind: "email.send",
+      tier: "approval",
+    })
+
+    const chain = await call("GET", "/audit/chain", { cookie })
+    expect(validateGateAuditChainStatus(chain.body)).toMatchObject({ ok: true })
+
+    append(s.db, {
+      actor: "owner",
+      action: "owner.settings_read",
+      target: "settings",
+      detailHash: payloadHash({ source: "test" }),
+    })
+    append(s.db, {
+      actor: "gate",
+      action: "gate.settings_read",
+      target: "settings",
+      detailHash: payloadHash({ source: "test" }),
+    })
+    const audit = await call("GET", "/audit", { cookie })
+    const checkedAudit = validateGateAuditPage(audit.body)
+    expect(checkedAudit.ok).toBe(true)
+    if (!checkedAudit.ok) throw new Error("audit page is invalid")
+    expect(checkedAudit.value.entries).toContainEqual(
+      expect.objectContaining({ actor: "owner", displayActor: "you" })
+    )
+    expect(checkedAudit.value.entries).toContainEqual(
+      expect.objectContaining({ actor: "gate", displayActor: "gate" })
+    )
+  })
+
+  it("pages audit rows by seq and derives undo from execution records", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const firstPage = await call("GET", "/audit?limit=1", { cookie })
+    const first = validateGateAuditPage(firstPage.body)
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("audit page is invalid")
+    expect(first.value.entries).toHaveLength(1)
+    expect(first.value.nextBefore).toBeDefined()
+
+    const priorPage = await call(
+      "GET",
+      `/audit?before=${first.value.nextBefore}&limit=1`,
+      { cookie }
+    )
+    const prior = validateGateAuditPage(priorPage.body)
+    expect(prior.ok).toBe(true)
+    if (!prior.ok) throw new Error("audit cursor page is invalid")
+    expect(prior.value.entries[0]?.seq).toBeLessThan(
+      first.value.entries[0]?.seq ?? 0
+    )
+
+    const automatic = propose(s.db, s.policy, {
+      intent: sample("email.archive"),
+      origin: "reactive",
+    })
+    if (!automatic.ok) throw new Error("automatic intent was refused")
+    const executed = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: automatic.intentId,
+      detailHash: payloadHash({ result: "synthetic" }),
+    })
+    s.db
+      .prepare("UPDATE intents SET state = 'executed' WHERE id = ?")
+      .run(automatic.intentId)
+    s.db
+      .prepare(
+        "INSERT INTO executions (intent_id, upstream_ref, result, inverse_op, audit_seq) VALUES (?, ?, ?, ?, ?)"
+      )
+      .run(automatic.intentId, "synthetic-ref", "{}", "{}", executed.seq)
+
+    const completedUndo = append(s.db, {
+      actor: "executor",
+      action: "undo",
+      target: automatic.intentId,
+      detailHash: payloadHash({ result: "restored" }),
+    })
+    s.db
+      .prepare(
+        "INSERT INTO execution_undos (intent_id, upstream_ref, result, audit_seq) VALUES (?, ?, ?, ?)"
+      )
+      .run(automatic.intentId, "synthetic-ref", "{}", completedUndo.seq)
+
+    const allRows = await call("GET", "/audit", { cookie })
+    const parsed = validateGateAuditPage(allRows.body)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error("audit page is invalid")
+    const executeRow = parsed.value.entries.find(
+      (entry) => entry.seq === executed.seq
+    )
+    expect(executeRow).toMatchObject({ displayActor: "auto", undo: "done" })
+  })
+
+  it("marks a reversible automatic execution as undoable until an undo is recorded", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const automatic = propose(s.db, s.policy, {
+      intent: sample("email.archive"),
+      origin: "reactive",
+    })
+    if (!automatic.ok) throw new Error("automatic intent was refused")
+    const executed = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: automatic.intentId,
+      detailHash: payloadHash({ result: "synthetic" }),
+    })
+    s.db
+      .prepare("UPDATE intents SET state = 'executed' WHERE id = ?")
+      .run(automatic.intentId)
+    s.db
+      .prepare(
+        "INSERT INTO executions (intent_id, upstream_ref, result, inverse_op, audit_seq) VALUES (?, ?, ?, ?, ?)"
+      )
+      .run(automatic.intentId, "synthetic-ref", "{}", "{}", executed.seq)
+
+    const reply = await call("GET", "/audit", { cookie })
+    const parsed = validateGateAuditPage(reply.body)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error("audit page is invalid")
+    expect(
+      parsed.value.entries.find((entry) => entry.seq === executed.seq)
+    ).toMatchObject({ undo: "available" })
+  })
+
+  it("rejects malformed and unsupported audit page query parameters", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    expect((await call("GET", "/audit?limit=bad", { cookie })).status).toBe(400)
+    expect((await call("GET", "/audit?limit=0", { cookie })).status).toBe(400)
+    expect(
+      (await call("GET", "/audit?limit=1&limit=2", { cookie })).status
+    ).toBe(400)
+    expect((await call("GET", "/audit?unknown=1", { cookie })).status).toBe(400)
+  })
+})
+
 afterEach(() => {
   s.cleanup()
 })
@@ -303,7 +495,6 @@ describe("phoneHandler: listener rules", () => {
     ["POST", "/credentials/revoke"],
     ["POST", "/policy"],
     ["POST", "/connectors/mail/pin"],
-    ["GET", "/audit/chain"],
     ["POST", "/audit"],
     ["POST", "/intents"],
     ["GET", "/intents"],
