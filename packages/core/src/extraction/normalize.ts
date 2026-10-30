@@ -12,9 +12,9 @@ import type { Passage } from "./types"
 type Run = { start: number; end: number; reasons: readonly InjectionReason[] }
 
 /**
- * Parsed text as the model reads it: normalized (see `normalizeMaterial`) one line at a time, the
- * offset table rebuilt for the new lengths. Quotes are verified, and spans point, into this text,
- * so what the owner is shown is exactly what the model read.
+ * Parsed text as the model reads it: normalized (see `normalizeMaterial`) one line at a time, with
+ * offsets rebuilt for the normalized lengths. Quotes are matched against this normalized text;
+ * stored SourceSpan ranges map back to the original parsed text for source highlighting.
  */
 export type NormalizedText = {
   text: string
