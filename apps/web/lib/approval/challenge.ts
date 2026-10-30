@@ -33,3 +33,10 @@ export async function buildChallenge(parts: {
 export function shortHash(hash: string): string {
   return `${hash.slice(0, 4)} ${hash.slice(4, 8)}`
 }
+
+/** Decodes unpadded base64url, the encoding the gate uses for challenges. */
+export function fromBase64url(text: string): Uint8Array {
+  const standard = text.replaceAll("-", "+").replaceAll("_", "/")
+  const padded = standard.padEnd(Math.ceil(standard.length / 4) * 4, "=")
+  return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0))
+}

@@ -4,13 +4,21 @@ import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { createAuditClient, createIntentClient } from "@eido/gate"
 import type { IntentClient } from "@eido/gate"
+import { ask } from "./ask/ask"
 import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
 import { openIndex } from "./index/schema"
 import { openDataDb } from "./ledger/db"
+import {
+  connectModelClient,
+  loopbackBaseUrl,
+  readContextTokens,
+  createInferenceQueue,
+} from "./inference/index"
 import { LedgerError } from "./ledger/errors"
 import { createProfileStore, readDefaultEntityId } from "./profile/store"
 import type { ProfileStore } from "./profile/store"
+import type { InferenceQueue } from "./inference/queue"
 
 // The data-plane process (ADR 0003). It owns eido-data.db, serves core's API on loopback, and
 // reaches the gate only through the intent and audit clients on the gate's data-plane socket.
@@ -49,6 +57,8 @@ export const DATA_PLANE_LOG_FILE = "data-plane.log"
 /** Where core's API listens unless EIDO_CORE_HOST and EIDO_CORE_PORT say otherwise. */
 export const DEFAULT_CORE_HOST = "127.0.0.1"
 export const DEFAULT_CORE_PORT = 8787
+export const ASK_CONTEXT_BUDGET_TOKENS = 3000
+export const ASK_REPLY_TOKENS = 512
 
 type Env = Readonly<Record<string, string | undefined>>
 
@@ -77,6 +87,8 @@ export type CoreApiConfig = {
   basePath: string
   /** Host headers answered besides the listen address, such as the one serve forwards. */
   allowedHosts: string[]
+  /** Present only when a local llama-server host and port are configured. */
+  modelBaseUrl?: string
 }
 
 export type DataPlaneConfig = {
@@ -87,11 +99,11 @@ export type DataPlaneConfig = {
   api: CoreApiConfig
 }
 
-function portOf(value: string): number {
+function portOf(value: string, name = "EIDO_CORE_PORT"): number {
   const port = Number(value)
   if (!/^\d+$/.test(value) || port > 65535) {
     throw new Error(
-      `EIDO_CORE_PORT must be a port number, not ${JSON.stringify(value)}`
+      `${name} must be a port number, not ${JSON.stringify(value)}`
     )
   }
   return port
@@ -99,6 +111,26 @@ function portOf(value: string): number {
 
 /** Core's API settings. A bind address other than 127.0.0.1 or ::1 throws: core has no auth. */
 export function coreApiConfig(env: Env): CoreApiConfig {
+  const modelHost = env["EIDO_LLAMA_HOST"]
+  const modelPort = env["EIDO_LLAMA_PORT"]
+  if (
+    (modelHost === undefined || modelHost === "") !==
+    (modelPort === undefined || modelPort === "")
+  ) {
+    throw new Error(
+      "EIDO_LLAMA_HOST and EIDO_LLAMA_PORT must be configured together"
+    )
+  }
+  const modelBaseUrl =
+    modelHost && modelPort
+      ? (() => {
+          const port = portOf(modelPort, "EIDO_LLAMA_PORT")
+          if (port === 0)
+            throw new Error("EIDO_LLAMA_PORT must be between 1 and 65535")
+          const host = modelHost.includes(":") ? `[${modelHost}]` : modelHost
+          return loopbackBaseUrl(`http://${host}:${String(port)}`)
+        })()
+      : undefined
   return {
     host: loopbackHost(env["EIDO_CORE_HOST"] || DEFAULT_CORE_HOST),
     port: portOf(env["EIDO_CORE_PORT"] || String(DEFAULT_CORE_PORT)),
@@ -107,6 +139,7 @@ export function coreApiConfig(env: Env): CoreApiConfig {
       .split(",")
       .map((host) => host.trim())
       .filter((host) => host !== ""),
+    ...(modelBaseUrl === undefined ? {} : { modelBaseUrl }),
   }
 }
 
@@ -211,9 +244,38 @@ export async function serveDataPlane(
   plane: DataPlane,
   config: CoreApiConfig
 ): Promise<CoreApi> {
+  const modelBaseUrl = config.modelBaseUrl
+  let queuePromise: Promise<InferenceQueue> | undefined
+  const getQueue = async (): Promise<InferenceQueue> => {
+    if (modelBaseUrl === undefined)
+      throw new Error("local model is not configured")
+    if (queuePromise === undefined) {
+      queuePromise = (async () => {
+        try {
+          const contextTokens = await readContextTokens(modelBaseUrl)
+          const client = await connectModelClient({
+            baseUrl: modelBaseUrl,
+            contextTokens,
+            maxReplyTokens: ASK_REPLY_TOKENS,
+          })
+          return createInferenceQueue(client)
+        } catch (error) {
+          queuePromise = undefined
+          throw error
+        }
+      })()
+    }
+    return queuePromise
+  }
+  const ask =
+    modelBaseUrl === undefined
+      ? undefined
+      : async (question: string) =>
+          askPipeline(question, plane.db, await getQueue())
   const api = await listenCoreApi({
     profile: plane.profile,
     connectorHealth: plane.gate.getConnectorHealth,
+    ...(ask === undefined ? {} : { ask }),
     ...config,
   })
   plane.log("listening", {
@@ -223,6 +285,18 @@ export async function serveDataPlane(
     allowedHosts: api.allowedHosts.join(","),
   })
   return api
+}
+
+function askPipeline(
+  question: string,
+  db: DatabaseSync,
+  queue: ReturnType<typeof createInferenceQueue>
+) {
+  return ask(question, {
+    db,
+    queue,
+    budgetTokens: ASK_CONTEXT_BUDGET_TOKENS,
+  })
 }
 
 const SIGNALS = ["SIGTERM", "SIGINT"] as const

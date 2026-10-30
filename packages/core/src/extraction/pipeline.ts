@@ -116,9 +116,10 @@ function savepoint<T>(db: DatabaseSync, work: () => T): T {
 }
 
 /**
- * The extraction pipeline: the only consumer of raw untrusted text. It has no tools and
- * proposes no write; it stores verified fields in the ledger and returns uncertain ones as
- * confirm candidates.
+ * The extraction pipeline: the only consumer of raw untrusted text. For a document and schema,
+ * it skips work once any extraction record exists, preserving the first run and preventing
+ * retries or re-syncs from duplicating ledger rows. It has no tools and proposes no write; it
+ * stores verified fields in the ledger and returns uncertain ones as confirm candidates.
  */
 export function createExtractor(deps: ExtractorDeps): Extractor {
   const { db, parser, model, config } = deps
@@ -161,6 +162,31 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
     opts: ExtractOptions = {}
   ): Promise<ExtractionResult> {
     const doc = loadDocument(docId)
+    if (
+      db
+        .prepare(
+          "SELECT 1 FROM extractions WHERE doc_id = ? AND schema = ? LIMIT 1"
+        )
+        .get(docId, EXTRACTION_SCHEMA) !== undefined
+    ) {
+      const result = {
+        docId,
+        status: "already_processed" as const,
+        proposed: 0,
+        verified: 0,
+        needsConfirmation: 0,
+        dropped: 0,
+        passagesRead: 0,
+        passagesTotal: 0,
+      }
+      return {
+        ...result,
+        summary: summarize(result),
+        confirmations: [],
+        obligationIds: [],
+        injectionReasons: [],
+      }
+    }
     const parsed = await parser.parseDocument({
       blobSha256: docId,
       mime: doc.mime,
@@ -355,6 +381,8 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
             status: "open",
             docId,
             span: fields.action.span,
+            injectionSuspected: reasons.length > 0,
+            injectionReasons: reasons,
           })
         )
       }

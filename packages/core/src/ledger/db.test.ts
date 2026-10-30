@@ -77,7 +77,7 @@ describe("migrations", () => {
     const defaultEntityId = await createDefaultEntity(path)
     const upgraded = openDataDb(path, { defaultEntityId })
     expect(schemaOf(upgraded)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(upgraded)).toBe(2)
+    expect(ledgerVersion(upgraded)).toBe(3)
     const documentsBefore = upgraded
       .prepare("SELECT * FROM documents ORDER BY sha256")
       .all()
@@ -85,7 +85,7 @@ describe("migrations", () => {
 
     const again = openDataDb(path)
     expect(schemaOf(again)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(again)).toBe(2)
+    expect(ledgerVersion(again)).toBe(3)
     expect(
       again.prepare("SELECT * FROM documents ORDER BY sha256").all()
     ).toEqual(documentsBefore)
@@ -141,12 +141,12 @@ describe("migrations", () => {
   test("a database from a newer ledger version is refused", () => {
     const path = tempPath()
     const db = openDataDb(path)
-    db.exec("UPDATE ledger_schema SET version = 3")
+    db.exec("UPDATE ledger_schema SET version = 4")
     db.close()
     expect(codeOf(() => openDataDb(path))).toBe("newer_schema")
   })
 
-  test("a database at ledger v1 migrates to v2: stored rows stay, the new checks apply to new writes", async () => {
+  test("a database at ledger v1 migrates: stored rows stay, provenance defaults clean, new checks apply", async () => {
     const path = tempPath()
     const old = openIndex(path)
     const profile = createProfileStore(old, { audit: () => Promise.resolve() })
@@ -173,7 +173,17 @@ describe("migrations", () => {
     old.close()
 
     const db = openDataDb(path)
-    expect(ledgerVersion(db)).toBe(2)
+    expect(ledgerVersion(db)).toBe(3)
+    expect(
+      db
+        .prepare(
+          "SELECT injection_suspected, injection_reasons FROM obligations ORDER BY id"
+        )
+        .all()
+    ).toEqual([
+      { injection_suspected: 0, injection_reasons: "[]" },
+      { injection_suspected: 0, injection_reasons: "[]" },
+    ])
     expect(
       db
         .prepare("SELECT entity_id, due_at FROM obligations ORDER BY id")

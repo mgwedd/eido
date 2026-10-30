@@ -1,5 +1,6 @@
 import type { AddressInfo } from "node:net"
 import type { GateConnectorHealth } from "@eido/schemas"
+import type { AskResult } from "../ask/types"
 import type { ProfileStore } from "../profile/store"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
@@ -57,6 +58,7 @@ export type CoreApiOptions = {
   profile: ProfileStore
   /** Gate-owned read-only connector health projection for the Today page. */
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
+  ask?: (question: string) => Promise<AskResult>
   host: LoopbackHost
   /** 0 picks a free port. */
   port: number
@@ -81,6 +83,7 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
     createApiHandler({
       profile: options.profile,
       connectorHealth: options.connectorHealth,
+      ask: options.ask,
       allowedHosts,
       basePath: options.basePath,
     })

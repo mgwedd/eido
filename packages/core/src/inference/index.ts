@@ -9,6 +9,7 @@ export {
   DEFAULT_TRIPWIRE_RATIO,
   connectModelClient,
   createModelClient,
+  loopbackBaseUrl,
   readContextTokens,
 } from "./client"
 export {

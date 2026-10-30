@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskCoverage",
+  "description": "Code-computed counts describing the Ask search and context read.",
+  "type": "object",
+  "properties": {
+    "searched": { "type": "integer", "minimum": 0 },
+    "matched": { "type": "integer", "minimum": 0 },
+    "readInFull": { "type": "integer", "minimum": 0 },
+    "label": { "type": "string", "minLength": 1, "maxLength": 200 }
+  },
+  "required": ["searched", "matched", "readInFull", "label"],
+  "additionalProperties": false
+}
