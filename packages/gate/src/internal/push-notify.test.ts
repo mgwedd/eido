@@ -1,5 +1,5 @@
 import { createECDH, randomBytes } from "node:crypto"
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { propose } from "./intents"
 import { createPushNotifier, pushPayload } from "./push-notify"
 import {
@@ -38,6 +38,9 @@ function requestUrl(value: string | URL | Request): string {
 }
 
 describe("count-only Web Push", () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }))
+  afterEach(() => vi.useRealTimers())
+
   it.each([
     "http://push.example.invalid/send",
     "https://push.example.invalid:444/send",
