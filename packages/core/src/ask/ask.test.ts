@@ -151,6 +151,10 @@ describe("code-computed facts", () => {
         followUpCandidates: [
           { kind: "email.archive", args: { messageIds: ["msg-1"] } },
           { kind: "email.archive", args: { messageIds: [] } },
+          {
+            kind: "email.markRead",
+            args: { messageIds: ["msg-2"], read: false },
+          },
         ],
       })
     )
@@ -158,6 +162,13 @@ describe("code-computed facts", () => {
       {
         label: "Archive email",
         intent: { kind: "email.archive", args: { messageIds: ["msg-1"] } },
+      },
+      {
+        label: "Mark email as unread",
+        intent: {
+          kind: "email.markRead",
+          args: { messageIds: ["msg-2"], read: false },
+        },
       },
     ])
   })

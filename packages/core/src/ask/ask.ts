@@ -94,7 +94,7 @@ const ACTION_LABELS: Record<Intent["kind"], string> = {
   "file.create": "Create a file",
   "file.rename": "Rename a file",
   "file.move": "Move a file",
-  "file.delete": "Delete a file",
+  "file.delete": "Move file to trash",
 }
 
 function validatedFollowUps(
@@ -104,11 +104,18 @@ function validatedFollowUps(
   const results: AskFollowUp[] = []
   for (const candidate of candidates.slice(0, 10)) {
     const checked = validateIntent(candidate)
-    if (checked.ok)
+    if (checked.ok) {
+      const label =
+        checked.value.kind === "email.markRead"
+          ? checked.value.args.read
+            ? "Mark email as read"
+            : "Mark email as unread"
+          : ACTION_LABELS[checked.value.kind]
       results.push({
-        label: ACTION_LABELS[checked.value.kind],
+        label,
         intent: checked.value,
       })
+    }
   }
   return results
 }
