@@ -2,6 +2,7 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import Forbidden from "@/app/forbidden"
 import ForbiddenPage from "@/app/forbidden/page"
 import { ForbiddenView } from "@/components/forbidden-view"
 import { register } from "@/instrumentation"
@@ -17,6 +18,9 @@ vi.mock("@/lib/auth0", () => ({
 vi.mock("next/navigation", () => ({
   redirect: (to: string) => {
     throw new Error(`redirect:${to}`)
+  },
+  forbidden: () => {
+    throw new Error("forbidden")
   },
 }))
 
@@ -39,6 +43,12 @@ describeStates("Forbidden states", [
     render: () => <ForbiddenView reason="owner-only" />,
     role: "alert",
     message: "This page is only for the person Eido works for.",
+  },
+  {
+    state: "refused with no specific reason",
+    render: () => <ForbiddenView reason={null} />,
+    role: "alert",
+    message: "This account can't open this page.",
   },
 ])
 
@@ -69,12 +79,24 @@ describe("forbidden page", () => {
     await expect(ForbiddenPage()).rejects.toThrow("redirect:/")
   })
 
+  it("answers 403 for an assistant", async () => {
+    sdk.session = {
+      user: { email: "assistant@example.test", email_verified: true },
+    }
+    await expect(ForbiddenPage()).rejects.toThrow("forbidden")
+  })
+
   it("tells an assistant the page is the owner's", async () => {
     sdk.session = {
       user: { email: "assistant@example.test", email_verified: true },
     }
-    const element = await ForbiddenPage()
+    const element = await Forbidden()
     expect((element.props as { reason: string }).reason).toBe("owner-only")
+  })
+
+  it("gives no specific reason without a session", async () => {
+    const element = await Forbidden()
+    expect((element.props as { reason: null }).reason).toBeNull()
   })
 })
 

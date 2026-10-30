@@ -12,8 +12,10 @@ const MESSAGES: Record<ForbiddenReason, string> = {
   "owner-only": "This page is only for the person Eido works for.",
 }
 
+const GENERIC = "This account can't open this page."
+
 /** The 403 page: why access was refused, and a way to sign out and switch accounts. */
-function ForbiddenView({ reason }: { reason: ForbiddenReason }) {
+function ForbiddenView({ reason }: { reason: ForbiddenReason | null }) {
   return (
     <div className="flex min-h-svh flex-col items-center justify-center gap-6 p-4">
       <p className="text-sm font-semibold tracking-wide">Eido</p>
@@ -28,7 +30,9 @@ function ForbiddenView({ reason }: { reason: ForbiddenReason }) {
             </h1>
           </header>
           <Alert variant="destructive">
-            <AlertDescription>{MESSAGES[reason]}</AlertDescription>
+            <AlertDescription>
+              {reason === null ? GENERIC : MESSAGES[reason]}
+            </AlertDescription>
           </Alert>
           {/* A plain link: sign-out must be a full navigation, never a prefetch. */}
           <Button

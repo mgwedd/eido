@@ -71,10 +71,9 @@ describe("proxy", () => {
     ["an assistant on an owner-only page", assistant],
     ["an address on neither list", { ...owner, email: "x@example.test" }],
     ["an unverified owner address", { ...owner, email_verified: false }],
-  ])("shows the 403 page to %s", async (_name, user) => {
+  ])("rewrites %s to the 403 page", async (_name, user) => {
     sdk.session = { user }
     const response = await proxy(request("/"))
-    expect(response.status).toBe(403)
     expect(isRewrite(response)).toBe(true)
     expect(getRewrittenUrl(response)).toBe(`${ORIGIN}/forbidden`)
     expect(response.headers.getSetCookie()).toEqual([

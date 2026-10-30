@@ -43,8 +43,9 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     login.searchParams.set("returnTo", decision.returnTo)
     return withCookies(NextResponse.redirect(login), authResponse)
   }
+  // The /forbidden page answers 403 itself (forbidden()); a rewrite's own status is dropped.
   return withCookies(
-    NextResponse.rewrite(new URL(FORBIDDEN_PATH, request.url), { status: 403 }),
+    NextResponse.rewrite(new URL(FORBIDDEN_PATH, request.url)),
     authResponse
   )
 }
