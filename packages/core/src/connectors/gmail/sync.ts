@@ -106,11 +106,15 @@ async function toDocuments(
   }
   const attachments: IndexedDocument[] = []
   for (const [index, attachment] of parsed.attachments.entries()) {
-    // A PDF's text comes from the sandboxed parser; one it cannot read is indexed with no text.
-    const body =
+    // A PDF's text and pages come from the sandboxed parser. If parsing fails, it has no
+    // page provenance, so it remains searchable but no page-citing digest is scheduled.
+    const pdf =
       parser !== undefined && isPdfMime(attachment.mime)
         ? await pdfAttachmentText(parser, attachment)
-        : attachmentText(attachment)
+        : null
+    const body =
+      pdf?.text ??
+      (isPdfMime(attachment.mime) ? null : attachmentText(attachment))
     attachments.push({
       sha256: sha256(`${contentHash}:${index}`),
       source: GMAIL_SOURCE,
@@ -119,6 +123,7 @@ async function toDocuments(
       entityId,
       title: attachment.filename,
       body: body ?? "",
+      ...(pdf === null ? {} : { pages: pdf.pages }),
       headers: { attachmentOf: message.id },
     })
   }
@@ -128,6 +133,8 @@ async function toDocuments(
 export type SyncOptions = {
   /** Reads PDF attachments. Without it a PDF is indexed with no text. */
   parser?: Parser
+  /** Called after the transaction commits, with documents submitted to that batch. */
+  onIngested?: (documents: readonly IndexedDocument[]) => void
 }
 
 type Totals = { inserted: number; skipped: number }
@@ -141,6 +148,7 @@ type LabelRun = {
   entityId: string
   totals: Totals
   parser: Parser | undefined
+  onIngested: SyncOptions["onIngested"]
 }
 
 /**
@@ -149,7 +157,7 @@ type LabelRun = {
  * duplicate document; a message deleted since it was listed is skipped too.
  */
 async function commitBatch(
-  { db, client, label, entityId, totals, parser }: LabelRun,
+  { db, client, label, entityId, totals, parser, onIngested }: LabelRun,
   ids: readonly string[],
   nextCursor: StreamCursor
 ): Promise<void> {
@@ -179,6 +187,7 @@ async function commitBatch(
   })
   totals.inserted += result.inserted
   totals.skipped += result.skipped
+  if (result.inserted > 0) onIngested?.(documents)
 }
 
 /**
@@ -265,6 +274,7 @@ export async function syncGmailLabel(
     entityId,
     totals,
     parser: options.parser,
+    onIngested: options.onIngested,
   }
   const cursor = readCursor(db, label)
   if (cursor === undefined) {

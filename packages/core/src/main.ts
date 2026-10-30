@@ -17,6 +17,7 @@ import {
   connectModelClient,
   loopbackBaseUrl,
   readContextTokens,
+  readModelId,
   createInferenceQueue,
 } from "./inference/index"
 import { LedgerError } from "./ledger/errors"
@@ -32,6 +33,11 @@ import { DEFAULT_DIGEST_IDLE_TTL_MINUTES } from "./conversation/digest"
 import { createProfileStore, readDefaultEntityId } from "./profile/store"
 import type { ProfileStore } from "./profile/store"
 import type { InferenceQueue } from "./inference/queue"
+import { createDigestService } from "./digest/service"
+import type { DigestService } from "./digest/service"
+import { scheduleIngestedDigests } from "./digest/ingest"
+import type { IndexedDocument } from "./index/ingest"
+import { DEFAULT_SECTION_TOKENS } from "./digest/types"
 import { createParser } from "./parsers/index"
 import type { Parser } from "./parsers/index"
 import {
@@ -66,6 +72,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_CORE_ALLOWED_HOSTS",
   "EIDO_GMAIL_PROXY_URL",
   "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
+  "EIDO_DIGEST_SECTION_TOKENS",
 ] as const
 
 /**
@@ -133,6 +140,7 @@ export type CoreApiConfig = {
   /** Gate egress proxy URL. Gmail sync is disabled when this is not configured. */
   gmailProxyUrl?: string
   conversationDigestIdleTtlMinutes: number
+  digest: { sectionTokens: number }
 }
 
 export type DataPlaneConfig = {
@@ -199,6 +207,12 @@ export function coreApiConfig(env: Env): CoreApiConfig {
         String(DEFAULT_DIGEST_IDLE_TTL_MINUTES),
       "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES"
     ),
+    digest: {
+      sectionTokens: positiveInteger(
+        env["EIDO_DIGEST_SECTION_TOKENS"] ?? String(DEFAULT_SECTION_TOKENS),
+        "EIDO_DIGEST_SECTION_TOKENS"
+      ),
+    },
     ...(modelBaseUrl === undefined ? {} : { modelBaseUrl }),
     ...(configuredGmailProxyUrl === undefined
       ? {}
@@ -244,6 +258,10 @@ export type DataPlane = {
   /** Waits for the profile store's queued calls to settle, then closes eido-data.db. */
   close: () => Promise<void>
   stopGmailSync: () => void
+  getInferenceQueue: () => Promise<InferenceQueue>
+  getModelContextTokens: () => number
+  /** Schedule digests for documents committed by a connector batch. */
+  scheduleIngestedDocuments: (documents: readonly IndexedDocument[]) => void
 }
 
 type GmailSyncRuntime = {
@@ -253,6 +271,7 @@ type GmailSyncRuntime = {
   client: GmailClient
   parser?: Parser
   config?: GmailConfig
+  onIngested?: (documents: readonly IndexedDocument[]) => void
   log: DataPlane["log"]
 }
 
@@ -281,7 +300,7 @@ export function createGmailSyncRuntime(
           input.client,
           config,
           { accountRef: account.emailAddress, entities: input.profile },
-          { parser: input.parser }
+          { parser: input.parser, onIngested: input.onIngested }
         )
       } catch (error) {
         input.log("gmail_sync_failed", {
@@ -300,6 +319,50 @@ function gmailParser(dataDir: string | undefined): Parser {
     throw new Error("Gmail sync requires EIDO_DATA_DIR to configure its parser")
   }
   return createParser({ dataDir })
+}
+
+function createModelQueueProvider(modelBaseUrl: string | undefined): {
+  getQueue: () => Promise<InferenceQueue>
+  getModelId: () => Promise<string>
+  getContextTokens: () => number
+} {
+  let queuePromise: Promise<InferenceQueue> | undefined
+  let modelIdPromise: Promise<string> | undefined
+  let modelContextTokens = 0
+  const getQueue = async (): Promise<InferenceQueue> => {
+    if (modelBaseUrl === undefined)
+      throw new Error("local model is not configured")
+    if (queuePromise === undefined) {
+      queuePromise = (async () => {
+        try {
+          const contextTokens = await readContextTokens(modelBaseUrl)
+          const client = await connectModelClient({
+            baseUrl: modelBaseUrl,
+            contextTokens,
+            maxReplyTokens: ASK_REPLY_TOKENS,
+          })
+          modelContextTokens = contextTokens
+          return createInferenceQueue(client)
+        } catch (error) {
+          queuePromise = undefined
+          throw error
+        }
+      })()
+    }
+    return queuePromise
+  }
+  const getModelId = async (): Promise<string> => {
+    if (modelBaseUrl === undefined)
+      throw new Error("local model is not configured")
+    if (modelIdPromise === undefined) {
+      modelIdPromise = readModelId(modelBaseUrl).catch((error: unknown) => {
+        modelIdPromise = undefined
+        throw error
+      })
+    }
+    return modelIdPromise
+  }
+  return { getQueue, getModelId, getContextTokens: () => modelContextTokens }
 }
 
 /**
@@ -338,6 +401,7 @@ export function openDataPlaneDb(
  * POST /audit, and logs the configuration and variable names.
  */
 export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
+  const model = createModelQueueProvider(config.api.modelBaseUrl)
   const parser =
     config.api.gmailProxyUrl === undefined
       ? undefined
@@ -366,6 +430,44 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   const gate = createIntentClient({ socketPath: config.gateSocket })
   const audit = createAuditClient({ socketPath: config.gateSocket })
   const profile = createProfileStore(db, { audit: audit.record })
+  let digestService: DigestService | undefined
+  let digestServicePromise: Promise<DigestService> | undefined
+  const getDigestService = async (): Promise<DigestService> => {
+    if (digestServicePromise === undefined) {
+      digestServicePromise = Promise.all([model.getQueue(), model.getModelId()])
+        .then(([queue, modelId]) => {
+          digestService = createDigestService({
+            db,
+            queue,
+            modelId,
+            config: { sectionTokens: config.api.digest.sectionTokens },
+            onError: (error) =>
+              log("digest_build_failed", {
+                reason:
+                  error instanceof Error ? error.message : "unknown error",
+              }),
+          })
+          return digestService
+        })
+        .catch((error: unknown) => {
+          digestServicePromise = undefined
+          throw error
+        })
+    }
+    return digestServicePromise
+  }
+  let digestScheduling = Promise.resolve()
+  const onIngested = (documents: readonly IndexedDocument[]): void => {
+    digestScheduling = digestScheduling.then(async () => {
+      try {
+        scheduleIngestedDigests(db, await getDigestService(), documents)
+      } catch (error) {
+        log("digest_schedule_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        })
+      }
+    })
+  }
   let stopGmailSync: () => void = () => {}
   let gmailSyncInFlight: Promise<void> | undefined
   if (config.api.gmailProxyUrl !== undefined) {
@@ -382,6 +484,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
         createGmailEgressTransport({ proxyUrl: config.api.gmailProxyUrl })
       ),
       parser,
+      onIngested,
       log,
     })
     const runSync = (): void => {
@@ -411,9 +514,14 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     profile,
     log,
     stopGmailSync,
+    getInferenceQueue: model.getQueue,
+    getModelContextTokens: model.getContextTokens,
+    scheduleIngestedDocuments: onIngested,
     close: async () => {
       stopGmailSync()
       await gmailSyncInFlight
+      await digestScheduling
+      await digestService?.whenIdle()
       await profile.drain()
       conversationIndex.close()
       db.close()
@@ -429,30 +537,7 @@ export async function serveDataPlane(
 ): Promise<CoreApi> {
   const modelBaseUrl = config.modelBaseUrl
   const conversation = plane.conversation
-  let queuePromise: Promise<InferenceQueue> | undefined
-  let modelContextTokens = 0
-  const getQueue = async (): Promise<InferenceQueue> => {
-    if (modelBaseUrl === undefined)
-      throw new Error("local model is not configured")
-    if (queuePromise === undefined) {
-      queuePromise = (async () => {
-        try {
-          const contextTokens = await readContextTokens(modelBaseUrl)
-          modelContextTokens = contextTokens
-          const client = await connectModelClient({
-            baseUrl: modelBaseUrl,
-            contextTokens,
-            maxReplyTokens: ASK_REPLY_TOKENS,
-          })
-          return createInferenceQueue(client)
-        } catch (error) {
-          queuePromise = undefined
-          throw error
-        }
-      })()
-    }
-    return queuePromise
-  }
+  const getQueue = plane.getInferenceQueue
   const ask =
     modelBaseUrl === undefined
       ? undefined
@@ -469,7 +554,7 @@ export async function serveDataPlane(
             1,
             Math.min(
               ASK_CONTEXT_BUDGET_TOKENS,
-              Math.floor(modelContextTokens / 2)
+              Math.floor(plane.getModelContextTokens() / 2)
             )
           )
           const compactOptions = {

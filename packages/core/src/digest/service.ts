@@ -2,7 +2,6 @@ import type { DatabaseSync } from "node:sqlite"
 import type { InferenceQueue } from "../inference/index"
 import { buildDigestLines, DIGEST_PROMPT_VERSION } from "./build"
 import {
-  applyDigestMigration,
   readDigest,
   readLatestDigest,
   readSection,
@@ -98,8 +97,6 @@ export function createDigestService(
     ),
   }
   const now = options.now ?? (() => new Date())
-  applyDigestMigration(db)
-
   const pending = pendingByDatabase.get(db) ?? new Map<string, Promise<void>>()
   pendingByDatabase.set(db, pending)
 

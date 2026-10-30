@@ -13,6 +13,8 @@ export interface IndexedDocument {
   blobPath?: string
   title?: string
   body: string
+  /** Parser-confirmed pages; absent means source page provenance is unavailable. */
+  pages?: { page: number; text: string }[]
   occurredAt?: string
   headers?: {
     messageId?: string
@@ -103,6 +105,11 @@ function insertDocument(
     h?.threadId ?? null,
     h?.attachmentOf ?? null
   )
+  const insertPage = db.prepare(
+    "INSERT INTO document_pages (sha256, page, text) VALUES (?, ?, ?)"
+  )
+  for (const page of doc.pages ?? [])
+    insertPage.run(doc.sha256, page.page, page.text)
   const insertName = db.prepare(
     "INSERT INTO name_keys (sha256, role, name, phonetic_key) VALUES (?, ?, ?, ?)"
   )

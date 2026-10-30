@@ -30,6 +30,7 @@ import {
   rfc822,
 } from "./connectors/gmail/fake-gmail.test-support"
 import { createParser } from "./parsers/index"
+import { scheduleIngestedDigests } from "./digest/ingest"
 import { textPdf } from "./parsers/fixtures.test-support"
 import {
   DATA_DB_FILE,
@@ -107,6 +108,7 @@ describe("dataPlaneConfig", () => {
         basePath: "",
         allowedHosts: [],
         conversationDigestIdleTtlMinutes: 60,
+        digest: { sectionTokens: 2000 },
       },
     })
   })
@@ -150,6 +152,7 @@ describe("coreApiConfig", () => {
       basePath: "/api/core",
       allowedHosts: ["eido.example.invalid", "127.0.0.1:9000"],
       conversationDigestIdleTtlMinutes: 60,
+      digest: { sectionTokens: 2000 },
     })
   })
 
@@ -179,6 +182,15 @@ describe("coreApiConfig", () => {
       coreApiConfig({ EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES: "0" })
     ).toThrow(
       "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES must be a positive integer"
+    )
+  })
+
+  test("reads the positive digest section token budget", () => {
+    expect(
+      coreApiConfig({ EIDO_DIGEST_SECTION_TOKENS: "1800" }).digest.sectionTokens
+    ).toBe(1800)
+    expect(() => coreApiConfig({ EIDO_DIGEST_SECTION_TOKENS: "0" })).toThrow(
+      "EIDO_DIGEST_SECTION_TOKENS must be a positive integer"
     )
   })
 
@@ -255,6 +267,87 @@ describe("runDataPlane", () => {
       { event: "stopped" },
     ])
   })
+
+  it("uses one model-backed digest service and drains its build before closing the database", async () => {
+    const model = await startStubModelServer({
+      contextTokens: 8192,
+      replies: [
+        {
+          deltas: [
+            JSON.stringify({
+              lines: [
+                {
+                  text: "Stored summary",
+                  cites: ["msg-runtime@example.invalid"],
+                },
+              ],
+            }),
+          ],
+        },
+      ],
+    })
+    const env = {
+      EIDO_DATA_DIR: join(dir, "digest-data"),
+      EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+      EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_LLAMA_PORT: new URL(model.url).port,
+    }
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const entityId = "entity-digest-test"
+    plane.db
+      .prepare(
+        "INSERT INTO entities (id, kind, name, tag, created_at) VALUES (?, 'personal', ?, 'ME', ?)"
+      )
+      .run(entityId, "Digest Test", "2030-01-01T00:00:00.000Z")
+    const document = {
+      sha256: "b".repeat(64),
+      source: "gmail",
+      sourceRef: "gm-runtime",
+      mime: "message/rfc822",
+      entityId,
+      body: "The stored message has a checkable source id.",
+      headers: {
+        threadId: "thread-runtime",
+        messageId: "msg-runtime@example.invalid",
+      },
+    }
+    ingestBatch(plane.db, {
+      connector: "gmail",
+      stream: "INBOX",
+      documents: [document],
+      nextCursor: "c1",
+    })
+    plane.scheduleIngestedDocuments([document])
+    plane.scheduleIngestedDocuments([document])
+
+    await plane.close()
+
+    expect(
+      model.requests.filter((request) => request.path === "/v1/models")
+    ).toHaveLength(1)
+    expect(model.completions()).toHaveLength(1)
+    const db = openDataDb(config.dbPath)
+    expect(
+      db.prepare("SELECT model_id, lines_json FROM digests").get()
+    ).toEqual({
+      model_id: "local",
+      lines_json: JSON.stringify([
+        {
+          text: "Stored summary",
+          cites: [
+            {
+              messageId: "msg-runtime@example.invalid",
+              injectionSuspected: false,
+              reasons: [],
+            },
+          ],
+        },
+      ]),
+    })
+    db.close()
+    await model.close()
+  })
 })
 
 describe("Gmail sync runtime", () => {
@@ -272,6 +365,7 @@ describe("Gmail sync runtime", () => {
         allowedHosts: [],
         gmailProxyUrl: "http://127.0.0.1:7801",
         conversationDigestIdleTtlMinutes: 60,
+        digest: { sectionTokens: 2000 },
       },
     }
     expect(() => runDataPlane(config, {})).toThrow(
@@ -303,17 +397,20 @@ describe("Gmail sync runtime", () => {
         attachment: {
           filename: "report.pdf",
           mime: "application/pdf",
-          content: textPdf([["Report body from the PDF"]]),
+          content: textPdf([["Report page one"], ["Report page two"]]),
         },
       }),
     })
     const parser = createParser({ dataDir: join(dir, "parser-data") })
+    const scheduleDigest = vi.fn()
     const sync = createGmailSyncRuntime({
       db,
       gate: { getConnectorHealth: () => Promise.resolve([]) },
       profile,
       client: createGmailClient(gmail.transport),
       parser,
+      onIngested: (documents) =>
+        scheduleIngestedDigests(db, { scheduleDigest }, documents),
       log: () => undefined,
     })
 
@@ -323,7 +420,28 @@ describe("Gmail sync runtime", () => {
         "SELECT t.body FROM document_text t JOIN documents d ON d.sha256 = t.sha256 WHERE t.attachment_of = ? AND d.source_ref = ?"
       )
       .get("gm-runtime", "gm-runtime#0")
-    expect(attachment?.["body"]).toBe("Report body from the PDF")
+    expect(attachment?.["body"]).toBe("Report page one\nReport page two")
+    const storedPages = db
+      .prepare(
+        "SELECT page, text FROM document_pages WHERE sha256 = (SELECT sha256 FROM documents WHERE source_ref = ?) ORDER BY page"
+      )
+      .all("gm-runtime#0")
+    expect(storedPages).toEqual([
+      { page: 1, text: "Report page one" },
+      { page: 2, text: "Report page two" },
+    ])
+    expect(scheduleDigest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "document",
+        pages: [
+          { page: 1, text: "Report page one" },
+          { page: 2, text: "Report page two" },
+        ],
+      })
+    )
+    expect(scheduleDigest).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "thread", threadId: "th-runtime" })
+    )
     db.close()
   }, 60_000)
 

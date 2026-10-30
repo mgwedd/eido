@@ -562,3 +562,43 @@ export async function readContextTokens(
   }
   return nCtx
 }
+
+/** Reads the active local model id used to key model-dependent caches. */
+export async function readModelId(
+  baseUrl: string,
+  deps: ModelClientDeps = {}
+): Promise<string> {
+  let response: Response
+  try {
+    response = await (deps.fetch ?? fetch)(
+      `${loopbackBaseUrl(baseUrl)}/v1/models`
+    )
+  } catch (cause) {
+    throw new Error("local model server is unreachable at /v1/models", {
+      cause,
+    })
+  }
+  if (!response.ok)
+    throw new Error(
+      `local model server answered ${String(response.status)} for /v1/models`
+    )
+  let value: unknown
+  try {
+    value = await response.json()
+  } catch (cause) {
+    throw new Error("local model server /v1/models response is not JSON", {
+      cause,
+    })
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("local model server /v1/models response is not an object")
+  const data: unknown = Reflect.get(value, "data")
+  const first: unknown = Array.isArray(data) ? data[0] : undefined
+  const id: unknown =
+    typeof first === "object" && first !== null && !Array.isArray(first)
+      ? Reflect.get(first, "id")
+      : undefined
+  if (typeof id !== "string" || id.trim() === "")
+    throw new Error("local model server /v1/models has no model id")
+  return id
+}

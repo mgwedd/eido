@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 6
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -108,6 +108,20 @@ SELECT d.source, d.source_ref, NULL, max(d.ingested_at)
 FROM documents d
 WHERE d.source = 'drive' GROUP BY d.source, d.source_ref;
 DELETE FROM cursors WHERE connector = 'drive' AND stream = 'files';
+`,
+  // v6: retain parser-confirmed pages for source-cited document digests. Existing documents have
+  // no page rows until reparsed; no page number is inferred from flattened text.
+  `
+CREATE TABLE document_pages (
+  sha256 TEXT NOT NULL REFERENCES documents(sha256),
+  page INTEGER NOT NULL CHECK (page >= 1),
+  text TEXT NOT NULL,
+  PRIMARY KEY (sha256, page)
+);
+CREATE TRIGGER document_pages_no_update BEFORE UPDATE ON document_pages
+BEGIN SELECT RAISE(ABORT, 'document pages are immutable'); END;
+CREATE TRIGGER document_pages_no_delete BEFORE DELETE ON document_pages
+BEGIN SELECT RAISE(ABORT, 'document pages are immutable'); END;
 `,
 ]
 

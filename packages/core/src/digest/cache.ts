@@ -2,37 +2,6 @@ import { INJECTION_REASONS } from "../inference/index"
 import type { DatabaseSync } from "node:sqlite"
 import type { Cite, Digest, DigestCoverage, DigestLine } from "./types"
 
-/**
- * The digests table of eido-data.db. The service applies it itself on creation; it is
- * idempotent (CREATE ... IF NOT EXISTS). Rows are never deleted: after a rebuild the old
- * digest stays readable under its old key.
- */
-export const DIGEST_MIGRATION_SQL = `
-CREATE TABLE IF NOT EXISTS digests (
-  key TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('thread','document')),
-  subject_ref TEXT NOT NULL,
-  prompt_version TEXT NOT NULL,
-  model_id TEXT NOT NULL,
-  fingerprint TEXT NOT NULL,
-  lines_json TEXT NOT NULL,
-  coverage_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS digests_subject ON digests(kind, subject_ref, created_at);
-CREATE TABLE IF NOT EXISTS digest_sections (
-  key TEXT PRIMARY KEY,
-  source_fingerprint TEXT NOT NULL,
-  section_identity TEXT NOT NULL,
-  prompt_version TEXT NOT NULL,
-  model_id TEXT NOT NULL,
-  lines_json TEXT NOT NULL,
-  dropped INTEGER NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS digest_sections_source ON digest_sections(source_fingerprint);
-`
-
 export interface StoredSection {
   key: string
   sourceFingerprint: string
@@ -111,10 +80,6 @@ export function pruneSections(db: DatabaseSync, before: string): number {
     db.prepare("DELETE FROM digest_sections WHERE created_at < ?").run(before)
       .changes
   )
-}
-
-export function applyDigestMigration(db: DatabaseSync): void {
-  db.exec(DIGEST_MIGRATION_SQL)
 }
 
 export interface StoredDigest {

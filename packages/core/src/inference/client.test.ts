@@ -6,6 +6,7 @@ import {
   loopbackBaseUrl,
   placeholder,
   readContextTokens,
+  readModelId,
   splitRendered,
 } from "./client"
 import {
@@ -880,5 +881,27 @@ describe("readContextTokens", () => {
     stub = undefined
     const error = await rejection(readContextTokens(url))
     expect(error).toMatchObject({ kind: "unreachable" })
+  })
+})
+
+describe("readModelId", () => {
+  test("reads the active id from the local model server", async () => {
+    const server = await start({ replies: [] })
+    expect(await readModelId(server.url)).toBe("local")
+    expect(server.requests[0]).toMatchObject({
+      method: "GET",
+      path: "/v1/models",
+    })
+  })
+
+  test("refuses a server response without a model id", async () => {
+    await expect(
+      readModelId("http://127.0.0.1:8080", {
+        fetch: () =>
+          Promise.resolve(
+            new Response(JSON.stringify({ data: [{ id: " " }] }))
+          ),
+      })
+    ).rejects.toThrow("local model server /v1/models has no model id")
   })
 })

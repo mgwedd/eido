@@ -347,6 +347,10 @@ export async function startStubModelServer(
       })
       return
     }
+    if (req.method === "GET" && path === "/v1/models") {
+      json(res, 200, { data: [{ id: "local" }] })
+      return
+    }
     if (req.method !== "POST") return notFound(res)
     if (path === "/apply-template" && !missing.has("apply-template")) {
       const prompt = renderChatTemplate(JSON.parse(body))
