@@ -658,6 +658,93 @@ function servedEnv(extra: Record<string, string> = {}) {
 }
 
 describe("serveDataPlane", () => {
+  it("retries idle conversation sweeps after queue and summary failures without overlapping builds", async () => {
+    const model = await startStubModelServer({
+      contextTokens: 8192,
+      replies: [
+        { deltas: ["invalid summary"] },
+        { deltas: [JSON.stringify({ summary: "Please track repairs." })] },
+      ],
+    })
+    const env = servedEnv({
+      EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_LLAMA_PORT: new URL(model.url).port,
+    })
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const queue = vi
+      .spyOn(plane, "getInferenceQueue")
+      .mockRejectedValueOnce(new Error("model temporarily unavailable"))
+    const log = vi.spyOn(plane, "log")
+    const timers = vi.spyOn(globalThis, "setInterval")
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      const tick = timers.mock.calls.at(-1)?.[0]
+      if (typeof tick !== "function") throw new Error("missing digest timer")
+      const store = plane.conversation
+      if (store === undefined) throw new Error("missing conversation store")
+      store.appendTurn("idle", {
+        id: "old-turn",
+        role: "user",
+        text: "Please track repairs.",
+        at: "2020-01-01T00:00:00.000Z",
+        sources: [],
+      })
+      plane.db
+        .prepare("UPDATE conversations SET last_activity_at = ? WHERE id = ?")
+        .run("2020-01-01T00:00:00.000Z", "idle")
+      tick()
+      await vi.waitFor(() =>
+        expect(log).toHaveBeenCalledWith("conversation_digest_sweep_failed", {
+          count: "unknown",
+        })
+      )
+      tick()
+      tick()
+      await vi.waitFor(() =>
+        expect(log).toHaveBeenCalledWith("conversation_digest_sweep_failed", {
+          count: "1",
+        })
+      )
+      expect(model.completions()).toHaveLength(1)
+      expect(store.getConversationDigest("idle")).toBeUndefined()
+      tick()
+      await vi.waitFor(() =>
+        expect(store.getConversationDigest("idle")?.text).toContain(
+          "Please track repairs."
+        )
+      )
+      expect(model.completions()).toHaveLength(2)
+      delete plane.conversation
+      tick()
+      expect(queue).toHaveBeenCalledTimes(3)
+    } finally {
+      timers.mockRestore()
+      await api.close()
+      await plane.close()
+      await model.close()
+    }
+  })
+
+  it("does not schedule a conversation sweep without a configured local model", async () => {
+    const env = servedEnv()
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const queue = vi.spyOn(plane, "getInferenceQueue")
+    const timers = vi.spyOn(globalThis, "setInterval")
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      const tick = timers.mock.calls.at(-1)?.[0]
+      if (typeof tick !== "function") throw new Error("missing digest timer")
+      tick()
+      expect(queue).not.toHaveBeenCalled()
+    } finally {
+      timers.mockRestore()
+      await api.close()
+      await plane.close()
+    }
+  })
+
   it("keeps non-ask routes available when the local model is unavailable", async () => {
     const env = servedEnv({
       EIDO_LLAMA_HOST: "127.0.0.1",
