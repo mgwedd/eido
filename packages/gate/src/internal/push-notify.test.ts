@@ -337,11 +337,14 @@ describe("count-only Web Push", () => {
   it("keeps a pending window durable across notifier restart and sends once when the key is available", async () => {
     const s = setup()
     let time = 1_000
+    // This test advances its injected clock directly; keep real timers from
+    // claiming the window if the macOS runner pauses while the test is active.
+    const windowMs = 24 * 60 * 60 * 1_000
     const subscription = {
       endpoint: "https://push.example.invalid/send/two",
       ...keys(),
     }
-    registerPushSubscription(
+    const id = registerPushSubscription(
       s.db,
       subscription,
       controlAuthorization(s.db, preparePushRegistration(s.db, subscription))
@@ -354,6 +357,7 @@ describe("count-only Web Push", () => {
     const first = createPushNotifier({
       db: s.db,
       now: () => time,
+      windowMs,
       subject: "mailto:ops@example.invalid",
       privateKey: () => Promise.resolve(undefined),
       fetch: () => Promise.reject(new Error("should not fetch without a key")),
@@ -364,6 +368,7 @@ describe("count-only Web Push", () => {
     const second = createPushNotifier({
       db: s.db,
       now: () => time,
+      windowMs,
       subject: "mailto:ops@example.invalid",
       privateKey: () => Promise.resolve(privateKey()),
       fetch: (url) => {
@@ -372,17 +377,24 @@ describe("count-only Web Push", () => {
       },
     })
     try {
-      time = 61_000
+      time = 1_000 + windowMs
       expect(await second.flushDue()).toBe(true)
       expect(await second.flushDue()).toBe(false)
       expect(sent).toEqual([subscription.endpoint])
-      expect(auditRows(s.db).some((row) => row.action === "push.sent")).toBe(
-        true
-      )
+      expect(
+        auditRows(s.db)
+          .filter((row) => row.action === "push.sent")
+          .map((row) => row.target)
+      ).toEqual([id])
       second.notifyPending()
-      time = 121_000
+      time = 1_000 + 2 * windowMs
       expect(await second.flushDue()).toBe(true)
       expect(sent).toEqual([subscription.endpoint, subscription.endpoint])
+      expect(
+        auditRows(s.db)
+          .filter((row) => row.action === "push.sent")
+          .map((row) => row.target)
+      ).toEqual([id, id])
     } finally {
       second.close()
       s.cleanup()
