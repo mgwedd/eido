@@ -3,7 +3,8 @@ import type { DatabaseSync } from "node:sqlite"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { IntentClient } from "@eido/gate"
-import { afterAll, beforeEach, describe, expect, test } from "vitest"
+import { afterAll, beforeEach, describe, expect, test, vi } from "vitest"
+import { scheduleIngestedDigests } from "../../digest/ingest"
 import { openDataDb } from "../../ledger/db"
 import { createParser } from "../../parsers/index"
 import type { Parser } from "../../parsers/index"
@@ -14,7 +15,7 @@ import { createGmailClient } from "./client"
 import { resolveGmailConfig } from "./config"
 import { createGmailFacade } from "./facade"
 import { createFakeGmail, rfc822 } from "./fake-gmail.test-support"
-import { syncGmail } from "./sync"
+import { syncGmail, syncGmailLabel } from "./sync"
 
 // PDF attachments are read by the real sandboxed parser (a child process per parse).
 
@@ -154,4 +155,49 @@ describe("PDF attachments", () => {
       facade().attachment_text({ messageId: "gm-1", attachmentIndex: 0 }).text
     ).toBeNull()
   })
+
+  test("reparsing a legacy PDF backfills page citations and schedules its digest", async () => {
+    const pdf = textPdf([["page one"], ["page two"]])
+    addWithPdf("gm-legacy", pdf)
+    await sync(undefined)
+    const storedSha: unknown = db
+      .prepare("SELECT sha256 FROM documents WHERE source_ref = 'gm-legacy#0'")
+      .get()?.["sha256"]
+    if (typeof storedSha !== "string")
+      throw new Error("legacy PDF was not stored")
+
+    // Exercise the bounded full-sync reparse path for old messages with flattened PDFs.
+    db.prepare(
+      "DELETE FROM cursors WHERE connector = 'gmail' AND stream = 'INBOX'"
+    ).run()
+    const client = createGmailClient(gmail.transport)
+    const scheduleDigest = vi.fn()
+    const result = await syncGmailLabel(db, client, "INBOX", config, account, {
+      parser: newParser(),
+      onIngested: (documents) =>
+        scheduleIngestedDigests(db, { scheduleDigest }, documents),
+    })
+
+    expect(result.inserted).toBe(0)
+    expect(
+      db
+        .prepare(
+          "SELECT page, text FROM document_pages WHERE sha256 = ? ORDER BY page"
+        )
+        .all(storedSha)
+    ).toEqual([
+      { page: 1, text: "page one" },
+      { page: 2, text: "page two" },
+    ])
+    expect(scheduleDigest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "document",
+        docSha256: storedSha,
+        pages: [
+          { page: 1, text: "page one" },
+          { page: 2, text: "page two" },
+        ],
+      })
+    )
+  }, 60_000)
 })

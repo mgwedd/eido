@@ -44,6 +44,7 @@ describe("runProbe", () => {
           basePath: "",
           allowedHosts: [],
           conversationDigestIdleTtlMinutes: 60,
+          digest: { sectionTokens: 2000 },
         },
       },
     })

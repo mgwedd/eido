@@ -70,6 +70,8 @@ export interface StubScript {
   replies: StubReply[]
   /** Routes this server lacks: they answer 404, as an older llama-server would. */
   missing?: ("apply-template" | "tokenize")[]
+  /** Number of initial `/v1/models` requests that return an error. */
+  modelMetadataFailures?: number
   /** `/tokenize` parses special tokens whatever `parse_special` says. */
   ignoreParseSpecial?: boolean
   /** Rewrites the `/apply-template` answer's prompt, for template tests. */
@@ -332,6 +334,7 @@ export async function startStubModelServer(
 ): Promise<StubModelServer> {
   const requests: RecordedRequest[] = []
   const missing = new Set(script.missing ?? [])
+  let modelMetadataFailures = script.modelMetadataFailures ?? 0
   let completions = 0
   const handle = async (
     req: IncomingMessage,
@@ -345,6 +348,15 @@ export async function startStubModelServer(
         default_generation_settings: { n_ctx: script.contextTokens ?? 4096 },
         total_slots: 1,
       })
+      return
+    }
+    if (req.method === "GET" && path === "/v1/models") {
+      if (modelMetadataFailures > 0) {
+        modelMetadataFailures -= 1
+        json(res, 503, { error: { message: "metadata unavailable" } })
+        return
+      }
+      json(res, 200, { data: [{ id: "local" }] })
       return
     }
     if (req.method !== "POST") return notFound(res)

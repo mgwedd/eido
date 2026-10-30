@@ -14,6 +14,8 @@ import { CONVERSATION_SCHEMA_SQL } from "../conversation/schema"
  *     carries the same entity as its source document (#259). The checks are triggers, since a
  *     column CHECK cannot be changed in place; they apply to writes from now on and leave rows
  *     stored under v1 as they are.
+ * v3 adds injection provenance to obligations; v4 adds conversation storage and search; v5 adds
+ *     resumable digest section and final digest caches.
  */
 export const LEDGER_MIGRATIONS: readonly string[] = [
   `
@@ -174,6 +176,31 @@ WHEN NEW.injection_suspected IS NOT OLD.injection_suspected OR NEW.injection_rea
 BEGIN SELECT RAISE(ABORT, 'an obligation keeps its source'); END;
 `,
   CONVERSATION_SCHEMA_SQL,
+  `
+CREATE TABLE digests (
+  key TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('thread','document')),
+  subject_ref TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  lines_json TEXT NOT NULL,
+  coverage_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX digests_subject ON digests(kind, subject_ref, created_at);
+CREATE TABLE digest_sections (
+  key TEXT PRIMARY KEY,
+  source_fingerprint TEXT NOT NULL,
+  section_identity TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  lines_json TEXT NOT NULL,
+  dropped INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX digest_sections_source ON digest_sections(source_fingerprint);
+`,
 ]
 
 export const LEDGER_SCHEMA_VERSION = LEDGER_MIGRATIONS.length

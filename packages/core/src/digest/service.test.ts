@@ -774,9 +774,15 @@ describe("failures", () => {
     ).toThrow(RangeError)
   })
 
-  it("applies its table once and keeps stored digests across service instances", async () => {
+  it("uses migration-owned tables and keeps stored digests across service instances", async () => {
     const model = fakeModel()
     const first = harness(model)
+    const tables = first.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all()
+      .map((row) => row["name"])
+    expect(tables).toContain("digests")
+    expect(tables).toContain("digest_sections")
     const thread = syntheticThread(2)
     first.service.scheduleDigest(thread)
     await first.service.whenIdle()

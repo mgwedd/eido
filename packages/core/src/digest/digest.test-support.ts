@@ -1,4 +1,3 @@
-import { DatabaseSync } from "node:sqlite"
 import type {
   InferenceRequest,
   InferenceResult,
@@ -10,6 +9,7 @@ import {
   plainContent,
 } from "../inference/index"
 import { createDigestService } from "./service"
+import { openDataDb } from "../ledger/db"
 import type { DigestServiceOptions } from "./service"
 import type { DigestSubject, ThreadMessage } from "./types"
 
@@ -110,7 +110,7 @@ export function harness(
   model: ReturnType<typeof fakeModel>,
   overrides: Partial<DigestServiceOptions> = {}
 ) {
-  const db = new DatabaseSync(":memory:")
+  const db = openDataDb(":memory:")
   const queue = createInferenceQueue(model.client)
   const errors: unknown[] = []
   const service = createDigestService({

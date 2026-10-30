@@ -627,6 +627,31 @@ describe("Gmail draft and send through fake Gmail", () => {
     expect(parsed.text?.trim()).toBe("Draft body")
   })
 
+  it.each([null, ""])(
+    "refuses to create a draft without an authenticated sender (%s)",
+    async (sender) => {
+      const setUp = pinnedGmail(true)
+      const gmail = fakeGmailApi({}, {}, sender)
+      const executor = await gmailExecutor(setUp, gmail)
+      const { intentId } = proposeIntent(setUp, {
+        kind: "email.draft",
+        connector: "gmail",
+        args: {
+          to: ["person@example.invalid"],
+          subject: "Approved subject",
+          body: "Approved body",
+        },
+      })
+      expect((await executor.execute(intentId)).ok).toBe(false)
+      expect(
+        gmail.calls.some(
+          (call) => call.method === "GET" && call.url.endsWith("/profile")
+        )
+      ).toBe(true)
+      expect(gmail.postedBodies).toEqual([])
+    }
+  )
+
   it("sends an existing draft with the approved MIME and records no inverse", async () => {
     const setUp = pinnedGmail(true)
     const gmail = fakeGmailApi({})

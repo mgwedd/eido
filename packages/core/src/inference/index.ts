@@ -11,6 +11,7 @@ export {
   createModelClient,
   loopbackBaseUrl,
   readContextTokens,
+  readModelId,
 } from "./client"
 export {
   InferenceError,

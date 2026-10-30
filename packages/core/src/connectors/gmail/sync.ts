@@ -106,11 +106,15 @@ async function toDocuments(
   }
   const attachments: IndexedDocument[] = []
   for (const [index, attachment] of parsed.attachments.entries()) {
-    // A PDF's text comes from the sandboxed parser; one it cannot read is indexed with no text.
-    const body =
+    // A PDF's text and pages come from the sandboxed parser. If parsing fails, it has no
+    // page provenance, so it remains searchable but no page-citing digest is scheduled.
+    const pdf =
       parser !== undefined && isPdfMime(attachment.mime)
         ? await pdfAttachmentText(parser, attachment)
-        : attachmentText(attachment)
+        : null
+    const body =
+      pdf?.text ??
+      (isPdfMime(attachment.mime) ? null : attachmentText(attachment))
     attachments.push({
       sha256: sha256(`${contentHash}:${index}`),
       source: GMAIL_SOURCE,
@@ -119,6 +123,7 @@ async function toDocuments(
       entityId,
       title: attachment.filename,
       body: body ?? "",
+      ...(pdf === null ? {} : { pages: pdf.pages }),
       headers: { attachmentOf: message.id },
     })
   }
@@ -128,6 +133,8 @@ async function toDocuments(
 export type SyncOptions = {
   /** Reads PDF attachments. Without it a PDF is indexed with no text. */
   parser?: Parser
+  /** Called after the transaction commits, with documents submitted to that batch. */
+  onIngested?: (documents: readonly IndexedDocument[]) => void
 }
 
 type Totals = { inserted: number; skipped: number }
@@ -141,24 +148,39 @@ type LabelRun = {
   entityId: string
   totals: Totals
   parser: Parser | undefined
+  onIngested: SyncOptions["onIngested"]
 }
 
 /**
- * Fetches and parses the messages not yet in the index, then commits them with `nextCursor` in one
- * transaction. Ids already indexed are skipped before any fetch, so a repeated batch costs no
- * duplicate document; a message deleted since it was listed is skipped too.
+ * Fetches and parses messages not yet in the index, then commits them with `nextCursor` in one
+ * transaction. Indexed messages are skipped unless a PDF attachment lacks stored parser pages;
+ * that bounded full-sync reparse can add provenance without replacing the immutable document.
+ * A message deleted since it was listed is skipped too.
  */
 async function commitBatch(
-  { db, client, label, entityId, totals, parser }: LabelRun,
+  { db, client, label, entityId, totals, parser, onIngested }: LabelRun,
   ids: readonly string[],
   nextCursor: StreamCursor
 ): Promise<void> {
   const known = db.prepare(
     "SELECT 1 FROM documents WHERE source = ? AND source_ref = ? LIMIT 1"
   )
+  const missingPdfPages = db.prepare(
+    `SELECT 1 FROM documents d
+     JOIN document_text t ON t.sha256 = d.sha256
+     WHERE d.source = ? AND t.attachment_of = ? AND d.mime = 'application/pdf'
+       AND NOT EXISTS (
+         SELECT 1 FROM document_pages p WHERE p.sha256 = d.sha256
+       )
+     LIMIT 1`
+  )
   const documents: IndexedDocument[] = []
   for (const id of new Set(ids)) {
-    if (known.get(GMAIL_SOURCE, id) !== undefined) {
+    if (
+      known.get(GMAIL_SOURCE, id) !== undefined &&
+      (parser === undefined ||
+        missingPdfPages.get(GMAIL_SOURCE, id) === undefined)
+    ) {
       totals.skipped++
       continue
     }
@@ -179,6 +201,7 @@ async function commitBatch(
   })
   totals.inserted += result.inserted
   totals.skipped += result.skipped
+  if (result.inserted > 0 || result.pagesStored > 0) onIngested?.(documents)
 }
 
 /**
@@ -265,6 +288,7 @@ export async function syncGmailLabel(
     entityId,
     totals,
     parser: options.parser,
+    onIngested: options.onIngested,
   }
   const cursor = readCursor(db, label)
   if (cursor === undefined) {

@@ -30,6 +30,7 @@ import {
   rfc822,
 } from "./connectors/gmail/fake-gmail.test-support"
 import { createParser } from "./parsers/index"
+import { scheduleIngestedDigests } from "./digest/ingest"
 import { textPdf } from "./parsers/fixtures.test-support"
 import {
   DATA_DB_FILE,
@@ -107,6 +108,7 @@ describe("dataPlaneConfig", () => {
         basePath: "",
         allowedHosts: [],
         conversationDigestIdleTtlMinutes: 60,
+        digest: { sectionTokens: 2000 },
       },
     })
   })
@@ -150,6 +152,7 @@ describe("coreApiConfig", () => {
       basePath: "/api/core",
       allowedHosts: ["eido.example.invalid", "127.0.0.1:9000"],
       conversationDigestIdleTtlMinutes: 60,
+      digest: { sectionTokens: 2000 },
     })
   })
 
@@ -179,6 +182,15 @@ describe("coreApiConfig", () => {
       coreApiConfig({ EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES: "0" })
     ).toThrow(
       "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES must be a positive integer"
+    )
+  })
+
+  test("reads the positive digest section token budget", () => {
+    expect(
+      coreApiConfig({ EIDO_DIGEST_SECTION_TOKENS: "1800" }).digest.sectionTokens
+    ).toBe(1800)
+    expect(() => coreApiConfig({ EIDO_DIGEST_SECTION_TOKENS: "0" })).toThrow(
+      "EIDO_DIGEST_SECTION_TOKENS must be a positive integer"
     )
   })
 
@@ -255,6 +267,133 @@ describe("runDataPlane", () => {
       { event: "stopped" },
     ])
   })
+
+  it("uses one model-backed digest service and drains its build before closing the database", async () => {
+    const model = await startStubModelServer({
+      contextTokens: 8192,
+      modelMetadataFailures: 1,
+      replies: [
+        {
+          deltas: [
+            JSON.stringify({
+              lines: [
+                {
+                  text: "Stored summary",
+                  cites: ["msg-runtime@example.invalid"],
+                },
+              ],
+            }),
+          ],
+        },
+      ],
+    })
+    const env = {
+      EIDO_DATA_DIR: join(dir, "digest-data"),
+      EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+      EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_LLAMA_PORT: new URL(model.url).port,
+    }
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const entityId = "entity-digest-test"
+    plane.db
+      .prepare(
+        "INSERT INTO entities (id, kind, name, tag, created_at) VALUES (?, 'personal', ?, 'ME', ?)"
+      )
+      .run(entityId, "Digest Test", "2030-01-01T00:00:00.000Z")
+    const document = {
+      sha256: "b".repeat(64),
+      source: "gmail",
+      sourceRef: "gm-runtime",
+      mime: "message/rfc822",
+      entityId,
+      body: "The stored message has a checkable source id.",
+      headers: {
+        threadId: "thread-runtime",
+        messageId: "msg-runtime@example.invalid",
+      },
+    }
+    ingestBatch(plane.db, {
+      connector: "gmail",
+      stream: "INBOX",
+      documents: [document],
+      nextCursor: "c1",
+    })
+    plane.scheduleIngestedDocuments([document])
+    plane.scheduleIngestedDocuments([document])
+
+    await plane.close()
+
+    expect(
+      model.requests.filter((request) => request.path === "/v1/models")
+    ).toHaveLength(2)
+    expect(model.completions()).toHaveLength(1)
+    expect(plane.db.isOpen).toBe(false)
+    expect(
+      readFileSync(config.logPath, "utf8").includes("digest_schedule_failed")
+    ).toBe(true)
+    const db = openDataDb(config.dbPath)
+    expect(
+      db.prepare("SELECT model_id, lines_json FROM digests").get()
+    ).toEqual({
+      model_id: "local",
+      lines_json: JSON.stringify([
+        {
+          text: "Stored summary",
+          cites: [
+            {
+              messageId: "msg-runtime@example.invalid",
+              injectionSuspected: false,
+              reasons: [],
+            },
+          ],
+        },
+      ]),
+    })
+    db.close()
+    await model.close()
+  })
+
+  it("logs failed digest scheduling and still closes when no local model is configured", async () => {
+    const env = {
+      EIDO_DATA_DIR: join(dir, "digest-without-model"),
+      EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+    }
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const entityId = "entity-no-model"
+    plane.db
+      .prepare(
+        "INSERT INTO entities (id, kind, name, tag, created_at) VALUES (?, 'personal', ?, 'ME', ?)"
+      )
+      .run(entityId, "No Model", "2030-01-01T00:00:00.000Z")
+    const document = {
+      sha256: "c".repeat(64),
+      source: "gmail",
+      sourceRef: "gm-no-model",
+      mime: "message/rfc822",
+      entityId,
+      body: "A stored message without model configuration.",
+      headers: {
+        threadId: "thread-no-model",
+        messageId: "no-model@example.invalid",
+      },
+    }
+    ingestBatch(plane.db, {
+      connector: "gmail",
+      stream: "INBOX",
+      documents: [document],
+      nextCursor: "c1",
+    })
+    plane.scheduleIngestedDocuments([document])
+
+    await plane.close()
+
+    expect(plane.db.isOpen).toBe(false)
+    expect(readFileSync(config.logPath, "utf8")).toContain(
+      '"event":"digest_schedule_failed"'
+    )
+  })
 })
 
 describe("Gmail sync runtime", () => {
@@ -272,6 +411,7 @@ describe("Gmail sync runtime", () => {
         allowedHosts: [],
         gmailProxyUrl: "http://127.0.0.1:7801",
         conversationDigestIdleTtlMinutes: 60,
+        digest: { sectionTokens: 2000 },
       },
     }
     expect(() => runDataPlane(config, {})).toThrow(
@@ -303,17 +443,20 @@ describe("Gmail sync runtime", () => {
         attachment: {
           filename: "report.pdf",
           mime: "application/pdf",
-          content: textPdf([["Report body from the PDF"]]),
+          content: textPdf([["Report page one"], ["Report page two"]]),
         },
       }),
     })
     const parser = createParser({ dataDir: join(dir, "parser-data") })
+    const scheduleDigest = vi.fn()
     const sync = createGmailSyncRuntime({
       db,
       gate: { getConnectorHealth: () => Promise.resolve([]) },
       profile,
       client: createGmailClient(gmail.transport),
       parser,
+      onIngested: (documents) =>
+        scheduleIngestedDigests(db, { scheduleDigest }, documents),
       log: () => undefined,
     })
 
@@ -323,7 +466,31 @@ describe("Gmail sync runtime", () => {
         "SELECT t.body FROM document_text t JOIN documents d ON d.sha256 = t.sha256 WHERE t.attachment_of = ? AND d.source_ref = ?"
       )
       .get("gm-runtime", "gm-runtime#0")
-    expect(attachment?.["body"]).toBe("Report body from the PDF")
+    expect(attachment?.["body"]).toBe("Report page one\nReport page two")
+    const storedPages = db
+      .prepare(
+        "SELECT page, text FROM document_pages WHERE sha256 = (SELECT sha256 FROM documents WHERE source_ref = ?) ORDER BY page"
+      )
+      .all("gm-runtime#0")
+    expect(storedPages).toEqual([
+      { page: 1, text: "Report page one" },
+      { page: 2, text: "Report page two" },
+    ])
+    expect(scheduleDigest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "document",
+        pages: [
+          { page: 1, text: "Report page one" },
+          { page: 2, text: "Report page two" },
+        ],
+      })
+    )
+    expect(scheduleDigest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "thread",
+        threadId: JSON.stringify(["gmail", entity.id, "th-runtime"]),
+      })
+    )
     db.close()
   }, 60_000)
 
@@ -491,6 +658,93 @@ function servedEnv(extra: Record<string, string> = {}) {
 }
 
 describe("serveDataPlane", () => {
+  it("retries idle conversation sweeps after queue and summary failures without overlapping builds", async () => {
+    const model = await startStubModelServer({
+      contextTokens: 8192,
+      replies: [
+        { deltas: ["invalid summary"] },
+        { deltas: [JSON.stringify({ summary: "Please track repairs." })] },
+      ],
+    })
+    const env = servedEnv({
+      EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_LLAMA_PORT: new URL(model.url).port,
+    })
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const queue = vi
+      .spyOn(plane, "getInferenceQueue")
+      .mockRejectedValueOnce(new Error("model temporarily unavailable"))
+    const log = vi.spyOn(plane, "log")
+    const timers = vi.spyOn(globalThis, "setInterval")
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      const tick = timers.mock.calls.at(-1)?.[0]
+      if (typeof tick !== "function") throw new Error("missing digest timer")
+      const store = plane.conversation
+      if (store === undefined) throw new Error("missing conversation store")
+      store.appendTurn("idle", {
+        id: "old-turn",
+        role: "user",
+        text: "Please track repairs.",
+        at: "2020-01-01T00:00:00.000Z",
+        sources: [],
+      })
+      plane.db
+        .prepare("UPDATE conversations SET last_activity_at = ? WHERE id = ?")
+        .run("2020-01-01T00:00:00.000Z", "idle")
+      tick()
+      await vi.waitFor(() =>
+        expect(log).toHaveBeenCalledWith("conversation_digest_sweep_failed", {
+          count: "unknown",
+        })
+      )
+      tick()
+      tick()
+      await vi.waitFor(() =>
+        expect(log).toHaveBeenCalledWith("conversation_digest_sweep_failed", {
+          count: "1",
+        })
+      )
+      expect(model.completions()).toHaveLength(1)
+      expect(store.getConversationDigest("idle")).toBeUndefined()
+      tick()
+      await vi.waitFor(() =>
+        expect(store.getConversationDigest("idle")?.text).toContain(
+          "Please track repairs."
+        )
+      )
+      expect(model.completions()).toHaveLength(2)
+      delete plane.conversation
+      tick()
+      expect(queue).toHaveBeenCalledTimes(3)
+    } finally {
+      timers.mockRestore()
+      await api.close()
+      await plane.close()
+      await model.close()
+    }
+  })
+
+  it("does not schedule a conversation sweep without a configured local model", async () => {
+    const env = servedEnv()
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const queue = vi.spyOn(plane, "getInferenceQueue")
+    const timers = vi.spyOn(globalThis, "setInterval")
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      const tick = timers.mock.calls.at(-1)?.[0]
+      if (typeof tick !== "function") throw new Error("missing digest timer")
+      tick()
+      expect(queue).not.toHaveBeenCalled()
+    } finally {
+      timers.mockRestore()
+      await api.close()
+      await plane.close()
+    }
+  })
+
   it("keeps non-ask routes available when the local model is unavailable", async () => {
     const env = servedEnv({
       EIDO_LLAMA_HOST: "127.0.0.1",

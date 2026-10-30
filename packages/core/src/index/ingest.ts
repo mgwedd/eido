@@ -13,6 +13,8 @@ export interface IndexedDocument {
   blobPath?: string
   title?: string
   body: string
+  /** Parser-confirmed pages; absent means source page provenance is unavailable. */
+  pages?: { page: number; text: string }[]
   occurredAt?: string
   headers?: {
     messageId?: string
@@ -31,6 +33,8 @@ export interface IndexedDocument {
 export interface IngestResult {
   inserted: number
   skipped: number
+  /** Parser-confirmed page rows stored for new documents or safely backfilled on reparse. */
+  pagesStored: number
   uidvalidityChanged: boolean
 }
 
@@ -67,7 +71,7 @@ function insertDocument(
   db: DatabaseSync,
   doc: IndexedDocument,
   now: string
-): boolean {
+): { inserted: boolean; pagesStored: number } {
   if (doc.content !== undefined) {
     const digest = createHash("sha256").update(doc.content).digest("hex")
     if (digest !== doc.sha256)
@@ -87,7 +91,35 @@ function insertDocument(
       now,
       doc.blobPath ?? null
     )
-  if (changes === 0) return false
+  if (changes === 0) {
+    if (doc.pages === undefined || doc.pages.length === 0)
+      return { inserted: false, pagesStored: 0 }
+    const stored = db
+      .prepare(
+        "SELECT source, source_ref, mime, entity_id, blob_path FROM documents WHERE sha256 = ?"
+      )
+      .get(doc.sha256)
+    if (
+      stored === undefined ||
+      stored["source"] !== doc.source ||
+      stored["source_ref"] !== doc.sourceRef ||
+      stored["mime"] !== doc.mime ||
+      (stored["entity_id"] !== (doc.entityId ?? null) &&
+        !(stored["entity_id"] === null && doc.entityId !== undefined)) ||
+      stored["blob_path"] !== (doc.blobPath ?? null)
+    )
+      return { inserted: false, pagesStored: 0 }
+    const hasPages = db
+      .prepare("SELECT 1 FROM document_pages WHERE sha256 = ? LIMIT 1")
+      .get(doc.sha256)
+    if (hasPages !== undefined) return { inserted: false, pagesStored: 0 }
+    const insertPage = db.prepare(
+      "INSERT INTO document_pages (sha256, page, text) VALUES (?, ?, ?)"
+    )
+    for (const page of doc.pages)
+      insertPage.run(doc.sha256, page.page, page.text)
+    return { inserted: false, pagesStored: doc.pages.length }
+  }
   const h = doc.headers
   db.prepare(
     `INSERT INTO document_text (sha256, title, body, occurred_at, message_id, in_reply_to, references_json, thread_id, attachment_of)
@@ -103,6 +135,11 @@ function insertDocument(
     h?.threadId ?? null,
     h?.attachmentOf ?? null
   )
+  const insertPage = db.prepare(
+    "INSERT INTO document_pages (sha256, page, text) VALUES (?, ?, ?)"
+  )
+  for (const page of doc.pages ?? [])
+    insertPage.run(doc.sha256, page.page, page.text)
   const insertName = db.prepare(
     "INSERT INTO name_keys (sha256, role, name, phonetic_key) VALUES (?, ?, ?, ?)"
   )
@@ -121,7 +158,7 @@ function insertDocument(
     positions.set(role, position + 1)
     insertAddress.run(doc.sha256, role, position, address)
   }
-  return true
+  return { inserted: true, pagesStored: doc.pages?.length ?? 0 }
 }
 
 /**
@@ -146,16 +183,24 @@ export function ingestBatch(
     args.uidvalidity !== undefined &&
     stored.uidvalidity !== args.uidvalidity
   ) {
-    return { inserted: 0, skipped: 0, uidvalidityChanged: true }
+    return {
+      inserted: 0,
+      skipped: 0,
+      pagesStored: 0,
+      uidvalidityChanged: true,
+    }
   }
   const now = new Date().toISOString()
   let inserted = 0
   let skipped = 0
+  let pagesStored = 0
   db.exec("BEGIN")
   try {
     for (const doc of args.documents) {
-      if (insertDocument(db, doc, now)) inserted++
+      const result = insertDocument(db, doc, now)
+      if (result.inserted) inserted++
       else skipped++
+      pagesStored += result.pagesStored
     }
     const setHead = db.prepare(
       `INSERT INTO document_heads (source, source_ref, sha256, updated_at) VALUES (?, ?, ?, ?)
@@ -180,5 +225,5 @@ export function ingestBatch(
     db.exec("ROLLBACK")
     throw error
   }
-  return { inserted, skipped, uidvalidityChanged: false }
+  return { inserted, skipped, pagesStored, uidvalidityChanged: false }
 }
