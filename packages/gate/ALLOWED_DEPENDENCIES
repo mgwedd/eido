@@ -10,6 +10,8 @@ vitest  # test script
 @vitest/coverage-v8  # test script coverage (v8 provider, same version as vitest); dev-only, no runtime or network access
 imapflow  # IMAP client for Proton Bridge on loopback only (#195); reads and the closed write set (append, move); no install scripts
 nodemailer  # SMTP client for Proton Bridge on loopback only (#195): sends from the assistant identity; no dependencies, no install scripts
+mailparser  # Parses approved RFC 2822 messages in Gmail draft and send requests
+@types/mailparser  # TypeScript declarations for the mailparser dependency
 # Transitive packages of imapflow 2.4.0, each checked for install scripts (none) in #195: pino, @pinojs/redact,
 # pino-abstract-transport, pino-std-serializers, libqp, libmime, libbase64, @zone-eu/mailsplit, socks, ip-address,
 # smart-buffer, iconv-lite, safer-buffer, encoding-japanese, atomic-sleep, on-exit-leak-free, process-warning,

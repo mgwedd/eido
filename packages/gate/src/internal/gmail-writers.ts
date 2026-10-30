@@ -1,4 +1,7 @@
+import { validateIntent } from "@eido/schemas"
 import type { Intent } from "@eido/schemas"
+import MailComposer from "nodemailer/lib/mail-composer"
+import { simpleParser } from "mailparser"
 import type { UpstreamRequest, UpstreamWriter } from "./executor"
 
 // Gmail write adapters for the executor. They hold no token: the gate's write transport adds the
@@ -11,6 +14,9 @@ import type { UpstreamRequest, UpstreamWriter } from "./executor"
 export const GMAIL_HOST = "gmail.googleapis.com"
 export const GMAIL_CONNECTOR = "gmail"
 export const GMAIL_BATCH_MODIFY_PATH = "/gmail/v1/users/me/messages/batchModify"
+export const GMAIL_DRAFTS_PATH = "/gmail/v1/users/me/drafts"
+export const GMAIL_SEND_PATH = "/gmail/v1/users/me/messages/send"
+export const GMAIL_DRAFT_SEND_PATH = "/gmail/v1/users/me/drafts/send"
 const BATCH_MODIFY_URL = `https://${GMAIL_HOST}${GMAIL_BATCH_MODIFY_PATH}`
 const UNREAD = "UNREAD"
 const INBOX = "INBOX"
@@ -66,6 +72,11 @@ const on = (connector: string | undefined): { connector?: string } =>
   connector === undefined ? {} : { connector }
 const sameConnector = (intent: Intent): { connector?: string } =>
   on("connector" in intent ? intent.connector : undefined)
+const noInverse: UpstreamWriter["inverse"] = (intent, result) => {
+  void intent
+  void result
+  return null
+}
 
 /** Whether `labels` is exactly the one label `only`. */
 const just = (labels: string[] | undefined, only: string): boolean =>
@@ -95,7 +106,7 @@ function markReadIntent(
   throw new Error("not a Gmail mark read request")
 }
 
-export const gmailMarkReadWriter: UpstreamWriter = {
+export const gmailMarkReadWriter = {
   connector: GMAIL_CONNECTOR,
   kind: "email.markRead",
   buildRequest(intent) {
@@ -130,7 +141,7 @@ export const gmailMarkReadWriter: UpstreamWriter = {
       args: { messageIds: affected, read: !read },
     }
   },
-}
+} satisfies UpstreamWriter
 
 /** The prior-state report in a write result, or null when the transport gave none. */
 function priorUnread(result: unknown): string[] | null {
@@ -177,7 +188,7 @@ function labelIntent(
   }
 }
 
-export const gmailLabelWriter: UpstreamWriter = {
+export const gmailLabelWriter = {
   connector: GMAIL_CONNECTOR,
   kind: "email.label",
   buildRequest(intent) {
@@ -236,7 +247,7 @@ export const gmailLabelWriter: UpstreamWriter = {
       },
     }
   },
-}
+} satisfies UpstreamWriter
 
 function archiveIntent(
   request: Readonly<UpstreamRequest>,
@@ -253,7 +264,7 @@ function archiveIntent(
 }
 
 /** Archiving is taking the INBOX label off. */
-export const gmailArchiveWriter: UpstreamWriter = {
+export const gmailArchiveWriter = {
   connector: GMAIL_CONNECTOR,
   kind: "email.archive",
   buildRequest(intent) {
@@ -280,7 +291,7 @@ export const gmailArchiveWriter: UpstreamWriter = {
       args: { messageIds: inInbox, add: [INBOX] },
     }
   },
-}
+} satisfies UpstreamWriter
 
 function trashIntent(
   request: Readonly<UpstreamRequest>,
@@ -301,7 +312,7 @@ function trashIntent(
  * removes mail itself. It is approval tier, so the executor records no inverse for it; taking a
  * message back out of Trash is #250.
  */
-export const gmailTrashWriter: UpstreamWriter = {
+export const gmailTrashWriter = {
   connector: GMAIL_CONNECTOR,
   kind: "email.trash",
   buildRequest(intent) {
@@ -313,8 +324,142 @@ export const gmailTrashWriter: UpstreamWriter = {
     }
   },
   intentFromRequest: trashIntent,
-  inverse: () => null,
+  inverse: noInverse,
+} satisfies UpstreamWriter
+
+function mailIntent(
+  request: Readonly<UpstreamRequest>,
+  kind: "email.draft" | "email.send",
+  connector?: string
+): Promise<Intent> {
+  if (request.method !== "POST") throw new Error("not a Gmail mail request")
+  const expected =
+    kind === "email.draft"
+      ? GMAIL_DRAFTS_PATH
+      : [GMAIL_SEND_PATH, GMAIL_DRAFT_SEND_PATH]
+  if (
+    !(Array.isArray(expected) ? expected : [expected]).some(
+      (path) => request.url === `https://${GMAIL_HOST}${path}`
+    ) ||
+    !isRecord(request.body)
+  )
+    throw new Error("not a Gmail mail request")
+  const message = request.body["message"]
+  const raw = isRecord(message) ? message["raw"] : request.body["raw"]
+  const id = request.body["id"]
+  if (typeof raw !== "string" || (id !== undefined && typeof id !== "string"))
+    throw new Error("not a Gmail raw mail request")
+  return simpleParser(Buffer.from(raw, "base64url")).then((mail) => {
+    const addresses = (value: typeof mail.to): string[] => {
+      const groups =
+        value === undefined ? [] : Array.isArray(value) ? value : [value]
+      return groups.flatMap((group) =>
+        group.value.map((entry) => entry.address ?? "")
+      )
+    }
+    const subject = mail.subject
+    if (
+      mail.attachments.length > 0 ||
+      (mail.html !== false && mail.html !== undefined)
+    )
+      throw new Error("Gmail raw message contains unsupported MIME parts")
+    const encodedLength = mail.headers.get("x-eido-body-length")
+    const parsedText = mail.text
+    const length =
+      typeof encodedLength === "string" ? Number(encodedLength) : NaN
+    const body =
+      parsedText === undefined || !Number.isSafeInteger(length) || length < 0
+        ? undefined
+        : Array.from(parsedText).slice(0, length).join("")
+    const to = addresses(mail.to)
+    if (subject === undefined || body === undefined || to.length === 0)
+      throw new Error("Gmail raw message lacks required headers or text body")
+    const common = {
+      to,
+      ...(addresses(mail.cc).length === 0 ? {} : { cc: addresses(mail.cc) }),
+      ...(addresses(mail.bcc).length === 0 ? {} : { bcc: addresses(mail.bcc) }),
+      subject,
+      body,
+    }
+    const intent: Intent =
+      kind === "email.draft"
+        ? { kind, ...on(connector), args: common }
+        : {
+            kind,
+            ...on(connector),
+            args: {
+              ...common,
+              ...(typeof id === "string" ? { draftId: id } : {}),
+            },
+          }
+    const checked = validateIntent(intent)
+    if (!checked.ok) throw new Error("Gmail raw message is not a valid intent")
+    return checked.value
+  })
 }
+
+async function rawMessage(args: {
+  to: string[]
+  cc?: string[]
+  bcc?: string[]
+  subject: string
+  body: string
+}): Promise<string> {
+  const composer = new MailComposer({
+    to: args.to,
+    ...(args.cc === undefined ? {} : { cc: args.cc }),
+    ...(args.bcc === undefined ? {} : { bcc: args.bcc }),
+    subject: args.subject,
+    text: args.body,
+    headers: [
+      {
+        key: "X-Eido-Body-Length",
+        value: String(Array.from(args.body).length),
+      },
+    ],
+    disableFileAccess: true,
+    disableUrlAccess: true,
+  }).compile()
+  composer.keepBcc = true
+  return Buffer.from(await composer.build()).toString("base64url")
+}
+
+export const gmailDraftWriter = {
+  connector: GMAIL_CONNECTOR,
+  kind: "email.draft",
+  async buildRequest(intent) {
+    if (intent.kind !== "email.draft") throw new Error("wrong intent kind")
+    const raw = await rawMessage(intent.args)
+    return {
+      method: "POST",
+      url: `https://${GMAIL_HOST}${GMAIL_DRAFTS_PATH}`,
+      body: { message: { raw } },
+    }
+  },
+  intentFromRequest: (request, connector = undefined) =>
+    mailIntent(request, "email.draft", connector),
+  inverse: noInverse,
+} satisfies UpstreamWriter
+
+export const gmailSendWriter = {
+  connector: GMAIL_CONNECTOR,
+  kind: "email.send",
+  async buildRequest(intent) {
+    if (intent.kind !== "email.send") throw new Error("wrong intent kind")
+    const raw = await rawMessage(intent.args)
+    return {
+      method: "POST",
+      url: `https://${GMAIL_HOST}${intent.args.draftId === undefined ? GMAIL_SEND_PATH : GMAIL_DRAFT_SEND_PATH}`,
+      body:
+        intent.args.draftId === undefined
+          ? { raw }
+          : { id: intent.args.draftId, message: { raw } },
+    }
+  },
+  intentFromRequest: (request, connector = undefined) =>
+    mailIntent(request, "email.send", connector),
+  inverse: noInverse,
+} satisfies UpstreamWriter
 
 /** The Gmail writers the gate registers. */
 export const GMAIL_WRITERS: readonly UpstreamWriter[] = [
@@ -322,4 +467,6 @@ export const GMAIL_WRITERS: readonly UpstreamWriter[] = [
   gmailLabelWriter,
   gmailArchiveWriter,
   gmailTrashWriter,
+  gmailDraftWriter,
+  gmailSendWriter,
 ]

@@ -16,11 +16,13 @@
   "dependencies": {
     "@eido/schemas": "workspace:*",
     "imapflow": "2.4.0",
+    "mailparser": "3.7.4",
     "nodemailer": "10.1.4"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
     "@eido/typescript-config": "workspace:*",
+    "@types/mailparser": "3.4.1",
     "@vitest/coverage-v8": "5.0.5",
     "eslint": "10.12.0",
     "typescript": "5.9.3",
