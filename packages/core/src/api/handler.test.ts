@@ -191,6 +191,7 @@ describe("default entity", () => {
       status: 200,
       json: { entityId: entity.id },
     })
+    await call("PUT", "/default-entity", { entityId: entity.id })
     expect((await call("GET", "/default-entity")).json.entityId).toBe(entity.id)
     expect(
       await call("PUT", "/default-entity", { entityId: "missing" })
