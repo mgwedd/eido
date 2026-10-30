@@ -413,6 +413,8 @@ describe("serveDataPlane", () => {
       replies: [
         { deltas: [JSON.stringify({ terms: ["invoice"], wants: "find" })] },
         { deltas: ["The invoice was paid [M1]."] },
+        { deltas: [JSON.stringify({ terms: ["invoice"], wants: "find" })] },
+        { deltas: ["It was paid on January 4 [M1]."] },
       ],
     })
     const port = new URL(model.url).port
@@ -467,6 +469,24 @@ describe("serveDataPlane", () => {
           label: "read 1 of 1 matching messages in full",
         },
       })
+      const followup = await fetch(`http://127.0.0.1:${String(api.port)}/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "What day was it?" }),
+      })
+      expect(await followup.json()).toMatchObject({
+        status: "answered",
+        answer: "It was paid on January 4 [M1].",
+      })
+      const followupPrompt =
+        model
+          .completions()[3]
+          ?.turns.map((turn) => turn.content)
+          .join("\n") ?? ""
+      expect(followupPrompt).toContain("When was the invoice paid?")
+      expect(followupPrompt.match(/Question: What day was it\?/g)).toHaveLength(
+        1
+      )
       const compact = await fetch(`http://127.0.0.1:${String(api.port)}/ask`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -483,7 +503,7 @@ describe("serveDataPlane", () => {
       api = undefined
       await plane.close()
       plane = runDataPlane(config, env)
-      expect(plane.conversation?.getTurns("ask")).toHaveLength(2)
+      expect(plane.conversation?.getTurns("ask")).toHaveLength(4)
       expect(plane.conversation?.sourceTags("ask")).toEqual([
         { tag: "M1", sourceRef: "gm-1" },
       ])

@@ -339,8 +339,16 @@ export async function serveDataPlane(
           }
           const queue = await getQueue()
           const conversationId = "ask"
+          const askBudgetTokens = Math.max(
+            1,
+            Math.min(
+              ASK_CONTEXT_BUDGET_TOKENS,
+              Math.floor(modelContextTokens / 2)
+            )
+          )
           const compactOptions = {
-            thresholdTokens: Math.floor(modelContextTokens / 2),
+            thresholdTokens: Math.max(1, Math.floor(askBudgetTokens / 2)),
+            keepRecentTokens: Math.max(1, Math.floor(askBudgetTokens / 4)),
           }
           const command = await dispatchCommand(question, conversationId, {
             store: conversation,
@@ -350,6 +358,7 @@ export async function serveDataPlane(
           if (command.handled) {
             return compactAskResult(command.reply)
           }
+          const priorTurns = conversation.getTurns(conversationId)
           conversation.appendTurn(conversationId, {
             id: randomUUID(),
             role: "user",
@@ -358,11 +367,12 @@ export async function serveDataPlane(
             sources: [],
           })
           const compacted = await compactConversation(
-            conversation.getTurns(conversationId),
+            priorTurns,
             compactOptions,
             { queue }
           )
           const result = await askPipeline(question, plane.db, queue, {
+            budgetTokens: askBudgetTokens,
             conversation: compacted.turns,
             allocateSourceTag: (sourceRef) =>
               conversation.allocateSourceTag(conversationId, sourceRef),
@@ -429,12 +439,14 @@ function askPipeline(
   question: string,
   db: DatabaseSync,
   queue: ReturnType<typeof createInferenceQueue>,
-  conversation: Pick<AskDeps, "conversation" | "allocateSourceTag"> = {}
+  conversation: Partial<
+    Pick<AskDeps, "budgetTokens" | "conversation" | "allocateSourceTag">
+  > = {}
 ) {
   return ask(question, {
     db,
     queue,
-    budgetTokens: ASK_CONTEXT_BUDGET_TOKENS,
+    budgetTokens: conversation.budgetTokens ?? ASK_CONTEXT_BUDGET_TOKENS,
     ...conversation,
   })
 }
