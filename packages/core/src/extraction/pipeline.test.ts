@@ -345,6 +345,30 @@ describe("an extraction record per processed document", () => {
     ])
   })
 
+  test("re-running a processed document skips it without duplicating ledger rows", async () => {
+    h = await harness(INVOICE, [
+      items({ action: { quote: "Payment of $4,800.00 is due" } }),
+    ])
+    const first = await h.extractor.extractDocument(h.docId)
+    const second = await h.extractor.extractDocument(h.docId)
+
+    expect(first).toMatchObject({ status: "ok", verified: 1 })
+    expect(second).toMatchObject({
+      status: "already_processed",
+      summary: "skipped: this document was already processed",
+      obligationIds: [],
+      confirmations: [],
+    })
+    expect(chatRequests(h.server)).toHaveLength(1)
+    expect(extractionRows(h)).toHaveLength(1)
+    expect(
+      h.db
+        .prepare("SELECT count(*) AS count FROM extraction_field_confidence")
+        .get()?.["count"]
+    ).toBe(1)
+    expect(listObligations(h.db)).toHaveLength(1)
+  })
+
   test("model_output_rejected and refused_over_budget write no row", async () => {
     h = await harness(INVOICE, [{ deltas: ["{oops"], promptTokens: 1_000_000 }])
     expect((await h.extractor.extractDocument(h.docId)).status).toBe(

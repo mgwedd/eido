@@ -154,6 +154,28 @@ function pinned(): DatabaseSync {
 }
 
 describe("pinManifest", () => {
+  it("includes each local endpoint port in the pinned manifest hash", () => {
+    const manifest = mail()
+    manifest.egress.local = [
+      { protocol: "imap", host: "127.0.0.1", port: 1143 },
+      { protocol: "smtp", host: "127.0.0.1", port: 1025 },
+    ]
+    const pinnedHash = manifestHash(manifest)
+    const changedImap = structuredClone(manifest)
+    const imap = changedImap.egress.local?.[0]
+    if (imap === undefined)
+      throw new Error("manifest has no local IMAP endpoint")
+    imap.port = 1144
+    expect(manifestHash(changedImap)).not.toBe(pinnedHash)
+
+    const changedSmtp = structuredClone(manifest)
+    const smtp = changedSmtp.egress.local?.[1]
+    if (smtp === undefined)
+      throw new Error("manifest has no local SMTP endpoint")
+    smtp.port = 1026
+    expect(manifestHash(changedSmtp)).not.toBe(pinnedHash)
+  })
+
   it("stores the manifest enabled and healthy with its hash", () => {
     const db = pinned()
     expect(row(db)).toEqual({
