@@ -1,4 +1,6 @@
 import type { DatabaseSync } from "node:sqlite"
+import MailComposer from "nodemailer/lib/mail-composer"
+import { validateIntent } from "@eido/schemas"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
 import { GMAIL_HOST, GMAIL_WRITERS } from "./gmail-writers"
@@ -15,6 +17,7 @@ import type { Vault } from "./vault/vault"
 
 /** Pinned shape of the one read this transport makes: users.messages.get, labels only. */
 const MESSAGE_PATH_PATTERN = "/gmail/v1/users/me/messages/{id}"
+const PROFILE_PATH_PATTERN = "/gmail/v1/users/me/profile"
 const UNREAD = "UNREAD"
 
 type Options = {
@@ -61,6 +64,30 @@ function messageReadUrl(
     encodeURIComponent(messageId)
   )
   return `https://${GMAIL_HOST}${path}?format=minimal`
+}
+
+function profileReadUrl(db: DatabaseSync, connector: string): string {
+  const manifest = getPinnedManifest(db, connector)
+  const pinned = (manifest?.operations ?? []).some(
+    (operation) =>
+      operation.effect === "read" &&
+      (operation.routes ?? []).some(
+        (route) =>
+          route.host === GMAIL_HOST &&
+          route.method === "GET" &&
+          route.pathPattern === PROFILE_PATH_PATTERN
+      )
+  )
+  const hostAllowed = (manifest?.egress.hosts ?? []).some(
+    (entry) =>
+      entry.host === GMAIL_HOST &&
+      entry.methods.includes("GET") &&
+      entry.pathPrefixes.some((prefix) =>
+        PROFILE_PATH_PATTERN.startsWith(prefix)
+      )
+  )
+  if (!pinned || !hostAllowed) throw new Error("unpinned Gmail profile route")
+  return `https://${GMAIL_HOST}${PROFILE_PATH_PATTERN}`
 }
 
 async function call(
@@ -199,13 +226,13 @@ async function labelsBefore(
 }
 
 /** The message ids of a Gmail write, re-derived from the exact request the executor approved. */
-function requestedIds(request: WriteRequest): string[] {
+async function requestedIds(request: WriteRequest): Promise<string[]> {
   const writer = GMAIL_WRITERS.find(
     (candidate) => candidate.kind === request.intentKind
   )
   if (writer === undefined)
     throw new Error("no Gmail write adapter for this intent kind")
-  const intent = writer.intentFromRequest(
+  const intent = await writer.intentFromRequest(
     {
       method: request.method,
       url: request.url,
@@ -220,9 +247,100 @@ function requestedIds(request: WriteRequest): string[] {
   return ids
 }
 
+async function sendMail(
+  options: Options,
+  request: WriteRequest
+): Promise<UpstreamResult> {
+  const writer = GMAIL_WRITERS.find(
+    (candidate) => candidate.kind === request.intentKind
+  )
+  if (writer === undefined)
+    throw new Error("no Gmail write adapter for this intent kind")
+  const decoded = await writer.intentFromRequest(
+    {
+      method: request.method,
+      url: request.url,
+      body: JSON.parse(request.body),
+    },
+    request.connector
+  )
+  const checked = validateIntent(decoded)
+  if (
+    !checked.ok ||
+    (checked.value.kind !== "email.draft" &&
+      checked.value.kind !== "email.send")
+  )
+    throw new Error("not a Gmail mail write")
+  const args = checked.value.args
+  const profileResponse = await call(
+    options,
+    profileReadUrl(options.db, request.connector),
+    request.connector,
+    { method: "GET" }
+  )
+  const profile: unknown = await profileResponse.json()
+  const emailAddress = isRecord(profile) ? profile["emailAddress"] : undefined
+  if (typeof emailAddress !== "string" || emailAddress.length === 0)
+    throw new Error("Gmail profile has no sender identity")
+  const composer = new MailComposer({
+    from: emailAddress,
+    to: args.to,
+    ...(args.cc === undefined ? {} : { cc: args.cc }),
+    ...(args.bcc === undefined ? {} : { bcc: args.bcc }),
+    subject: args.subject,
+    text: args.body,
+    disableFileAccess: true,
+    disableUrlAccess: true,
+  }).compile()
+  composer.keepBcc = true
+  const mime = await composer.build()
+  const raw = Buffer.from(mime).toString("base64url")
+  const isDraft = checked.value.kind === "email.draft"
+  const draftId =
+    checked.value.kind === "email.send" ? checked.value.args.draftId : undefined
+  const path = isDraft
+    ? "/gmail/v1/users/me/drafts"
+    : draftId === undefined
+      ? "/gmail/v1/users/me/messages/send"
+      : "/gmail/v1/users/me/drafts/send"
+  const body = isDraft
+    ? { message: { raw } }
+    : draftId === undefined
+      ? { raw }
+      : { id: draftId, message: { raw } }
+  const response = await call(
+    options,
+    `https://${GMAIL_HOST}${path}`,
+    request.connector,
+    { method: "POST", body: JSON.stringify(body) }
+  )
+  const result: unknown = await response.json()
+  if (!isRecord(result) || typeof result["id"] !== "string")
+    throw new Error("Gmail response has no message id")
+  const createdDraftId = isDraft ? result["id"] : undefined
+  return {
+    upstreamRef: createdDraftId ?? result["id"],
+    result: {
+      id: result["id"],
+      ...(createdDraftId === undefined
+        ? {}
+        : {
+            messageId: isRecord(result["message"])
+              ? result["message"]["id"]
+              : undefined,
+          }),
+    },
+  }
+}
+
 export function gmailWriteTransport(options: Options): WriteTransport {
   return async (request: WriteRequest): Promise<UpstreamResult> => {
-    const ids = requestedIds(request)
+    if (
+      request.intentKind === "email.draft" ||
+      request.intentKind === "email.send"
+    )
+      return sendMail(options, request)
+    const ids = await requestedIds(request)
     const write = () =>
       call(options, request.url, request.connector, {
         method: request.method,

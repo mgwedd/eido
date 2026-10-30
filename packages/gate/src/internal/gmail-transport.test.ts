@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { simpleParser } from "mailparser"
+import type { AddressObject } from "mailparser"
 import type { ConnectorManifest, Intent } from "@eido/schemas"
 import { PROTON_CONNECTOR } from "./bridge/config"
 import { createExecutor } from "./executor"
@@ -24,6 +26,18 @@ afterEach(() => {
 
 const TOKEN = "write-token-for-tests"
 const MESSAGE_PATH = "/gmail/v1/users/me/messages/{id}"
+const PROFILE_PATH = "/gmail/v1/users/me/profile"
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+const parsedAddresses = (
+  value: AddressObject | AddressObject[] | undefined
+): string[] => {
+  const groups =
+    value === undefined ? [] : Array.isArray(value) ? value : [value]
+  return groups.flatMap((group) =>
+    group.value.map((entry) => entry.address ?? "")
+  )
+}
 
 /** A pinned Gmail connector; `withRead` adds the pinned messages.get route on a read operation. */
 function pinnedGmail(withRead: boolean): Setup {
@@ -52,6 +66,21 @@ function pinnedGmail(withRead: boolean): Setup {
       },
     ]
   }
+  for (const [kind, routes] of [
+    ["email.draft", ["/gmail/v1/users/me/drafts"]],
+    [
+      "email.send",
+      ["/gmail/v1/users/me/messages/send", "/gmail/v1/users/me/drafts/send"],
+    ],
+  ] as const) {
+    const operation = gmail.operations.find((op) => op.intentKind === kind)
+    if (operation === undefined) throw new Error(`fixture lacks ${kind}`)
+    operation.routes = routes.map((pathPattern) => ({
+      host: GMAIL_HOST,
+      method: "POST",
+      pathPattern,
+    }))
+  }
   if (withRead) {
     gmail.operations.push({
       name: "get_message",
@@ -62,6 +91,16 @@ function pinnedGmail(withRead: boolean): Setup {
       untrustedOutput: true,
       authScopes: ["write"],
       routes: [{ host: GMAIL_HOST, method: "GET", pathPattern: MESSAGE_PATH }],
+    })
+    gmail.operations.push({
+      name: "get_profile",
+      effect: "read",
+      reversibility: "reversible",
+      defaultTier: "auto",
+      sensitivity: "normal",
+      untrustedOutput: true,
+      authScopes: ["write"],
+      routes: [{ host: GMAIL_HOST, method: "GET", pathPattern: PROFILE_PATH }],
     })
   }
   s = setup([gmail])
@@ -75,6 +114,7 @@ function fakeGmailApi(labels: Record<string, string[]>) {
   )
   const calls: Array<{ method: string; url: string; authorization: string }> =
     []
+  const postedBodies: unknown[] = []
   const send = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url =
       typeof input === "string"
@@ -90,6 +130,10 @@ function fakeGmailApi(labels: Record<string, string[]>) {
       authorization: headers.get("authorization") ?? "",
     })
     const parsed = new URL(url)
+    if (method === "GET" && parsed.pathname === PROFILE_PATH)
+      return Promise.resolve(
+        Response.json({ emailAddress: "signed-sender@example.invalid" })
+      )
     const read = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(
       parsed.pathname
     )
@@ -122,11 +166,30 @@ function fakeGmailApi(labels: Record<string, string[]>) {
       }
       return Promise.resolve(new Response(null, { status: 204 }))
     }
+    if (
+      method === "POST" &&
+      [
+        "/gmail/v1/users/me/drafts",
+        "/gmail/v1/users/me/messages/send",
+        "/gmail/v1/users/me/drafts/send",
+      ].includes(parsed.pathname)
+    ) {
+      const body: unknown = JSON.parse(
+        typeof init?.body === "string" ? init.body : ""
+      )
+      postedBodies.push(body)
+      if (parsed.pathname.endsWith("/drafts"))
+        return Promise.resolve(
+          Response.json({ id: "draft-1", message: { id: "message-1" } })
+        )
+      return Promise.resolve(Response.json({ id: "sent-message-1" }))
+    }
     return Promise.resolve(new Response("{}", { status: 404 }))
   })
   return {
     send,
     calls,
+    postedBodies,
     unread: (id: string) => mailbox.get(id)?.has("UNREAD") ?? false,
     labels: (id: string) => [...(mailbox.get(id) ?? [])].sort(),
   }
@@ -457,6 +520,89 @@ async function gmailExecutor(
     })
   )
 }
+
+describe("Gmail draft and send through fake Gmail", () => {
+  it("creates a draft with the authenticated sender, returns both ids and records no inverse", async () => {
+    const setUp = pinnedGmail(true)
+    const gmail = fakeGmailApi({})
+    const executor = await gmailExecutor(setUp, gmail)
+    const { intentId } = proposeIntent(setUp, {
+      kind: "email.draft",
+      connector: "gmail",
+      args: {
+        to: ["person@example.invalid"],
+        cc: ["copy@example.invalid"],
+        bcc: ["blind@example.invalid"],
+        subject: "A subject",
+        body: "Draft body",
+      },
+    })
+    const result = await executor.execute(intentId)
+    expect(result).toEqual({
+      ok: true,
+      upstreamRef: "draft-1",
+      result: { id: "draft-1", messageId: "message-1" },
+    })
+    expect(inverseOp(setUp, intentId)).toBeNull()
+    const body = gmail.postedBodies[0]
+    if (
+      !isRecord(body) ||
+      !isRecord(body["message"]) ||
+      typeof body["message"]["raw"] !== "string"
+    )
+      throw new Error("fake Gmail did not receive draft MIME")
+    const parsed = await simpleParser(
+      Buffer.from(body["message"]["raw"], "base64url")
+    )
+    expect(parsedAddresses(parsed.from)).toEqual([
+      "signed-sender@example.invalid",
+    ])
+    expect(parsedAddresses(parsed.to)).toEqual(["person@example.invalid"])
+    expect(parsedAddresses(parsed.cc)).toEqual(["copy@example.invalid"])
+    expect(parsedAddresses(parsed.bcc)).toEqual(["blind@example.invalid"])
+    expect(parsed.text?.trim()).toBe("Draft body")
+  })
+
+  it("sends an existing draft with the approved MIME and records no inverse", async () => {
+    const setUp = pinnedGmail(true)
+    const gmail = fakeGmailApi({})
+    const executor = await gmailExecutor(setUp, gmail)
+    const { intentId } = proposeIntent(setUp, {
+      kind: "email.send",
+      connector: "gmail",
+      args: {
+        to: ["person@example.invalid"],
+        subject: "Approved subject",
+        body: "Approved body",
+        draftId: "draft-approved",
+      },
+    })
+    approve(setUp, intentId)
+    expect((await executor.execute(intentId)).ok).toBe(true)
+    expect(inverseOp(setUp, intentId)).toBeNull()
+    expect(gmail.calls.at(-1)).toMatchObject({
+      method: "POST",
+      url: "https://gmail.googleapis.com/gmail/v1/users/me/drafts/send",
+    })
+    const body = gmail.postedBodies[0]
+    if (
+      !isRecord(body) ||
+      typeof body["id"] !== "string" ||
+      !isRecord(body["message"]) ||
+      typeof body["message"]["raw"] !== "string"
+    )
+      throw new Error("fake Gmail did not receive existing draft MIME")
+    expect(body["id"]).toBe("draft-approved")
+    const parsed = await simpleParser(
+      Buffer.from(body["message"]["raw"], "base64url")
+    )
+    expect(parsedAddresses(parsed.from)).toEqual([
+      "signed-sender@example.invalid",
+    ])
+    expect(parsedAddresses(parsed.to)).toEqual(["person@example.invalid"])
+    expect(parsed.text?.trim()).toBe("Approved body")
+  })
+})
 
 describe("Gmail write transport: label, archive and trash against a fake Gmail", () => {
   it("labels, records what changed, and undo restores each message's prior labels", async () => {

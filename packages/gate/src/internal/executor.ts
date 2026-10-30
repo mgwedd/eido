@@ -29,7 +29,10 @@ export interface UpstreamWriter {
   kind: Intent["kind"]
   /** Gate-owned adapter identity; never selected by kind alone. */
   connector: string
-  buildRequest(this: void, intent: Intent): UpstreamRequest
+  buildRequest(
+    this: void,
+    intent: Intent
+  ): UpstreamRequest | Promise<UpstreamRequest>
   /** Reconstruct all intent semantics from the exact method, URL and canonical body. */
   intentFromRequest(
     this: void,
@@ -77,6 +80,14 @@ type Stored = {
   tier: string
   state: string
 }
+type Ready = {
+  connector: string
+  operation: string
+  intent: Intent
+  writer: UpstreamWriter
+  stored: Stored
+}
+
 type Prepared = {
   intent: Intent
   writer: UpstreamWriter
@@ -324,10 +335,7 @@ export function createExecutor(
       return { ok: false, code }
     })
 
-  function prepare(
-    id: string,
-    direction: Direction
-  ): Prepared | ExecutionResult {
+  function prepare(id: string, direction: Direction): Ready | ExecutionResult {
     const stored = readIntent(db, id)
     if (stored === undefined) return refuse(id, direction, "not_found")
     if (direction === "execute") {
@@ -429,11 +437,20 @@ export function createExecutor(
     if (writer === undefined) return refuse(id, direction, "unknown_writer")
     if (writer.channel === "bridge" && !bridgeConfigured(db, connector))
       return refuse(id, direction, "connector_misconfigured")
+    return { intent, writer, stored, connector, operation }
+  }
+
+  async function build(
+    id: string,
+    direction: Direction,
+    ready: Ready
+  ): Promise<Prepared | ExecutionResult> {
+    const { intent, writer, stored, connector, operation } = ready
     let request: WriteRequest
     try {
       const expectedHash =
         direction === "execute" ? stored.hash : payloadHash(intent)
-      const built = writer.buildRequest(intent)
+      const built = await writer.buildRequest(intent)
       // Strings and canonical body bytes are copied before the projection or asynchronous call.
       const snapshot = Object.freeze({
         method: built.method,
@@ -445,7 +462,7 @@ export function createExecutor(
           ? bridgeDestination(intent.kind, snapshot)
           : writeDestination(db, connector, operation, snapshot)
       if (destination !== snapshot.url) throw new Error("noncanonical target")
-      const decoded = writer.intentFromRequest(
+      const decoded = await writer.intentFromRequest(
         Object.freeze({ ...snapshot, body: parse(snapshot.body) }),
         connector
       )
@@ -459,28 +476,41 @@ export function createExecutor(
         idempotencyKey: direction === "execute" ? id : `${id}:undo`,
       })
     } catch {
-      return fail(id, direction, "hash_mismatch")
+      return atomically(db, () => fail(id, direction, "hash_mismatch"))
     }
-    // A permanent claim is acquired before any external effect; another process/handle cannot
-    // call again, even after a crash that left the upstream outcome unknown.
-    const claim = db
-      .prepare(
-        "INSERT OR IGNORE INTO execution_attempts(intent_id,direction,started_at) VALUES (?,?,?)"
-      )
-      .run(id, direction, new Date().toISOString())
-    if (Number(claim.changes) !== 1)
-      return refuse(id, direction, "outcome_unresolved")
-    auditEvent(db, id, `${direction}.started`, {
-      request_hash: payloadHash(request),
+    return atomically(db, () => {
+      // Authority may change while MIME preparation is awaiting. Validate it again before
+      // claiming an attempt or allowing the transport to perform an external write.
+      const current = prepare(id, direction)
+      if ("ok" in current) return current
+      if (
+        JSON.stringify(current.stored) !== JSON.stringify(stored) ||
+        current.connector !== connector ||
+        current.operation !== operation ||
+        current.writer !== writer ||
+        payloadHash(current.intent) !== payloadHash(intent)
+      ) {
+        return refuse(id, direction, "invalid_state")
+      }
+      const claim = db
+        .prepare(
+          "INSERT OR IGNORE INTO execution_attempts(intent_id,direction,started_at) VALUES (?,?,?)"
+        )
+        .run(id, direction, new Date().toISOString())
+      if (Number(claim.changes) !== 1)
+        return refuse(id, direction, "outcome_unresolved")
+      auditEvent(db, id, `${direction}.started`, {
+        request_hash: payloadHash(request),
+      })
+      return { intent, writer, request, stored }
     })
-    return { intent, writer, request, stored }
   }
 
   async function run(
     id: string,
     direction: Direction
   ): Promise<ExecutionResult> {
-    const prepared = atomically(db, () => {
+    const ready = atomically(db, () => {
       try {
         const existing = recorded(db, id, direction)
         if (existing !== undefined) {
@@ -494,6 +524,8 @@ export function createExecutor(
       }
       return prepare(id, direction)
     })
+    if ("ok" in ready) return ready
+    const prepared = await build(id, direction, ready)
     if ("ok" in prepared) return prepared
     let response: UpstreamResult
     let inverse: unknown = null
