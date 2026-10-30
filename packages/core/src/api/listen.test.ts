@@ -94,8 +94,8 @@ describe("basePath", () => {
 
 describe("hostHeader", () => {
   test("brackets the IPv6 loopback", () => {
-    expect(hostHeader("::1", 8787)).toBe("[::1]:8787")
-    expect(hostHeader("127.0.0.1", 8787)).toBe("127.0.0.1:8787")
+    expect(hostHeader("::1", 8789)).toBe("[::1]:8789")
+    expect(hostHeader("127.0.0.1", 8789)).toBe("127.0.0.1:8789")
   })
 })
 
@@ -149,6 +149,6 @@ describe("listenCoreApi", () => {
 
 test("withListenHost does not list the listen address twice", () => {
   expect(
-    withListenHost("127.0.0.1:8787", ["127.0.0.1:8787", "eido.example.invalid"])
-  ).toEqual(["127.0.0.1:8787", "eido.example.invalid"])
+    withListenHost("127.0.0.1:8789", ["127.0.0.1:8789", "eido.example.invalid"])
+  ).toEqual(["127.0.0.1:8789", "eido.example.invalid"])
 })
