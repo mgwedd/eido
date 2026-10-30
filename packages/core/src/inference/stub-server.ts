@@ -57,6 +57,8 @@ export interface StubReply {
   splitInside?: string[]
   /** Send the first piece, then keep the stream open until the client goes away. */
   hang?: boolean
+  /** Called after the first streaming chunk is written; test synchronization only. */
+  onFirstChunk?: () => void
   /** Replaces the whole streamed body, for malformed-stream tests. */
   rawBody?: string
 }
@@ -293,6 +295,7 @@ async function writeReply(
   res.flushHeaders()
   if (reply.hang === true) {
     res.write(sse({ content: reply.deltas?.[0] ?? "", stop: false }))
+    reply.onFirstChunk?.()
     return
   }
   const pieces = splitBytes(
