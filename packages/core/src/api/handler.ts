@@ -13,9 +13,11 @@ import type {
 } from "@eido/schemas"
 import { validateCoreApiAskRequest } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
+import type { ObligationStateStore } from "../ledger/obligation-state"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
 import type { ProfileStore } from "../profile/store"
+import { OBLIGATION_CHANGE_PATH, changeObligation } from "./obligations-route"
 
 export interface ApiDeps {
   profile: ProfileStore
@@ -38,6 +40,8 @@ export interface ApiDeps {
    * served.
    */
   ask?: (question: string) => Promise<AskResult>
+  /** Local obligation state changes (#104). When absent, `/obligations/...` is not served. */
+  obligations?: ObligationStateStore
 }
 
 export type ApiHandler = (request: Request) => Promise<Response>
@@ -50,6 +54,7 @@ const STATUS: Record<ErrorCode, number> = {
   duplicate_tag: 409,
   not_found: 404,
   entity_in_use: 409,
+  invalid_transition: 409,
   bad_request: 400,
   unsupported_media_type: 415,
   payload_too_large: 413,
@@ -268,6 +273,22 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       }
       const body: CoreApiAskResponse = result
       return json(body)
+    }
+
+    const obligationMatch = OBLIGATION_CHANGE_PATH.exec(path)
+    if (obligationMatch && deps.obligations !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const result = await changeObligation(
+        deps.obligations,
+        obligationMatch,
+        await readJson(request)
+      )
+      if (result.ok) return json(result.body)
+      return failure(
+        result.code,
+        result.message,
+        result.fields ? { fields: result.fields } : {}
+      )
     }
 
     if (path === "/entity-assignments") {

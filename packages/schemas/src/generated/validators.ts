@@ -3403,7 +3403,7 @@ export function validateGateAuditPage(value: unknown): ValidationResult<GateAudi
 export const GATE_AUDIT_RECORD_REQUEST_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateAuditRecordRequest",
-  "description": "Body of POST /audit on the data-plane listener (#181): one profile change for the gate to append to its audit log as an audit.profile.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector or account reference is sent in clear. The gate also checks that beforeHash and afterHash are null or set as the action requires.",
+  "description": "Body of POST /audit on the data-plane listener (#181): one profile change (entity.*, account.*), appended to the gate's audit log as an audit.profile.* row, or one local obligation state change (obligation.*, #104), appended as an audit.ledger.* row. Hashes only: each hash is the lowercase hex SHA-256 of the canonical JSON of the record, so no name, tag, connector, account reference or obligation text is sent in clear. The gate also checks that beforeHash and afterHash are null or set as the action requires.",
   "type": "object",
   "properties": {
     "action": {
@@ -3413,7 +3413,10 @@ export const GATE_AUDIT_RECORD_REQUEST_JSON_SCHEMA: JsonSchema = {
         "entity.update",
         "entity.delete",
         "account.assign",
-        "account.unassign"
+        "account.unassign",
+        "obligation.done",
+        "obligation.resolve",
+        "obligation.reopen"
       ],
       "maxLength": 32
     },

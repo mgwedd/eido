@@ -309,6 +309,38 @@ describe("POST /audit", () => {
     expect(JSON.parse(chain.text)).toMatchObject({ ok: true })
   })
 
+  it("records obligation state changes as audit.ledger rows (#104)", async () => {
+    for (const action of [
+      "obligation.done",
+      "obligation.resolve",
+      "obligation.reopen",
+    ] as const) {
+      await audit.record({
+        action,
+        subjectHash: SUBJECT,
+        beforeHash: BEFORE,
+        afterHash: AFTER,
+      })
+    }
+    expect(actions()).toEqual([
+      "audit.ledger.obligation.done",
+      "audit.ledger.obligation.resolve",
+      "audit.ledger.obligation.reopen",
+    ])
+    expect(auditRows(s.db).at(-1)).toMatchObject({
+      actor: "data-plane",
+      target: SUBJECT,
+      detail_hash: payloadHash({
+        action: "obligation.reopen",
+        subjectHash: SUBJECT,
+        beforeHash: BEFORE,
+        afterHash: AFTER,
+      }),
+    })
+    const chain = await raw(controlSocket, "GET", "/audit/chain")
+    expect(JSON.parse(chain.text)).toMatchObject({ ok: true })
+  })
+
   it("refuses a clear-text field with 400 naming only the path, and audits the refusal", async () => {
     const refused = audit.record({
       ...created,
@@ -357,9 +389,24 @@ describe("POST /audit", () => {
       "$.afterHash: must be a hash",
     ],
     [
+      "an obligation change with no before side",
+      { ...created, action: "obligation.done" },
+      "$.beforeHash: must be a hash",
+    ],
+    [
+      "an obligation change with no after side",
+      {
+        ...created,
+        action: "obligation.reopen",
+        beforeHash: BEFORE,
+        afterHash: null,
+      },
+      "$.afterHash: must be a hash",
+    ],
+    [
       "an intent kind as the action",
       { ...created, action: "email.send" },
-      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign"',
+      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen"',
     ],
   ])(
     "refuses %s with 400 and writes no profile row",
