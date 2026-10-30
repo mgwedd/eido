@@ -271,6 +271,7 @@ describe("runDataPlane", () => {
   it("uses one model-backed digest service and drains its build before closing the database", async () => {
     const model = await startStubModelServer({
       contextTokens: 8192,
+      modelMetadataFailures: 1,
       replies: [
         {
           deltas: [
@@ -325,8 +326,12 @@ describe("runDataPlane", () => {
 
     expect(
       model.requests.filter((request) => request.path === "/v1/models")
-    ).toHaveLength(1)
+    ).toHaveLength(2)
     expect(model.completions()).toHaveLength(1)
+    expect(plane.db.isOpen).toBe(false)
+    expect(
+      readFileSync(config.logPath, "utf8").includes("digest_schedule_failed")
+    ).toBe(true)
     const db = openDataDb(config.dbPath)
     expect(
       db.prepare("SELECT model_id, lines_json FROM digests").get()
@@ -347,6 +352,47 @@ describe("runDataPlane", () => {
     })
     db.close()
     await model.close()
+  })
+
+  it("logs failed digest scheduling and still closes when no local model is configured", async () => {
+    const env = {
+      EIDO_DATA_DIR: join(dir, "digest-without-model"),
+      EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+    }
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const entityId = "entity-no-model"
+    plane.db
+      .prepare(
+        "INSERT INTO entities (id, kind, name, tag, created_at) VALUES (?, 'personal', ?, 'ME', ?)"
+      )
+      .run(entityId, "No Model", "2030-01-01T00:00:00.000Z")
+    const document = {
+      sha256: "c".repeat(64),
+      source: "gmail",
+      sourceRef: "gm-no-model",
+      mime: "message/rfc822",
+      entityId,
+      body: "A stored message without model configuration.",
+      headers: {
+        threadId: "thread-no-model",
+        messageId: "no-model@example.invalid",
+      },
+    }
+    ingestBatch(plane.db, {
+      connector: "gmail",
+      stream: "INBOX",
+      documents: [document],
+      nextCursor: "c1",
+    })
+    plane.scheduleIngestedDocuments([document])
+
+    await plane.close()
+
+    expect(plane.db.isOpen).toBe(false)
+    expect(readFileSync(config.logPath, "utf8")).toContain(
+      '"event":"digest_schedule_failed"'
+    )
   })
 })
 
