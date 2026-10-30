@@ -1586,6 +1586,997 @@ export const CORE_API_ASK_RESPONSE_JSON_SCHEMA: JsonSchema = {
       ],
       "additionalProperties": false
     },
+    "figures": {
+      "type": "array",
+      "items": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "AskFigure",
+        "description": "A code-computed Ask value linked to its stable response location.",
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "matched",
+              "searched",
+              "readInFull"
+            ]
+          },
+          "value": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "location": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "location"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 3
+    },
+    "followUps": {
+      "type": "array",
+      "items": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "AskFollowUp",
+        "description": "A validated intent offered for the owner to submit through the proposal API.",
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "intent": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "Intent",
+            "description": "One proposed write. The model never supplies an id; the gate assigns it.",
+            "oneOf": [
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "EmailDraftIntent",
+                "description": "Save an email draft. Nothing is sent.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "email.draft"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "to": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Recipients"
+                      },
+                      "cc": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Cc recipients"
+                      },
+                      "bcc": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Bcc recipients"
+                      },
+                      "subject": {
+                        "type": "string",
+                        "minLength": 0,
+                        "maxLength": 200,
+                        "description": "Subject"
+                      },
+                      "body": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000,
+                        "description": "Plain-text body"
+                      },
+                      "inReplyToMessageId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Message id this draft replies to"
+                      }
+                    },
+                    "required": [
+                      "to",
+                      "subject",
+                      "body"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "EmailLabelIntent",
+                "description": "Add or remove labels on messages.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "email.label"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "messageIds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "description": "Message ids"
+                      },
+                      "add": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100
+                        },
+                        "description": "Labels to add"
+                      },
+                      "remove": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100
+                        },
+                        "description": "Labels to remove"
+                      }
+                    },
+                    "required": [
+                      "messageIds"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "EmailArchiveIntent",
+                "description": "Archive messages.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "email.archive"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "messageIds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "description": "Message ids"
+                      }
+                    },
+                    "required": [
+                      "messageIds"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "EmailMarkReadIntent",
+                "description": "Change the read flag only. The message stays in the index and in triage; read false marks it unread again.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "email.markRead"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "messageIds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "description": "Message ids"
+                      },
+                      "read": {
+                        "type": "boolean",
+                        "description": "True marks read, false marks unread"
+                      }
+                    },
+                    "required": [
+                      "messageIds",
+                      "read"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "EmailSendIntent",
+                "description": "Send an email, optionally from an existing draft.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "email.send"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "to": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Recipients"
+                      },
+                      "cc": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Cc recipients"
+                      },
+                      "bcc": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Bcc recipients"
+                      },
+                      "subject": {
+                        "type": "string",
+                        "minLength": 0,
+                        "maxLength": 200,
+                        "description": "Subject"
+                      },
+                      "body": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000,
+                        "description": "Plain-text body"
+                      },
+                      "draftId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Draft to send"
+                      }
+                    },
+                    "required": [
+                      "to",
+                      "subject",
+                      "body"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "EmailReplyIntent",
+                "description": "Reply to a message.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "email.reply"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "messageId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Message id to reply to"
+                      },
+                      "messageSha256": {
+                        "type": "string",
+                        "minLength": 64,
+                        "maxLength": 64,
+                        "pattern": "^[0-9a-f]{64}$",
+                        "description": "SHA-256 (lowercase hex) of the raw message, so only that exact message is the target"
+                      },
+                      "replyAll": {
+                        "type": "boolean",
+                        "description": "True replies to all recipients"
+                      },
+                      "to": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Recipients the reply goes to, as approved"
+                      },
+                      "cc": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Cc recipients, as approved"
+                      },
+                      "body": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000,
+                        "description": "Plain-text body"
+                      }
+                    },
+                    "required": [
+                      "messageId",
+                      "messageSha256",
+                      "replyAll",
+                      "to",
+                      "body"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "EmailForwardIntent",
+                "description": "Forward a message.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "email.forward"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "messageId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Message id to forward"
+                      },
+                      "messageSha256": {
+                        "type": "string",
+                        "minLength": 64,
+                        "maxLength": 64,
+                        "pattern": "^[0-9a-f]{64}$",
+                        "description": "SHA-256 (lowercase hex) of the raw message, so only that exact message is the target"
+                      },
+                      "to": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Recipients"
+                      },
+                      "note": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000,
+                        "description": "Note placed above the forwarded message"
+                      }
+                    },
+                    "required": [
+                      "messageId",
+                      "messageSha256",
+                      "to"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "EmailTrashIntent",
+                "description": "Move messages to the trash. Never a permanent delete.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "email.trash"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Pinned connector to run this email write (for example gmail or proton-mail)"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "messageIds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "description": "Message ids"
+                      }
+                    },
+                    "required": [
+                      "messageIds"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "CalendarCreateIntent",
+                "description": "Send an iCalendar invitation (METHOD:REQUEST) from the assistant identity. The gate assigns the event UID.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "calendar.create"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "entity": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Entity id from local config, for example a company or personal"
+                      },
+                      "category": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100,
+                        "description": "Category from local config"
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "description": "Event title"
+                      },
+                      "start": {
+                        "type": "string",
+                        "format": "date-time",
+                        "minLength": 20,
+                        "maxLength": 40,
+                        "description": "Start, RFC 3339"
+                      },
+                      "end": {
+                        "type": "string",
+                        "format": "date-time",
+                        "minLength": 20,
+                        "maxLength": 40,
+                        "description": "End, RFC 3339"
+                      },
+                      "allDay": {
+                        "type": "boolean",
+                        "description": "True for an all-day event"
+                      },
+                      "location": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500,
+                        "description": "Location"
+                      },
+                      "description": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000,
+                        "description": "Event description"
+                      },
+                      "guests": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Guest email addresses; empty means the owner is the only attendee"
+                      }
+                    },
+                    "required": [
+                      "entity",
+                      "title",
+                      "start",
+                      "end",
+                      "allDay"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "CalendarEditIntent",
+                "description": "Change an event by sending a REQUEST with an incremented SEQUENCE. Only the listed changes apply.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "calendar.edit"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "eventUid": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "UID of the event to change"
+                      },
+                      "entity": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Entity id from local config, for example a company or personal"
+                      },
+                      "category": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100,
+                        "description": "Category from local config"
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "description": "Event title"
+                      },
+                      "start": {
+                        "type": "string",
+                        "format": "date-time",
+                        "minLength": 20,
+                        "maxLength": 40,
+                        "description": "Start, RFC 3339"
+                      },
+                      "end": {
+                        "type": "string",
+                        "format": "date-time",
+                        "minLength": 20,
+                        "maxLength": 40,
+                        "description": "End, RFC 3339"
+                      },
+                      "allDay": {
+                        "type": "boolean",
+                        "description": "True for an all-day event"
+                      },
+                      "location": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500,
+                        "description": "Location"
+                      },
+                      "description": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000,
+                        "description": "Event description"
+                      },
+                      "guests": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320
+                        },
+                        "description": "Guest email addresses; empty means the owner is the only attendee"
+                      }
+                    },
+                    "required": [
+                      "eventUid"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "CalendarDeleteIntent",
+                "description": "Cancel an event by sending METHOD:CANCEL.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "calendar.delete"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "eventUid": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "UID of the event to cancel"
+                      }
+                    },
+                    "required": [
+                      "eventUid"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "ReminderCreateIntent",
+                "description": "Create a reminder.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "reminder.create"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "list": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "description": "Reminder list name"
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "description": "Title"
+                      },
+                      "due": {
+                        "type": "string",
+                        "format": "date-time",
+                        "minLength": 20,
+                        "maxLength": 40,
+                        "description": "Due, RFC 3339"
+                      },
+                      "notes": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000,
+                        "description": "Notes"
+                      }
+                    },
+                    "required": [
+                      "list",
+                      "title"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "FileCreateIntent",
+                "description": "Create a file inside an allowed folder.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "file.create"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "root": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Allowed-folder id from local config"
+                      },
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024,
+                        "description": "Path relative to the root"
+                      },
+                      "content": {
+                        "type": "string",
+                        "minLength": 0,
+                        "maxLength": 20000,
+                        "description": "File content"
+                      }
+                    },
+                    "required": [
+                      "root",
+                      "path",
+                      "content"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "FileRenameIntent",
+                "description": "Rename a file inside an allowed folder.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "file.rename"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "root": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Allowed-folder id from local config"
+                      },
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024,
+                        "description": "Path relative to the root"
+                      },
+                      "newName": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255,
+                        "description": "New file name"
+                      }
+                    },
+                    "required": [
+                      "root",
+                      "path",
+                      "newName"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "FileMoveIntent",
+                "description": "Move a file inside an allowed folder.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "file.move"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "root": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Allowed-folder id from local config"
+                      },
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024,
+                        "description": "Path relative to the root"
+                      },
+                      "toPath": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024,
+                        "description": "Destination path relative to the root"
+                      }
+                    },
+                    "required": [
+                      "root",
+                      "path",
+                      "toPath"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "FileDeleteIntent",
+                "description": "Move a file to the Eido trash folder. Never a permanent delete.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "file.delete"
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "root": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                        "description": "Allowed-folder id from local config"
+                      },
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024,
+                        "description": "Path relative to the root"
+                      }
+                    },
+                    "required": [
+                      "root",
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "label",
+          "intent"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 10
+    },
     "droppedTags": {
       "type": "array",
       "items": {
@@ -1609,6 +2600,8 @@ export const CORE_API_ASK_RESPONSE_JSON_SCHEMA: JsonSchema = {
     "citations",
     "coverage",
     "facts",
+    "figures",
+    "followUps",
     "droppedTags",
     "possiblyTruncated"
   ],

@@ -21,6 +21,19 @@ export interface AskCoverage {
   label: string
 }
 
+/** A code-computed Ask value linked to its stable response location. */
+export interface AskFigure {
+  key: "matched" | "searched" | "readInFull"
+  value: number
+  location: string
+}
+
+/** A validated intent offered for the owner to submit through the proposal API. */
+export interface AskFollowUp {
+  label: string
+  intent: Intent
+}
+
 /** A connector's pinned manifest: auth scopes, egress hosts, operations, sync triggers, ledger mapping and health settings. Changing it is a control-plane change. */
 export interface ConnectorManifest {
   name: string
@@ -99,6 +112,8 @@ export interface CoreApiAskResponse {
   facts: {
     matchCount: number | null
   }
+  figures: Array<AskFigure>
+  followUps: Array<AskFollowUp>
   droppedTags: Array<string>
   possiblyTruncated: boolean
   reason?: string

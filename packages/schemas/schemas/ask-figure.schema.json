@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskFigure",
+  "description": "A code-computed Ask value linked to its stable response location.",
+  "type": "object",
+  "properties": {
+    "key": { "type": "string", "enum": ["matched", "searched", "readInFull"] },
+    "value": { "type": "integer", "minimum": 0 },
+    "location": { "type": "string", "minLength": 1, "maxLength": 100 }
+  },
+  "required": ["key", "value", "location"],
+  "additionalProperties": false
+}
