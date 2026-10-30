@@ -157,6 +157,18 @@ describe("startStubModelServer", () => {
     expect(stub.requests).toEqual([{ method: "GET", path: "/props", body: "" }])
   })
 
+  test("answers /health and reports the scripted model id on a chosen port", async () => {
+    const probe = await startStubModelServer({ replies: [] })
+    const port = Number(new URL(probe.url).port)
+    await probe.close()
+    stub = await startStubModelServer({ port, modelId: "m-1", replies: [] })
+    expect(stub.url).toBe(`http://127.0.0.1:${String(port)}`)
+    expect((await fetch(`${stub.url}/health`)).status).toBe(200)
+    expect(await (await fetch(`${stub.url}/v1/models`)).json()).toEqual({
+      data: [{ id: "m-1" }],
+    })
+  })
+
   test("reports 4096 context tokens when the script gives none", async () => {
     stub = await startStubModelServer({ replies: [] })
     const response = await fetch(`${stub.url}/props`)
@@ -231,7 +243,7 @@ describe("startStubModelServer", () => {
 
   test("answers 404 for other routes and for completions with no scripted reply", async () => {
     stub = await startStubModelServer({ replies: [] })
-    const other = await fetch(`${stub.url}/health`)
+    const other = await fetch(`${stub.url}/metrics`)
     const getTokenize = await fetch(`${stub.url}/tokenize`)
     const completion = await post(`${stub.url}/completion`, { prompt: [] })
     expect([other.status, getTokenize.status, completion.status]).toEqual([
