@@ -461,6 +461,56 @@ export const gmailSendWriter = {
   inverse: noInverse,
 } satisfies UpstreamWriter
 
+/** Reply and forward requests carry only the validated signed intent. The gate fetches the
+ * original message during execution, after approval, and derives MIME from its verified bytes. */
+function replyForwardIntent(
+  request: Readonly<UpstreamRequest>,
+  kind: "email.reply" | "email.forward",
+  connector?: string
+): Intent {
+  if (
+    request.method !== "POST" ||
+    request.url !== `https://${GMAIL_HOST}${GMAIL_SEND_PATH}`
+  )
+    throw new Error("not a Gmail reply or forward request")
+  const checked = validateIntent(request.body)
+  if (!checked.ok || checked.value.kind !== kind)
+    throw new Error("not a Gmail reply or forward request")
+  return { ...checked.value, ...on(connector) }
+}
+
+export const gmailReplyWriter = {
+  connector: GMAIL_CONNECTOR,
+  kind: "email.reply",
+  buildRequest(intent) {
+    if (intent.kind !== "email.reply") throw new Error("wrong intent kind")
+    return {
+      method: "POST",
+      url: `https://${GMAIL_HOST}${GMAIL_SEND_PATH}`,
+      body: intent,
+    }
+  },
+  intentFromRequest: (request, connector = undefined) =>
+    replyForwardIntent(request, "email.reply", connector),
+  inverse: noInverse,
+} satisfies UpstreamWriter
+
+export const gmailForwardWriter = {
+  connector: GMAIL_CONNECTOR,
+  kind: "email.forward",
+  buildRequest(intent) {
+    if (intent.kind !== "email.forward") throw new Error("wrong intent kind")
+    return {
+      method: "POST",
+      url: `https://${GMAIL_HOST}${GMAIL_SEND_PATH}`,
+      body: intent,
+    }
+  },
+  intentFromRequest: (request, connector = undefined) =>
+    replyForwardIntent(request, "email.forward", connector),
+  inverse: noInverse,
+} satisfies UpstreamWriter
+
 /** The Gmail writers the gate registers. */
 export const GMAIL_WRITERS: readonly UpstreamWriter[] = [
   gmailMarkReadWriter,
@@ -469,4 +519,6 @@ export const GMAIL_WRITERS: readonly UpstreamWriter[] = [
   gmailTrashWriter,
   gmailDraftWriter,
   gmailSendWriter,
+  gmailReplyWriter,
+  gmailForwardWriter,
 ]

@@ -15,6 +15,8 @@ import {
   gmailTrashWriter,
   gmailDraftWriter,
   gmailSendWriter,
+  gmailReplyWriter,
+  gmailForwardWriter,
 } from "./gmail-writers"
 import { intentHistory, intentSummary, propose } from "./intents"
 import {
@@ -715,6 +717,8 @@ describe("the Gmail writers", () => {
       "gmail:email.trash",
       "gmail:email.draft",
       "gmail:email.send",
+      "gmail:email.reply",
+      "gmail:email.forward",
     ])
   })
 
@@ -787,6 +791,48 @@ describe("the Gmail writers", () => {
         })
       )
     ).rejects.toThrow("Gmail raw message lacks required headers or text body")
+  })
+
+  it.each([
+    [
+      gmailReplyWriter,
+      {
+        kind: "email.reply",
+        connector: "gmail",
+        args: {
+          messageId: "original-249",
+          messageSha256: "ab".repeat(32),
+          replyAll: true,
+          to: ["person@example.invalid"],
+          cc: ["copy@example.invalid"],
+          body: "Approved reply.",
+        },
+      } satisfies Intent,
+    ],
+    [
+      gmailForwardWriter,
+      {
+        kind: "email.forward",
+        connector: "gmail",
+        args: {
+          messageId: "original-249",
+          messageSha256: "cd".repeat(32),
+          to: ["person@example.invalid"],
+          note: "See attached.",
+        },
+      } satisfies Intent,
+    ],
+  ])("round-trips approved $1 intent without an inverse", (writer, intent) => {
+    const request = writer.buildRequest(intent)
+    expect(writer.intentFromRequest(request, "gmail")).toEqual(intent)
+    expect(writer.inverse(intent, { id: "sent-message" })).toBeNull()
+    const changedBody = {
+      ...request,
+      body: { ...request.body, unrelated: "unapproved" },
+    }
+    expect(() => writer.intentFromRequest(changedBody, "gmail")).toThrow(
+      "not a Gmail reply or forward request"
+    )
   })
 
   it.each(["./gmail-writers.ts", "./gmail-transport.ts"])(
