@@ -134,6 +134,7 @@
         "package.json",
         "apps/*/package.json",
         "packages/*/package.json",
+        "infra/package.json",
         ".node-version",
         "scripts/check-exact-versions.mjs"
       ]

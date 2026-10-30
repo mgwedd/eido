@@ -1,4 +1,4 @@
-// Every dependency spec in the root and in apps/* and packages/* must be an exact version
+// Every dependency spec in the root, in apps/* and packages/*, and in infra must be an exact version
 // (or a workspace: reference). peerDependencies may use ranges and are not checked.
 // .node-version must be an exact Node version.
 import { existsSync, readdirSync, readFileSync } from "node:fs"
@@ -13,6 +13,7 @@ const DEPENDENCY_FIELDS = [
 const NODE_VERSION = /^\d+\.\d+\.\d+$/
 
 const packageFiles = ["package.json"]
+if (existsSync("infra/package.json")) packageFiles.push("infra/package.json")
 for (const group of ["apps", "packages"]) {
   if (!existsSync(group)) continue
   for (const entry of readdirSync(group, { withFileTypes: true })) {

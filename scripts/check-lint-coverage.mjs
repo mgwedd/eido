@@ -11,6 +11,7 @@ const packages = [
   "packages/schemas",
   "packages/ui",
   "apps/web",
+  "infra",
 ]
 
 let failed = false

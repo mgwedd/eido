@@ -1,0 +1,12 @@
+{
+  "TCP": { "8443": { "HTTPS": true } },
+  "Web": {
+    "node.example.ts.net:8443": {
+      "Handlers": {
+        "/": { "Proxy": "http://127.0.0.1:3000" },
+        "/api/core": { "Proxy": "http://127.0.0.1:8787" },
+        "/api/gate": { "Proxy": "http://127.0.0.1:8788" }
+      }
+    }
+  }
+}

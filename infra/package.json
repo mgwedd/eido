@@ -1,0 +1,22 @@
+{
+  "name": "@eido/infra",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve-routes": "node --disable-warning=ExperimentalWarning tailscale/bin.ts",
+    "lint": "eslint",
+    "typecheck": "tsc -p . --noEmit",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest --watch"
+  },
+  "devDependencies": {
+    "@eido/eslint-config": "workspace:*",
+    "@eido/typescript-config": "workspace:*",
+    "@types/node": "24.19.2",
+    "@vitest/coverage-v8": "5.0.5",
+    "eslint": "10.12.0",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  }
+}
