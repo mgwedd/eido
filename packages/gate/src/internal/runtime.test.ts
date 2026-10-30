@@ -34,7 +34,20 @@ describe("the running gate", () => {
     expect(() => runningGate()).toThrow("the gate is not started")
   })
 
-  it("refuses to start with an origin that is not https://<rpId>", () => {
+  it("starts with an origin that carries the app's own port", () => {
+    current = setup()
+    expect(
+      startGate(current.db, current.options, {
+        rpId: "node.example.ts.net",
+        origin: "https://node.example.ts.net:8443",
+      })
+    ).toEqual([])
+    expect(runningGate().webAuthn.origin).toBe(
+      "https://node.example.ts.net:8443"
+    )
+  })
+
+  it("refuses to start with an origin that is not https://<rpId>[:<port>]", () => {
     const s = setup()
     current = s
     expect(() =>
@@ -42,7 +55,9 @@ describe("the running gate", () => {
         rpId: WEBAUTHN.rpId,
         origin: "http://eido.example.invalid",
       })
-    ).toThrow("the WebAuthn origin must be https://<rpId>")
+    ).toThrow(
+      "the WebAuthn origin must be https://<rpId> or https://<rpId>:<port>"
+    )
     expect(() => runningGate()).toThrow("the gate is not started")
   })
 

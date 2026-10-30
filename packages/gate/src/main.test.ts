@@ -159,6 +159,24 @@ describe("gateConfig", () => {
     })
   })
 
+  it("starts with the :8443 origin from ADR 0004", async () => {
+    const base = config()
+    const gate = await startGate(
+      gateConfig({
+        EIDO_GATE_DATA_DIR: base.dataDir,
+        EIDO_GATE_SOCKET: base.socketPath,
+        EIDO_GATE_CONTROL_SOCKET: base.controlSocketPath,
+        EIDO_WEBAUTHN_RP_ID: "node.example.ts.net",
+        EIDO_WEBAUTHN_ORIGIN: "https://node.example.ts.net:8443",
+      })
+    )
+    expect(runningGate().webAuthn).toEqual({
+      rpId: "node.example.ts.net",
+      origin: "https://node.example.ts.net:8443",
+    })
+    await gate.close()
+  })
+
   const BASE = {
     EIDO_GATE_DATA_DIR: "/d",
     EIDO_GATE_SOCKET: "/d/gate.sock",
