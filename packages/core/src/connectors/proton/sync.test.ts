@@ -256,10 +256,18 @@ describe("syncFolder", () => {
     await syncFolder(db, source, "INBOX", 10, account)
 
     expect(
-      search(db, { text: "zirconium ledger anomaly", source: "proton" }).map(
-        (hit) => hit.sourceRef
-      )
-    ).toEqual(["<report@example.com>#0", "<report@example.com>"])
+      search(db, { text: "zirconium ledger anomaly", source: "proton" })
+    ).toMatchObject([
+      {
+        sourceRef: "<report@example.com>#0",
+        parentSourceRef: "<report@example.com>",
+      },
+    ])
+    expect(
+      db
+        .prepare("SELECT body FROM document_text WHERE message_id = ?")
+        .get("<report@example.com>")?.["body"]
+    ).toBe("Please see attached.")
   })
 })
 

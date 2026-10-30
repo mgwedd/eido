@@ -15,6 +15,8 @@ export interface SearchHit {
   sha256: string
   source: string
   sourceRef: string
+  /** Source reference of the parent message when this hit is an attachment. */
+  parentSourceRef?: string
   title?: string
   occurredAt?: string
   score: number
@@ -140,7 +142,7 @@ export function search(db: DatabaseSync, q: SearchQuery): SearchHit[] {
   const p = plan(db, q)
   if (p === null) return []
   const limit = q.limit ?? DEFAULT_LIMIT
-  const select = `SELECT t.sha256, d.source, d.source_ref, t.title, t.occurred_at, t.body,`
+  const select = `SELECT t.sha256, d.source, d.source_ref, t.title, t.occurred_at, t.body, t.attachment_of,`
   const sql =
     p.match === null
       ? `${select} 0 AS score ${FROM_NO_MATCH}${p.where} ORDER BY t.occurred_at DESC, t.sha256 LIMIT ?`
@@ -154,10 +156,12 @@ export function search(db: DatabaseSync, q: SearchQuery): SearchHit[] {
     .map((r) => {
       const title = r["title"]
       const occurredAt = r["occurred_at"]
+      const parentSourceRef = r["attachment_of"]
       return {
         sha256: String(r["sha256"]),
         source: String(r["source"]),
         sourceRef: String(r["source_ref"]),
+        ...(typeof parentSourceRef === "string" ? { parentSourceRef } : {}),
         ...(typeof title === "string" ? { title } : {}),
         ...(typeof occurredAt === "string" ? { occurredAt } : {}),
         score: Number(r["score"]),

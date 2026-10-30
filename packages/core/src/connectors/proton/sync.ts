@@ -56,19 +56,13 @@ async function toDocuments(
   // The Message-ID is the stable identity; a UID is only unique within one UIDVALIDITY epoch.
   const key = parsed.messageId ?? `proton:${folder}:${uidValidity}:${uid}`
   const thread = parsed.references[0] ?? parsed.inReplyTo ?? key
-  const searchableAttachments = parsed.attachments
-    .filter((attachment) => isTextMime(attachment.mime))
-    .map(attachmentText)
-    .filter((text): text is string => text !== null && text.trim() !== "")
   const message: IndexedDocument = {
     sha256: contentHash,
     source: CONNECTOR,
     sourceRef: key,
     mime: "message/rfc822",
     entityId,
-    // Keep attachment text in the message's searchable body so a hit identifies the message;
-    // attachment documents below retain their own source reference and snippet as well.
-    body: [parsed.text, ...searchableAttachments].filter(Boolean).join("\n\n"),
+    body: parsed.text,
     title: parsed.subject,
     ...(parsed.date === undefined ? {} : { occurredAt: parsed.date }),
     headers: {
