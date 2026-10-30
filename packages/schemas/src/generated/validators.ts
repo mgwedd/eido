@@ -509,6 +509,82 @@ export const INTENT_JSON_SCHEMA: JsonSchema = {
     },
     {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "EmailUntrashIntent",
+      "description": "Restore Gmail messages from Trash to their recorded prior labels. Requires fresh approval.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "email.untrash"
+        },
+        "connector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "args": {
+          "type": "object",
+          "properties": {
+            "sourceIntentId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "messageIds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 50,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            },
+            "priorLabels": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 50,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "messageId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "labels": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    }
+                  }
+                },
+                "required": [
+                  "messageId",
+                  "labels"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "sourceIntentId",
+            "messageIds",
+            "priorLabels"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "kind",
+        "args"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "title": "CalendarCreateIntent",
       "description": "Send an iCalendar invitation (METHOD:REQUEST) from the assistant identity. The gate assigns the event UID.",
       "type": "object",
@@ -2125,6 +2201,82 @@ export const CORE_API_ASK_RESPONSE_JSON_SCHEMA: JsonSchema = {
                     },
                     "required": [
                       "messageIds"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "EmailUntrashIntent",
+                "description": "Restore Gmail messages from Trash to their recorded prior labels. Requires fresh approval.",
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "email.untrash"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "args": {
+                    "type": "object",
+                    "properties": {
+                      "sourceIntentId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
+                      "messageIds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        }
+                      },
+                      "priorLabels": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 50,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "messageId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            "labels": {
+                              "type": "array",
+                              "maxItems": 100,
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100
+                              }
+                            }
+                          },
+                          "required": [
+                            "messageId",
+                            "labels"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "sourceIntentId",
+                      "messageIds",
+                      "priorLabels"
                     ],
                     "additionalProperties": false
                   }

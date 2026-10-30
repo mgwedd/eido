@@ -35,6 +35,10 @@ const READ_ACTIONS = new Set([
   "lookup",
 ])
 
+// Trash restoration is a gate-derived operation: the gate supplies the message ids and prior
+// labels from its authenticated trash receipt, so models never construct this intent directly.
+const GATE_DERIVED_ACTIONS = new Set(["untrash"])
+
 /** Money movement and permanent deletes are never offered, whatever the catalog holds. */
 const FORBIDDEN_SEGMENT =
   /^(pay|payment|payments|transfer|wire|refund|purchase|buy|charge|withdraw|deposit|expunge|purge|destroy|wipe|erase|shred)$|permanent/i
@@ -75,6 +79,8 @@ export function selectTools(
   return catalog
     .filter((tool) => {
       if (isForbidden(tool)) return false
+      if (GATE_DERIVED_ACTIONS.has(segments(tool).at(-1)?.toLowerCase() ?? ""))
+        return false
       if (isRead(tool)) return true
       if (request.task !== "propose") return false
       const area = areaOf(tool)

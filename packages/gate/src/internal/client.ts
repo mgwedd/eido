@@ -72,6 +72,8 @@ export type IntentProposal = Omit<GateIntentProposal, "intent"> & {
 export type IntentClient = {
   /** Resolves for a stored intent, including one policy refused (state rejected). */
   propose: (proposal: IntentProposal) => Promise<GateProposeResult>
+  /** Creates a fresh approval-tier restore proposal from an executed Gmail trash receipt. */
+  restoreTrash: (trashIntentId: string) => Promise<GateProposeResult>
   status: (id: string) => Promise<GateIntentStatus>
   history: (id: string) => Promise<GateIntentHistory["entries"]>
   listPending: () => Promise<GatePendingIntentList["intents"]>
@@ -192,6 +194,18 @@ export function createIntentClient(options: IntentClientOptions): IntentClient {
         "GateProposeResult"
       )
     },
+    restoreTrash: async (trashIntentId) =>
+      expect(
+        await call(
+          resolved,
+          "POST",
+          `${intentPath(trashIntentId)}/restore`,
+          {}
+        ),
+        [201],
+        validateGateProposeResult,
+        "GateProposeResult"
+      ),
     status: async (id) =>
       expect(
         await call(resolved, "GET", intentPath(id)),
