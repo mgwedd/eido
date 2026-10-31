@@ -3,7 +3,9 @@
   "compilerOptions": {
     "composite": true,
     "emitDeclarationOnly": true,
-    "outDir": "dist/types"
+    "outDir": "dist/types",
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
   },
-  "include": ["src", "vitest.config.ts"]
+  "include": ["src", "scripts", "vitest.config.ts"]
 }

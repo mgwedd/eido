@@ -4,7 +4,9 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 
-const DEPENDENCIES = [
+type Rule = [finding: string, pattern: RegExp]
+
+const DEPENDENCIES: Rule[] = [
   [
     "analytics SDK",
     /^(?:posthog-js|@posthog\/[^/]+|@amplitude\/[^/]+|amplitude-js|mixpanel-browser|mixpanel|@segment\/[^/]+|analytics-node|@vercel\/analytics|@cloudflare\/web-analytics|plausible-tracker|umami(?:-tracker)?)$/i,
@@ -23,7 +25,7 @@ const DEPENDENCIES = [
   ],
 ]
 
-const INITIALIZERS = [
+const INITIALIZERS: Rule[] = [
   [
     "analytics SDK initialization",
     /\b(?:posthog|PostHog|amplitude|Amplitude|mixpanel|Mixpanel)\s*\.\s*(?:init|initWithoutPageview)\s*\(|\banalytics\s*\.\s*load\s*\(|\bgtag\s*\(\s*["']config["']|\bfbq\s*\(\s*["']init["']/,
@@ -44,9 +46,20 @@ const INITIALIZERS = [
 
 // Each exception must be one exact repository path and one exact finding label.
 // Add an entry only after review, with its rationale. No globs or regex exceptions.
-const EXCEPTIONS = []
+interface Exception {
+  file: string
+  finding: string
+  reason: string
+}
 
-function filesFromGit() {
+const EXCEPTIONS: Exception[] = []
+
+export interface Finding {
+  file: string
+  finding: string
+}
+
+function filesFromGit(): string[] {
   return execFileSync(
     "git",
     ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
@@ -58,25 +71,33 @@ function filesFromGit() {
     .filter(Boolean)
 }
 
-function scan(files) {
-  const findings = []
+/** Scans manifests, the lockfile and app source; `read` returns a file's text. */
+export function scan(
+  files: string[],
+  read: (file: string) => string = (file) => readFileSync(file, "utf8")
+): Finding[] {
+  const findings: Finding[] = []
   for (const file of files) {
     const isManifest = /(^|\/)package\.json$/.test(file)
     const isLockfile = /(^|\/)pnpm-lock\.yaml$/.test(file)
     const isAppSource = /^apps\/.+\.(?:[cm]?[jt]sx?|swift)$/.test(file)
     if (!isManifest && !isLockfile && !isAppSource) continue
 
-    let content
+    let content: string
     try {
-      content = readFileSync(file, "utf8")
+      content = read(file)
     } catch (error) {
-      if (error.code === "ENOENT" || error.code === "EISDIR") continue
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? error.code
+          : undefined
+      if (code === "ENOENT" || code === "EISDIR") continue
       throw error
     }
     if (isManifest) {
-      let manifest
+      let manifest: Record<string, Record<string, string> | undefined>
       try {
-        manifest = JSON.parse(content)
+        manifest = JSON.parse(content) as typeof manifest
       } catch {
         continue
       }
@@ -123,7 +144,7 @@ function scan(files) {
   )
 }
 
-function selfTest() {
+function selfTest(): void {
   const fixtures = [
     {
       file: "apps/web/package.json",
@@ -167,11 +188,13 @@ function selfTest() {
     },
   ]
   const files = fixtures.map(({ file, source }) => ({ file, source }))
-  const detected = []
+  const detected: string[] = []
   for (const { file, source } of files) {
     const manifest = /package\.json$/.test(file)
     if (manifest) {
-      const parsed = JSON.parse(source)
+      const parsed = JSON.parse(source) as {
+        dependencies: Record<string, string>
+      }
       for (const dependency of Object.keys(parsed.dependencies)) {
         const match = DEPENDENCIES.find(([, pattern]) =>
           pattern.test(dependency)
@@ -198,7 +221,7 @@ function selfTest() {
   )
 }
 
-function scanFixtureSafeCases() {
+function scanFixtureSafeCases(): number {
   const safe = [
     {
       file: "apps/web/src/turbo.ts",
@@ -222,13 +245,15 @@ function scanFixtureSafeCases() {
   return 0
 }
 
-if (process.argv.includes("--self-test")) {
-  selfTest()
-} else {
+function main(): void {
+  if (process.argv.includes("--self-test")) {
+    selfTest()
+    return
+  }
   const findings = scan(filesFromGit())
   if (findings.length) {
     console.error(
-      "FAIL: telemetry, analytics, crash-reporting, or advertising SDK found (review scripts/check-no-telemetry.mjs denylist):\n" +
+      "FAIL: telemetry, analytics, crash-reporting, or advertising SDK found (review scripts/check-no-telemetry.ts denylist):\n" +
         findings
           .map(({ file, finding }) => `  - ${file}: ${finding}`)
           .join("\n")
@@ -239,3 +264,5 @@ if (process.argv.includes("--self-test")) {
     "ok: no denied telemetry SDKs in manifests, lockfile, or app source"
   )
 }
+
+if (import.meta.main) main()

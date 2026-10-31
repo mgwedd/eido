@@ -23,7 +23,7 @@ import { validate } from "./validate"
 
 const pkgRoot = join(import.meta.dirname, "..")
 const schemaDir = join(pkgRoot, "schemas")
-const codegen = join(pkgRoot, "scripts", "codegen.mjs")
+const codegen = join(pkgRoot, "scripts", "codegen.ts")
 
 const ISO = "2030-01-02T09:00:00Z"
 const ISO_END = "2030-01-02T10:00:00+01:00"
