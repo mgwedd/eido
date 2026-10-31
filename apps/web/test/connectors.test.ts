@@ -1,31 +1,17 @@
 import { describe, expect, test } from "vitest"
 import {
-  CACHE_KEY,
   bridgeNotice,
   breakerLabel,
   displayName,
   healthLabel,
   invitationsWait,
-  readCache,
-  writeCache,
 } from "../lib/connectors"
 import {
-  AS_OF,
   driveDisabled,
   gmail,
   protonCalendarOpen,
   protonMailOpen,
 } from "./fixtures/connectors"
-
-function memoryStore(initial?: string) {
-  let value = initial
-  return {
-    getItem: () => value ?? null,
-    setItem: (_key: string, next: string) => {
-      value = next
-    },
-  }
-}
 
 describe("labels", () => {
   test("names known connectors and passes others through", () => {
@@ -65,43 +51,5 @@ describe("shared Bridge health", () => {
       false
     )
     expect(invitationsWait(protonMailOpen)).toBe(false)
-  })
-})
-
-describe("cache", () => {
-  test("round-trips a read with its as_of time", () => {
-    const store = memoryStore()
-    writeCache({ connectors: [gmail] }, new Date(AS_OF), store)
-    expect(readCache(store)).toEqual({ asOf: AS_OF, connectors: [gmail] })
-  })
-  test("ignores corrupt, malformed and missing entries", () => {
-    expect(readCache(memoryStore())).toBeNull()
-    expect(readCache(memoryStore("{"))).toBeNull()
-    expect(
-      readCache(memoryStore(JSON.stringify({ asOf: "no", settings: {} })))
-    ).toBeNull()
-    expect(
-      readCache(
-        memoryStore(
-          JSON.stringify({ asOf: AS_OF, settings: { connectors: [{}] } })
-        )
-      )
-    ).toBeNull()
-    expect(readCache(null)).toBeNull()
-    expect(CACHE_KEY).toContain("connectors")
-  })
-  test("a blocked store does not throw", () => {
-    const blocked = {
-      getItem: () => {
-        throw new Error("blocked")
-      },
-      setItem: () => {
-        throw new Error("blocked")
-      },
-    }
-    expect(() =>
-      writeCache({ connectors: [] }, new Date(AS_OF), blocked)
-    ).not.toThrow()
-    expect(readCache(blocked)).toBeNull()
   })
 })

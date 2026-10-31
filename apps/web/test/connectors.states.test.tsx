@@ -60,6 +60,12 @@ describeStates("Connectors", [
     message: "1 connector",
   },
   {
+    state: "offline",
+    render: body({ status: "offline" }),
+    role: "status",
+    message: "Offline. Connector status is not stored on this device.",
+  },
+  {
     state: "error",
     render: body({ status: "error" }),
     role: "alert",

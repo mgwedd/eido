@@ -25,7 +25,7 @@ type ConnectorsState =
   | { status: "loading" }
   | { status: "error" }
   | { status: "ready"; connectors: Connector[]; asOf: string }
-  | { status: "offline"; connectors: Connector[]; asOf: string }
+  | { status: "offline" }
 
 function useConnectors(): { state: ConnectorsState; retry: () => void } {
   const [state, setState] = React.useState<ConnectorsState>({
@@ -182,12 +182,21 @@ function ConnectorsBody({
         <Skeleton className="h-40 w-full" />
       </>
     )
-  if (state.status === "error")
+  if (state.status === "error" || state.status === "offline")
     return (
       <>
-        <p role="alert" className="text-sm">
-          Could not read connector status from the gate.
-        </p>
+        {state.status === "offline" ? (
+          <Alert role={undefined}>
+            <WifiOff aria-hidden />
+            <AlertDescription role="status">
+              Offline. Connector status is not stored on this device.
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <p role="alert" className="text-sm">
+            Could not read connector status from the gate.
+          </p>
+        )}
         <Button
           variant="outline"
           onClick={onRetry}
@@ -202,18 +211,6 @@ function ConnectorsBody({
       <p role="status" className="text-sm text-muted-foreground">
         No connectors are configured.
       </p>
-    )
-  if (state.status === "offline")
-    return (
-      <>
-        <Alert role={undefined}>
-          <WifiOff aria-hidden />
-          <AlertDescription role="status">
-            {`Offline. Showing cached status as of ${formatDateTime(state.asOf)}.`}
-          </AlertDescription>
-        </Alert>
-        <ConnectorList connectors={state.connectors} />
-      </>
     )
   return <ConnectorList connectors={state.connectors} />
 }

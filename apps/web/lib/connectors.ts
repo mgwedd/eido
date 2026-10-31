@@ -7,7 +7,6 @@ export type Connector = GateConnectorSettings["connectors"][number]
 export type Health = Connector["health"]
 
 export const CONNECTORS_URL = "/api/gate/connector-settings"
-export const CACHE_KEY = "eido.connectors.v1"
 
 /** Display names for the connectors the gate pins today; any other name is shown as sent. */
 const DISPLAY_NAMES: Readonly<Record<string, string>> = {
@@ -86,68 +85,16 @@ export function invitationsWait(connector: Connector): boolean {
   )
 }
 
-export type CachedStatus = { asOf: string; connectors: Connector[] }
-
-type Store = Pick<Storage, "getItem" | "setItem">
-
-function defaultStore(): Store | null {
-  try {
-    return window.localStorage
-  } catch {
-    return null
-  }
-}
-
-/**
- * The last successful read, kept so an offline reload still shows the last known status.
- * The service worker never caches this endpoint, so the page keeps its own copy. It holds
- * only what the gate's response holds: no credentials, no payload bodies.
- */
-export function readCache(
-  store: Store | null = defaultStore()
-): CachedStatus | null {
-  try {
-    const raw = store?.getItem(CACHE_KEY)
-    if (!raw) return null
-    const stored = JSON.parse(raw) as { asOf?: unknown; settings?: unknown }
-    if (
-      typeof stored.asOf !== "string" ||
-      Number.isNaN(Date.parse(stored.asOf))
-    )
-      return null
-    const parsed = validateGateConnectorSettings(stored.settings)
-    return parsed.ok
-      ? { asOf: stored.asOf, connectors: parsed.value.connectors }
-      : null
-  } catch {
-    return null
-  }
-}
-
-export function writeCache(
-  settings: GateConnectorSettings,
-  asOf: Date,
-  store: Store | null = defaultStore()
-): void {
-  try {
-    store?.setItem(
-      CACHE_KEY,
-      JSON.stringify({ asOf: asOf.toISOString(), settings })
-    )
-  } catch {
-    // Storage can be full or blocked; the page works without it.
-  }
-}
-
 export type ConnectorsLoad =
   | { status: "ready"; connectors: Connector[]; asOf: string }
-  | { status: "offline"; connectors: Connector[]; asOf: string }
+  | { status: "offline" }
   | { status: "unauthenticated" }
   | { status: "error" }
 
 /**
- * Reads connector status through the gate. A network failure with a cached read is
- * "offline" and shows that read with its as_of time; any other failure is an error.
+ * Reads connector status through the gate. The response is never stored on the device
+ * (`connector-settings` is sensitive): a network failure is "offline" and carries no data;
+ * any other failure is an error.
  */
 export async function loadConnectors(
   signal: AbortSignal,
@@ -159,19 +106,15 @@ export async function loadConnectors(
     if (!response.ok) return { status: "error" }
     const parsed = validateGateConnectorSettings(await response.json())
     if (!parsed.ok) return { status: "error" }
-    const asOf = now()
-    writeCache(parsed.value, asOf)
     return {
       status: "ready",
       connectors: parsed.value.connectors,
-      asOf: asOf.toISOString(),
+      asOf: now().toISOString(),
     }
   } catch (error) {
     // An aborted read is ignored by the caller; a TypeError is fetch's network failure.
-    if (!signal.aborted && error instanceof TypeError) {
-      const cached = readCache()
-      if (cached) return { status: "offline", ...cached }
-    }
+    if (!signal.aborted && error instanceof TypeError)
+      return { status: "offline" }
     return { status: "error" }
   }
 }

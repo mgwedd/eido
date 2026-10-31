@@ -20,6 +20,7 @@ let root: Root
 
 beforeEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -139,9 +140,12 @@ test("retry reads again", async () => {
   expect(cards()).toHaveLength(1)
 })
 
-test("offline with a cached read shows the cached rows and their as_of time", async () => {
+test("offline renders no rows and nothing is written to browser storage", async () => {
   respond({ connectors: sharedBridgeOpen })
   await render()
+  expect(cards()).toHaveLength(4)
+  expect(localStorage.length).toBe(0)
+  expect(sessionStorage.length).toBe(0)
   act(() => root.unmount())
   root = createRoot(container)
   vi.stubGlobal(
@@ -149,23 +153,14 @@ test("offline with a cached read shows the cached rows and their as_of time", as
     vi.fn<typeof fetch>(() => Promise.reject(new TypeError("network")))
   )
   await render()
-  const status = container.querySelector('[role="status"]')
-  expect(status?.textContent).toMatch(
-    /^Offline\. Showing cached status as of .+\.$/
+  expect(container.querySelector('[role="status"]')?.textContent).toBe(
+    "Offline. Connector status is not stored on this device."
   )
-  expect(cards()).toHaveLength(4)
-  expect(container.querySelector('[role="alert"]')).toBeNull()
-})
-
-test("offline with nothing cached is an error", async () => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn<typeof fetch>(() => Promise.reject(new TypeError("network")))
-  )
-  await render()
-  expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-    "Could not read connector status from the gate."
-  )
+  expect(container.querySelector("button")?.textContent).toBe("Retry")
+  expect(cards()).toHaveLength(0)
+  expect(container.textContent).not.toContain("Gmail")
+  expect(localStorage.length).toBe(0)
+  expect(sessionStorage.length).toBe(0)
 })
 
 test("an expired session goes to unlock", async () => {
