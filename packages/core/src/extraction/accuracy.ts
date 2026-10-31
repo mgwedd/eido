@@ -274,7 +274,8 @@ export function formatReport(report: AccuracyReport): string {
   return lines.join("\n")
 }
 
-export type AccuracyDeps = Omit<ExtractorDeps, "parser"> & {
+export type AccuracyDeps = ExtractorDeps & {
+  /** Parses each original once; its text is stored as the document body the extractor reads. */
   parser: Pick<Parser, "parseDocument" | "storeOriginal">
   /** The entity the documents are filed under. */
   entityId: string
@@ -312,6 +313,15 @@ export async function runAccuracy(
       continue
     }
     seen.set(sha256, label.file)
+    const parsed = await deps.parser.parseDocument({ blobSha256: sha256, mime })
+    if (!parsed.ok) {
+      outcomes.push({
+        file: label.file,
+        kind: "failed",
+        reason: `the document could not be parsed (${parsed.reason})`,
+      })
+      continue
+    }
     ingestBatch(deps.db, {
       connector: "accuracy",
       stream: "local",
@@ -322,7 +332,7 @@ export async function runAccuracy(
           sourceRef: label.file,
           mime,
           entityId: deps.entityId,
-          body: "",
+          body: parsed.text,
         },
       ],
       nextCursor: String(index),
