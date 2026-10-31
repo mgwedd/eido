@@ -18,6 +18,7 @@ export type RouteRule = {
 export const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/", roles: ["owner"] },
   { path: "/queue", roles: ["owner"] },
+  { path: "/connectors", roles: ["owner"] },
   { path: "/unlock", roles: ["owner"] },
 ]
 
