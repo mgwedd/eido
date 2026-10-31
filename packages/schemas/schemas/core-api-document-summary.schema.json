@@ -1,34 +1,102 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "CoreApiDocumentSummary",
-  "description": "One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored MIME type.",
+  "description": "One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored semantic document type, and `typeSource` says whether a model or the user set it; both are null for a document nobody has classified, never a guess from `mime`. `mime` is the stored MIME type.",
   "type": "object",
   "properties": {
-    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "name": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
-    "source": { "type": "string", "minLength": 1 },
-    "sourceRef": { "type": "string", "minLength": 1 },
-    "type": { "type": "string", "minLength": 1 },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "name": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "entity": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "kind": { "enum": ["personal", "property", "company"] },
-        "name": { "type": "string", "minLength": 1 },
-        "tag": { "type": "string", "minLength": 1 }
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["personal", "property", "company"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "required": ["id", "kind", "name", "tag"],
       "additionalProperties": false
     },
-    "ingestedAt": { "type": "string", "minLength": 1 },
-    "occurredAt": { "oneOf": [{ "type": "string" }, { "type": "null" }] }
+    "ingestedAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "occurredAt": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mime": {
+      "type": "string",
+      "minLength": 1
+    },
+    "typeSource": {
+      "oneOf": [
+        {
+          "enum": ["model", "user"]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
   },
   "required": [
     "sha256",
     "name",
     "source",
     "sourceRef",
+    "mime",
     "type",
+    "typeSource",
     "entity",
     "ingestedAt",
     "occurredAt"

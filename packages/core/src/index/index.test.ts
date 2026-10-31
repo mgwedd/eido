@@ -8,9 +8,11 @@ import {
   SCHEMA_VERSION,
   countMatches,
   getCursor,
+  getDocumentType,
   ingestBatch,
   openIndex,
   search,
+  setDocumentType,
 } from "./index"
 import type { IndexedDocument } from "./index"
 import { soundex, tokenize, withinOneEdit } from "./text"
@@ -617,5 +619,85 @@ describe("text helpers", () => {
   test("tokenize", () => {
     expect(tokenize("Héllo, Wörld-42!")).toEqual(["hello", "world", "42"])
     expect(tokenize("!!!")).toEqual([])
+  })
+})
+
+describe("document types", () => {
+  const storedDoc = (): string => {
+    ingestBatch(db, {
+      connector: "c",
+      stream: "s",
+      documents: [doc("typed", { body: "hello" })],
+      nextCursor: "1",
+    })
+    const row = db.prepare("SELECT sha256 FROM documents").get()
+    return String(row?.["sha256"])
+  }
+
+  test("a document has no type until one is stored", () => {
+    expect(getDocumentType(db, storedDoc())).toBeNull()
+  })
+
+  test("stores a type with its source and replaces it with a later one", () => {
+    const id = storedDoc()
+    expect(setDocumentType(db, id, { type: " Quote ", source: "model" })).toBe(
+      true
+    )
+    expect(getDocumentType(db, id)).toEqual({ type: "Quote", source: "model" })
+    setDocumentType(db, id, { type: "Invoice", source: "user" })
+    expect(getDocumentType(db, id)).toEqual({ type: "Invoice", source: "user" })
+  })
+
+  test("a model label never replaces a user label", () => {
+    const id = storedDoc()
+    setDocumentType(db, id, { type: "Invoice", source: "user" })
+    setDocumentType(db, id, { type: "Quote", source: "model" })
+    expect(getDocumentType(db, id)).toEqual({ type: "Invoice", source: "user" })
+    expect(() =>
+      db.prepare("UPDATE document_types SET source = 'model'").run()
+    ).toThrow(/user label/)
+  })
+
+  test("refuses an unknown document, an empty type and an over-long type", () => {
+    const id = storedDoc()
+    expect(
+      setDocumentType(db, "f".repeat(64), { type: "Quote", source: "model" })
+    ).toBe(false)
+    expect(setDocumentType(db, id, { type: "  ", source: "model" })).toBe(false)
+    expect(
+      setDocumentType(db, id, { type: "x".repeat(101), source: "model" })
+    ).toBe(false)
+    expect(getDocumentType(db, id)).toBeNull()
+  })
+
+  test("a stored type is never deleted and a bad source is rejected", () => {
+    const id = storedDoc()
+    setDocumentType(db, id, { type: "Quote", source: "model" })
+    expect(() => db.prepare("DELETE FROM document_types").run()).toThrow(
+      /never deleted/
+    )
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO document_types (sha256, type, source, set_at) VALUES (?, 'x', 'guess', 't')"
+        )
+        .run("e".repeat(64))
+    ).toThrow()
+  })
+
+  test("migrating a v8 database adds the table and leaves documents untyped", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "eido-idx-")), "t.db")
+    const legacy = new DatabaseSync(path)
+    legacy.exec("PRAGMA foreign_keys = ON")
+    MIGRATIONS.slice(0, 8).forEach((m, i) => {
+      legacy.exec(m)
+      legacy.exec(`PRAGMA user_version = ${i + 1}`)
+    })
+    legacy.close()
+    const migrated = openIndex(path)
+    expect(
+      migrated.prepare("SELECT count(*) AS n FROM document_types").get()?.["n"]
+    ).toBe(0)
+    migrated.close()
   })
 })

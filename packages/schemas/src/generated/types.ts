@@ -154,13 +154,13 @@ export interface CoreApiDocumentList {
   nextOffset: number | null
 }
 
-/** One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored MIME type. */
+/** One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored semantic document type, and `typeSource` says whether a model or the user set it; both are null for a document nobody has classified, never a guess from `mime`. `mime` is the stored MIME type. */
 export interface CoreApiDocumentSummary {
   sha256: string
   name: string | null
   source: string
   sourceRef: string
-  type: string
+  type: string | null
   entity: {
     id: string
     kind: "personal" | "property" | "company"
@@ -169,6 +169,8 @@ export interface CoreApiDocumentSummary {
   }
   ingestedAt: string
   occurredAt: string | null
+  mime: string
+  typeSource: "model" | "user" | null
 }
 
 /** Response of GET /documents/:sha256?start=&end=. `lines` is the stored text split on newlines; `start` is each line's UTF-16 offset in that text. `highlight` is the requested [start, end) range, or null when none was asked. `extractions` lists the document's extracted rows, oldest first. Text is data only: the client renders it as plain text. */

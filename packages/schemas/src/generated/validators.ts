@@ -2955,7 +2955,7 @@ export const CORE_API_DOCUMENT_LIST_JSON_SCHEMA: JsonSchema = {
       "items": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "CoreApiDocumentSummary",
-        "description": "One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored MIME type.",
+        "description": "One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored semantic document type, and `typeSource` says whether a model or the user set it; both are null for a document nobody has classified, never a guess from `mime`. `mime` is the stored MIME type.",
         "type": "object",
         "properties": {
           "sha256": {
@@ -2981,8 +2981,16 @@ export const CORE_API_DOCUMENT_LIST_JSON_SCHEMA: JsonSchema = {
             "minLength": 1
           },
           "type": {
-            "type": "string",
-            "minLength": 1
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "entity": {
             "type": "object",
@@ -3028,6 +3036,23 @@ export const CORE_API_DOCUMENT_LIST_JSON_SCHEMA: JsonSchema = {
                 "type": "null"
               }
             ]
+          },
+          "mime": {
+            "type": "string",
+            "minLength": 1
+          },
+          "typeSource": {
+            "oneOf": [
+              {
+                "enum": [
+                  "model",
+                  "user"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -3035,7 +3060,9 @@ export const CORE_API_DOCUMENT_LIST_JSON_SCHEMA: JsonSchema = {
           "name",
           "source",
           "sourceRef",
+          "mime",
           "type",
+          "typeSource",
           "entity",
           "ingestedAt",
           "occurredAt"
@@ -3071,7 +3098,7 @@ export function validateCoreApiDocumentList(value: unknown): ValidationResult<Co
 export const CORE_API_DOCUMENT_SUMMARY_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "CoreApiDocumentSummary",
-  "description": "One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored MIME type.",
+  "description": "One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored semantic document type, and `typeSource` says whether a model or the user set it; both are null for a document nobody has classified, never a guess from `mime`. `mime` is the stored MIME type.",
   "type": "object",
   "properties": {
     "sha256": {
@@ -3097,8 +3124,16 @@ export const CORE_API_DOCUMENT_SUMMARY_JSON_SCHEMA: JsonSchema = {
       "minLength": 1
     },
     "type": {
-      "type": "string",
-      "minLength": 1
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "entity": {
       "type": "object",
@@ -3144,6 +3179,23 @@ export const CORE_API_DOCUMENT_SUMMARY_JSON_SCHEMA: JsonSchema = {
           "type": "null"
         }
       ]
+    },
+    "mime": {
+      "type": "string",
+      "minLength": 1
+    },
+    "typeSource": {
+      "oneOf": [
+        {
+          "enum": [
+            "model",
+            "user"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -3151,7 +3203,9 @@ export const CORE_API_DOCUMENT_SUMMARY_JSON_SCHEMA: JsonSchema = {
     "name",
     "source",
     "sourceRef",
+    "mime",
     "type",
+    "typeSource",
     "entity",
     "ingestedAt",
     "occurredAt"
@@ -3174,7 +3228,7 @@ export const CORE_API_DOCUMENT_VIEW_JSON_SCHEMA: JsonSchema = {
     "document": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "title": "CoreApiDocumentSummary",
-      "description": "One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored MIME type.",
+      "description": "One stored document as the Documents list and viewer show it. `name` is the stored title (mail subject or file name), null when the source gave none. `type` is the stored semantic document type, and `typeSource` says whether a model or the user set it; both are null for a document nobody has classified, never a guess from `mime`. `mime` is the stored MIME type.",
       "type": "object",
       "properties": {
         "sha256": {
@@ -3200,8 +3254,16 @@ export const CORE_API_DOCUMENT_VIEW_JSON_SCHEMA: JsonSchema = {
           "minLength": 1
         },
         "type": {
-          "type": "string",
-          "minLength": 1
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "entity": {
           "type": "object",
@@ -3247,6 +3309,23 @@ export const CORE_API_DOCUMENT_VIEW_JSON_SCHEMA: JsonSchema = {
               "type": "null"
             }
           ]
+        },
+        "mime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "typeSource": {
+          "oneOf": [
+            {
+              "enum": [
+                "model",
+                "user"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -3254,7 +3333,9 @@ export const CORE_API_DOCUMENT_VIEW_JSON_SCHEMA: JsonSchema = {
         "name",
         "source",
         "sourceRef",
+        "mime",
         "type",
+        "typeSource",
         "entity",
         "ingestedAt",
         "occurredAt"

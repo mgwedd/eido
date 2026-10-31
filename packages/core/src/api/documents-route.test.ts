@@ -10,6 +10,7 @@ import {
   validateCoreApiDocumentView,
 } from "@eido/schemas"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
+import { setDocumentType } from "../index/document-type"
 import { confirmExtraction, insertExtraction } from "../ledger/index"
 import {
   addDocs,
@@ -72,6 +73,9 @@ beforeEach(async () => {
     // A drive file with no head row is a superseded version: the list hides it.
     testDoc("stale", { entityId: property.id, source: "drive" }),
   ])
+  // The pdf stays untyped on purpose.
+  setDocumentType(db, invoice, { type: "Invoice", source: "model" })
+  setDocumentType(db, quote, { type: "Quote", source: "user" })
   handle = createApiHandler({
     profile,
     allowedHosts: ["core.test"],
@@ -131,7 +135,9 @@ describe("GET /documents", () => {
       name: "Water invoice",
       source: "gmail",
       sourceRef: "ref-invoice",
-      type: "message/rfc822",
+      mime: "message/rfc822",
+      type: "Invoice",
+      typeSource: "model",
       entity: {
         id: property.id,
         kind: "property",
@@ -144,14 +150,44 @@ describe("GET /documents", () => {
     expect(body.documents[0]).toMatchObject({ name: null, occurredAt: null })
   })
 
+  test("reports the stored type and its source, and null for an untyped document", async () => {
+    const [untyped, user, model] = (await list()).documents
+    expect(untyped).toMatchObject({
+      sha256: pdf,
+      mime: "application/pdf",
+      type: null,
+      typeSource: null,
+    })
+    expect(user).toMatchObject({ type: "Quote", typeSource: "user" })
+    expect(model).toMatchObject({ type: "Invoice", typeSource: "model" })
+  })
+
+  test("the viewer reports the same type fields", async () => {
+    expect((await view(pdf)).document).toMatchObject({
+      type: null,
+      typeSource: null,
+    })
+    expect((await view(invoice)).document).toMatchObject({
+      type: "Invoice",
+      typeSource: "model",
+    })
+  })
+
   test("filters by entity, type and source", async () => {
     expect(shas(await list(`?entity=${property.id}`))).toEqual([pdf, invoice])
     expect(shas(await list(`?entity=${company.id}`))).toEqual([quote])
-    expect(shas(await list("?type=application%2Fpdf"))).toEqual([pdf])
+    expect(shas(await list("?type=Quote"))).toEqual([quote])
+    expect(shas(await list("?type=Invoice"))).toEqual([invoice])
     expect(shas(await list("?source=gmail"))).toEqual([quote, invoice])
-    expect(
-      shas(await list(`?entity=${property.id}&type=message%2Frfc822`))
-    ).toEqual([invoice])
+    expect(shas(await list(`?entity=${property.id}&type=Invoice`))).toEqual([
+      invoice,
+    ])
+  })
+
+  test("type filters on the stored type, never on the MIME type", async () => {
+    expect(shas(await list("?type=application%2Fpdf"))).toEqual([])
+    expect(shas(await list("?type=message%2Frfc822"))).toEqual([])
+    expect(shas(await list("?type=Tax%20bill"))).toEqual([])
   })
 
   test("blank filters are ignored", async () => {

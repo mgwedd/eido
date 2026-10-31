@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 8
+export const SCHEMA_VERSION = 9
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -148,6 +148,22 @@ CREATE TRIGGER mail_message_mailboxes_no_update BEFORE UPDATE ON mail_message_ma
 BEGIN SELECT RAISE(ABORT, 'mail message mailbox identities are immutable'); END;
 CREATE TRIGGER mail_message_mailboxes_no_delete BEFORE DELETE ON mail_message_mailboxes
 BEGIN SELECT RAISE(ABORT, 'mail message mailbox identities are immutable'); END;
+`,
+  // v9: the semantic type of a classified document (Quote, Tax bill) and who set it. Kept beside
+  // `documents`, which is immutable. A document with no row here is untyped; nothing is inferred.
+  `
+CREATE TABLE document_types (
+  sha256 TEXT PRIMARY KEY REFERENCES documents(sha256),
+  type TEXT NOT NULL CHECK (length(trim(type)) > 0 AND length(type) <= 100),
+  source TEXT NOT NULL CHECK (source IN ('model', 'user')),
+  set_at TEXT NOT NULL CHECK (length(set_at) > 0)
+);
+CREATE INDEX document_types_type ON document_types(type);
+CREATE TRIGGER document_types_no_delete BEFORE DELETE ON document_types
+BEGIN SELECT RAISE(ABORT, 'document types are never deleted'); END;
+CREATE TRIGGER document_types_user_wins BEFORE UPDATE ON document_types
+WHEN OLD.source = 'user' AND NEW.source = 'model'
+BEGIN SELECT RAISE(ABORT, 'a user label is not replaced by a model label'); END;
 `,
 ]
 
