@@ -145,16 +145,6 @@ describe("obligation state changes", () => {
     expect(db.isTransaction).toBe(false)
   })
 
-  test("refuses with busy while another store's transaction is open", async () => {
-    db.exec("BEGIN")
-    try {
-      expect(await codeOf(store.change(openId, "done"))).toBe("busy")
-    } finally {
-      db.exec("ROLLBACK")
-    }
-    expect(statusOf(openId)).toBe("open")
-  })
-
   test("runs calls one at a time, so a second change sees the first", async () => {
     let release: () => void = () => {}
     const gated = storeWith(

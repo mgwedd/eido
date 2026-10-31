@@ -4,6 +4,7 @@ import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
 import type { DocumentHeadChange } from "../../index/index"
 import { ingestEntityId } from "../ingest-entity"
+import { writeQueueFor } from "../../db/write-queue"
 import type { IngestAccount } from "../ingest-entity"
 import { DriveError } from "./client"
 import type { DriveChange, DriveClient, DriveFile } from "./client"
@@ -51,14 +52,16 @@ export async function syncDrive(options: {
     heads: DocumentHeadChange[],
     next: Cursor
   ) =>
-    ingestBatch(options.db, {
-      connector: "drive",
-      stream: "files",
-      documents,
-      heads,
-      nextCursor: JSON.stringify(next),
-    })
-  if (saved === null) commit([], [], current)
+    writeQueueFor(options.db).run(() =>
+      ingestBatch(options.db, {
+        connector: "drive",
+        stream: "files",
+        documents,
+        heads,
+        nextCursor: JSON.stringify(next),
+      })
+    )
+  if (saved === null) await commit([], [], current)
   let inserted = 0
   let skipped = 0
   for (;;) {
@@ -124,7 +127,7 @@ export async function syncDrive(options: {
       if (typeof token !== "string") throw new DriveError("invalid_response")
       next = { phase: "changes", token }
     }
-    const result = commit(documents, heads, next)
+    const result = await commit(documents, heads, next)
     inserted += result.inserted
     skipped += result.skipped
     const done = current.phase === "changes" && nextPageToken === undefined

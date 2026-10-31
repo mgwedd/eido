@@ -53,6 +53,7 @@ import type { GmailClient } from "./connectors/gmail/client"
 import type { GmailConfig } from "./connectors/gmail/config"
 import type { ConnectorHealthReader } from "./connectors/health-aware-sync"
 import { syncReplyObligations } from "./obligations/replies"
+import { writeQueueFor } from "./db/write-queue"
 import type { RepliesConfig } from "./obligations/replies"
 
 // The data-plane process (ADR 0003). It owns eido-data.db, serves core's API on loopback, and
@@ -570,10 +571,9 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     replyScheduling = replyScheduling.then(async () => {
       await new Promise<void>((resolve) => setImmediate(resolve))
       try {
-        const result = syncReplyObligations(new Date(), {
-          ...repliesConfig,
-          db,
-        })
+        const result = await writeQueueFor(db).run(() =>
+          syncReplyObligations(new Date(), { ...repliesConfig, db })
+        )
         if (result.created > 0 || result.resolved > 0)
           log("reply_obligations_synced", {
             created: String(result.created),

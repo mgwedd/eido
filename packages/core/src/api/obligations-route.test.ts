@@ -2,7 +2,10 @@ import type { DatabaseSync } from "node:sqlite"
 import { GateUnavailableError } from "@eido/gate"
 import { beforeEach, describe, expect, test } from "vitest"
 import { addDocs, ledgerFixture, testDoc } from "../ledger/ledger.test-support"
-import { createObligationStateStore } from "../ledger/obligation-state"
+import {
+  MAX_OBLIGATION_CALLS,
+  createObligationStateStore,
+} from "../ledger/obligation-state"
 import type {
   ObligationAuditEntry,
   ObligationAuditSink,
@@ -158,15 +161,23 @@ describe("POST /obligations/:id/{done,resolve,reopen}", () => {
     expect(statusOf()).toBe("open")
   })
 
-  test("answers 503 busy while another store's transaction is open", async () => {
-    db.exec("BEGIN")
-    try {
-      const response = await post(`/obligations/${String(id)}/done`)
-      expect(response.status).toBe(503)
-      expect(await response.json()).toMatchObject({ error: { code: "busy" } })
-    } finally {
-      db.exec("ROLLBACK")
-    }
+  test("answers 503 busy when too many changes are waiting", async () => {
+    let release: (() => void) | undefined
+    const h = handlerWith(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve
+        })
+    )
+    const waiting = Array.from({ length: MAX_OBLIGATION_CALLS }, () =>
+      post(`/obligations/${String(id)}/done`, "{}", h)
+    )
+    const response = await post(`/obligations/${String(id)}/done`, "{}", h)
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ error: { code: "busy" } })
+    while (release === undefined) await new Promise((r) => setImmediate(r))
+    release()
+    await Promise.all(waiting)
   })
 
   test("is not served without an obligation store", async () => {

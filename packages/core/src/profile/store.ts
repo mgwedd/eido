@@ -8,6 +8,7 @@ import {
 } from "@eido/schemas"
 import { ProfileError } from "./errors"
 import { activateDataLedger } from "../ledger/db"
+import { writeQueueFor } from "../db/write-queue"
 import type {
   AccountAssignment,
   Entity,
@@ -107,10 +108,12 @@ export function createProfileStore(
     db.prepare(sql).run(...params)
   }
 
-  // The tail of the queue of store calls. node:sqlite has one connection and the audit call is
-  // awaited inside the transaction, so without the queue a second request's statements would
-  // run inside the first one's open transaction. The audit client's timeout (2 s) bounds how
-  // long one call holds the queue.
+  // Store calls run on the connection's write queue. node:sqlite has one connection and the
+  // audit call is awaited inside the transaction, so without the queue a second write's
+  // statements would run inside the first one's open transaction. The audit client's timeout
+  // (2 s) bounds how long one call holds the queue. `tail` only tracks this store's own calls,
+  // for drain.
+  const queue = writeQueueFor(db)
   let tail: Promise<unknown> = Promise.resolve()
   let admitted = 0
   function serialized<A extends unknown[], T>(
@@ -121,7 +124,7 @@ export function createProfileStore(
         return Promise.reject(new ProfileError("busy", "profile store busy"))
       }
       admitted++
-      const result = tail.then(() => work(...args))
+      const result = queue.run(() => work(...args))
       tail = result.then(
         () => {
           admitted--

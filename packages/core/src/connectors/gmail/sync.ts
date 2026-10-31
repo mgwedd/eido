@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
 import { ingestEntityId } from "../ingest-entity"
+import { writeQueueFor } from "../../db/write-queue"
 import type { IngestAccount } from "../ingest-entity"
 import { isPdfMime, attachmentText, parseMessage } from "../mail/parse"
 import { pdfAttachmentText } from "../mail/pdf-text"
@@ -220,12 +221,14 @@ async function commitBatch(
     }
     documents.push(...(await toDocuments(message, entityId, parser, mailboxId)))
   }
-  const result = ingestBatch(db, {
-    connector: GMAIL_CONNECTOR,
-    stream: label,
-    documents,
-    nextCursor: JSON.stringify(nextCursor),
-  })
+  const result = await writeQueueFor(db).run(() =>
+    ingestBatch(db, {
+      connector: GMAIL_CONNECTOR,
+      stream: label,
+      documents,
+      nextCursor: JSON.stringify(nextCursor),
+    })
+  )
   totals.inserted += result.inserted
   totals.skipped += result.skipped
   if (result.inserted > 0 || result.pagesStored > 0) onIngested?.(documents)
