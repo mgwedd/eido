@@ -5,7 +5,7 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 
-const PATTERNS = [
+const PATTERNS: [name: string, pattern: RegExp][] = [
   [
     "private key",
     /-----BEGIN (RSA |EC |OPENSSH |DSA |PGP |ENCRYPTED )?PRIVATE KEY-----/,
@@ -29,39 +29,60 @@ const URL_CREDENTIALS =
 const PLACEHOLDER_PASSWORD =
   /^(\$|<|\{|\*+$|x+$|\.\.\.$|password$|pass$|changeme$|example$)/i
 
-const SKIP = /(^|\/)(pnpm-lock\.yaml|scripts\/secret-scan\.mjs)$/
+const SKIP = /(^|\/)(pnpm-lock\.yaml|scripts\/secret-scan\.ts)$/
 const IGNORABLE_READ_ERRORS = new Set(["EISDIR", "ENOENT"])
 
-const files = execFileSync(
-  "git",
-  ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-  { encoding: "utf8" }
-)
-  .split("\0")
-  .filter((f) => f && !SKIP.test(f))
-
-let hits = 0
-const report = (file, message) => {
-  console.error(`FAIL: possible ${message} in ${file}`)
-  hits++
-}
-
-for (const file of files) {
-  let text
-  try {
-    text = readFileSync(file, "utf8")
-  } catch (error) {
-    if (IGNORABLE_READ_ERRORS.has(error.code)) continue
-    console.error(`FAIL: could not read ${file}: ${error.message}`)
-    process.exit(1)
-  }
+/** Names of the secret kinds found in one file's text; a kind can repeat for URL credentials. */
+export function findSecrets(text: string): string[] {
+  const found: string[] = []
   for (const [name, re] of PATTERNS) {
-    if (re.test(text)) report(file, name)
+    if (re.test(text)) found.push(name)
   }
   for (const match of text.matchAll(URL_CREDENTIALS)) {
-    if (!PLACEHOLDER_PASSWORD.test(match[2]))
-      report(file, "URL with embedded credentials")
+    if (!PLACEHOLDER_PASSWORD.test(match[2] ?? ""))
+      found.push("URL with embedded credentials")
   }
+  return found
 }
-if (hits) process.exit(1)
-console.log(`ok: scanned ${files.length} files, no secrets found`)
+
+export function isSkipped(file: string): boolean {
+  return SKIP.test(file)
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String(error.code)
+    : undefined
+}
+
+function main(): void {
+  const files = execFileSync(
+    "git",
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    { encoding: "utf8" }
+  )
+    .split("\0")
+    .filter((f) => f && !isSkipped(f))
+
+  let hits = 0
+  for (const file of files) {
+    let text: string
+    try {
+      text = readFileSync(file, "utf8")
+    } catch (error) {
+      const code = errorCode(error)
+      if (code && IGNORABLE_READ_ERRORS.has(code)) continue
+      const reason = error instanceof Error ? error.message : String(error)
+      console.error(`FAIL: could not read ${file}: ${reason}`)
+      process.exit(1)
+    }
+    for (const name of findSecrets(text)) {
+      console.error(`FAIL: possible ${name} in ${file}`)
+      hits++
+    }
+  }
+  if (hits) process.exit(1)
+  console.log(`ok: scanned ${files.length} files, no secrets found`)
+}
+
+if (import.meta.main) main()

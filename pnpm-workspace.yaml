@@ -2,6 +2,7 @@ packages:
   - "apps/*"
   - "packages/*"
   - "infra"
+  - "scripts"
 
 # Install hardening: no dependency install scripts except this allowlist,
 # and no versions published in the last 7 days (value is in minutes).

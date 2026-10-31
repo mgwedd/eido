@@ -2,29 +2,13 @@
 // and each case must fail for the right reason (right rule, right file).
 import { spawnSync } from "node:child_process"
 
-const run = spawnSync(
-  "pnpm",
-  [
-    "exec",
-    "depcruise",
-    "fixtures/boundary-violation",
-    "--config",
-    ".dependency-cruiser.cjs",
-    "--no-cache",
-  ],
-  { encoding: "utf8" }
-)
-const output = `${run.stdout}${run.stderr}`
-
-if (run.status === 0) {
-  console.error(
-    "FAIL: dependency-cruiser passed on the boundary-violation fixture; the boundary rules are not enforced."
-  )
-  process.exit(1)
+interface FixtureCase {
+  label: string
+  pattern: RegExp
 }
 
 // Each case: a violation line that names both the rule and the offending file.
-const cases = [
+export const CASES: FixtureCase[] = [
   {
     label: "relative import of gate internals (bad.ts)",
     pattern:
@@ -64,17 +48,61 @@ const cases = [
   },
 ]
 
-const missing = cases.filter((c) => !c.pattern.test(output))
-if (missing.length) {
-  console.error(
-    "FAIL: fixture did not fail for the expected reasons:\n" +
-      missing.map((c) => `  - ${c.label}`).join("\n") +
-      "\n\n" +
-      output
-  )
-  process.exit(1)
+export interface FixtureVerdict {
+  ok: boolean
+  message: string
 }
-console.log(
-  "ok: fixture violates the boundary rules as expected:\n" +
-    cases.map((c) => `  - ${c.label}`).join("\n")
-)
+
+/** Judges one dependency-cruiser run over the fixture: it must fail, for every expected reason. */
+export function judgeFixtureRun(
+  status: number | null,
+  output: string
+): FixtureVerdict {
+  if (status === 0) {
+    return {
+      ok: false,
+      message:
+        "FAIL: dependency-cruiser passed on the boundary-violation fixture; the boundary rules are not enforced.",
+    }
+  }
+  const missing = CASES.filter((c) => !c.pattern.test(output))
+  if (missing.length) {
+    return {
+      ok: false,
+      message:
+        "FAIL: fixture did not fail for the expected reasons:\n" +
+        missing.map((c) => `  - ${c.label}`).join("\n") +
+        "\n\n" +
+        output,
+    }
+  }
+  return {
+    ok: true,
+    message:
+      "ok: fixture violates the boundary rules as expected:\n" +
+      CASES.map((c) => `  - ${c.label}`).join("\n"),
+  }
+}
+
+function main(): void {
+  const run = spawnSync(
+    "pnpm",
+    [
+      "exec",
+      "depcruise",
+      "fixtures/boundary-violation",
+      "--config",
+      ".dependency-cruiser.mts",
+      "--no-cache",
+    ],
+    { encoding: "utf8" }
+  )
+  const verdict = judgeFixtureRun(run.status, `${run.stdout}${run.stderr}`)
+  if (!verdict.ok) {
+    console.error(verdict.message)
+    process.exit(1)
+  }
+  console.log(verdict.message)
+}
+
+if (import.meta.main) main()

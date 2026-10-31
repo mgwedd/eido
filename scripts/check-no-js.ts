@@ -1,20 +1,12 @@
 // Fails when a tracked .js/.jsx/.mjs/.cjs file is not on the allowlist below.
 // Why: Eido is TypeScript. A stray JavaScript file skips type checking and the type-aware lint rules.
-// Run `node scripts/check-no-js.mjs --self-test` to prove the check still catches a stray file.
+// Run `node scripts/check-no-js.ts --self-test` to prove the check still catches a stray file.
 import { execFileSync } from "node:child_process"
 
 const JS_FILE = /\.(js|jsx|mjs|cjs)$/
 
 // Each entry names a place where JavaScript is allowed, and why. Keep this list short.
-export const ALLOWED = [
-  {
-    pattern: /^scripts\//,
-    reason: "repo check scripts run directly by Node, without a build step",
-  },
-  {
-    pattern: /^packages\/[^/]+\/scripts\//,
-    reason: "package-level scripts such as codegen, run directly by Node",
-  },
+export const ALLOWED: { pattern: RegExp; reason: string }[] = [
   {
     pattern: /^\.agents\//,
     reason: "agent skills ship their own helper scripts",
@@ -23,10 +15,6 @@ export const ALLOWED = [
     pattern: /(^|\/)[^/]+\.config\.(js|mjs|cjs)$/,
     reason:
       "tool config files (eslint, postcss, ...) are read by the tool as JS",
-  },
-  {
-    pattern: /^\.dependency-cruiser\.cjs$/,
-    reason: "dependency-cruiser only reads its config as CommonJS",
   },
   {
     pattern: /^packages\/eslint-config\/[^/]+\.js$/,
@@ -40,19 +28,20 @@ export const ALLOWED = [
 ]
 
 /** Returns the tracked JavaScript files that are not allowed. */
-export function findStrayJs(files) {
+export function findStrayJs(files: string[]): string[] {
   return files.filter(
     (file) => JS_FILE.test(file) && !ALLOWED.some((a) => a.pattern.test(file))
   )
 }
 
-function selfTest() {
+function selfTest(): void {
   const fixture = [
     "packages/core/src/ok.ts",
     "packages/core/src/stray.js",
     "apps/web/lib/helper.mjs",
     "apps/web/components/widget.jsx",
     "scripts/check-something.mjs",
+    "packages/schemas/scripts/codegen.mjs",
     "apps/web/eslint.config.js",
     "packages/eslint-config/base.js",
     "packages/eslint-config/nested/other.js",
@@ -61,6 +50,8 @@ function selfTest() {
     "packages/core/src/stray.js",
     "apps/web/lib/helper.mjs",
     "apps/web/components/widget.jsx",
+    "scripts/check-something.mjs",
+    "packages/schemas/scripts/codegen.mjs",
     "packages/eslint-config/nested/other.js",
   ]
   const actual = findStrayJs(fixture)
@@ -75,7 +66,7 @@ function selfTest() {
   )
 }
 
-function main() {
+function main(): void {
   if (process.argv.includes("--self-test")) return selfTest()
   const files = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
     .split("\0")
@@ -83,7 +74,7 @@ function main() {
   const stray = findStrayJs(files)
   if (stray.length) {
     console.error(
-      "FAIL: JavaScript files outside the allowlist (write TypeScript, or add a reason in scripts/check-no-js.mjs):\n" +
+      "FAIL: JavaScript files outside the allowlist (write TypeScript, or add a reason in scripts/check-no-js.ts):\n" +
         stray.map((f) => `  - ${f}`).join("\n")
     )
     process.exit(1)
@@ -91,4 +82,4 @@ function main() {
   console.log(`ok: no stray JavaScript among ${files.length} tracked files`)
 }
 
-main()
+if (import.meta.main) main()

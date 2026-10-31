@@ -1,3 +1,4 @@
+/* eslint-disable turbo/no-undeclared-env-vars -- run by `pnpm verify` outside any turbo task; CI and GITHUB_* are set by the runner */
 // `pnpm verify`: one `turbo run` over every repo check. CI runs this same script, so the two cannot drift.
 // Turborepo runs the tasks in parallel where independent and caches passing ones; the root tasks
 // (`//#check:*`, `//#format:check`) and their inputs are defined in turbo.json.
@@ -14,13 +15,13 @@ import { appendFileSync } from "node:fs"
 
 const args = process.argv.slice(2)
 const inCI = process.env.CI === "true"
-const git = (cmd) => {
+const git = (cmd: string): string | null => {
   const r = spawnSync(`git ${cmd}`, { shell: true, encoding: "utf8" })
   return r.status === 0 ? r.stdout.trim() : null
 }
 
 // Changed files, or null when there is no base to compare against (then everything runs).
-function changedFiles() {
+function changedFiles(): string[] | null {
   if (inCI) {
     if (process.env.GITHUB_EVENT_NAME !== "pull_request") return null
     const out = git("diff --name-only HEAD^1 HEAD")
@@ -69,7 +70,7 @@ console.log(`$ ${cmd}`)
 
 const run = spawnSync(cmd, { shell: true, stdio: "inherit" })
 if (inCI && process.env.GITHUB_STEP_SUMMARY && !docsOnly) {
-  const summary = spawnSync("node", ["scripts/coverage-summary.mjs"], {
+  const summary = spawnSync("node", ["scripts/coverage-summary.ts"], {
     encoding: "utf8",
   })
   appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.stdout ?? "")

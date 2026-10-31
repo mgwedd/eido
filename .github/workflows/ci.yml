@@ -38,7 +38,7 @@ jobs:
           tesseract --version
       - name: Check named invariant tests
         run: pnpm check:invariants
-      # The checks are one turbo run, defined by scripts/verify.mjs and turbo.json: edit those to change CI and
+      # The checks are one turbo run, defined by scripts/verify.ts and turbo.json: edit those to change CI and
       # `pnpm verify` together. Pull requests that only touch docs or images run the light steps;
       # every push to main runs everything.
       - name: Verify

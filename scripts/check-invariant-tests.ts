@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 
-const requiredTests = [
+export const REQUIRED_TESTS: [path: string, name: string][] = [
   [
     "packages/gate/src/internal/approvals.test.ts",
     "invariant: approval replay and a second assertion are refused",
@@ -63,21 +63,32 @@ const requiredTests = [
   ],
 ]
 
-const missing = []
-
-for (const [path, requiredName] of requiredTests) {
-  const source = readFileSync(path, "utf8")
-  if (!source.includes(`"${requiredName}"`)) {
-    missing.push(`${path}: ${requiredName}`)
+/** Returns "path: name" for every required test whose name is not quoted in its source file. */
+export function findMissingTests(
+  required: [path: string, name: string][],
+  read: (path: string) => string
+): string[] {
+  const missing: string[] = []
+  for (const [path, requiredName] of required) {
+    if (!read(path).includes(`"${requiredName}"`)) {
+      missing.push(`${path}: ${requiredName}`)
+    }
   }
+  return missing
 }
 
-if (missing.length > 0) {
-  console.error(
-    "FAIL: required named invariant tests are missing or renamed:\n" +
-      missing.map((name) => `  - ${name}`).join("\n")
+function main(): void {
+  const missing = findMissingTests(REQUIRED_TESTS, (path) =>
+    readFileSync(path, "utf8")
   )
-  process.exit(1)
+  if (missing.length > 0) {
+    console.error(
+      "FAIL: required named invariant tests are missing or renamed:\n" +
+        missing.map((name) => `  - ${name}`).join("\n")
+    )
+    process.exit(1)
+  }
+  console.log(`ok: found all ${REQUIRED_TESTS.length} named invariant tests`)
 }
 
-console.log(`ok: found all ${requiredTests.length} named invariant tests`)
+if (import.meta.main) main()

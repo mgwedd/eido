@@ -1,8 +1,9 @@
 /** Eido boundary rules. Run from the repo root; fixtures mirror the real paths. */
+import type { IConfiguration } from "dependency-cruiser"
+
 const GATE_INTERNALS = "(^|/)packages/gate/src/(?!index\\.ts$)"
 
-/** @type {import("dependency-cruiser").IConfiguration} */
-module.exports = {
+const config: IConfiguration = {
   forbidden: [
     {
       name: "gate-internals-are-private",
@@ -112,3 +113,5 @@ module.exports = {
     },
   },
 }
+
+export default config
