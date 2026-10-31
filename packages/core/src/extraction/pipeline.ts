@@ -9,7 +9,6 @@ import {
 import type { InjectionReason } from "../inference/fence"
 import type { ChatMessage, ModelClient } from "../inference/types"
 import { insertExtraction, insertObligation } from "../ledger/store"
-import type { Parser } from "../parsers/parse-document"
 import {
   DEFAULT_MAX_PASSAGES,
   DEFAULT_PHRASES,
@@ -23,6 +22,7 @@ import {
   priorReply,
 } from "./prompt"
 import { normalizeParsed, passageReasons } from "./normalize"
+import { loadStoredText } from "./stored-text"
 import type { CandidateItem, ItemOutcome } from "./verify"
 import { defaultFieldConfidence, verifyItem } from "./verify"
 import { summarize } from "./summary"
@@ -58,8 +58,6 @@ export type ExtractionConfig = {
 
 export type ExtractorDeps = {
   db: DatabaseSync
-  /** Parses the stored original whose hash is the document's sha256. */
-  parser: Pick<Parser, "parseDocument">
   model: ModelClient
   config: ExtractionConfig
   /** Per-field confidence. Default: 1.0 for a field that verified and parsed. */
@@ -70,7 +68,7 @@ export type ExtractorDeps = {
 
 export type ExtractOptions = { signal?: AbortSignal }
 
-export type ExtractionErrorCode = "document_not_found" | "parse_failed"
+export type ExtractionErrorCode = "document_not_found" | "no_stored_text"
 
 /** The document could not be read; nothing was written. Messages never hold document text. */
 export class ExtractionError extends Error {
@@ -249,7 +247,7 @@ function savepoint<T>(db: DatabaseSync, work: () => T): T {
  * stores verified fields in the ledger and returns uncertain ones as confirm candidates.
  */
 export function createExtractor(deps: ExtractorDeps): Extractor {
-  const { db, parser, model, config } = deps
+  const { db, model, config } = deps
   const threshold = config.threshold ?? DEFAULT_CONFIDENCE_THRESHOLD
   if (!(threshold >= 0 && threshold <= 1)) {
     throw new RangeError("threshold must be between 0 and 1")
@@ -274,14 +272,14 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
     { role: "user", content: passageMessage("") },
   ])
 
-  function loadDocument(docId: string): { mime: string; entityId: string } {
+  function loadDocument(docId: string): { entityId: string } {
     const row = db
-      .prepare("SELECT mime, entity_id FROM documents WHERE sha256 = ?")
+      .prepare("SELECT entity_id FROM documents WHERE sha256 = ?")
       .get(docId)
     if (row === undefined) {
       throw new ExtractionError("document_not_found", "no such document")
     }
-    return { mime: String(row["mime"]), entityId: String(row["entity_id"]) }
+    return { entityId: String(row["entity_id"]) }
   }
 
   async function extractDocument(
@@ -314,14 +312,12 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         injectionReasons: [],
       }
     }
-    const parsed = await parser.parseDocument({
-      blobSha256: docId,
-      mime: doc.mime,
-    })
-    if (!parsed.ok) {
+    // Spans index `document_text.body` itself, the text the viewer renders (#389).
+    const parsed = loadStoredText(db, docId)
+    if (parsed === null) {
       throw new ExtractionError(
-        "parse_failed",
-        `the document could not be parsed (${parsed.reason})`
+        "no_stored_text",
+        "the document has no stored text"
       )
     }
     // Quotes are checked against the text exactly as the model read it.

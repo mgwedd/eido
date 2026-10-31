@@ -976,29 +976,18 @@ describe("errors", () => {
     })
   })
 
-  test("a parse failure throws parse_failed and writes nothing", async () => {
+  test("a document with no stored text throws no_stored_text and writes nothing", async () => {
     h = await harness(INVOICE, [NOTHING_FOUND])
-    const extractor = createExtractor({
-      db: h.db,
-      parser: {
-        parseDocument: (doc) =>
-          Promise.resolve({
-            ok: false,
-            sha256: doc.blobSha256,
-            reason: "malformed",
-            detail: "bad",
-          }),
-      },
-      model: { complete: () => Promise.reject(new Error("not called")) },
-      config: { model: "stub-model" },
-    })
-    const error: unknown = await extractor
+    h.db.exec("DROP TRIGGER document_text_no_delete")
+    h.db.exec("DROP TRIGGER document_text_ai")
+    h.db.exec("DELETE FROM document_text")
+    const error: unknown = await h.extractor
       .extractDocument(h.docId)
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(ExtractionError)
     expect(error).toMatchObject({
-      code: "parse_failed",
-      message: "the document could not be parsed (malformed)",
+      code: "no_stored_text",
+      message: "the document has no stored text",
     })
     expect(extractionRows(h)).toEqual([])
   })
@@ -1036,7 +1025,6 @@ describe("errors", () => {
     expect(() =>
       createExtractor({
         db,
-        parser: { parseDocument: () => Promise.reject(new Error("unused")) },
         model: { complete: () => Promise.reject(new Error("unused")) },
         config: { model: "m", threshold: 1.2 },
       })
