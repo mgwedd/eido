@@ -9,3 +9,5 @@ export type {
 } from "./ingest"
 export { countMatches, search } from "./search"
 export type { SearchHit, SearchQuery } from "./search"
+export { getDocumentType, setDocumentType } from "./document-type"
+export type { DocumentType, DocumentTypeSource } from "./document-type"

@@ -46,12 +46,14 @@ const FIELD_NAMES = [
 ] as const
 
 const SUMMARY_COLUMNS = `d.sha256, t.title, d.source, d.source_ref, d.mime, d.ingested_at,
+  dt.type AS doc_type, dt.source AS doc_type_source,
   t.occurred_at, e.id AS entity_id, e.kind AS entity_kind, e.name AS entity_name,
   e.tag AS entity_tag`
 
 const SUMMARY_FROM = `FROM documents d
   JOIN document_text t ON t.sha256 = d.sha256
-  JOIN entities e ON e.id = d.entity_id`
+  JOIN entities e ON e.id = d.entity_id
+  LEFT JOIN document_types dt ON dt.sha256 = d.sha256`
 
 /**
  * Serves `GET /documents` (list, filters, text search) and `GET /documents/:sha256` (viewer).
@@ -134,7 +136,7 @@ function listDocuments(
   const values: SQLInputValue[] = []
   for (const [name, column] of [
     ["entity", "d.entity_id"],
-    ["type", "d.mime"],
+    ["type", "dt.type"],
     ["source", "d.source"],
   ] as const) {
     const value = param(params, name)
@@ -199,13 +201,22 @@ function entityKind(value: string): CoreApiDocumentSummary["entity"]["kind"] {
   throw new Error("stored entity kind is unknown")
 }
 
+function typeSource(
+  value: string | null
+): CoreApiDocumentSummary["typeSource"] {
+  if (value === null || value === "model" || value === "user") return value
+  throw new Error("stored document type source is unknown")
+}
+
 function summary(row: Record<string, unknown>): CoreApiDocumentSummary {
   return {
     sha256: text(row, "sha256"),
     name: nullableText(row, "title"),
     source: text(row, "source"),
     sourceRef: text(row, "source_ref"),
-    type: text(row, "mime"),
+    mime: text(row, "mime"),
+    type: nullableText(row, "doc_type"),
+    typeSource: typeSource(nullableText(row, "doc_type_source")),
     entity: {
       id: text(row, "entity_id"),
       kind: entityKind(text(row, "entity_kind")),
