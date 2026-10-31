@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import type { GateAuditRecordRequest } from "@eido/schemas"
+import { writeQueueFor } from "../db/write-queue"
 import { LedgerError } from "./errors"
 import type { ObligationStatus } from "./types"
 
@@ -49,7 +50,7 @@ export interface ObligationStateStore {
   /**
    * Applies `change` to obligation `id` and returns its new state. Fails with a LedgerError:
    * `obligation_not_found`, `invalid_transition` when the obligation is not in the state the
-   * change starts from, or `busy` when the queue is full or another store's transaction is open.
+   * change starts from, or `busy` when too many of this store's calls are waiting.
    */
   change(id: number, change: ObligationChange): Promise<ObligationState>
   /** Resolves once every queued call has settled; used before closing the database. */
@@ -65,7 +66,9 @@ export function createObligationStateStore(
   options: ObligationStateStoreOptions
 ): ObligationStateStore {
   // node:sqlite has one connection and the audit call is awaited inside the transaction, so
-  // calls run one at a time, as in the profile store.
+  // calls run one at a time on the connection's write queue, shared with the profile store and
+  // sync. `tail` only tracks this store's own calls, for drain.
+  const queue = writeQueueFor(db)
   let tail: Promise<unknown> = Promise.resolve()
   let admitted = 0
 
@@ -73,11 +76,6 @@ export function createObligationStateStore(
     id: number,
     change: ObligationChange
   ): Promise<ObligationState> {
-    // Another store (the profile store) is awaiting its own audit call inside a transaction;
-    // joining it would commit or roll back this change with that one.
-    if (db.isTransaction) {
-      throw new LedgerError("busy", "ledger busy")
-    }
     const { from, to } = TRANSITIONS[change]
     db.exec("BEGIN IMMEDIATE")
     try {
@@ -112,7 +110,7 @@ export function createObligationStateStore(
         return Promise.reject(new LedgerError("busy", "ledger busy"))
       }
       admitted++
-      const result = tail.then(() => apply(id, change))
+      const result = queue.run(() => apply(id, change))
       const release = (): void => {
         admitted--
       }

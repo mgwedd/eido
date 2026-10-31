@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
 import { ingestEntityId } from "../ingest-entity"
+import { writeQueueFor } from "../../db/write-queue"
 import type { IngestAccount, IngestEntities } from "../ingest-entity"
 import type { ProtonConfig } from "./config"
 import { CONNECTOR_NAME } from "./manifest"
@@ -202,13 +203,15 @@ export async function syncFolder(
       fetched[fetched.length - 1]?.uid ?? from - 1,
       skippedUids[skippedUids.length - 1] ?? from - 1
     )
-    const result = ingestBatch(db, {
-      connector: CONNECTOR,
-      stream: folder,
-      documents,
-      nextCursor: String(last),
-      uidvalidity: state.uidValidity,
-    })
+    const result = await writeQueueFor(db).run(() =>
+      ingestBatch(db, {
+        connector: CONNECTOR,
+        stream: folder,
+        documents,
+        nextCursor: String(last),
+        uidvalidity: state.uidValidity,
+      })
+    )
     inserted += result.inserted
     skipped += result.skipped + duplicates + skippedUids.length
     covered = last
@@ -216,13 +219,15 @@ export async function syncFolder(
   // Records the position reached with an empty tail, and the UIDVALIDITY of a folder with no
   // mail, so a later change is detected.
   if (stored === null || resynced || covered !== Number(stored.cursor)) {
-    ingestBatch(db, {
-      connector: CONNECTOR,
-      stream: folder,
-      documents: [],
-      nextCursor: String(covered),
-      uidvalidity: state.uidValidity,
-    })
+    await writeQueueFor(db).run(() =>
+      ingestBatch(db, {
+        connector: CONNECTOR,
+        stream: folder,
+        documents: [],
+        nextCursor: String(covered),
+        uidvalidity: state.uidValidity,
+      })
+    )
   }
   return { folder, inserted, skipped, resynced }
 }
