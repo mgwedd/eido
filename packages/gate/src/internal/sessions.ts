@@ -159,6 +159,34 @@ function auditLogin(
   })
 }
 
+function storeSession(
+  db: DatabaseSync,
+  token: string,
+  credentialId: string,
+  at: Date,
+  expiresAt: Date
+): void {
+  db.prepare(
+    "INSERT INTO sessions (token_hash, credential_id, created_at, expires_at) VALUES (?, ?, ?, ?)"
+  ).run(hex(token), credentialId, at.toISOString(), expiresAt.toISOString())
+  auditLogin(db, "session.created", "created", credentialId)
+}
+
+/**
+ * Starts a session for a credential that was just enrolled on the phone (#202), in the
+ * caller's transaction. Returns the cookie value, which the gate never stores.
+ */
+export function startSession(
+  db: DatabaseSync,
+  credentialId: string,
+  at: Date
+): { token: string; expiresAt: Date } {
+  const token = newNonce()
+  const expiresAt = new Date(at.getTime() + SESSION_TTL_MS)
+  storeSession(db, token, credentialId, at, expiresAt)
+  return { token, expiresAt }
+}
+
 /**
  * Signs the phone in. In one transaction the challenge is consumed, the credential's counter
  * advanced (only if it is still the one checked and the credential is not revoked) and the
@@ -198,15 +226,7 @@ export function login(
     if (Number(used.changes) !== 1 || Number(counted.changes) !== 1) {
       return false
     }
-    db.prepare(
-      "INSERT INTO sessions (token_hash, credential_id, created_at, expires_at) VALUES (?, ?, ?, ?)"
-    ).run(
-      hex(token),
-      checked.credentialId,
-      at.toISOString(),
-      expiresAt.toISOString()
-    )
-    auditLogin(db, "session.created", "created", checked.credentialId)
+    storeSession(db, token, checked.credentialId, at, expiresAt)
     return true
   })
   if (!created) {

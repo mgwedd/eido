@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateEnrolOptions",
+  "description": "Response of POST /passkey/enroll/options: a single-use registration challenge for navigator.credentials.create with attestation \"none\". It can be used only while the enrolment code is valid, so it expires with the code.",
+  "type": "object",
+  "properties": {
+    "challenge": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "description": "32 random bytes as unpadded base64url; clientDataJSON.challenge must carry it unchanged."
+    },
+    "rpId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40,
+      "description": "When the enrolment code expires."
+    }
+  },
+  "required": ["challenge", "rpId", "expiresAt"],
+  "additionalProperties": false
+}
