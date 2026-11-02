@@ -1113,6 +1113,24 @@ describe("serveDataPlane", () => {
       expect(await response.json()).toMatchObject({
         status: "answered",
         answer: "The invoice was paid [M1].",
+        followUps: [
+          {
+            label: "Archive matching emails",
+            intent: {
+              kind: "email.archive",
+              connector: "gmail",
+              args: { messageIds: ["gm-1"] },
+            },
+          },
+          {
+            label: "Mark matching emails as read",
+            intent: {
+              kind: "email.markRead",
+              connector: "gmail",
+              args: { messageIds: ["gm-1"], read: true },
+            },
+          },
+        ],
         citations: [{ tag: "M1", sourceRef: "gm-1" }],
         coverage: {
           searched: 1,
