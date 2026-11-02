@@ -553,6 +553,12 @@ export interface GateIntentStatus {
   edited_from: string | null
 }
 
+/** Internal reply from the gate's fixed Security.framework helper. OSStatus only; errors contain no native text or credential values. */
+export interface GateKeychainResult {
+  status: number
+  data?: string
+}
+
 /** Response of POST /auth/login/options on the phone listener: a single-use login challenge for navigator.credentials.get with a discoverable passkey (no allowCredentials). It expires after five minutes. */
 export interface GateLoginOptions {
   challenge: string
