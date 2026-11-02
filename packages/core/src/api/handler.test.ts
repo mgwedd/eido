@@ -625,6 +625,129 @@ describe("connector health", () => {
   })
 })
 
+describe("connector accounts", () => {
+  const proton = {
+    connector: "proton",
+    healthName: "proton-mail",
+    accountRef: "assistant@example.com",
+    label: "Proton Mail",
+  }
+
+  function handlerWith(
+    deps: Partial<Parameters<typeof createApiHandler>[0]>
+  ): ApiHandler {
+    return createApiHandler({
+      profile: createProfileStore(db, { audit: () => Promise.resolve() }),
+      allowedHosts: ["core.test"],
+      ...deps,
+    })
+  }
+
+  test("lists the account of a connected connector", async () => {
+    const response = await handlerWith({
+      connectorAccounts: () => [proton],
+      connectorHealth: () =>
+        Promise.resolve([
+          { name: "proton-mail", health: "healthy", consecutiveFailures: 0 },
+        ]),
+    })(new Request("http://core.test/connectors/accounts"))
+    expect([response.status, await response.json()]).toEqual([
+      200,
+      {
+        accounts: [
+          {
+            connector: "proton",
+            accountRef: "assistant@example.com",
+            label: "Proton Mail",
+          },
+        ],
+      },
+    ])
+  })
+
+  test("lists nothing for a disconnected connector", async () => {
+    const response = await handlerWith({
+      connectorAccounts: () => [proton],
+      connectorHealth: () =>
+        Promise.resolve([
+          { name: "proton-mail", health: "open", consecutiveFailures: 4 },
+        ]),
+    })(new Request("http://core.test/connectors/accounts"))
+    expect(await response.json()).toEqual({ accounts: [] })
+  })
+
+  test("lists nothing, without asking the gate, when no connector is configured", async () => {
+    const response = await handlerWith({
+      connectorHealth: () => Promise.reject(new Error("must not be called")),
+    })(new Request("http://core.test/connectors/accounts"))
+    expect([response.status, await response.json()]).toEqual([
+      200,
+      { accounts: [] },
+    ])
+  })
+
+  test("answers 503 when accounts are known but health is not wired", async () => {
+    const response = await handlerWith({
+      connectorAccounts: () => [proton],
+    })(new Request("http://core.test/connectors/accounts"))
+    expect([response.status, await response.json()]).toEqual([
+      503,
+      {
+        error: {
+          code: "gate_unavailable",
+          message: "connector health unavailable",
+        },
+      },
+    ])
+  })
+
+  test("is read-only", async () => {
+    const response = await handlerWith({})(
+      new Request("http://core.test/connectors/accounts", { method: "POST" })
+    )
+    expect([response.status, response.headers.get("allow")]).toEqual([
+      405,
+      "GET",
+    ])
+  })
+})
+
+describe("send-from address", () => {
+  const handlerWith = (sendFrom?: string): ApiHandler =>
+    createApiHandler({
+      profile: createProfileStore(db, { audit: () => Promise.resolve() }),
+      allowedHosts: ["core.test"],
+      ...(sendFrom === undefined ? {} : { sendFrom }),
+    })
+
+  test("returns the configured Proton account", async () => {
+    const response = await handlerWith("assistant@example.com")(
+      new Request("http://core.test/connectors/send-from")
+    )
+    expect(await response.json()).toEqual({ address: "assistant@example.com" })
+  })
+
+  test("returns null when Proton is not configured", async () => {
+    const response = await handlerWith()(
+      new Request("http://core.test/connectors/send-from")
+    )
+    expect(await response.json()).toEqual({ address: null })
+  })
+
+  test.each(["PUT", "PATCH", "POST", "DELETE"])(
+    "has no write route (%s is 405)",
+    async (method) => {
+      const response = await handlerWith("assistant@example.com")(
+        new Request("http://core.test/connectors/send-from", { method })
+      )
+      expect([response.status, response.headers.get("allow")]).toEqual([
+        405,
+        "GET",
+      ])
+    }
+  )
+})
+
 describe("routePath", () => {
   test("maps the base path itself to the root", () => {
     expect(routePath("/api/core", "/api/core")).toBe("/")

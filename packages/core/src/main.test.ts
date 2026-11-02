@@ -313,6 +313,34 @@ describe("coreApiConfig", () => {
 })
 
 describe("runDataPlane", () => {
+  it("reports the configured Proton account before any sync has run", async () => {
+    const env = {
+      EIDO_DATA_DIR: join(dir, "data"),
+      EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+      EIDO_PROTON_USERNAME: "assistant@example.com",
+    }
+    const plane = runDataPlane(dataPlaneConfig(env), env)
+    expect(plane.connectorAccounts()).toEqual([
+      {
+        connector: "proton",
+        healthName: "proton-mail",
+        accountRef: "assistant@example.com",
+        label: "Proton Mail",
+      },
+    ])
+    await plane.close()
+  })
+
+  it("reports no accounts when no connector is configured", async () => {
+    const env = {
+      EIDO_DATA_DIR: join(dir, "data"),
+      EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+    }
+    const plane = runDataPlane(dataPlaneConfig(env), env)
+    expect(plane.connectorAccounts()).toEqual([])
+    await plane.close()
+  })
+
   it("opens eido-data.db, logs variable names only, and reaches the gate through the client", async () => {
     const env = {
       EIDO_DATA_DIR: join(dir, "data"),
@@ -531,6 +559,7 @@ describe("Gmail sync runtime", () => {
     const parser = createParser({ dataDir: join(dir, "parser-data") })
     const scheduleDigest = vi.fn()
     const scheduleReplies = vi.fn()
+    const onAccount = vi.fn()
     const sync = createGmailSyncRuntime({
       db,
       gate: { getConnectorHealth: () => Promise.resolve([]) },
@@ -540,10 +569,12 @@ describe("Gmail sync runtime", () => {
       onIngested: (documents) =>
         scheduleIngestedDigests(db, { scheduleDigest }, documents),
       onBatchCommitted: scheduleReplies,
+      onAccount,
       log: () => undefined,
     })
 
     await sync()
+    expect(onAccount).toHaveBeenCalledWith("owner@example.com")
     const attachment = db
       .prepare(
         "SELECT t.body FROM document_text t JOIN documents d ON d.sha256 = t.sha256 WHERE t.attachment_of = ? AND d.source_ref = ?"

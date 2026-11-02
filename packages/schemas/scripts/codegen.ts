@@ -259,10 +259,11 @@ function promptText(verbSchemas: Schema[]): string {
       return `  - ${name} (${fieldType(field)}, ${need})${note}`
     })
     const selector = verb.properties?.connector
+    const selectorNote = selector?.description
+      ? `: ${selector.description}`
+      : ""
     const selectorLine = selector
-      ? [
-          `  - connector (${fieldType(selector)}, optional): ${String(selector.description)}`,
-        ]
+      ? [`  - connector (${fieldType(selector)}, optional)${selectorNote}`]
       : []
     return [
       `${kind}: ${String(verb.description)}`,
