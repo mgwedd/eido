@@ -35,6 +35,7 @@ import type { DocumentsDeps } from "./documents-route"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
 import type { ProfileStore } from "../profile/store"
+import { dueSoonRoute } from "./due-soon"
 import { OBLIGATION_CHANGE_PATH, changeObligation } from "./obligations-route"
 
 export interface ApiDeps {
@@ -68,6 +69,8 @@ export interface ApiDeps {
   obligations?: ObligationStateStore
   /** The data DB the Documents list and viewer read. When absent, `/documents` is not served. */
   documents?: DocumentsDeps
+  /** The clock `/today/due-soon` reads "today" from. Absent: the system clock. */
+  now?: () => Date
 }
 
 export type ApiHandler = (request: Request) => Promise<Response>
@@ -438,6 +441,19 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       if (result.ok) return json(result.body)
       const { code, message, fields } = result
       return failure(code, message, fields ? { fields } : {})
+    }
+
+    if (path === "/today/due-soon" && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const timezone = (await profile.getProfile())?.timezone ?? null
+      const result = dueSoonRoute(
+        deps.documents.db,
+        url.searchParams,
+        timezone,
+        deps.now?.() ?? new Date()
+      )
+      if (result.ok) return json(result.body)
+      return failure(result.code, result.message, { fields: result.fields })
     }
 
     if (deps.documents !== undefined) {

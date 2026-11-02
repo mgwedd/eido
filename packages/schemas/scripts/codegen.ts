@@ -378,6 +378,7 @@ function main(): void {
       file.startsWith("core-api-ask-") ||
       file.startsWith("core-api-default-entity") ||
       file.startsWith("core-api-document-") ||
+      file.startsWith("core-api-today-") ||
       file === "ask-coverage.schema.json" ||
       file === "ask-citation.schema.json" ||
       file === "extraction-candidates.schema.json" ||
