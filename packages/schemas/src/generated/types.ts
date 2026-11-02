@@ -9,6 +9,13 @@ export interface AskCitation {
   sourceRef: string
   title?: string
   occurredAt?: string
+  excerpt?: {
+    passages: Array<{
+      start: number
+      end: number
+    }>
+    omittedChars: number
+  }
   injectionSuspected: boolean
   injectionReasons: Array<"fence-tag" | "template-marker" | "boundary-confusion" | "hidden-characters">
 }
@@ -18,6 +25,8 @@ export interface AskCoverage {
   searched: number
   matched: number
   readInFull: number
+  readPartially?: number
+  notRead?: number
   label: string
 }
 

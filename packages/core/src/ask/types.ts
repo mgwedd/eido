@@ -26,8 +26,14 @@ export interface AskDeps {
   db: DatabaseSync
   /** The shared inference queue; the whole ask runs as one foreground job. */
   queue: InferenceQueue
-  /** Context budget for the pack, from `ContextBudgets.ask`. */
+  /**
+   * The one input cap for each Ask model request, in estimated tokens. The answer request's
+   * system prompt, conversation, facts, messages, question and `followUpReserveTokens` all fit
+   * inside it; the plan request's system prompt, schema and question too.
+   */
   budgetTokens: number
+  /** Room inside `budgetTokens` kept free for a follow-up lookup. Default 256. */
+  followUpReserveTokens?: number
   /** Characters per estimated token, as configured for the model client. */
   charsPerToken?: number
   /** How many search hits may extend the pack. Default 20. */

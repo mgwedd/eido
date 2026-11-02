@@ -18,6 +18,14 @@ export interface PackMember {
   /** From `fence`: the member's text looked like an injection attempt. It is still sent. */
   injectionSuspected: boolean
   injectionReasons: InjectionReason[]
+  /** Present when the member is ranked passages of its document rather than the whole body. */
+  excerpt?: PackExcerpt
+}
+
+/** Passages of one document: UTF-16 ranges in its indexed body, and the body characters left out. */
+export interface PackExcerpt {
+  passages: { start: number; end: number }[]
+  omittedChars: number
 }
 
 /** One member's place in the prompt: its tag line (trusted, from the index) and its block. */
@@ -117,6 +125,7 @@ function parseMember(value: unknown): PackMember {
   const tokens: unknown = Reflect.get(value, "tokens")
   const suspected: unknown = Reflect.get(value, "injectionSuspected")
   const reasons: unknown = Reflect.get(value, "injectionReasons")
+  const excerpt = parseExcerpt(Reflect.get(value, "excerpt"))
   if (
     typeof tag !== "string" ||
     typeof sha256 !== "string" ||
@@ -134,7 +143,36 @@ function parseMember(value: unknown): PackMember {
     tokens,
     injectionSuspected: suspected,
     injectionReasons: reasons,
+    ...(excerpt === undefined ? {} : { excerpt }),
   }
+}
+
+const isOffset = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0
+
+function parsePassage(value: unknown): { start: number; end: number } {
+  if (typeof value !== "object" || value === null)
+    throw new Error("context pack member has a malformed field")
+  const start: unknown = Reflect.get(value, "start")
+  const end: unknown = Reflect.get(value, "end")
+  if (!isOffset(start) || !isOffset(end) || end <= start)
+    throw new Error("context pack member has a malformed field")
+  return { start, end }
+}
+
+function parseExcerpt(value: unknown): PackExcerpt | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "object" || value === null)
+    throw new Error("context pack member has a malformed field")
+  const passages: unknown = Reflect.get(value, "passages")
+  const omittedChars: unknown = Reflect.get(value, "omittedChars")
+  if (
+    !Array.isArray(passages) ||
+    passages.length === 0 ||
+    !isOffset(omittedChars)
+  )
+    throw new Error("context pack member has a malformed field")
+  return { passages: passages.map(parsePassage), omittedChars }
 }
 
 /** Read a stored pack record back, or null when no pack has that id. */

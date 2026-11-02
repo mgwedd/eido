@@ -1064,6 +1064,44 @@ export const ASK_CITATION_JSON_SCHEMA: JsonSchema = {
       "format": "date-time",
       "maxLength": 40
     },
+    "excerpt": {
+      "description": "Present when the model read only passages of this document: their UTF-16 offsets in the indexed body, and how many body characters it did not read.",
+      "type": "object",
+      "properties": {
+        "passages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "start",
+              "end"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 200
+        },
+        "omittedChars": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "passages",
+        "omittedChars"
+      ],
+      "additionalProperties": false
+    },
     "injectionSuspected": {
       "type": "boolean"
     },
@@ -1113,6 +1151,16 @@ export const ASK_COVERAGE_JSON_SCHEMA: JsonSchema = {
       "minimum": 0
     },
     "readInFull": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "readPartially": {
+      "description": "Matching documents the model read only ranked passages of.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "notRead": {
+      "description": "Matching documents left out of the model's context entirely.",
       "type": "integer",
       "minimum": 0
     },
@@ -1581,6 +1629,44 @@ export const CORE_API_ASK_RESPONSE_JSON_SCHEMA: JsonSchema = {
             "format": "date-time",
             "maxLength": 40
           },
+          "excerpt": {
+            "description": "Present when the model read only passages of this document: their UTF-16 offsets in the indexed body, and how many body characters it did not read.",
+            "type": "object",
+            "properties": {
+              "passages": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "start": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "end": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "required": [
+                    "start",
+                    "end"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "maxItems": 200
+              },
+              "omittedChars": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "passages",
+              "omittedChars"
+            ],
+            "additionalProperties": false
+          },
           "injectionSuspected": {
             "type": "boolean"
           },
@@ -1625,6 +1711,16 @@ export const CORE_API_ASK_RESPONSE_JSON_SCHEMA: JsonSchema = {
           "minimum": 0
         },
         "readInFull": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "readPartially": {
+          "description": "Matching documents the model read only ranked passages of.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "notRead": {
+          "description": "Matching documents left out of the model's context entirely.",
           "type": "integer",
           "minimum": 0
         },

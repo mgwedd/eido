@@ -181,3 +181,11 @@ export function countMatches(db: DatabaseSync, q: SearchQuery): number {
   const params = p.match === null ? p.params : [p.match, ...p.params]
   return Number(db.prepare(sql).get(...params)?.["n"] ?? 0)
 }
+
+/**
+ * The normalized terms a query matches on, fuzzy variants included: what `search` marks as hits
+ * in its snippets. Terms matched only by a phonetic name key are not included.
+ */
+export function matchTerms(db: DatabaseSync, q: SearchQuery): Set<string> {
+  return plan(db, q)?.hitTerms ?? new Set()
+}
