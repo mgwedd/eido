@@ -61,6 +61,7 @@ import {
   hasCredential,
   login,
   sessionCookie,
+  sessionCredential,
   sessionExpiry,
   sessionToken,
 } from "./sessions"
@@ -465,8 +466,17 @@ function connectorSettings(state: PhoneState, now: Clock): Reply {
   return { status: 200, body }
 }
 
-function passkeyList(state: PhoneState): Reply {
-  const body: GatePasskeyList = { passkeys: listPasskeys(state.db) }
+function passkeyList(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Reply {
+  const current = sessionCredential(
+    state.db,
+    sessionToken(request.headers.cookie),
+    now
+  )
+  const body: GatePasskeyList = { passkeys: listPasskeys(state.db, current) }
   return { status: 200, body }
 }
 
@@ -650,7 +660,7 @@ function route(
     case "/connector-settings":
       return connectorSettings(state, now)
     case "/passkeys":
-      return passkeyList(state)
+      return passkeyList(state, request, now)
     case "/permissions":
       return permissionList(state)
     case "/approvals/:id/history":

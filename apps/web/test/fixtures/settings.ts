@@ -10,12 +10,21 @@ const activePasskey: GatePasskeyList["passkeys"][number] = {
   fingerprint: "a".repeat(64),
   createdAt: "2026-10-01T09:00:00.000Z",
   revokedAt: null,
+  current: false,
+}
+
+const currentPasskey: GatePasskeyList["passkeys"][number] = {
+  fingerprint: "c2".repeat(32),
+  createdAt: "2026-10-02T09:00:00.000Z",
+  revokedAt: null,
+  current: true,
 }
 
 const revokedPasskey: GatePasskeyList["passkeys"][number] = {
   fingerprint: "b1".repeat(32),
   createdAt: "2026-09-01T09:00:00.000Z",
   revokedAt: "2026-10-05T09:00:00.000Z",
+  current: false,
 }
 
 const permissions: GatePermissionList = {
@@ -46,6 +55,7 @@ const chainBroken: GateAuditChainStatus = {
 }
 
 export {
+  currentPasskey,
   activePasskey,
   chainBroken,
   chainOk,

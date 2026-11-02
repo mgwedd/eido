@@ -660,6 +660,7 @@ describe("the control listener", () => {
           fingerprint,
           createdAt: "2026-10-01T00:00:00.000Z",
           revokedAt: null,
+          current: false,
         },
       ],
     })

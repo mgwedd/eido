@@ -564,6 +564,7 @@ export interface GatePasskeyList {
     fingerprint: string
     createdAt: string
     revokedAt: string | null
+    current: boolean
   }>
 }
 
