@@ -260,7 +260,10 @@ function NotificationsSection({ device }: { device?: PushDevice }) {
           </span>
           {failed ? null : (
             <span role="status" className="text-xs text-muted-foreground">
-              {status === null || status.status === "unauthenticated"
+              {status === null ||
+              status.status === "offline" ||
+              status.status === "error" ||
+              status.status === "unauthenticated"
                 ? ""
                 : PUSH_STATUS_LABELS[status.status]}
             </span>
