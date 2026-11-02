@@ -14,10 +14,10 @@ afterEach(() => {
   fixture.cleanup()
 })
 
-function seed(turns: number, tokensEach: number): void {
+async function seed(turns: number, tokensEach: number): Promise<void> {
   fixture = storeFixture()
   for (let n = 1; n <= turns; n++) {
-    fixture.store.appendTurn("c1", rawTurn(n, words(tokensEach)))
+    await fixture.store.appendTurn("c1", rawTurn(n, words(tokensEach)))
   }
 }
 
@@ -25,7 +25,7 @@ const options = { thresholdTokens: 30, keepRecentTokens: 10 }
 
 describe("/compact", () => {
   it("runs the compaction path and reports how many turns were replaced", async () => {
-    seed(6, 10)
+    await seed(6, 10)
     const model = summarizingModel("S")
     const outcome = await dispatchCommand("/compact", "c1", {
       store: fixture.store,
@@ -43,7 +43,7 @@ describe("/compact", () => {
   })
 
   it("matches runCompactCommand directly", async () => {
-    seed(6, 10)
+    await seed(6, 10)
     const direct = await runCompactCommand("c1", {
       store: fixture.store,
       queue: summarizingModel("S").queue,
@@ -54,7 +54,7 @@ describe("/compact", () => {
   })
 
   it("writes nothing back over the raw turns", async () => {
-    seed(6, 10)
+    await seed(6, 10)
     const before = fixture.store.getTurns("c1")
     await runCompactCommand("c1", {
       store: fixture.store,
@@ -79,7 +79,7 @@ describe("/compact", () => {
   })
 
   it("says so when there is nothing to compact", async () => {
-    seed(2, 5)
+    await seed(2, 5)
     const model = summarizingModel("S")
     const outcome = await dispatchCommand("/compact", "c1", {
       store: fixture.store,
@@ -93,7 +93,7 @@ describe("/compact", () => {
   })
 
   it("reports the cause when compaction fails", async () => {
-    seed(6, 10)
+    await seed(6, 10)
     const outcome = await dispatchCommand("/compact", "c1", {
       store: fixture.store,
       queue: stubModel(() => "garbage").queue,
@@ -106,7 +106,7 @@ describe("/compact", () => {
   })
 
   it("accepts surrounding whitespace but no other message", async () => {
-    seed(6, 10)
+    await seed(6, 10)
     const model = summarizingModel("S")
     const ctx = { store: fixture.store, queue: model.queue, options }
     expect((await dispatchCommand(" /compact\n", "c1", ctx)).handled).toBe(true)

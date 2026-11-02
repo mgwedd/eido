@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite"
 import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
+import { writeQueueFor } from "../db/write-queue"
 import { PromptTooLargeError } from "../inference/errors"
 import {
   ESTIMATE_BOUNDARY,
@@ -227,17 +228,24 @@ type AskOutcome =
   | { kind: "skipped" }
   | { kind: "rejected" }
 
-function savepoint<T>(db: DatabaseSync, work: () => T): T {
-  db.exec("SAVEPOINT extraction_run")
-  try {
-    const result = work()
-    db.exec("RELEASE extraction_run")
-    return result
-  } catch (error) {
-    db.exec("ROLLBACK TO extraction_run")
-    db.exec("RELEASE extraction_run")
-    throw error
-  }
+/**
+ * Run `work` in a savepoint on the connection's write queue, so a run's writes wait for an
+ * audited store's open transaction instead of joining it. The ledger writers `work` calls run
+ * inline inside it.
+ */
+function savepoint<T>(db: DatabaseSync, work: () => Promise<T>): Promise<T> {
+  return writeQueueFor(db).run(async () => {
+    db.exec("SAVEPOINT extraction_run")
+    try {
+      const result = await work()
+      db.exec("RELEASE extraction_run")
+      return result
+    } catch (error) {
+      db.exec("ROLLBACK TO extraction_run")
+      db.exec("RELEASE extraction_run")
+      throw error
+    }
+  })
 }
 
 /**
@@ -362,7 +370,7 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
     }
 
     if (total === 0) {
-      insertExtraction(db, {
+      await insertExtraction(db, {
         docId,
         schema: EXTRACTION_SCHEMA,
         status: "processed_empty",
@@ -508,13 +516,13 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
     let verified = 0
     let needsConfirmation = 0
     let dropped = 0
-    savepoint(db, () => {
+    await savepoint(db, async () => {
       for (const { outcome, reasons } of outcomes) {
         if (outcome.kind === "dropped") {
           dropped += 1
           continue
         }
-        const extractionId = insertExtraction(db, {
+        const extractionId = await insertExtraction(db, {
           docId,
           schema: EXTRACTION_SCHEMA,
           status: "extracted",
@@ -556,7 +564,7 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         )
       }
       if (verified + needsConfirmation === 0) {
-        insertExtraction(db, {
+        await insertExtraction(db, {
           docId,
           schema: EXTRACTION_SCHEMA,
           status: "processed_empty",

@@ -332,6 +332,5 @@ export function assembleContext(
     droppedMembers: neighbours.length + 1 - chosen.length,
     packHash,
   }
-  storeContextPack(db, pack)
-  return Promise.resolve(pack)
+  return storeContextPack(db, pack).then(() => pack)
 }

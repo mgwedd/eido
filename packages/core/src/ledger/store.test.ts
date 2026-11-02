@@ -41,6 +41,16 @@ function codeOf(fn: () => unknown): string {
   return "none"
 }
 
+async function codeOfAsync(fn: () => Promise<unknown>): Promise<string> {
+  try {
+    await fn()
+  } catch (error) {
+    if (error instanceof LedgerError) return error.code
+    throw error
+  }
+  return "none"
+}
+
 const FIELDS: ExtractedFields = {
   action: { raw: "Pay the invoice", span: { start: 10, end: 25 } },
   amount: {
@@ -128,9 +138,9 @@ describe("no ledger row without a source link", () => {
     expect(listObligations(db)).toEqual([])
   })
 
-  test("insertExtraction fails with a typed error for a missing document", () => {
+  test("insertExtraction fails with a typed error for a missing document", async () => {
     expect(
-      codeOf(() =>
+      await codeOfAsync(() =>
         insertExtraction(db, {
           docId: "f".repeat(64),
           schema: "extracted-fields",
@@ -159,8 +169,8 @@ describe("per-field confidence", () => {
       )
       .run(id, field, confidence)
 
-  test("two fields of one extraction store different confidences", () => {
-    const id = rawExtraction()
+  test("two fields of one extraction store different confidences", async () => {
+    const id = await rawExtraction()
     expect(confidences(id)).toEqual([
       ["action", 0.9],
       ["amount", 0.4],
@@ -210,8 +220,8 @@ describe("per-field confidence", () => {
     ])
   })
 
-  test("a processed_empty extraction has '{}', no confidence rows and accepts none", () => {
-    const id = insertExtraction(db, {
+  test("a processed_empty extraction has '{}', no confidence rows and accepts none", async () => {
+    const id = await insertExtraction(db, {
       docId: docA,
       schema: "extracted-fields",
       status: "processed_empty",
@@ -237,7 +247,7 @@ describe("per-field confidence", () => {
     ).toThrow(/CHECK/)
   })
 
-  test("insertExtraction refuses a present field without confidence, or a confidence without its field", () => {
+  test("insertExtraction refuses a present field without confidence, or a confidence without its field", async () => {
     const base = {
       docId: docA,
       schema: "extracted-fields",
@@ -247,12 +257,12 @@ describe("per-field confidence", () => {
       createdAt: "2030-01-01T00:00:00.000Z",
     }
     expect(
-      codeOf(() =>
+      await codeOfAsync(() =>
         insertExtraction(db, { ...base, confidence: { action: 0.9 } })
       )
     ).toBe("invalid_confidence")
     expect(
-      codeOf(() =>
+      await codeOfAsync(() =>
         insertExtraction(db, {
           ...base,
           confidence: { action: 0.9, amount: 0.4, party: 0.5 },
@@ -264,9 +274,9 @@ describe("per-field confidence", () => {
     ).toBe(0)
   })
 
-  test("a confidence outside 0..1 is refused before anything is written", () => {
+  test("a confidence outside 0..1 is refused before anything is written", async () => {
     expect(
-      codeOf(() =>
+      await codeOfAsync(() =>
         insertExtraction(db, {
           docId: docA,
           schema: "extracted-fields",
@@ -283,8 +293,8 @@ describe("per-field confidence", () => {
     ).toBe(0)
   })
 
-  test("stored extractions and confidences cannot be changed or deleted", () => {
-    const id = rawExtraction()
+  test("stored extractions and confidences cannot be changed or deleted", async () => {
+    const id = await rawExtraction()
     expect(() =>
       db.exec("UPDATE extraction_field_confidence SET confidence = 0.1")
     ).toThrow(/append-only/)
@@ -380,8 +390,8 @@ describe("an obligation has its document's entity", () => {
 })
 
 describe("confirmed_at", () => {
-  test("can be set once, then cannot be changed or cleared", () => {
-    const id = rawExtraction()
+  test("can be set once, then cannot be changed or cleared", async () => {
+    const id = await rawExtraction()
     confirmExtraction(db, id, "2030-01-02T00:00:00.000Z")
     expect(
       db.prepare("SELECT confirmed_at FROM extractions WHERE id = ?").get(id)?.[
@@ -404,8 +414,8 @@ describe("confirmed_at", () => {
     ).toBe("2030-01-02T00:00:00.000Z")
   })
 
-  test("cannot be cleared before it is set, and other columns cannot change", () => {
-    const id = rawExtraction()
+  test("cannot be cleared before it is set, and other columns cannot change", async () => {
+    const id = await rawExtraction()
     expect(() =>
       db
         .prepare("UPDATE extractions SET confirmed_at = NULL WHERE id = ?")
@@ -614,7 +624,7 @@ describe("getObligationSource", () => {
 })
 
 describe("parameterized statements only", () => {
-  test("a hostile document, obligation and extraction round-trip as data", () => {
+  test("a hostile document, obligation and extraction round-trip as data", async () => {
     const hostile = `O'Brien'); DROP TABLE obligations; -- "quoted" ; DROP TABLE documents;`
     const [doc = ""] = addDocs(db, [
       testDoc("hostile", {
@@ -627,7 +637,7 @@ describe("parameterized statements only", () => {
       db,
       obligation({ docId: doc, party: hostile, action: hostile })
     )
-    const extraction = insertExtraction(db, {
+    const extraction = await insertExtraction(db, {
       docId: doc,
       schema: hostile,
       status: "extracted",

@@ -392,10 +392,10 @@ describe("GET /documents/:sha256", () => {
       },
     }
 
-    const store = (
+    const store = async (
       fields: ExtractedFields,
       confidence: Partial<Record<keyof ExtractedFields, number>>
-    ): number =>
+    ): Promise<number> =>
       insertExtraction(db, {
         docId: invoice,
         schema: "invoice.v1",
@@ -407,7 +407,7 @@ describe("GET /documents/:sha256", () => {
       })
 
     test("lists fields with value, line, confidence and verified", async () => {
-      const id = store(FIELDS, {
+      const id = await store(FIELDS, {
         action: 0.95,
         party: 0.9,
         amount: 0.99,
@@ -462,7 +462,7 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("low confidence is unverified until the extraction is confirmed", async () => {
-      const id = store({ action: FIELDS.action }, { action: 0.5 })
+      const id = await store({ action: FIELDS.action }, { action: 0.5 })
       expect((await view(invoice)).extractions[0]?.fields[0]?.verified).toBe(
         false
       )
@@ -473,7 +473,7 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("a confidence threshold can be configured", async () => {
-      store({ action: FIELDS.action }, { action: 0.85 })
+      await store({ action: FIELDS.action }, { action: 0.85 })
       const strict = createApiHandler({
         profile,
         allowedHosts: ["core.test"],
@@ -487,7 +487,7 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("a field that did not parse is never verified", async () => {
-      store(
+      await store(
         {
           action: FIELDS.action,
           amount: {
@@ -508,7 +508,7 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("a quote that differs from the stored text is unverified", async () => {
-      store(
+      await store(
         {
           action: { raw: "Please pay", span: party },
           reference_number: {
@@ -526,7 +526,7 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("a span starting past the stored text has no line", async () => {
-      store(
+      await store(
         {
           action: {
             raw: "Please pay",
@@ -540,15 +540,15 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("empty extractions are left out; rows come oldest first", async () => {
-      insertExtraction(db, {
+      await insertExtraction(db, {
         docId: invoice,
         schema: "invoice.v1",
         status: "processed_empty",
         model: "none",
         createdAt: "2030-01-04T00:00:00.000Z",
       })
-      const first = store({ action: FIELDS.action }, { action: 0.9 })
-      const second = store(
+      const first = await store({ action: FIELDS.action }, { action: 0.9 })
+      const second = await store(
         { party: FIELDS.party, action: FIELDS.action },
         {
           action: 0.9,

@@ -748,7 +748,7 @@ describe("serveDataPlane", () => {
       if (typeof tick !== "function") throw new Error("missing digest timer")
       const store = plane.conversation
       if (store === undefined) throw new Error("missing conversation store")
-      store.appendTurn("idle", {
+      await store.appendTurn("idle", {
         id: "old-turn",
         role: "user",
         text: "Please track repairs.",
