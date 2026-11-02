@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiTodayDueSoon",
+  "description": "A bounded page of open ledger obligations due in the next 90 local calendar dates, including overdue obligations. `nextOffset` is the offset of the next page, or null on the last page.",
+  "type": "object",
+  "properties": {
+    "timezone": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "fromDate": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "throughDate": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "title": "CoreApiTodayDueSoonEntry",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "entity": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": ["personal", "property", "company"]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "tag": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 24
+              }
+            },
+            "required": ["id", "kind", "name", "tag"],
+            "additionalProperties": false
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1
+          },
+          "party": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dueAt": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          },
+          "direction": {
+            "oneOf": [
+              {
+                "enum": ["owed", "waiting"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "documentId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "span": {
+                "$ref": "source-span.schema.json"
+              }
+            },
+            "required": ["documentId", "span"],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "entity",
+          "action",
+          "party",
+          "dueAt",
+          "direction",
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "nextOffset": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": ["timezone", "fromDate", "throughDate", "entries", "nextOffset"],
+  "additionalProperties": false
+}

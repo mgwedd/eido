@@ -68,6 +68,7 @@ export {
   validateCoreApiDocumentType,
   validateCoreApiDefaultEntityRequest,
   validateCoreApiDefaultEntity,
+  validateCoreApiTodayDueSoon,
   validateAskCoverage,
   validateAskCitation,
 } from "./generated/validators"
