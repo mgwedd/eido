@@ -4,15 +4,20 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import { ActivityView } from "../components/activity-view"
 import {
+  EXECUTED_ID,
   INTENT_ID,
   alertRow,
   autoRow,
   chainBroken,
   chainOk,
+  executedRow,
+  executedUndoneRow,
   history,
   intentRow,
   refusedRow,
   rows,
+  undoRow,
+  undoneRow,
 } from "./fixtures/activity"
 
 ;(
@@ -226,22 +231,175 @@ test("empty, error with Retry (chain banner still shown), and offline", async ()
   expect(text()).toContain("Offline. Activity is not stored on this device.")
 })
 
-test("the page issues only GET requests and stores nothing on the device", async () => {
+test("the only request that is not a GET is the undo, and nothing is stored on the device", async () => {
   const fetchMock = serve((url) =>
-    url.includes("/audit/chain")
-      ? Response.json(chainOk)
-      : page([intentRow, alertRow], 100)
+    url.endsWith("/undo")
+      ? Response.json({ id: EXECUTED_ID, undone: true })
+      : url.includes("/audit/chain")
+        ? Response.json(chainOk)
+        : page([executedRow, intentRow, alertRow], 100)
   )
   await render()
   await click("Load more")
   await click("Verify again")
-  for (const [, init] of fetchMock.mock.calls)
-    expect(init?.method ?? "GET").toBe("GET")
+  await click("Undo")
+  const writes = fetchMock.mock.calls.filter(
+    ([, init]) => (init?.method ?? "GET") !== "GET"
+  )
+  expect(writes.map(([u, init]) => [urlOf(u), init?.method])).toEqual([
+    [`/api/gate/executions/${EXECUTED_ID}/undo`, "POST"],
+  ])
   expect(localStorage.length).toBe(0)
   expect(sessionStorage.length).toBe(0)
   expect(
     container.querySelector("input, textarea, [contenteditable]")
   ).toBeNull()
+})
+
+const auditGets = (fetchMock: ReturnType<typeof serve>) =>
+  fetchMock.mock.calls.filter(([u]) => urlOf(u).includes("/audit?"))
+const undoCalls = (fetchMock: ReturnType<typeof serve>) =>
+  fetchMock.mock.calls.filter(([u]) => urlOf(u).endsWith("/undo"))
+const undoButtons = () =>
+  [...container.querySelectorAll("button")].filter(
+    (b) => b.textContent === "Undo"
+  )
+/** A row found by its short detail hash. */
+const rowOf = (entry: { detailHash: string }) =>
+  [...container.querySelectorAll("li")].find((li) =>
+    li.textContent?.includes(entry.detailHash.slice(0, 8))
+  )
+
+test("Undo appears only on available rows; done rows say Undone; a double click issues one call", async () => {
+  const fetchMock = serve((url) =>
+    url.endsWith("/undo")
+      ? new Promise<Response>(() => undefined)
+      : url.includes("/audit/chain")
+        ? Response.json(chainOk)
+        : page([executedRow, undoneRow, intentRow, autoRow])
+  )
+  await render()
+  expect(undoButtons()).toHaveLength(1)
+  expect(rowOf(executedRow)?.querySelector("button")?.textContent).toBe("Undo")
+  const statuses = [...container.querySelectorAll('li [role="status"]')].map(
+    (el) => el.textContent
+  )
+  expect(statuses).toEqual(["Undone"])
+  await act(async () => {
+    const undo = undoButtons()[0]
+    undo?.click()
+    undo?.click()
+    await new Promise((r) => setTimeout(r, 0))
+  })
+  expect(undoCalls(fetchMock)).toHaveLength(1)
+  expect(text()).toContain("Undoing…")
+})
+
+test("after Undo the row says Undone and the new audited entry appears", async () => {
+  let undone = false
+  const fetchMock = serve((url) => {
+    if (url.endsWith("/undo")) {
+      undone = true
+      return Response.json({ id: EXECUTED_ID, undone: true })
+    }
+    if (url.includes("/audit/chain")) return Response.json(chainOk)
+    return undone
+      ? page([undoRow, executedUndoneRow, intentRow])
+      : page([executedRow, intentRow])
+  })
+  await render()
+  expect(text()).not.toContain("9a0c4d5e")
+  await click("Undo")
+  expect(auditGets(fetchMock)).toHaveLength(2)
+  expect(rowOf(executedRow)?.textContent).toContain("Undone")
+  expect(rowOf(undoRow)?.textContent).toContain("undo")
+  expect(seqs()).toBe(3)
+  expect(undoButtons()).toHaveLength(0)
+})
+
+test("a refused undo shows the error with Retry, re-reads the log once, keeps the list, and never retries alone", async () => {
+  const fetchMock = serve((url) =>
+    url.endsWith("/undo")
+      ? Response.json({ error: "already_decided" }, { status: 409 })
+      : url.includes("/audit/chain")
+        ? Response.json(chainOk)
+        : page([executedRow, intentRow, alertRow])
+  )
+  await render()
+  await click("Undo")
+  expect(rowOf(executedRow)?.querySelector('[role="alert"]')?.textContent).toBe(
+    "Could not undo."
+  )
+  expect(seqs()).toBe(3)
+  expect(text()).not.toContain("Undone")
+  expect(undoCalls(fetchMock)).toHaveLength(1)
+  expect(auditGets(fetchMock)).toHaveLength(2)
+  await click("Retry")
+  expect(undoCalls(fetchMock)).toHaveLength(2)
+})
+
+test("an unconfirmed undo that the refreshed log shows as done becomes Undone", async () => {
+  let posted = false
+  serve((url) => {
+    if (url.endsWith("/undo")) {
+      posted = true
+      return "network"
+    }
+    if (url.includes("/audit/chain")) return Response.json(chainOk)
+    return posted ? page([undoRow, executedUndoneRow]) : page([executedRow])
+  })
+  await render()
+  await click("Undo")
+  expect(rowOf(executedRow)?.textContent).toContain("Undone")
+  expect(rowOf(executedRow)?.querySelector('[role="alert"]')).toBeNull()
+})
+
+test("a failed refresh after an undo leaves the list as it was", async () => {
+  let posted = false
+  serve((url) => {
+    if (url.endsWith("/undo")) {
+      posted = true
+      return Response.json({ id: EXECUTED_ID, undone: true })
+    }
+    if (url.includes("/audit/chain")) return Response.json(chainOk)
+    return posted
+      ? new Response(null, { status: 500 })
+      : page([executedRow, intentRow])
+  })
+  await render()
+  await click("Undo")
+  expect(seqs()).toBe(2)
+  expect(rowOf(executedRow)?.textContent).toContain("Undone")
+  expect(text()).not.toContain("Could not read the audit log.")
+})
+
+test("a 401 on undo, or on the refresh after it, sends the owner to unlock", async () => {
+  const replace = vi.fn()
+  vi.stubGlobal("location", { pathname: "/activity", search: "", replace })
+  serve((url) =>
+    url.endsWith("/undo")
+      ? new Response(null, { status: 401 })
+      : url.includes("/audit/chain")
+        ? Response.json(chainOk)
+        : page([executedRow])
+  )
+  await render()
+  await click("Undo")
+  expect(replace).toHaveBeenCalledTimes(1)
+
+  replace.mockClear()
+  let posted = false
+  serve((url) => {
+    if (url.endsWith("/undo")) {
+      posted = true
+      return Response.json({ id: EXECUTED_ID, undone: true })
+    }
+    if (url.includes("/audit/chain")) return Response.json(chainOk)
+    return posted ? new Response(null, { status: 401 }) : page([executedRow])
+  })
+  await render()
+  await click("Undo")
+  expect(replace).toHaveBeenCalledTimes(1)
 })
 
 test("an intent's history lists entries in order with time, from to to, actor and reason", async () => {
