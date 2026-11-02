@@ -47,6 +47,7 @@ import {
 import { reloadPolicy } from "./internal/runtime"
 import { validateGatePrepareApproval } from "@eido/schemas"
 import { FileVault } from "./internal/vault/file-vault"
+import { InMemoryVault } from "./internal/vault/vault"
 import { vapidPublicKey } from "./internal/push-crypto"
 import {
   CONTROL_DB_FILE,
@@ -54,7 +55,7 @@ import {
   gateConfig,
   runGate as startGate,
 } from "./main"
-import type { GateConfig, RunningGate } from "./main"
+import type { GateConfig, RunningGate, VaultConfig } from "./main"
 
 let dir: string
 const openGates = new Set<RunningGate>()
@@ -268,12 +269,13 @@ describe("Web Push configuration", () => {
         ...BASE,
         EIDO_PUSH_VAPID_SUBJECT: "mailto:ops@example.invalid",
       })
-    ).toThrow("Web Push needs EIDO_GATE_VAULT_FILE")
+    ).toThrow("Web Push needs EIDO_GATE_KEYCHAIN_PATH")
     expect(() =>
       gateConfig({
         ...BASE,
         EIDO_PUSH_VAPID_SUBJECT: "mailto:ops@example.invalid",
         EIDO_GATE_VAULT_FILE: "/tmp/vault",
+        EIDO_DEV_VAULT: "1",
         EIDO_PUSH_WINDOW_MS: "0",
       })
     ).toThrow("EIDO_PUSH_WINDOW_MS")
@@ -288,8 +290,7 @@ describe("Web Push configuration", () => {
         EIDO_APPROVAL_NUDGE_WINDOW_MS: "90000",
       }).push
     ).toEqual({
-      vaultPath: "/tmp/vault",
-      devVault: true,
+      vault: { kind: "file", path: "/tmp/vault", devFlag: true },
       subject: "mailto:ops@example.invalid",
       windowMs: 30000,
       nudgeThreshold: 3,
@@ -302,8 +303,7 @@ describe("Web Push configuration", () => {
     const c: GateConfig = {
       ...config(),
       push: {
-        vaultPath,
-        devVault: true,
+        vault: { kind: "file", path: vaultPath, devFlag: true },
         subject: "mailto:ops@example.invalid",
         windowMs: 60_000,
         nudgeThreshold: 5,
@@ -330,8 +330,11 @@ describe("Web Push configuration", () => {
     const c: GateConfig = {
       ...config(),
       push: {
-        vaultPath: join(dir, "bad-vapid-vault.json"),
-        devVault: true,
+        vault: {
+          kind: "file" as const,
+          path: join(dir, "bad-vapid-vault.json"),
+          devFlag: true,
+        },
         subject: "invalid-subject",
         windowMs: 60_000,
         nudgeThreshold: 5,
@@ -464,6 +467,46 @@ describe("runGate", () => {
   })
 })
 
+describe("runGate with the production vault selection", () => {
+  it("uses the injected Keychain vault instance for Web Push secrets", async () => {
+    const selected: VaultConfig = {
+      kind: "keychain",
+      path: "/Users/gate/Library/Keychains/eido.keychain-db",
+    }
+    const vault = new InMemoryVault()
+    const factory = vi.fn((selection: VaultConfig) => {
+      expect(selection).toEqual(selected)
+      return vault
+    })
+    const gate = await startGate(
+      {
+        ...config(),
+        push: {
+          vault: selected,
+          subject: "mailto:ops@example.invalid",
+          windowMs: 60_000,
+          nudgeThreshold: 5,
+          nudgeWindowMs: 120_000,
+        },
+      },
+      () => new Date(),
+      factory
+    )
+    try {
+      expect(factory).toHaveBeenCalledTimes(1)
+      const secret = await vault.get({
+        connector: "eido-web-push",
+        kind: "api_key",
+        client: "write",
+      })
+      expect(typeof secret).toBe("string")
+      expect(vapidPublicKey(secret ?? "")).toMatch(/^[A-Za-z0-9_-]+$/)
+    } finally {
+      await gate.close()
+    }
+  })
+})
+
 describe("gateConfig with Bridge", () => {
   const BASE = {
     EIDO_GATE_DATA_DIR: "/d",
@@ -503,22 +546,35 @@ describe("gateConfig with Bridge", () => {
         username: "assistant@example.invalid",
         searchFolders: ["INBOX"],
       },
-      vaultPath: "/vault/dev.json",
-      devVault: true,
+      vault: { kind: "file", path: "/vault/dev.json", devFlag: true },
+    })
+  })
+
+  it("selects the configured Keychain for Bridge", () => {
+    const selected = gateConfig({
+      ...BASE,
+      EIDO_GATE_KEYCHAIN_PATH: "/Users/gate/Library/Keychains/eido.keychain-db",
+    })
+    expect(selected.bridge?.vault).toEqual({
+      kind: "keychain",
+      path: "/Users/gate/Library/Keychains/eido.keychain-db",
     })
   })
 
   it("leaves the development flag off unless it is exactly 1", () => {
-    const config = gateConfig({
-      ...BASE,
-      EIDO_GATE_VAULT_FILE: "/v.json",
-      EIDO_DEV_VAULT: "true",
-    })
-    expect(config.bridge?.devVault).toBe(false)
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_VAULT_FILE: "/v.json",
+        EIDO_DEV_VAULT: "true",
+      })
+    ).toThrow("EIDO_GATE_VAULT_FILE requires EIDO_DEV_VAULT=1")
   })
 
   it("refuses Bridge without a vault file", () => {
-    expect(() => gateConfig(BASE)).toThrow("Bridge needs EIDO_GATE_VAULT_FILE")
+    expect(() => gateConfig(BASE)).toThrow(
+      "Bridge needs EIDO_GATE_KEYCHAIN_PATH"
+    )
   })
 
   it("has no Bridge when its host is not set", () => {
@@ -545,15 +601,54 @@ describe("gateConfig with Gmail", () => {
       }).gmail
     ).toEqual({
       clientId: "test-client-id",
-      vaultPath: "/vault/dev.json",
-      devVault: true,
+      vault: { kind: "file", path: "/vault/dev.json", devFlag: true },
     })
   })
 
   it("requires a vault file when Gmail is enabled", () => {
     expect(() =>
       gateConfig({ ...BASE, EIDO_GMAIL_CLIENT_ID: "test-client-id" })
-    ).toThrow("Gmail needs EIDO_GATE_VAULT_FILE")
+    ).toThrow("Gmail needs EIDO_GATE_KEYCHAIN_PATH")
+  })
+
+  it("selects an absolute Keychain path for all enabled gate services", () => {
+    const selected = gateConfig({
+      ...BASE,
+      EIDO_GATE_KEYCHAIN_PATH: "/Users/gate/Library/Keychains/eido.keychain-db",
+      EIDO_GMAIL_CLIENT_ID: "test-client-id",
+      EIDO_PUSH_VAPID_SUBJECT: "mailto:ops@example.invalid",
+    })
+    const expected = {
+      kind: "keychain",
+      path: "/Users/gate/Library/Keychains/eido.keychain-db",
+    }
+    expect(selected.gmail?.vault).toEqual(expected)
+    expect(selected.push?.vault).toEqual(expected)
+  })
+
+  it("rejects conflicting, relative and dev-flagged production vault selections", () => {
+    const base = { ...BASE, EIDO_GMAIL_CLIENT_ID: "test-client-id" }
+    expect(() =>
+      gateConfig({
+        ...base,
+        EIDO_GATE_KEYCHAIN_PATH: "/Users/gate/eido.keychain-db",
+        EIDO_GATE_VAULT_FILE: "/tmp/vault.json",
+        EIDO_DEV_VAULT: "1",
+      })
+    ).toThrow("Set only one of EIDO_GATE_KEYCHAIN_PATH or EIDO_GATE_VAULT_FILE")
+    expect(() =>
+      gateConfig({
+        ...base,
+        EIDO_GATE_KEYCHAIN_PATH: "relative.keychain-db",
+      })
+    ).toThrow("EIDO_GATE_KEYCHAIN_PATH must be an absolute path")
+    expect(() =>
+      gateConfig({
+        ...base,
+        EIDO_GATE_KEYCHAIN_PATH: "/Users/gate/eido.keychain-db",
+        EIDO_DEV_VAULT: "1",
+      })
+    ).toThrow("EIDO_DEV_VAULT=1 cannot be used with EIDO_GATE_KEYCHAIN_PATH")
   })
 })
 
@@ -568,12 +663,15 @@ describe("runGate with Gmail", () => {
         allowedHosts: [],
       },
       gmail: {
-        vaultPath: join(dir, "vault", "dev.json"),
-        devVault: true,
+        vault: {
+          kind: "file" as const,
+          path: join(dir, "vault", "dev.json"),
+          devFlag: true,
+        },
         clientId: "test-client-id",
       },
     }
-    await new FileVault({ path: c.gmail.vaultPath, devFlag: true }).set(
+    await new FileVault({ path: c.gmail.vault.path, devFlag: true }).set(
       { connector: "gmail", kind: "access_token", client: "write" },
       "test-access-token"
     )
@@ -784,8 +882,7 @@ describe("runGate with Bridge", () => {
           username: USER,
           searchFolders: ["INBOX"],
         },
-        vaultPath,
-        devVault,
+        vault: { kind: "file", path: vaultPath, devFlag: devVault },
       },
     }
   }
