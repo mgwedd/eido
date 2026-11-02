@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs"
 import type { Server } from "node:http"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { createProtonBridge } from "./internal/bridge/bridge"
 import { PROTON_CONNECTOR, bridgeConfig } from "./internal/bridge/config"
@@ -34,6 +34,7 @@ import { runningGate, startGate, stopGate } from "./internal/runtime"
 import { OWNER_CONFIG_FILE } from "./internal/policy"
 import { devFlagFromEnv, FileVault } from "./internal/vault/file-vault"
 import type { Vault } from "./internal/vault/vault"
+import { KeychainVault } from "./internal/vault/keychain-vault"
 import type { WebAuthnConfig } from "./internal/webauthn"
 
 // The gate process (ADR 0003). It owns eido-control.db and opens no other database. It
@@ -70,10 +71,9 @@ export type GateConfig = {
   /** Absent when EIDO_BRIDGE_HOST is not set: the gate then serves no mail routes (#195). */
   bridge?: BridgeListenerConfig
   /** Gmail compose client: refresh/access tokens and the OAuth client secret live in this vault. */
-  gmail?: { vaultPath: string; devVault: boolean; clientId: string }
+  gmail?: { vault: VaultConfig; clientId: string }
   push?: {
-    vaultPath: string
-    devVault: boolean
+    vault: VaultConfig
     subject: string
     windowMs: number
     nudgeThreshold: number
@@ -83,12 +83,47 @@ export type GateConfig = {
 
 export type BridgeListenerConfig = {
   config: BridgeConfig
-  /**
-   * The development vault file holding the Bridge password. The Keychain vault (#67) replaces
-   * it; until then Bridge needs EIDO_DEV_VAULT=1 and EIDO_GATE_VAULT_FILE.
-   */
-  vaultPath: string
-  devVault: boolean
+  vault: VaultConfig
+}
+
+export type VaultConfig =
+  | { kind: "keychain"; path: string }
+  | { kind: "file"; path: string; devFlag: boolean }
+
+function vaultConfig(
+  env: Readonly<Record<string, string | undefined>>
+): VaultConfig | undefined {
+  const keychainPath = env["EIDO_GATE_KEYCHAIN_PATH"] ?? ""
+  const filePath = env["EIDO_GATE_VAULT_FILE"] ?? ""
+  const devVault = devFlagFromEnv({ ...env })
+  if (keychainPath !== "" && filePath !== "")
+    throw new Error(
+      "Set only one of EIDO_GATE_KEYCHAIN_PATH or EIDO_GATE_VAULT_FILE"
+    )
+  if (keychainPath !== "") {
+    if (!isAbsolute(keychainPath))
+      throw new Error("EIDO_GATE_KEYCHAIN_PATH must be an absolute path")
+    if (devVault)
+      throw new Error(
+        "EIDO_DEV_VAULT=1 cannot be used with EIDO_GATE_KEYCHAIN_PATH"
+      )
+    return { kind: "keychain", path: keychainPath }
+  }
+  if (filePath !== "") {
+    if (!isAbsolute(filePath))
+      throw new Error("EIDO_GATE_VAULT_FILE must be an absolute path")
+    if (!devVault)
+      throw new Error("EIDO_GATE_VAULT_FILE requires EIDO_DEV_VAULT=1")
+    return { kind: "file", path: filePath, devFlag: true }
+  }
+  if (devVault) throw new Error("EIDO_DEV_VAULT=1 needs EIDO_GATE_VAULT_FILE")
+  return undefined
+}
+
+function createVault(config: VaultConfig): Vault {
+  return config.kind === "keychain"
+    ? new KeychainVault({ path: config.path })
+    : new FileVault({ path: config.path, devFlag: config.devFlag })
 }
 
 const REQUIRED = {
@@ -119,12 +154,15 @@ export function gateConfig(
   const port = env["EIDO_GATE_PHONE_PORT"] ?? ""
   const bridge = bridgeConfig(env)
   const gmailClientId = env["EIDO_GMAIL_CLIENT_ID"] ?? ""
-  const gmailVaultPath = env["EIDO_GATE_VAULT_FILE"] ?? ""
-  if (gmailClientId !== "" && gmailVaultPath === "")
-    throw new Error("Gmail needs EIDO_GATE_VAULT_FILE")
+  const vault = vaultConfig(env)
   const pushSubject = env["EIDO_PUSH_VAPID_SUBJECT"] ?? ""
-  if (pushSubject !== "" && gmailVaultPath === "")
-    throw new Error("Web Push needs EIDO_GATE_VAULT_FILE")
+  const requireVault = (service: string): VaultConfig => {
+    if (vault === undefined)
+      throw new Error(
+        `${service} needs EIDO_GATE_KEYCHAIN_PATH or EIDO_DEV_VAULT=1 with EIDO_GATE_VAULT_FILE`
+      )
+    return vault
+  }
   const positive = (name: string, fallback: number): number => {
     const value = env[name]
     if (value === undefined || value === "") return fallback
@@ -141,8 +179,7 @@ export function gateConfig(
       ? {}
       : {
           gmail: {
-            vaultPath: gmailVaultPath,
-            devVault: devFlagFromEnv({ ...env }),
+            vault: requireVault("Gmail"),
             clientId: gmailClientId,
           },
         }),
@@ -150,8 +187,7 @@ export function gateConfig(
       ? {}
       : {
           push: {
-            vaultPath: gmailVaultPath,
-            devVault: devFlagFromEnv({ ...env }),
+            vault: requireVault("Web Push"),
             subject: pushSubject,
             windowMs: positive("EIDO_PUSH_WINDOW_MS", 60_000),
             nudgeThreshold: positive("EIDO_APPROVAL_NUDGE_THRESHOLD", 5),
@@ -165,13 +201,12 @@ function bridgeVault(
   env: Readonly<Record<string, string | undefined>>,
   config: BridgeConfig
 ): BridgeListenerConfig {
-  const vaultPath = env["EIDO_GATE_VAULT_FILE"] ?? ""
-  if (vaultPath === "") {
+  const vault = vaultConfig(env)
+  if (vault === undefined)
     throw new Error(
-      "Bridge needs EIDO_GATE_VAULT_FILE, the development vault holding its password, until the Keychain vault (#67)"
+      "Bridge needs EIDO_GATE_KEYCHAIN_PATH or EIDO_DEV_VAULT=1 with EIDO_GATE_VAULT_FILE"
     )
-  }
-  return { config, vaultPath, devVault: devFlagFromEnv({ ...env }) }
+  return { config, vault }
 }
 
 // The production host, base path and allowed hosts wait on the serve measurements (#178).
@@ -208,7 +243,8 @@ export type RunningGate = {
  */
 export async function runGate(
   config: GateConfig,
-  now: Clock = () => new Date()
+  now: Clock = () => new Date(),
+  vaultFactory: (config: VaultConfig) => Vault = createVault
 ): Promise<RunningGate> {
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
   const log = fileLog(join(config.dataDir, GATE_LOG_FILE))
@@ -232,12 +268,7 @@ export async function runGate(
       config.webAuthn
     )
     const pushVault: Vault | undefined =
-      config.push === undefined
-        ? undefined
-        : new FileVault({
-            path: config.push.vaultPath,
-            devFlag: config.push.devVault,
-          })
+      config.push === undefined ? undefined : vaultFactory(config.push.vault)
     const vapidKey = {
       connector: "eido-web-push",
       kind: "api_key",
@@ -292,10 +323,7 @@ export async function runGate(
         ? undefined
         : createProtonBridge({
             config: config.bridge.config,
-            vault: new FileVault({
-              path: config.bridge.vaultPath,
-              devFlag: config.bridge.devVault,
-            }),
+            vault: vaultFactory(config.bridge.vault),
           })
     // Register only gate-owned adapters. A missing Bridge still takes a Proton intent through
     // the executor, where the attempted write is claimed and its failure is recorded.
@@ -308,10 +336,7 @@ export async function runGate(
         ? undefined
         : gmailWriteTransport({
             db,
-            vault: new FileVault({
-              path: config.gmail.vaultPath,
-              devFlag: config.gmail.devVault,
-            }),
+            vault: vaultFactory(config.gmail.vault),
             clientId: config.gmail.clientId,
           })
     const executor = createExecutor(

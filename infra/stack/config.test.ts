@@ -91,6 +91,23 @@ describe("buildStackConfig", () => {
     expect(core.healthUrl).toBe("http://127.0.0.1:8789/connectors/health")
   })
 
+  it("passes an explicitly selected Keychain path to the gate alone", () => {
+    const config = buildStackConfig(
+      input({
+        env: { EIDO_GATE_KEYCHAIN_PATH: "/Users/gate/Eido.keychain-db" },
+      })
+    )
+    expect(byName(config, "gate").env["EIDO_GATE_KEYCHAIN_PATH"]).toBe(
+      "/Users/gate/Eido.keychain-db"
+    )
+    expect(byName(config, "core").env).not.toHaveProperty(
+      "EIDO_GATE_KEYCHAIN_PATH"
+    )
+    expect(byName(config, "web").env).not.toHaveProperty(
+      "EIDO_GATE_KEYCHAIN_PATH"
+    )
+  })
+
   it("never sets the llama, Gmail or Bridge variables", () => {
     const config = buildStackConfig(input())
     const keys = config.processes.flatMap((p) => Object.keys(p.env))
