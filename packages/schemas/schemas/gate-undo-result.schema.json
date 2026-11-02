@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateUndoResult",
+  "description": "Response 200 of POST /executions/{id}/undo: the gate ran the stored inverse for the executed intent.",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "undone": { "const": true }
+  },
+  "required": ["id", "undone"],
+  "additionalProperties": false
+}

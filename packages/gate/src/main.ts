@@ -347,6 +347,7 @@ export async function runGate(
           basePath: options.basePath,
           now,
           execute,
+          undo: (id) => executor.undo(id),
         })
       let handler = handlerFor([])
       const server = createGateServer(
