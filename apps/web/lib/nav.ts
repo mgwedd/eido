@@ -1,4 +1,11 @@
-import { History, Inbox, Plug, Sun, type LucideIcon } from "lucide-react"
+import {
+  History,
+  Inbox,
+  Plug,
+  Settings,
+  Sun,
+  type LucideIcon,
+} from "lucide-react"
 
 export type NavItem = {
   href: string
@@ -18,6 +25,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/queue", label: "Queue", icon: Inbox, phone: true },
   { href: "/activity", label: "Activity", icon: History, phone: true },
   { href: "/connectors", label: "Connectors", icon: Plug, phone: false },
+  { href: "/settings", label: "Settings", icon: Settings, phone: false },
 ]
 
 export const MAX_PHONE_TABS = 5
