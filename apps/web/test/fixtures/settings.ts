@@ -20,15 +20,20 @@ const revokedPasskey: GatePasskeyList["passkeys"][number] = {
 
 const permissions: GatePermissionList = {
   tiers: [
-    { kind: "reminder.create", tier: "auto" },
-    { kind: "email.send", tier: "approval" },
-    { kind: "file.delete", tier: "forbidden", reason: "manifest_forbidden" },
+    { kind: "reminder.create", tier: "auto", default: null },
+    { kind: "email.send", tier: "approval", default: "approval" },
+    {
+      kind: "file.delete",
+      tier: "forbidden",
+      default: "approval",
+      reason: "manifest_forbidden",
+    },
   ],
   forbiddenKinds: ["file.delete"],
 }
 
 const permissionsNoForbidden: GatePermissionList = {
-  tiers: [{ kind: "email.send", tier: "approval" }],
+  tiers: [{ kind: "email.send", tier: "approval", default: "approval" }],
   forbiddenKinds: [],
 }
 
