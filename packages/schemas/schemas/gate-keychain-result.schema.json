@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateKeychainResult",
+  "description": "Internal reply from the gate's fixed Security.framework helper. OSStatus only; errors contain no native text or credential values.",
+  "type": "object",
+  "properties": {
+    "status": { "type": "integer" },
+    "data": { "type": "string", "maxLength": 1048576 }
+  },
+  "required": ["status"],
+  "additionalProperties": false
+}

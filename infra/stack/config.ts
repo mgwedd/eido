@@ -34,6 +34,7 @@ export const OVERRIDES = [
   "EIDO_DATA_DIR",
   "EIDO_GATE_SOCKET",
   "EIDO_GATE_CONTROL_SOCKET",
+  "EIDO_GATE_KEYCHAIN_PATH",
   "EIDO_WEBAUTHN_RP_ID",
   "EIDO_WEBAUTHN_ORIGIN",
   "EIDO_GATE_PHONE_BASE_PATH",
@@ -192,6 +193,10 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       EIDO_GATE_DATA_DIR: gateDataDir,
       EIDO_GATE_SOCKET: gateSocket,
       EIDO_GATE_CONTROL_SOCKET: controlSocket,
+      ...(env["EIDO_GATE_KEYCHAIN_PATH"] === undefined ||
+      env["EIDO_GATE_KEYCHAIN_PATH"] === ""
+        ? {}
+        : { EIDO_GATE_KEYCHAIN_PATH: env["EIDO_GATE_KEYCHAIN_PATH"] }),
       EIDO_WEBAUTHN_RP_ID: read(env, "EIDO_WEBAUTHN_RP_ID", tailnetHost),
       EIDO_WEBAUTHN_ORIGIN: read(env, "EIDO_WEBAUTHN_ORIGIN", url.origin),
       EIDO_GATE_PHONE_HOST: LOOPBACK,
