@@ -230,7 +230,13 @@ fn json_refuses_shapes_outside_the_protocol() {
         json::parse("{\"a\":\"1\",\"a\":\"2\"}"),
         Err("duplicate key")
     );
-    assert_eq!(json::parse("{\"a\":1}"), Err("unsupported value"));
+    assert_eq!(
+        json::parse("{\"a\":1}")
+            .unwrap()
+            .get("a")
+            .and_then(Value::as_usize),
+        Some(1)
+    );
     assert_eq!(json::parse("{\"a\":[\"x\"]}"), Err("unsupported value"));
     assert_eq!(json::parse("{\"a\":true}"), Err("unsupported value"));
     assert_eq!(json::parse("{\"a\":\"x\"} {}"), Err("trailing data"));
@@ -750,7 +756,7 @@ fn the_helper_source_has_no_destructive_calls() {
         "rmdir",
         "remove_file",
         "remove_dir",
-        "truncate",
+        "truncate(",
         "set_len",
         "FILE_DELETE_ON_CLOSE",
         "DeleteFile",
@@ -772,4 +778,142 @@ fn the_helper_source_has_no_destructive_calls() {
             assert!(!code.contains(word), "helper source contains {word}");
         }
     }
+}
+
+impl Fixture {
+    fn read(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+        let value = call(&format!(
+            "{{\"op\":\"read\",\"root\":{},\"path\":{},\"maxBytes\":{}}}",
+            self.root_json,
+            json::quote(path),
+            max_bytes
+        ));
+        outcome(&value)?;
+        Ok(
+            base64::decode(&field(&value, "contentBase64").expect("content"))
+                .expect("canonical base64"),
+        )
+    }
+    fn list_raw(&self, path: &str) -> String {
+        crate::handle(
+            format!(
+                "{{\"op\":\"list\",\"root\":{},\"path\":{}}}",
+                self.root_json,
+                json::quote(path)
+            )
+            .as_bytes(),
+        )
+    }
+}
+
+#[test]
+fn reads_exact_regular_file_bytes_with_a_strict_limit() {
+    let f = Fixture::new();
+    fs::write(f.root.join("data.bin"), [0, 255, 1, 42]).unwrap();
+    assert_eq!(f.read("data.bin", 4), Ok(vec![0, 255, 1, 42]));
+    assert_eq!(f.read("data.bin", 3), Err("io".to_owned()));
+    assert_eq!(f.read("data.bin", 0), Err("bad_request".to_owned()));
+    assert_eq!(
+        f.read("data.bin", 8 * 1024 * 1024 + 1),
+        Err("bad_request".to_owned())
+    );
+    assert_eq!(
+        f.read("../outside/data.bin", 4),
+        Err("invalid_path".to_owned())
+    );
+    fs::create_dir(f.root.join("dir")).unwrap();
+    assert!(f.read("dir", 4).is_err());
+}
+
+#[test]
+fn lists_only_portable_children_and_excludes_the_trash() {
+    let f = Fixture::new();
+    fs::write(f.root.join("b.txt"), "inside").unwrap();
+    fs::create_dir(f.root.join("a-dir")).unwrap();
+    fs::create_dir(f.root.join(TRASH)).unwrap();
+    assert_eq!(f.list_raw(""), "{\"ok\":true,\"op\":\"list\",\"entries\":[{\"name\":\"a-dir\",\"kind\":\"directory\"},{\"name\":\"b.txt\",\"kind\":\"file\"}],\"truncated\":false}");
+    assert_eq!(
+        f.list_raw("a-dir"),
+        "{\"ok\":true,\"op\":\"list\",\"entries\":[],\"truncated\":false}"
+    );
+    assert!(f.list_raw(TRASH).contains("\"code\":\"invalid_path\""));
+}
+
+#[test]
+fn listing_stops_at_the_entry_budget_and_reports_partial_coverage() {
+    let f = Fixture::new();
+    for n in 0..1002 {
+        fs::write(f.root.join(format!("item-{n:04}")), "x").unwrap();
+    }
+    let response = f.list_raw("");
+    assert!(response.contains("\"truncated\":true"));
+    assert_eq!(response.matches("\"kind\":\"file\"").count(), 1000);
+}
+
+#[test]
+fn reads_and_lists_reject_a_replaced_approved_root() {
+    let f = Fixture::new();
+    fs::write(f.root.join("data.txt"), "inside").unwrap();
+    fs::rename(&f.root, f.base.join("old-root")).unwrap();
+    fs::create_dir(&f.root).unwrap();
+    fs::write(f.root.join("data.txt"), "outside").unwrap();
+    assert_eq!(f.read("data.txt", 100), Err("root_changed".to_owned()));
+    assert!(f.list_raw("").contains("\"code\":\"root_changed\""));
+}
+
+#[test]
+fn read_remains_in_its_open_parent_during_an_ancestor_swap() {
+    let f = Fixture::new();
+    fs::create_dir(f.root.join("parent")).unwrap();
+    fs::write(f.root.join("parent/data.txt"), "inside").unwrap();
+    let root = f.root.clone();
+    on_mutation(move || {
+        fs::rename(root.join("parent"), root.join("old-parent")).unwrap();
+        fs::create_dir(root.join("parent")).unwrap();
+        fs::write(root.join("parent/data.txt"), "replacement").unwrap();
+    });
+    assert_eq!(f.read("parent/data.txt", 100), Ok(b"inside".to_vec()));
+}
+
+#[test]
+fn list_remains_in_its_open_directory_during_an_ancestor_swap() {
+    let f = Fixture::new();
+    fs::create_dir(f.root.join("parent")).unwrap();
+    fs::write(f.root.join("parent/inside.txt"), "inside").unwrap();
+    let root = f.root.clone();
+    on_mutation(move || {
+        fs::rename(root.join("parent"), root.join("old-parent")).unwrap();
+        fs::create_dir(root.join("parent")).unwrap();
+        fs::write(root.join("parent/replacement.txt"), "replacement").unwrap();
+    });
+    let response = f.list_raw("parent");
+    assert!(response.contains("inside.txt"));
+    assert!(!response.contains("replacement.txt"));
+}
+
+#[test]
+fn reads_and_lists_never_follow_final_or_ancestor_links() {
+    let f = Fixture::new();
+    fs::write(f.outside.join("secret.txt"), "outside-secret").unwrap();
+    link_file(&f.outside.join("secret.txt"), &f.root.join("secret.txt"));
+    link_dir(&f.outside, &f.root.join("escape"));
+    assert_link_refused(f.read("secret.txt", 100).map(|_| ()));
+    assert_link_refused(f.read("escape/secret.txt", 100).map(|_| ()));
+    assert_eq!(
+        f.list_raw(""),
+        "{\"ok\":true,\"op\":\"list\",\"entries\":[],\"truncated\":false}"
+    );
+    let escaped = f.list_raw("escape");
+    assert!(escaped.contains("\"ok\":false"));
+    assert!(!escaped.contains("secret.txt"));
+}
+
+#[test]
+fn read_refuses_a_final_link_planted_after_parent_validation() {
+    let f = Fixture::new();
+    fs::write(f.outside.join("secret.txt"), "outside-secret").unwrap();
+    let target = f.outside.join("secret.txt");
+    let link = f.root.join("data.txt");
+    on_mutation(move || link_file(&target, &link));
+    assert_link_refused(f.read("data.txt", 100).map(|_| ()));
 }

@@ -538,6 +538,15 @@ export type GateFileHelperRequest = {
   root: GateFileRoot
   trashName: string
   path: string
+} | {
+  op: "read"
+  root: GateFileRoot
+  path: string
+  maxBytes: number
+} | {
+  op: "list"
+  root: GateFileRoot
+  path: string
 }
 
 /** The single line the native file helper writes to stdout (ADR 0006). Errors carry a fixed code and a fixed message; never a path or OS text. */
@@ -554,6 +563,18 @@ export type GateFileHelperResponse = {
   ok: false
   code: "bad_request" | "invalid_path" | "root_changed" | "not_found" | "exists" | "not_a_directory" | "symlink" | "io" | "unsupported"
   message: string
+} | {
+  ok: true
+  op: "read"
+  contentBase64: string
+} | {
+  ok: true
+  op: "list"
+  entries: Array<{
+    name: string
+    kind: "file" | "directory"
+  }>
+  truncated: boolean
 }
 
 /** One approved local file root (#313): the canonical absolute path, the device and file identity captured when the owner approved it, and the name of its trash directory directly under the root. The native file helper refuses every operation when the directory at path no longer has this identity. */
@@ -624,6 +645,18 @@ export interface GateIntentStatus {
 export interface GateKeychainResult {
   status: number
   data?: string
+}
+
+/** Read-only local file operation over an owner-approved root ID. The gate resolves the signed native identity, never a caller-supplied absolute root. */
+export type GateLocalFileRequest = {
+  op: "read"
+  root: string
+  path: string
+  maxBytes: number
+} | {
+  op: "list"
+  root: string
+  path: string
 }
 
 /** Response of POST /auth/login/options on the phone listener: a single-use login challenge for navigator.credentials.get with a discoverable passkey (no allowCredentials). It expires after five minutes. */

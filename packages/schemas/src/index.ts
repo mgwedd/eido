@@ -30,6 +30,7 @@ export {
   validateGateFileHelperRequest,
   validateGateFileHelperResponse,
   validateGateFileRoots,
+  validateGateLocalFileRequest,
   validateGateFileRootsRequest,
   validateGateEditRequest,
   validateGateEnrolOptions,
