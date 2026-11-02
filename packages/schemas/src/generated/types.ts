@@ -98,6 +98,15 @@ export interface ConnectorOperation {
 /** Approval tier for one connector operation: auto runs without asking, approval needs a signed approval, forbidden never runs. */
 export type ConnectorTier = "auto" | "approval" | "forbidden"
 
+/** Response of GET /connectors/accounts: the accounts a connected connector reports, which the Profile page can assign to an entity. A connector whose health is open (disconnected) or that is not configured lists none. */
+export interface CoreApiAccountList {
+  accounts: Array<{
+    connector: string
+    accountRef: string
+    label: string
+  }>
+}
+
 /** Request body for the read-only core Ask endpoint. */
 export interface CoreApiAskRequest {
   question: string
@@ -256,6 +265,11 @@ export interface CoreApiProfile {
     label: string
   }>
   updatedAt: string
+}
+
+/** Response of GET /connectors/send-from: the address the assistant sends from, which is the Proton connector's configured account. It is read-only; null when Proton is not configured. */
+export interface CoreApiSendFrom {
+  address: string | null
 }
 
 /** The semantic types the owner can set on a stored document, and the set the document classifier (#398) picks from. Closed on purpose: a label outside it is refused. */

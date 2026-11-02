@@ -56,7 +56,12 @@ import {
 import type { GmailClient } from "./connectors/gmail/client"
 import type { GmailConfig } from "./connectors/gmail/config"
 import type { ConnectorHealthReader } from "./connectors/health-aware-sync"
+import { createAccountRegistry } from "./connectors/accounts"
+import type { KnownAccount } from "./connectors/accounts"
+import { GMAIL_CONNECTOR } from "./connectors/gmail/routes"
+import { CONNECTOR_NAME as PROTON_HEALTH_NAME } from "./connectors/proton/manifest"
 import {
+  CONNECTOR as PROTON_CONNECTOR,
   resolveConfig as resolveProtonConfig,
   syncProtonWithHealth,
 } from "./connectors/proton/index"
@@ -382,6 +387,8 @@ export type DataPlane = {
   close: () => Promise<void>
   stopGmailSync: () => void
   stopProtonSync: () => void
+  /** Accounts the configured connectors have reported: Proton's at startup, Gmail's per run. */
+  connectorAccounts: () => readonly KnownAccount[]
   getInferenceQueue: () => Promise<InferenceQueue>
   getModelContextTokens: () => number
   /** Schedule digests for documents committed by a connector batch. */
@@ -399,6 +406,8 @@ type GmailSyncRuntime = {
   config?: GmailConfig
   onIngested?: (documents: readonly IndexedDocument[]) => void
   onBatchCommitted?: () => void
+  /** Called with the account address each run reads from Gmail's profile. */
+  onAccount?: (accountRef: string) => void
   log: DataPlane["log"]
 }
 
@@ -421,6 +430,7 @@ export function createGmailSyncRuntime(
         if (account.emailAddress === undefined || account.emailAddress === "") {
           throw new Error("Gmail profile did not provide an account address")
         }
+        input.onAccount?.(account.emailAddress)
         await syncGmailWithHealth(
           input.gate,
           input.db,
@@ -693,6 +703,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       }
     })
   }
+  const accounts = createAccountRegistry()
   let gmailTimer: ReturnType<typeof startSyncTimer> | undefined
   if (config.api.gmailProxyUrl !== undefined) {
     if (parser === undefined) {
@@ -710,12 +721,25 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       parser,
       onIngested,
       onBatchCommitted: scheduleReplies,
+      onAccount: (accountRef) =>
+        accounts.add({
+          connector: GMAIL_CONNECTOR,
+          healthName: GMAIL_CONNECTOR,
+          accountRef,
+          label: "Gmail",
+        }),
       log,
     })
     gmailTimer = startSyncTimer(sync, GMAIL_SYNC_INTERVAL_MS)
   }
   let protonTimer: ReturnType<typeof startSyncTimer> | undefined
   if (config.api.protonUsername !== undefined) {
+    accounts.add({
+      connector: PROTON_CONNECTOR,
+      healthName: PROTON_HEALTH_NAME,
+      accountRef: config.api.protonUsername,
+      label: "Proton Mail",
+    })
     const sync = createProtonSyncRuntime({
       db,
       gate,
@@ -746,6 +770,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     log,
     stopGmailSync,
     stopProtonSync,
+    connectorAccounts: accounts.list,
     getInferenceQueue: model.getQueue,
     getModelContextTokens: model.getContextTokens,
     scheduleIngestedDocuments: onIngested,
@@ -867,6 +892,8 @@ export async function serveDataPlane(
     profile: plane.profile,
     obligations: plane.obligations,
     connectorHealth: plane.gate.getConnectorHealth,
+    connectorAccounts: plane.connectorAccounts,
+    sendFrom: config.protonUsername,
     ...(ask === undefined ? {} : { ask }),
     documents: { db: plane.db },
     ...config,
