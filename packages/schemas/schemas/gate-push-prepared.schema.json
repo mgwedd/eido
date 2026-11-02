@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePushPrepared",
+  "description": "Response of POST /push/prepare on the phone listener (#16): a signed control ceremony for registering one push subscription. The device rebuilds target, payloadHash and the challenge from the subscription it sent and refuses a mismatch.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "purpose": {
+      "const": "policy.set"
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096
+    },
+    "payloadHash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "challenge": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    }
+  },
+  "required": [
+    "id",
+    "purpose",
+    "target",
+    "payload",
+    "payloadHash",
+    "nonce",
+    "challenge"
+  ],
+  "additionalProperties": false
+}

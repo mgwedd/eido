@@ -1,0 +1,187 @@
+// @vitest-environment happy-dom
+import { act } from "react"
+import { createRoot, type Root } from "react-dom/client"
+import { afterEach, beforeEach, expect, test, vi } from "vitest"
+import { TooltipProvider } from "@eido/ui/components/tooltip"
+import { NotificationsSection } from "../components/settings-view"
+import { PUSH_ID_KEY } from "@/lib/push"
+import { prepared, serverKey } from "./fixtures/push"
+import {
+  fakeBrowser,
+  stubWebAuthnGlobals,
+  type FakeBrowser,
+} from "./push-device"
+
+;(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true
+
+let container: HTMLElement
+let root: Root
+
+beforeEach(() => {
+  localStorage.clear()
+  stubWebAuthnGlobals()
+  container = document.createElement("div")
+  document.body.appendChild(container)
+  root = createRoot(container)
+})
+afterEach(() => {
+  act(() => root.unmount())
+  container.remove()
+  vi.unstubAllGlobals()
+})
+
+const urlOf = (input: RequestInfo | URL): string =>
+  typeof input === "string"
+    ? input
+    : input instanceof URL
+      ? input.href
+      : input.url
+
+const json =
+  (body: unknown, status = 200) =>
+  () =>
+    new Response(JSON.stringify(body), { status })
+
+function gate(routes: Record<string, () => Response>) {
+  const fn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const handler = routes[`${init?.method ?? "GET"} ${urlOf(input)}`]
+    return handler
+      ? Promise.resolve(handler())
+      : Promise.reject(new TypeError("net"))
+  })
+  vi.stubGlobal("fetch", fn)
+  return fn
+}
+
+// Subscribing awaits several hashes and requests; let them all run.
+async function settle() {
+  for (let i = 0; i < 10; i += 1)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+async function render(browser: FakeBrowser) {
+  await act(async () => {
+    root.render(
+      <TooltipProvider>
+        <NotificationsSection device={browser.device} />
+      </TooltipProvider>
+    )
+    await settle()
+  })
+}
+
+const toggle = () => container.querySelector<HTMLElement>('[role="switch"]')!
+const status = () => container.querySelector('[role="status"]')?.textContent
+const alert = () => container.querySelector('[role="alert"]')?.textContent
+
+async function click() {
+  await act(async () => {
+    toggle().click()
+    await settle()
+  })
+}
+
+const list = (ids: string[]) =>
+  json({ subscriptions: ids.map((id) => ({ id })) })
+
+test("turning the switch on registers this device and shows it subscribed", async () => {
+  const fn = gate({
+    "GET /api/gate/push/subscriptions": list([]),
+    "GET /api/gate/push/key": json({ publicKey: serverKey }),
+    "POST /api/gate/push/prepare": json(prepared),
+    "POST /api/gate/push/subscriptions": json({ id: "sub-1" }, 201),
+  })
+  const browser = fakeBrowser({ permission: "default", answer: "granted" })
+  await render(browser)
+  expect(status()).toBe("Not subscribed")
+  expect(toggle().getAttribute("aria-checked")).toBe("false")
+
+  await click()
+  expect(status()).toBe("Subscribed")
+  expect(toggle().getAttribute("aria-checked")).toBe("true")
+  expect(alert()).toBeUndefined()
+  expect(fn.mock.calls.map(([, init]) => init?.method ?? "GET")).toEqual([
+    "GET",
+    "GET",
+    "POST",
+    "POST",
+  ])
+})
+
+test("turning the switch off removes the registration at the gate", async () => {
+  localStorage.setItem(PUSH_ID_KEY, "sub-1")
+  const fn = gate({
+    "GET /api/gate/push/subscriptions": list(["sub-1"]),
+    "POST /api/gate/push/sub-1/remove": json({ id: "sub-1" }),
+  })
+  const browser = fakeBrowser({ subscribed: true })
+  await render(browser)
+  expect(status()).toBe("Subscribed")
+
+  await click()
+  expect(status()).toBe("Not subscribed")
+  expect(urlOf(fn.mock.calls.at(-1)?.[0] ?? "")).toBe(
+    "/api/gate/push/sub-1/remove"
+  )
+  expect(browser.current()).toBeNull()
+})
+
+test("a failed subscribe leaves the switch off and says why", async () => {
+  gate({
+    "GET /api/gate/push/subscriptions": list([]),
+    "GET /api/gate/push/key": json(
+      { code: "unavailable", message: "push is not configured" },
+      503
+    ),
+  })
+  await render(fakeBrowser())
+  await click()
+  expect(alert()).toBe("Push is not set up on the gate.")
+  expect(status()).toBe("Not subscribed")
+  expect(toggle().getAttribute("aria-checked")).toBe("false")
+})
+
+test("the switch is disabled while a change is in flight", async () => {
+  gate({
+    "GET /api/gate/push/subscriptions": list([]),
+    "GET /api/gate/push/key": json({ publicKey: serverKey }),
+    "POST /api/gate/push/prepare": json(prepared),
+  })
+  const browser = fakeBrowser({
+    credential: () => new Promise(() => undefined),
+  })
+  await render(browser)
+  await click()
+  expect(toggle().hasAttribute("data-disabled")).toBe(true)
+  await click()
+  expect(browser.credentialOptions).toHaveLength(1)
+})
+
+test.each([
+  ["denied", { permission: "denied" as const }],
+  ["unsupported", { supported: false }],
+  ["offline", {}],
+])("the switch is disabled when push is %s", async (_, options) => {
+  const fn = gate({})
+  const browser = fakeBrowser(options)
+  await render(browser)
+  expect(toggle().hasAttribute("data-disabled")).toBe(true)
+  const before = fn.mock.calls.length
+  await click()
+  expect(fn.mock.calls.length).toBe(before)
+  expect(browser.subscribeOptions).toEqual([])
+})
+
+test("the tooltip says pushes carry only a count", async () => {
+  gate({})
+  await render(fakeBrowser({ supported: false }))
+  const trigger = container.querySelector<HTMLButtonElement>(
+    '[aria-label="About push on this device"]'
+  )!
+  act(() => trigger.click())
+  expect(document.body.textContent).toContain(
+    "Pushes carry only a count of waiting cards."
+  )
+})

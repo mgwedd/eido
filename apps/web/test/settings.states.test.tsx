@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { SettingsBody, type SettingsState } from "../components/settings-view"
 import { activePasskey, chainOk, permissions } from "./fixtures/settings"
+import { fakeBrowser } from "./push-device"
 import { describeStates } from "./render-states"
 
 const loaded = (
@@ -17,7 +18,14 @@ const body =
     state: SettingsState,
     about = { version: "1.0.0", buildId: null as string | null }
   ) =>
-  () => <SettingsBody state={state} onRetry={() => undefined} about={about} />
+  () => (
+    <SettingsBody
+      state={state}
+      onRetry={() => undefined}
+      about={about}
+      pushDevice={fakeBrowser({ supported: false }).device}
+    />
+  )
 
 describeStates("Settings", [
   {
@@ -30,12 +38,14 @@ describeStates("Settings", [
     state: "no passkey enrolled",
     render: body(loaded({ passkeys: { status: "ready", value: [] } })),
     role: "status",
+    selector: '[aria-labelledby="settings-devices"] [role="status"]',
     message: "No passkey is enrolled.",
   },
   {
     state: "gate unreachable",
     render: body(loaded({ chain: { status: "offline" } })),
     role: "status",
+    selector: '[aria-labelledby="settings-security"] [role="status"]',
     message: "Offline. Audit chain status is not stored on this device.",
   },
   {
