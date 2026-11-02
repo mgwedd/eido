@@ -177,11 +177,26 @@ test("no control revokes a passkey or edits permissions", async () => {
     (b) => b.getAttribute("aria-label") ?? b.textContent ?? ""
   )
   expect(labels.join("|")).not.toMatch(/^(remove|revoke|edit|delete)/i)
-  // The only form control is the push switch in Notifications.
-  for (const control of container.querySelectorAll("input, select, textarea"))
-    expect(
-      control.closest('[aria-labelledby="settings-notifications"]')
-    ).not.toBeNull()
+  // The only controls that change anything are the theme radios and the push switch.
+  // The switch mirrors its state into an aria-hidden checkbox input, which is not a
+  // control of its own.
+  const controls = [
+    ...container.querySelectorAll(
+      "input, select, textarea, [role=switch], [role=radio], [role=checkbox], [role=combobox], [role=textbox], [role=slider], [role=spinbutton]"
+    ),
+  ]
+    .filter((control) => control.getAttribute("aria-hidden") !== "true")
+    .map((control) => [
+      control.closest("[aria-labelledby]")?.getAttribute("aria-labelledby"),
+      control.getAttribute("role") ?? control.tagName.toLowerCase(),
+      control.getAttribute("aria-label") ?? control.textContent,
+    ])
+  expect(controls).toEqual([
+    ["settings-appearance", "radio", "Dark"],
+    ["settings-appearance", "radio", "Light"],
+    ["settings-appearance", "radio", "System"],
+    ["settings-notifications", "switch", "Push on this device"],
+  ])
   // No write requests were made either.
   const fn = vi.mocked(fetch)
   for (const call of fn.mock.calls) expect(call[1]?.method ?? "GET").toBe("GET")

@@ -13,11 +13,19 @@ import { fromBase64url, toBase64url } from "@/lib/approval/challenge"
 import { toAssertion } from "@/lib/approval/sign"
 
 const PUSH_URL = "/api/gate/push"
-/** The gate's id for this device's registration; the gate lists ids only. */
-export const PUSH_ID_KEY = "eido.push.subscriptionId"
+/**
+ * This device's registration: the gate's id for it and the endpoint it was made for. The
+ * gate lists ids only, so the endpoint tells whether the browser still holds the
+ * subscription the gate has. Any script on this origin can read the endpoint from the
+ * push manager already, so keeping it here exposes nothing new.
+ */
+export const PUSH_REGISTRATION_KEY = "eido.push.registration"
+
+export type PushRegistration = { id: string; endpoint: string }
 
 /** The browser objects the push control uses, so tests can supply their own. */
 export type PushSubscriptionLike = {
+  readonly options: { readonly applicationServerKey: ArrayBuffer | null }
   toJSON(): PushSubscriptionJSON
   unsubscribe(): Promise<boolean>
 }
@@ -74,11 +82,15 @@ export type PushStatus =
   | { status: "unsubscribed" }
   | { status: "offline" }
   | { status: "error" }
+  | { status: "unauthenticated" }
 
-export type PushResult<T> =
-  { ok: true; value: T } | { ok: false; message: string }
+/** A failed push call: a message to show, or a session that expired (401). */
+export type PushFailure =
+  { ok: false; message: string } | { ok: false; expired: true }
 
-const fail = <T>(message: string): PushResult<T> => ({ ok: false, message })
+export type PushResult<T> = { ok: true; value: T } | PushFailure
+
+const fail = (message: string): PushFailure => ({ ok: false, message })
 
 const MESSAGES = {
   network: "The gate could not be reached.",
@@ -88,24 +100,35 @@ const MESSAGES = {
   cancelled: "Face ID did not complete.",
   notAllowed: "Notifications were not allowed.",
   browser: "This browser could not create a push subscription.",
+  storage: "This browser could not save the push registration.",
   mismatch:
     "The gate prepared a different subscription. Nothing was registered.",
 } as const
 
-export function storedPushId(): string | null {
+export function storedPushRegistration(): PushRegistration | null {
+  let parsed: unknown
   try {
-    return localStorage.getItem(PUSH_ID_KEY)
+    parsed = JSON.parse(localStorage.getItem(PUSH_REGISTRATION_KEY) ?? "null")
   } catch {
     return null
   }
+  if (typeof parsed !== "object" || parsed === null) return null
+  const id: unknown = Reflect.get(parsed, "id")
+  const endpoint: unknown = Reflect.get(parsed, "endpoint")
+  return typeof id === "string" && typeof endpoint === "string"
+    ? { id, endpoint }
+    : null
 }
 
-function storePushId(id: string | null): void {
+/** Saves or clears this device's registration; false when storage is blocked. */
+function storePushRegistration(registration: PushRegistration | null): boolean {
   try {
-    if (id === null) localStorage.removeItem(PUSH_ID_KEY)
-    else localStorage.setItem(PUSH_ID_KEY, id)
+    if (registration === null) localStorage.removeItem(PUSH_REGISTRATION_KEY)
+    else
+      localStorage.setItem(PUSH_REGISTRATION_KEY, JSON.stringify(registration))
+    return true
   } catch {
-    // Storage blocked: the switch reads as off on the next load.
+    return false
   }
 }
 
@@ -129,6 +152,7 @@ async function call(
   } catch {
     return fail(MESSAGES.network)
   }
+  if (response.status === 401) return { ok: false, expired: true }
   let json: unknown
   try {
     json = await response.json()
@@ -213,7 +237,10 @@ export async function checkedChallenge(
   return fromBase64url(challenge)
 }
 
-/** Reads whether this device is subscribed: a browser subscription the gate still lists. */
+/**
+ * Reads whether this device is subscribed: the browser holds the subscription this device
+ * registered (same endpoint) and the gate still lists its id.
+ */
 export async function loadPushStatus(device: PushDevice): Promise<PushStatus> {
   const availability = pushAvailability(device)
   if (availability !== "available") return { status: availability }
@@ -222,6 +249,7 @@ export async function loadPushStatus(device: PushDevice): Promise<PushStatus> {
     const response = await fetch(`${PUSH_URL}/subscriptions`, {
       cache: "no-store",
     })
+    if (response.status === 401) return { status: "unauthenticated" }
     if (!response.ok) return { status: "error" }
     const parsed = validateGatePushSubscriptionList(await response.json())
     if (!parsed.ok) return { status: "error" }
@@ -229,17 +257,25 @@ export async function loadPushStatus(device: PushDevice): Promise<PushStatus> {
   } catch (error) {
     return { status: error instanceof TypeError ? "offline" : "error" }
   }
-  const id = storedPushId()
+  const stored = storedPushRegistration()
   let subscription: PushSubscriptionLike | null
   try {
     subscription = await (await device.pushManager()).getSubscription()
   } catch {
     return { status: "error" }
   }
-  return subscription !== null && id !== null && listed.includes(id)
-    ? { status: "subscribed", id }
+  return subscription !== null &&
+    stored !== null &&
+    listed.includes(stored.id) &&
+    subscription.toJSON().endpoint === stored.endpoint
+    ? { status: "subscribed", id: stored.id }
     : { status: "unsubscribed" }
 }
+
+const sameKey = (held: ArrayBuffer | null, key: Uint8Array) =>
+  held !== null &&
+  held.byteLength === key.length &&
+  new Uint8Array(held).every((byte, i) => byte === key[i])
 
 async function register(
   device: PushDevice,
@@ -283,8 +319,11 @@ async function register(
 
 /**
  * Turns push on: asks for notification permission, subscribes the browser to the gate's
- * key, and registers the subscription with a passkey approval. Any failure after the
- * browser subscribed undoes the browser subscription, so nothing is left half on.
+ * key, and registers the subscription with a passkey approval. A subscription the browser
+ * already holds for another key is dropped first: subscribing over it throws
+ * InvalidStateError. Any failure after the browser subscribed undoes the browser
+ * subscription, and a registration this device cannot save is removed at the gate, so
+ * nothing is left half on.
  */
 export async function subscribePush(
   device: PushDevice
@@ -298,29 +337,34 @@ export async function subscribePush(
   const parsedKey = validateGatePushKey(key.value)
   if (!parsedKey.ok) return fail(MESSAGES.unreadable)
 
+  const serverKey = fromBase64url(parsedKey.value.publicKey)
   let browser: PushSubscriptionLike
   try {
-    browser = await (
-      await device.pushManager()
-    ).subscribe({
+    const manager = await device.pushManager()
+    const held = await manager.getSubscription()
+    if (held !== null && !sameKey(held.options.applicationServerKey, serverKey))
+      await held.unsubscribe()
+    browser = await manager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: fromBase64url(parsedKey.value.publicKey)
-        .buffer as ArrayBuffer,
+      applicationServerKey: serverKey.buffer as ArrayBuffer,
     })
   } catch {
     return fail(MESSAGES.browser)
   }
-  const subscription = toGateSubscription(browser.toJSON())
-  const result =
-    subscription === undefined
-      ? fail<string>(MESSAGES.browser)
-      : await register(device, subscription)
-  if (!result.ok) {
+  const undo = async (failure: PushFailure): Promise<PushFailure> => {
     await browser.unsubscribe().catch(() => false)
-    return result
+    return failure
   }
-  storePushId(result.value)
-  return { ok: true, value: { status: "subscribed", id: result.value } }
+  const subscription = toGateSubscription(browser.toJSON())
+  if (subscription === undefined) return undo(fail(MESSAGES.browser))
+  const result = await register(device, subscription)
+  if (!result.ok) return undo(result)
+  const id = result.value
+  if (!storePushRegistration({ id, endpoint: subscription.endpoint })) {
+    await call(`/${encodeURIComponent(id)}/remove`, {})
+    return undo(fail(MESSAGES.storage))
+  }
+  return { ok: true, value: { status: "subscribed", id } }
 }
 
 /** Turns push off: the gate forgets the subscription first, then the browser drops it. */
@@ -330,7 +374,7 @@ export async function unsubscribePush(
 ): Promise<PushResult<PushStatus>> {
   const removed = await call(`/${encodeURIComponent(id)}/remove`, {})
   if (!removed.ok) return removed
-  storePushId(null)
+  storePushRegistration(null)
   try {
     await (
       await device.pushManager()

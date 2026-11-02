@@ -2,15 +2,14 @@
 import { vi } from "vitest"
 import { TooltipProvider } from "@eido/ui/components/tooltip"
 import { NotificationsSection } from "../components/settings-view"
-import { PUSH_ID_KEY } from "@/lib/push"
-import { fakeBrowser } from "./push-device"
+import { fakeBrowser, storeRegistration } from "./push-device"
 import { describeStates } from "./render-states"
 
 type Options = Parameters<typeof fakeBrowser>[0]
 
 const section = (options: Options, storedId?: string) => () => {
   localStorage.clear()
-  if (storedId) localStorage.setItem(PUSH_ID_KEY, storedId)
+  if (storedId) storeRegistration(storedId)
   return (
     <TooltipProvider>
       <NotificationsSection device={fakeBrowser(options).device} />

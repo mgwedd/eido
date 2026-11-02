@@ -5,8 +5,8 @@ import {
   checkedChallenge,
   loadPushStatus,
   pushAvailability,
-  PUSH_ID_KEY,
-  storedPushId,
+  PUSH_REGISTRATION_KEY,
+  storedPushRegistration,
   subscribePush,
   toGateSubscription,
   unsubscribePush,
@@ -19,7 +19,11 @@ import {
   serverKey,
   subscriptionJson,
 } from "./fixtures/push"
-import { fakeBrowser, stubWebAuthnGlobals } from "./push-device"
+import {
+  fakeBrowser,
+  storeRegistration,
+  stubWebAuthnGlobals,
+} from "./push-device"
 
 const subscription = { endpoint, p256dh, auth }
 const bytes = (base64url: string) => [...Buffer.from(base64url, "base64url")]
@@ -62,6 +66,19 @@ function gate(routes: Record<string, Handler>) {
     })
   )
   return calls
+}
+
+/** Storage the browser blocks: every access throws, as in some private modes. */
+const blockedStorage = {
+  getItem: () => {
+    throw new DOMException("blocked", "SecurityError")
+  },
+  setItem: () => {
+    throw new DOMException("blocked", "SecurityError")
+  },
+  removeItem: () => {
+    throw new DOMException("blocked", "SecurityError")
+  },
 }
 
 const happyRoutes = {
@@ -180,7 +197,7 @@ describe("loadPushStatus", () => {
   })
 
   it("is subscribed when the browser holds a subscription and the gate lists this device's id", async () => {
-    localStorage.setItem(PUSH_ID_KEY, "sub-1")
+    storeRegistration("sub-1")
     gate(list(["sub-0", "sub-1"]))
     expect(
       await loadPushStatus(fakeBrowser({ subscribed: true }).device)
@@ -188,7 +205,7 @@ describe("loadPushStatus", () => {
   })
 
   it("is not subscribed when the gate no longer lists the id", async () => {
-    localStorage.setItem(PUSH_ID_KEY, "sub-1")
+    storeRegistration("sub-1")
     gate(list(["sub-0"]))
     expect(
       await loadPushStatus(fakeBrowser({ subscribed: true }).device)
@@ -196,10 +213,25 @@ describe("loadPushStatus", () => {
   })
 
   it("is not subscribed when the browser holds no subscription", async () => {
-    localStorage.setItem(PUSH_ID_KEY, "sub-1")
+    storeRegistration("sub-1")
     gate(list(["sub-1"]))
     expect(await loadPushStatus(fakeBrowser().device)).toEqual({
       status: "unsubscribed",
+    })
+  })
+
+  it("is not subscribed when the browser holds another subscription than the one registered", async () => {
+    storeRegistration("sub-1", "https://push.example.invalid/send/device-0")
+    gate(list(["sub-1"]))
+    expect(
+      await loadPushStatus(fakeBrowser({ subscribed: true }).device)
+    ).toEqual({ status: "unsubscribed" })
+  })
+
+  it("is unauthenticated when the session has expired", async () => {
+    gate({ "GET /api/gate/push/subscriptions": json({}, 401) })
+    expect(await loadPushStatus(fakeBrowser().device)).toEqual({
+      status: "unauthenticated",
     })
   })
 
@@ -284,8 +316,63 @@ describe("subscribePush", () => {
         },
       },
     })
-    expect(localStorage.getItem(PUSH_ID_KEY)).toBe("sub-1")
+    expect(storedPushRegistration()).toEqual({ id: "sub-1", endpoint })
     expect(browser.unsubscribed()).toBe(0)
+  })
+
+  it("replaces a subscription the browser holds for another key", async () => {
+    gate(happyRoutes)
+    // p256dh is a P-256 point like the server key, so it stands in for an old gate key.
+    const browser = fakeBrowser({ subscribed: true, heldKey: p256dh })
+    expect(await subscribePush(browser.device)).toEqual({
+      ok: true,
+      value: { status: "subscribed", id: "sub-1" },
+    })
+    expect(browser.unsubscribed()).toBe(1)
+    const key = browser.current()?.options.applicationServerKey
+    expect(key && [...new Uint8Array(key)]).toEqual(bytes(serverKey))
+  })
+
+  it("keeps a subscription the browser already holds for the gate's key", async () => {
+    gate(happyRoutes)
+    const browser = fakeBrowser({ subscribed: true })
+    const held = browser.current()
+    expect(await subscribePush(browser.device)).toEqual({
+      ok: true,
+      value: { status: "subscribed", id: "sub-1" },
+    })
+    expect(browser.current()).toBe(held)
+    expect(browser.unsubscribed()).toBe(0)
+  })
+
+  it("sends an expired session to unlock and undoes the browser subscription", async () => {
+    gate({
+      ...happyRoutes,
+      "POST /api/gate/push/prepare": json({}, 401),
+    })
+    const browser = fakeBrowser()
+    expect(await subscribePush(browser.device)).toEqual({
+      ok: false,
+      expired: true,
+    })
+    expect(browser.current()).toBeNull()
+  })
+
+  it("removes the gate registration when this device cannot save it", async () => {
+    const calls = gate({
+      ...happyRoutes,
+      "POST /api/gate/push/sub-1/remove": json({ id: "sub-1" }),
+    })
+    vi.stubGlobal("localStorage", blockedStorage)
+    const browser = fakeBrowser()
+    expect(await subscribePush(browser.device)).toEqual({
+      ok: false,
+      message: "This browser could not save the push registration.",
+    })
+    expect(calls.map((c) => `${c.method} ${c.url}`).at(-1)).toBe(
+      "POST /api/gate/push/sub-1/remove"
+    )
+    expect(browser.current()).toBeNull()
   })
 
   it("reports denied without asking the gate when the prompt is refused", async () => {
@@ -396,7 +483,7 @@ describe("subscribePush", () => {
     })
     expect(browser.current()).toBeNull()
     expect(calls).toHaveLength(2)
-    expect(storedPushId()).toBeNull()
+    expect(storedPushRegistration()).toBeNull()
   })
 
   it("treats a prompt that returns no credential as cancelled", async () => {
@@ -422,7 +509,7 @@ describe("subscribePush", () => {
       message: "The gate refused the push registration.",
     })
     expect(browser.current()).toBeNull()
-    expect(storedPushId()).toBeNull()
+    expect(storedPushRegistration()).toBeNull()
   })
 
   it("refuses an unreadable registration answer", async () => {
@@ -464,7 +551,7 @@ describe("subscribePush", () => {
 
 describe("unsubscribePush", () => {
   it("removes the registration at the gate, then drops the browser subscription", async () => {
-    localStorage.setItem(PUSH_ID_KEY, "sub/1")
+    storeRegistration("sub/1")
     const calls = gate({
       "POST /api/gate/push/sub%2F1/remove": json({ id: "sub/1" }),
     })
@@ -477,11 +564,11 @@ describe("unsubscribePush", () => {
       "POST /api/gate/push/sub%2F1/remove",
     ])
     expect(browser.current()).toBeNull()
-    expect(storedPushId()).toBeNull()
+    expect(storedPushRegistration()).toBeNull()
   })
 
   it("keeps everything when the gate cannot be reached", async () => {
-    localStorage.setItem(PUSH_ID_KEY, "sub-1")
+    storeRegistration("sub-1")
     gate({})
     const browser = fakeBrowser({ subscribed: true })
     expect(await unsubscribePush(browser.device, "sub-1")).toEqual({
@@ -489,7 +576,19 @@ describe("unsubscribePush", () => {
       message: "The gate could not be reached.",
     })
     expect(browser.current()).not.toBeNull()
-    expect(storedPushId()).toBe("sub-1")
+    expect(storedPushRegistration()?.id).toBe("sub-1")
+  })
+
+  it("reports an expired session and keeps the registration", async () => {
+    storeRegistration("sub-1")
+    gate({ "POST /api/gate/push/sub-1/remove": json({}, 401) })
+    const browser = fakeBrowser({ subscribed: true })
+    expect(await unsubscribePush(browser.device, "sub-1")).toEqual({
+      ok: false,
+      expired: true,
+    })
+    expect(browser.current()).not.toBeNull()
+    expect(storedPushRegistration()?.id).toBe("sub-1")
   })
 
   it("still succeeds when the browser's push manager fails after the gate removed it", async () => {
@@ -503,11 +602,15 @@ describe("unsubscribePush", () => {
   })
 })
 
-describe("storedPushId", () => {
+describe("storedPushRegistration", () => {
   it("reads null when storage is blocked", () => {
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new Error("blocked")
-    })
-    expect(storedPushId()).toBeNull()
+    storeRegistration("sub-1")
+    vi.stubGlobal("localStorage", blockedStorage)
+    expect(storedPushRegistration()).toBeNull()
+  })
+
+  it("reads null for a saved value without an endpoint", () => {
+    localStorage.setItem(PUSH_REGISTRATION_KEY, '{"id":"sub-1"}')
+    expect(storedPushRegistration()).toBeNull()
   })
 })

@@ -4,10 +4,10 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import { TooltipProvider } from "@eido/ui/components/tooltip"
 import { NotificationsSection } from "../components/settings-view"
-import { PUSH_ID_KEY } from "@/lib/push"
 import { prepared, serverKey } from "./fixtures/push"
 import {
   fakeBrowser,
+  storeRegistration,
   stubWebAuthnGlobals,
   type FakeBrowser,
 } from "./push-device"
@@ -124,7 +124,7 @@ test("turning the switch on registers this device and shows it subscribed", asyn
 })
 
 test("turning the switch off removes the registration at the gate", async () => {
-  localStorage.setItem(PUSH_ID_KEY, "sub-1")
+  storeRegistration("sub-1")
   const fn = gate({
     "GET /api/gate/push/subscriptions": list(["sub-1"]),
     "POST /api/gate/push/sub-1/remove": json({ id: "sub-1" }),
@@ -200,4 +200,66 @@ test("the tooltip says pushes carry only a count", async () => {
   expect(document.body.textContent).toContain(
     "Pushes carry only a count of waiting cards."
   )
+})
+
+const retryButton = () =>
+  [...container.querySelectorAll("button")].find(
+    (b) => b.textContent === "Retry"
+  )
+
+test("a failed read offers a retry that brings the switch back", async () => {
+  let reads = 0
+  gate({
+    "GET /api/gate/push/subscriptions": () =>
+      ++reads === 1 ? new Response("{}", { status: 500 }) : list([])(),
+  })
+  await render(fakeBrowser())
+  expect(alert()).toBe("Could not read push status from the gate.")
+  expect(toggle().hasAttribute("data-disabled")).toBe(true)
+
+  act(() => {
+    retryButton()?.click()
+  })
+  await until(() => expect(status()).toBe("Not subscribed"))
+  expect(alert()).toBeUndefined()
+  expect(retryButton()).toBeUndefined()
+  expect(toggle().hasAttribute("data-disabled")).toBe(false)
+})
+
+function stubLocation() {
+  const replace = vi.fn()
+  vi.stubGlobal("location", {
+    ...window.location,
+    replace,
+    pathname: "/settings",
+    search: "",
+  })
+  return replace
+}
+
+test("an expired session on the status read sends the user to unlock", async () => {
+  gate({ "GET /api/gate/push/subscriptions": json({}, 401) })
+  const replace = stubLocation()
+  act(() => {
+    root.render(
+      <TooltipProvider>
+        <NotificationsSection device={fakeBrowser().device} />
+      </TooltipProvider>
+    )
+  })
+  await until(() => expect(replace).toHaveBeenCalledTimes(1))
+  expect(replace).toHaveBeenCalledWith("/unlock?next=%2Fsettings&expired=1")
+})
+
+test("an expired session while turning push on sends the user to unlock", async () => {
+  gate({
+    "GET /api/gate/push/subscriptions": list([]),
+    "GET /api/gate/push/key": json({}, 401),
+  })
+  const replace = stubLocation()
+  await render(fakeBrowser())
+  await click()
+  await until(() => expect(replace).toHaveBeenCalledTimes(1))
+  expect(replace).toHaveBeenCalledWith("/unlock?next=%2Fsettings&expired=1")
+  expect(alert()).toBeUndefined()
 })

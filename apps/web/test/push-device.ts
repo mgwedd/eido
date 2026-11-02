@@ -2,7 +2,8 @@
 // permission and passkey prompt, recording what the code under test asked of it.
 import { vi } from "vitest"
 import type { PushDevice, PushSubscriptionLike } from "@/lib/push"
-import { subscriptionJson } from "./fixtures/push"
+import { PUSH_REGISTRATION_KEY } from "@/lib/push"
+import { endpoint, serverKey, subscriptionJson } from "./fixtures/push"
 
 class FakeAssertionResponse {
   authenticatorData = new Uint8Array([1, 2]).buffer
@@ -19,6 +20,17 @@ export function stubWebAuthnGlobals() {
   vi.stubGlobal("AuthenticatorAssertionResponse", FakeAssertionResponse)
   vi.stubGlobal("PublicKeyCredential", FakeCredential)
 }
+
+/** Saves a registration the way the push control does: the gate's id and the endpoint. */
+export function storeRegistration(id: string, registered = endpoint) {
+  localStorage.setItem(
+    PUSH_REGISTRATION_KEY,
+    JSON.stringify({ id, endpoint: registered })
+  )
+}
+
+const sameBytes = (a: ArrayBuffer | null, b: ArrayBuffer) =>
+  a !== null && Buffer.from(a).equals(Buffer.from(b))
 
 export type FakeBrowser = {
   device: PushDevice
@@ -37,6 +49,8 @@ export function fakeBrowser(
     /** What the permission prompt answers. */
     answer?: NotificationPermission
     subscribed?: boolean
+    /** The key the held subscription was made with (base64url); the gate's key by default. */
+    heldKey?: string
     subscription?: PushSubscriptionJSON
     subscribeFails?: boolean
     credential?: () => Promise<Credential | null>
@@ -46,8 +60,9 @@ export function fakeBrowser(
   let unsubscribed = 0
   const subscribeOptions: PushSubscriptionOptionsInit[] = []
   const credentialOptions: CredentialRequestOptions[] = []
-  const make = (): PushSubscriptionLike => {
+  const make = (key: ArrayBuffer | null): PushSubscriptionLike => {
     const sub: PushSubscriptionLike = {
+      options: { applicationServerKey: key },
       toJSON: () => options.subscription ?? subscriptionJson,
       unsubscribe: () => {
         unsubscribed += 1
@@ -57,7 +72,12 @@ export function fakeBrowser(
     }
     return sub
   }
-  let current: PushSubscriptionLike | null = options.subscribed ? make() : null
+  let current: PushSubscriptionLike | null = options.subscribed
+    ? make(
+        new Uint8Array(Buffer.from(options.heldKey ?? serverKey, "base64url"))
+          .buffer
+      )
+    : null
   const device: PushDevice = {
     supported: options.supported ?? true,
     standalone: options.standalone,
@@ -73,7 +93,16 @@ export function fakeBrowser(
           subscribeOptions.push(init)
           if (options.subscribeFails)
             return Promise.reject(new DOMException("no", "AbortError"))
-          current ??= make()
+          const key = init.applicationServerKey
+          if (!(key instanceof ArrayBuffer))
+            return Promise.reject(new TypeError("key"))
+          // A real browser refuses to subscribe over a subscription made with another key.
+          if (
+            current !== null &&
+            !sameBytes(current.options.applicationServerKey, key)
+          )
+            return Promise.reject(new DOMException("key", "InvalidStateError"))
+          current ??= make(key)
           return Promise.resolve(current)
         },
       }),

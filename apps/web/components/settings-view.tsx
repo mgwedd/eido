@@ -193,24 +193,40 @@ const PUSH_STATUS_LABELS = {
   denied: "Blocked in browser settings",
   install: "Add to Home Screen first",
   unsupported: "Not supported in this browser",
-  offline: "Offline. Push status is not stored on this device.",
-} as const satisfies Record<Exclude<PushStatus["status"], "error">, string>
+} as const satisfies Record<
+  Exclude<PushStatus["status"], "offline" | "error" | "unauthenticated">,
+  string
+>
+
+const toUnlock = () =>
+  window.location.replace(
+    expiredUnlockUrl(window.location.pathname + window.location.search)
+  )
 
 function NotificationsSection({ device }: { device?: PushDevice }) {
   const [push] = React.useState(() => device ?? browserPushDevice())
   const [status, setStatus] = React.useState<PushStatus | null>(null)
+  const [attempt, setAttempt] = React.useState(0)
   const [busy, setBusy] = React.useState(false)
   const [problem, setProblem] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     let live = true
     void loadPushStatus(push).then((next) => {
-      if (live) setStatus(next)
+      if (!live) return
+      if (next.status === "unauthenticated") toUnlock()
+      else setStatus(next)
     })
     return () => {
       live = false
     }
-  }, [push])
+  }, [push, attempt])
+
+  const retry = () => {
+    setStatus(null)
+    setProblem(null)
+    setAttempt((n) => n + 1)
+  }
 
   const toggle = (on: boolean) => {
     if (status === null || busy) return
@@ -222,6 +238,7 @@ function NotificationsSection({ device }: { device?: PushDevice }) {
         : unsubscribePush(push, status.id)
     void run.then((result) => {
       if (result.ok) setStatus(result.value)
+      else if ("expired" in result) toUnlock()
       else setProblem(result.message)
       setBusy(false)
     })
@@ -229,6 +246,8 @@ function NotificationsSection({ device }: { device?: PushDevice }) {
 
   const ready =
     status?.status === "subscribed" || status?.status === "unsubscribed"
+  const failed =
+    status?.status === "offline" || status?.status === "error" ? status : null
   return (
     <Section id="notifications" title="Notifications">
       <div className="flex min-h-11 items-center justify-between gap-3">
@@ -239,11 +258,13 @@ function NotificationsSection({ device }: { device?: PushDevice }) {
               Pushes carry only a count of waiting cards.
             </InfoTip>
           </span>
-          <span role="status" className="text-xs text-muted-foreground">
-            {status === null || status.status === "error"
-              ? ""
-              : PUSH_STATUS_LABELS[status.status]}
-          </span>
+          {failed ? null : (
+            <span role="status" className="text-xs text-muted-foreground">
+              {status === null || status.status === "unauthenticated"
+                ? ""
+                : PUSH_STATUS_LABELS[status.status]}
+            </span>
+          )}
         </div>
         <Switch
           aria-label="Push on this device"
@@ -252,10 +273,17 @@ function NotificationsSection({ device }: { device?: PushDevice }) {
           onCheckedChange={toggle}
         />
       </div>
-      {status?.status === "error" ? (
-        <p role="alert" className="text-sm">
-          Could not read push status from the gate.
-        </p>
+      {failed ? (
+        <>
+          <SectionError load={failed} what="Push status" />
+          <Button
+            variant="outline"
+            onClick={retry}
+            className="min-h-11 self-start"
+          >
+            Retry
+          </Button>
+        </>
       ) : problem ? (
         <p role="alert" className="text-sm">
           {problem}
