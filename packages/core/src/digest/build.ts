@@ -83,7 +83,10 @@ const MAX_MERGE_ROUNDS = 8
 
 export interface SectionResume {
   load(identity: string): { lines: RefLine[]; dropped: number } | undefined
-  save(identity: string, result: { lines: RefLine[]; dropped: number }): void
+  save(
+    identity: string,
+    result: { lines: RefLine[]; dropped: number }
+  ): Promise<void>
 }
 
 interface RefLine {
@@ -218,7 +221,7 @@ export async function buildDigestLines(
     if (result === undefined)
       throw new DigestBuildError("a section produced no result")
     dropped += result.dropped
-    resume?.save(identity, result)
+    await resume?.save(identity, result)
     lines.push(...result.lines)
   }
 

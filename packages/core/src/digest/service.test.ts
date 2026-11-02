@@ -138,9 +138,11 @@ describe("cache", () => {
     ).toHaveLength(plannedSections)
 
     expect(
-      pruneSections(dbHarness.db, "9999-01-01T00:00:00.000Z")
+      await pruneSections(dbHarness.db, "9999-01-01T00:00:00.000Z")
     ).toBeGreaterThan(0)
-    expect(pruneSections(dbHarness.db, "9999-01-01T00:00:00.000Z")).toBe(0)
+    expect(await pruneSections(dbHarness.db, "9999-01-01T00:00:00.000Z")).toBe(
+      0
+    )
   })
 
   it("a second build for the same content makes zero model calls", async () => {

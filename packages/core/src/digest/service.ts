@@ -123,14 +123,14 @@ export function createDigestService(
           return undefined
         return { lines: saved.lines, dropped: saved.dropped }
       },
-      save(
+      async save(
         identity: string,
         result: { lines: { text: string; refs: string[] }[]; dropped: number }
       ) {
         const sectionKey = sha256Hex(
           `${fingerprint}\0${identity}\0${promptVersion}\0${modelId}`
         )
-        writeSection(db, {
+        await writeSection(db, {
           key: sectionKey,
           sourceFingerprint: fingerprint,
           sectionIdentity: identity,
@@ -158,7 +158,7 @@ export function createDigestService(
       coverage,
       createdAt: now().toISOString(),
     }
-    writeDigest(db, row)
+    await writeDigest(db, row)
   }
 
   function getDigest(subject: DigestSubject): Digest | DigestMissing {

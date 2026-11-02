@@ -68,7 +68,7 @@ export async function runDigestSweep(
       result.failed.push({ conversationId, error: summarized.error })
       continue
     }
-    store.putDigest(
+    await store.putDigest(
       conversationId,
       summarized.text,
       fingerprintTurns(turns),

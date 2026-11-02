@@ -391,16 +391,17 @@ async function run(
       possiblyTruncated,
     }
   }
-  const citations = checked.cited.flatMap((tag) => {
+  const citations = []
+  for (const tag of checked.cited) {
     const member = byTag.get(tag)
-    if (member === undefined) return []
+    if (member === undefined) continue
     const citation = citationFor(db, tag, member)
-    return [
+    citations.push(
       deps.allocateSourceTag === undefined
         ? citation
-        : { ...citation, tag: deps.allocateSourceTag(citation.sourceRef) },
-    ]
-  })
+        : { ...citation, tag: await deps.allocateSourceTag(citation.sourceRef) }
+    )
+  }
   let answer = checked.text
   if (deps.allocateSourceTag !== undefined) {
     for (const citation of citations) {

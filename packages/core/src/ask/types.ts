@@ -37,7 +37,7 @@ export interface AskDeps {
   /** Compacted turns from this Ask conversation, included to resolve follow-up questions. */
   conversation?: readonly Turn[]
   /** Maps a document source to its stable tag in this conversation. */
-  allocateSourceTag?: (sourceRef: string) => string
+  allocateSourceTag?: (sourceRef: string) => Promise<string>
   /** Intent candidates from a trusted integration; every item is still checked against schemas. */
   followUpCandidates?: readonly unknown[]
 }

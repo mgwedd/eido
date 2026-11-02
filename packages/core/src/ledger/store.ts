@@ -1,6 +1,7 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
 import type { SourceSpan } from "@eido/schemas"
 import type { EntityKind } from "../profile/types"
+import { writeQueueFor } from "../db/write-queue"
 import { INJECTION_REASONS } from "../inference/fence"
 import type { InjectionReason } from "../inference/fence"
 import { LedgerError } from "./errors"
@@ -35,20 +36,24 @@ const optionalText = (row: Row, key: string): string | null => {
 }
 
 /**
- * Run `work` in a savepoint, so a ledger write is atomic and still composes with a caller's
- * own transaction (an extraction and its obligation written together by #46).
+ * Run `work` in a savepoint on the connection's write queue, so a ledger write is atomic and
+ * waits for an audited store's open transaction instead of joining it. Called from a job of the
+ * same queue (an extraction and its obligation written together by #46), it runs inline and
+ * composes with that job's transaction.
  */
-function atomically<T>(db: DatabaseSync, work: () => T): T {
-  db.exec("SAVEPOINT ledger_write")
-  try {
-    const result = work()
-    db.exec("RELEASE ledger_write")
-    return result
-  } catch (error) {
-    db.exec("ROLLBACK TO ledger_write")
-    db.exec("RELEASE ledger_write")
-    throw error
-  }
+function atomically<T>(db: DatabaseSync, work: () => T): Promise<T> {
+  return writeQueueFor(db).run(() => {
+    db.exec("SAVEPOINT ledger_write")
+    try {
+      const result = work()
+      db.exec("RELEASE ledger_write")
+      return result
+    } catch (error) {
+      db.exec("ROLLBACK TO ledger_write")
+      db.exec("RELEASE ledger_write")
+      throw error
+    }
+  })
 }
 
 function requireDocument(db: DatabaseSync, docId: string): void {
@@ -103,10 +108,10 @@ function parseReasons(json: string): InjectionReason[] {
 }
 
 /** Store one extraction and its per-field confidence rows. Returns the extraction id. */
-export function insertExtraction(
+export async function insertExtraction(
   db: DatabaseSync,
   input: ExtractionInput
-): number {
+): Promise<number> {
   requireDocument(db, input.docId)
   const confidences: [ExtractionFieldName, number][] = []
   if (input.status === "extracted") {
@@ -131,7 +136,7 @@ export function insertExtraction(
   }
   const fieldsJson =
     input.status === "extracted" ? JSON.stringify(input.fields) : "{}"
-  return atomically(db, () => {
+  return await atomically(db, () => {
     const { lastInsertRowid } = db
       .prepare(
         `INSERT INTO extractions (doc_id, schema, status, fields_json, model, created_at)
@@ -312,7 +317,10 @@ export function getObligationSource(
 }
 
 /** Store links; one already stored (same src, dst and kind) is left as is. Returns how many were new. */
-export function insertLinks(db: DatabaseSync, links: readonly Link[]): number {
+export function insertLinks(
+  db: DatabaseSync,
+  links: readonly Link[]
+): Promise<number> {
   return atomically(db, () => {
     const insert = db.prepare(
       `INSERT INTO links (src, dst, kind, confidence, origin) VALUES (?, ?, ?, ?, ?)

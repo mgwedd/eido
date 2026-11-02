@@ -1,5 +1,6 @@
 import { INJECTION_REASONS } from "../inference/index"
 import type { DatabaseSync } from "node:sqlite"
+import { writeQueueFor } from "../db/write-queue"
 import type { Cite, Digest, DigestCoverage, DigestLine } from "./types"
 
 export interface StoredSection {
@@ -57,28 +58,38 @@ export function readSection(
   }
 }
 
-export function writeSection(db: DatabaseSync, row: StoredSection): void {
-  db.prepare(
-    `INSERT OR REPLACE INTO digest_sections
+export function writeSection(
+  db: DatabaseSync,
+  row: StoredSection
+): Promise<void> {
+  return writeQueueFor(db).run(() => {
+    db.prepare(
+      `INSERT OR REPLACE INTO digest_sections
     (key, source_fingerprint, section_identity, prompt_version, model_id, lines_json, dropped, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    row.key,
-    row.sourceFingerprint,
-    row.sectionIdentity,
-    row.promptVersion,
-    row.modelId,
-    JSON.stringify(row.lines),
-    row.dropped,
-    row.createdAt
-  )
+    ).run(
+      row.key,
+      row.sourceFingerprint,
+      row.sectionIdentity,
+      row.promptVersion,
+      row.modelId,
+      JSON.stringify(row.lines),
+      row.dropped,
+      row.createdAt
+    )
+  })
 }
 
 /** Deletes old partial work only when explicitly called; returns the number of rows removed. */
-export function pruneSections(db: DatabaseSync, before: string): number {
-  return Number(
-    db.prepare("DELETE FROM digest_sections WHERE created_at < ?").run(before)
-      .changes
+export function pruneSections(
+  db: DatabaseSync,
+  before: string
+): Promise<number> {
+  return writeQueueFor(db).run(() =>
+    Number(
+      db.prepare("DELETE FROM digest_sections WHERE created_at < ?").run(before)
+        .changes
+    )
   )
 }
 
@@ -203,20 +214,25 @@ export function readLatestDigest(
   return undefined
 }
 
-export function writeDigest(db: DatabaseSync, row: StoredDigest): void {
-  db.prepare(
-    `INSERT OR REPLACE INTO digests
+export function writeDigest(
+  db: DatabaseSync,
+  row: StoredDigest
+): Promise<void> {
+  return writeQueueFor(db).run(() => {
+    db.prepare(
+      `INSERT OR REPLACE INTO digests
        (key, kind, subject_ref, prompt_version, model_id, fingerprint, lines_json, coverage_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    row.key,
-    row.kind,
-    row.subjectRef,
-    row.promptVersion,
-    row.modelId,
-    row.fingerprint,
-    JSON.stringify(row.lines),
-    JSON.stringify(row.coverage),
-    row.createdAt
-  )
+    ).run(
+      row.key,
+      row.kind,
+      row.subjectRef,
+      row.promptVersion,
+      row.modelId,
+      row.fingerprint,
+      JSON.stringify(row.lines),
+      JSON.stringify(row.coverage),
+      row.createdAt
+    )
+  })
 }

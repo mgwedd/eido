@@ -705,7 +705,7 @@ export async function serveDataPlane(
             return compactAskResult(command.reply)
           }
           const priorTurns = conversation.getTurns(conversationId)
-          conversation.appendTurn(conversationId, {
+          await conversation.appendTurn(conversationId, {
             id: randomUUID(),
             role: "user",
             text: question,
@@ -723,7 +723,7 @@ export async function serveDataPlane(
             allocateSourceTag: (sourceRef) =>
               conversation.allocateSourceTag(conversationId, sourceRef),
           })
-          conversation.appendTurn(conversationId, {
+          await conversation.appendTurn(conversationId, {
             id: randomUUID(),
             role: "assistant",
             text: result.answer,
