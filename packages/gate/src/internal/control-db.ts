@@ -210,6 +210,9 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      epoch TEXT PRIMARY KEY,
      key_hash TEXT NOT NULL
    ) STRICT;`,
+  // The fence's injection flag on an intent (#300): a JSON GateIntentInjection, NULL for an intent
+  // from clean material. Display-only on the approval card, never part of the payload or its hash.
+  `ALTER TABLE intents ADD COLUMN injection_reasons_json TEXT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {
