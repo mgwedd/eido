@@ -24,6 +24,7 @@ import type {
   GateSession,
   GatePasskeyList,
   GatePermissionList,
+  GateUndoResult,
 } from "@eido/schemas"
 import { issueNonce, reject, verifyApproval } from "./approvals"
 import type { PreparedApproval } from "./approvals"
@@ -109,6 +110,7 @@ export const PHONE_ROUTES = [
   { method: "POST", path: "/approvals/:id/nonce", session: true },
   { method: "POST", path: "/approvals/:id/decision", session: true },
   { method: "POST", path: "/approvals/:id/edit", session: true },
+  { method: "POST", path: "/executions/:id/undo", session: true },
   { method: "GET", path: "/push/key", session: true },
   { method: "GET", path: "/push/subscriptions", session: true },
   { method: "POST", path: "/push/prepare", session: true },
@@ -583,6 +585,79 @@ async function edit(
   return prepared(state, issueNonce(state.db, result.intentId))
 }
 
+const undoInFlight = new WeakMap<DatabaseSync, Set<string>>()
+
+async function undo(
+  state: PhoneState,
+  request: GateRequest,
+  id: string,
+  executeUndo?: (id: string) => Promise<ExecutionResult>
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  if (
+    typeof body.value !== "object" ||
+    body.value === null ||
+    Array.isArray(body.value) ||
+    Object.keys(body.value).length !== 0
+  ) {
+    return invalid("an empty undo request", ["expected an empty object"])
+  }
+  if (id.length > 64) {
+    return apiError(400, "invalid_request", "the execution id is invalid")
+  }
+  if (executeUndo === undefined) {
+    return apiError(503, "unavailable", "undo is not configured")
+  }
+  const activeUndos = undoInFlight.get(state.db)
+  if (activeUndos?.has(id)) {
+    return apiError(
+      409,
+      "already_decided",
+      "this execution is already being undone"
+    )
+  }
+  if (
+    state.db
+      .prepare("SELECT 1 FROM execution_undos WHERE intent_id=?")
+      .get(id) !== undefined
+  ) {
+    return apiError(
+      409,
+      "already_decided",
+      "this execution has already been undone"
+    )
+  }
+  const undos = activeUndos ?? new Set<string>()
+  if (activeUndos === undefined) undoInFlight.set(state.db, undos)
+  undos.add(id)
+  try {
+    const result = await executeUndo(id)
+    if (result.ok) {
+      const response: GateUndoResult = { id, undone: true }
+      return { status: 200, body: response }
+    }
+    if (result.code === "not_found") {
+      return apiError(404, "not_found", "no such execution")
+    }
+    if (
+      result.code === "upstream_error" ||
+      result.code === "connector_unavailable" ||
+      result.code === "connector_misconfigured" ||
+      result.code === "unknown_writer" ||
+      result.code === "changed_during_execution"
+    ) {
+      return apiError(503, "unavailable", "undo could not be completed")
+    }
+    return apiError(409, "already_decided", "this execution cannot be undone")
+  } catch {
+    return apiError(503, "unavailable", "undo could not be completed")
+  } finally {
+    undos.delete(id)
+    if (undos.size === 0) undoInFlight.delete(state.db)
+  }
+}
+
 async function preparePush(
   state: PhoneState,
   request: GateRequest
@@ -625,7 +700,8 @@ function route(
   request: GateRequest,
   matched: Matched,
   now: Clock,
-  execute?: (id: string) => Promise<ExecutionResult>
+  execute?: (id: string) => Promise<ExecutionResult>,
+  executeUndo?: (id: string) => Promise<ExecutionResult>
 ): Reply | Promise<Reply> {
   const path: RoutePath = matched.route.path
   switch (path) {
@@ -661,6 +737,8 @@ function route(
       return decision(state, request, matched.id, now, execute)
     case "/approvals/:id/edit":
       return edit(state, request, matched.id)
+    case "/executions/:id/undo":
+      return undo(state, request, matched.id, executeUndo)
     case "/push/key":
       return state.push === undefined
         ? apiError(503, "unavailable", "push is not configured")
@@ -693,6 +771,7 @@ export type PhoneOptions = {
   basePath: string
   now: Clock
   execute?: (id: string) => Promise<ExecutionResult>
+  undo?: (id: string) => Promise<ExecutionResult>
 }
 
 const NO_STORE = { "cache-control": "no-store" } as const
@@ -730,7 +809,14 @@ export function phoneHandler(options: PhoneOptions): Handler {
     ) {
       return apiError(401, "unauthenticated", "sign in with your passkey")
     }
-    return route(state, request, matched, options.now, options.execute)
+    return route(
+      state,
+      request,
+      matched,
+      options.now,
+      options.execute,
+      options.undo
+    )
   }
   return async (request) => {
     const reply = await answer(request)
