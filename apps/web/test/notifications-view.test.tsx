@@ -55,21 +55,34 @@ function gate(routes: Record<string, () => Response>) {
   return fn
 }
 
-// Subscribing awaits several hashes and requests; let them all run.
-async function settle() {
-  for (let i = 0; i < 10; i += 1)
+const tick = () =>
+  act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+
+/**
+ * Subscribing awaits crypto.subtle hashes and requests, which take an unknown number of
+ * ticks: flush React inside act and retry the check until it holds.
+ */
+async function until(check: () => void) {
+  await vi.waitFor(
+    async () => {
+      await tick()
+      check()
+    },
+    { timeout: 5_000 }
+  )
 }
 
 async function render(browser: FakeBrowser) {
-  await act(async () => {
+  act(() => {
     root.render(
       <TooltipProvider>
         <NotificationsSection device={browser.device} />
       </TooltipProvider>
     )
-    await settle()
   })
+  await until(() => expect(status()).not.toBe(""))
 }
 
 const toggle = () => container.querySelector<HTMLElement>('[role="switch"]')!
@@ -77,10 +90,10 @@ const status = () => container.querySelector('[role="status"]')?.textContent
 const alert = () => container.querySelector('[role="alert"]')?.textContent
 
 async function click() {
-  await act(async () => {
+  act(() => {
     toggle().click()
-    await settle()
   })
+  await tick()
 }
 
 const list = (ids: string[]) =>
@@ -99,7 +112,7 @@ test("turning the switch on registers this device and shows it subscribed", asyn
   expect(toggle().getAttribute("aria-checked")).toBe("false")
 
   await click()
-  expect(status()).toBe("Subscribed")
+  await until(() => expect(status()).toBe("Subscribed"))
   expect(toggle().getAttribute("aria-checked")).toBe("true")
   expect(alert()).toBeUndefined()
   expect(fn.mock.calls.map(([, init]) => init?.method ?? "GET")).toEqual([
@@ -121,7 +134,7 @@ test("turning the switch off removes the registration at the gate", async () => 
   expect(status()).toBe("Subscribed")
 
   await click()
-  expect(status()).toBe("Not subscribed")
+  await until(() => expect(status()).toBe("Not subscribed"))
   expect(urlOf(fn.mock.calls.at(-1)?.[0] ?? "")).toBe(
     "/api/gate/push/sub-1/remove"
   )
@@ -138,7 +151,7 @@ test("a failed subscribe leaves the switch off and says why", async () => {
   })
   await render(fakeBrowser())
   await click()
-  expect(alert()).toBe("Push is not set up on the gate.")
+  await until(() => expect(alert()).toBe("Push is not set up on the gate."))
   expect(status()).toBe("Not subscribed")
   expect(toggle().getAttribute("aria-checked")).toBe("false")
 })
@@ -154,8 +167,10 @@ test("the switch is disabled while a change is in flight", async () => {
   })
   await render(browser)
   await click()
+  await until(() => expect(browser.credentialOptions).toHaveLength(1))
   expect(toggle().hasAttribute("data-disabled")).toBe(true)
   await click()
+  await tick()
   expect(browser.credentialOptions).toHaveLength(1)
 })
 
@@ -170,6 +185,7 @@ test.each([
   expect(toggle().hasAttribute("data-disabled")).toBe(true)
   const before = fn.mock.calls.length
   await click()
+  await tick()
   expect(fn.mock.calls.length).toBe(before)
   expect(browser.subscribeOptions).toEqual([])
 })

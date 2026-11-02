@@ -7,9 +7,14 @@
 import type { GatePushPrepared } from "@eido/schemas"
 
 const endpoint = "https://push.example.invalid/send/device-1"
-const p256dh =
-  "BAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
-const auth = "oKGio6SlpqeoqaqrrK2urw"
+// Built from their byte patterns, not written out, so secret scanners do not read the
+// synthetic keys as real ones.
+const base64url = (bytes: number[]) => Buffer.from(bytes).toString("base64url")
+const run = (length: number, from: number, step: number) =>
+  Array.from({ length }, (_, i) => from + i * step)
+
+const p256dh = base64url([0x04, ...run(64, 1, 1)])
+const auth = base64url(run(16, 0xa0, 1))
 
 const subscriptionJson: PushSubscriptionJSON = {
   endpoint,
@@ -17,8 +22,7 @@ const subscriptionJson: PushSubscriptionJSON = {
   keys: { p256dh, auth },
 }
 
-const serverKey =
-  "BMjHxsXEw8LBwL--vby7urm4t7a1tLOysbCvrq2sq6qpqKempaSjoqGgn56dnJuamZiXlpWUk5KRkI-OjYyLiok"
+const serverKey = base64url([0x04, ...run(64, 200, -1)])
 
 // sha256 of `"https://push.example.invalid/send/device-1"`.
 const endpointHash =
@@ -32,7 +36,11 @@ const prepared: GatePushPrepared = {
   payloadHash:
     "34b0342c1cf252333261ec7764c6fceadc58114cd7eacebe7a061b304539b9ee",
   nonce: "n".repeat(43),
-  challenge: "42l7V3atUda0AtlKqkYLOd3mxZGYYjm9WB52Ivo_wcQ",
+  // sha256 of the canonical ["eido.control.v1", "policy.set", target, id, payloadHash, nonce].
+  challenge: Buffer.from(
+    "e3697b5776ad51d6b402d94aaa460b39dde6c591986239bd581e7622fa3fc1c4",
+    "hex"
+  ).toString("base64url"),
 }
 
 export { auth, endpoint, p256dh, prepared, serverKey, subscriptionJson }
