@@ -9,6 +9,7 @@ import {
   validateGateMailFolderList,
   validateGateMailFolderState,
   validateGateMailMessagePage,
+  validateGatePasskeyList,
   validateGatePendingIntentList,
   validateGateProposeRefusal,
   validateGateProposeResult,
@@ -22,6 +23,7 @@ import type {
   GateIntentProposal,
   GateIntentStatus,
   GateMailFolderState,
+  GatePasskeyList,
   GatePendingIntentList,
   GateProposeResult,
   ValidationResult,
@@ -354,6 +356,36 @@ export function createEnrolmentClient(options: IntentClientOptions): {
         [201],
         validateGateEnrolmentCode,
         "GateEnrolmentCode"
+      ),
+  }
+}
+
+/**
+ * The owner's passkey client for the control socket (#419), used by the Mac-side `passkeys`
+ * command. Revoking a passkey signs its phone out; the phone listener has no revoke route.
+ */
+export function createPasskeyAdminClient(options: IntentClientOptions): {
+  list: () => Promise<GatePasskeyList>
+  revoke: (fingerprint: string) => Promise<GatePasskeyList>
+} {
+  const resolved = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  return {
+    list: async () =>
+      expect(
+        await call(resolved, "GET", "/passkeys"),
+        [200],
+        validateGatePasskeyList,
+        "GatePasskeyList"
+      ),
+    revoke: async (fingerprint) =>
+      expect(
+        await call(resolved, "POST", "/passkeys/revoke", { fingerprint }),
+        [200],
+        validateGatePasskeyList,
+        "GatePasskeyList"
       ),
   }
 }

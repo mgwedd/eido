@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { createServer, request } from "node:http"
 import type { Server } from "node:http"
@@ -11,6 +12,7 @@ import {
   GateUnavailableError,
   createAuditClient,
   createEnrolmentClient,
+  createPasskeyAdminClient,
   createIntentClient,
 } from "./client"
 import type { AuditClient, IntentClient } from "./client"
@@ -581,6 +583,8 @@ describe("everything else on the data-plane listener", () => {
       ["GET", "/audit"],
       ["GET", "/audit/chain"],
       ["POST", "/enrolment-codes"],
+      ["GET", "/passkeys"],
+      ["POST", "/passkeys/revoke"],
       ["POST", "/connector-health"],
       ["PUT", "/connector-health"],
       ["DELETE", "/connector-health"],
@@ -639,6 +643,61 @@ describe("the control listener", () => {
     expect(actions().slice(-1)).toEqual(["enrolment_code.issued"])
     const rows = s.db.prepare("SELECT used_at FROM enrolment_codes").all()
     expect(rows).toEqual([{ used_at: null }])
+  })
+
+  it("lists and revokes passkeys by fingerprint, which only the control listener serves", async () => {
+    s.db
+      .prepare(
+        "INSERT INTO credentials (credential_id, public_key, sign_count, created_at) VALUES ('Y3JlZC1vbmU', 'AA', 0, '2026-10-01T00:00:00.000Z')"
+      )
+      .run()
+    // SHA-256 of the UTF-8 credential id "Y3JlZC1vbmU", lowercase hex.
+    const fingerprint = createHash("sha256").update("Y3JlZC1vbmU").digest("hex")
+    const admin = createPasskeyAdminClient({ socketPath: controlSocket })
+    expect(await admin.list()).toEqual({
+      passkeys: [
+        {
+          fingerprint,
+          createdAt: "2026-10-01T00:00:00.000Z",
+          revokedAt: null,
+        },
+      ],
+    })
+    const revoked = await admin.revoke(fingerprint)
+    expect(revoked.passkeys[0]?.revokedAt).toEqual(expect.any(String))
+    expect(actions().slice(-1)).toEqual(["credential.revoked"])
+    await expect(admin.revoke(fingerprint)).rejects.toMatchObject({
+      status: 409,
+      code: "already_decided",
+    })
+    await expect(admin.revoke("0".repeat(64))).rejects.toMatchObject({
+      status: 404,
+      code: "not_found",
+    })
+  })
+
+  it.each([
+    ["not JSON", "{", "the body is not valid JSON"],
+    ["without a fingerprint", "{}", "the body must name a fingerprint"],
+    [
+      "a short fingerprint",
+      JSON.stringify({ fingerprint: "abcd1234" }),
+      "the body must name a fingerprint",
+    ],
+  ])("refuses a revoke body that is %s", async (_name, body, message) => {
+    const reply = await raw(controlSocket, "POST", "/passkeys/revoke", body)
+    expect(reply.status).toBe(400)
+    expect(JSON.parse(reply.text)).toEqual({ code: "invalid_request", message })
+  })
+
+  it("refuses a revoke body over 1 MiB", async () => {
+    const big = "a".repeat(MAX_BODY_BYTES + 1)
+    const reply = await raw(controlSocket, "POST", "/passkeys/revoke", big)
+    expect(reply.status).toBe(413)
+    expect(JSON.parse(reply.text)).toEqual({
+      code: "invalid_request",
+      message: "the body is over 1 MiB",
+    })
   })
 
   it("does not take audit entries: POST /audit is a data-plane route only", async () => {

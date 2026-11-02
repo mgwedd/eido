@@ -41,6 +41,7 @@ export {
   validateGateOwnerConfiguration,
   validateGatePendingIntentList,
   validateGatePasskeyList,
+  validateGatePasskeyRevokeRequest,
   validateGatePermissionList,
   validateGatePrepareApproval,
   validateGateProposeRefusal,
