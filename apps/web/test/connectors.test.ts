@@ -1,13 +1,17 @@
-import { describe, expect, test } from "vitest"
+import { describe, expect, test, vi } from "vitest"
 import {
   bridgeNotice,
   breakerLabel,
+  disabledByDrift,
   displayName,
+  loadConnectors,
   healthLabel,
   invitationsWait,
 } from "../lib/connectors"
 import {
+  AS_OF,
   driveDisabled,
+  driveDrifted,
   gmail,
   protonCalendarOpen,
   protonMailOpen,
@@ -51,5 +55,36 @@ describe("shared Bridge health", () => {
       false
     )
     expect(invitationsWait(protonMailOpen)).toBe(false)
+  })
+})
+
+describe("drift", () => {
+  test("only a disabled connector with drift detail is disabled by drift", () => {
+    expect(disabledByDrift(driveDrifted)).toBe(true)
+    expect(disabledByDrift(driveDisabled)).toBe(false)
+    expect(disabledByDrift({ ...driveDrifted, enabled: true })).toBe(false)
+  })
+})
+
+describe("loadConnectors", () => {
+  const read = (body: unknown) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(() => Promise.resolve(Response.json(body)))
+    )
+    return loadConnectors(new AbortController().signal)
+  }
+  test("carries the gate's asOf", async () => {
+    expect(await read({ connectors: [gmail], asOf: AS_OF })).toEqual({
+      status: "ready",
+      connectors: [gmail],
+      asOf: AS_OF,
+    })
+  })
+  test("carries no asOf when the gate sent none", async () => {
+    expect(await read({ connectors: [gmail] })).toEqual({
+      status: "ready",
+      connectors: [gmail],
+    })
   })
 })

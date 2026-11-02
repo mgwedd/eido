@@ -4,6 +4,7 @@ import {
   AS_OF,
   driveDegraded,
   driveDisabled,
+  driveDrifted,
   gmail,
   sharedBridgeOpen,
 } from "./fixtures/connectors"
@@ -56,6 +57,12 @@ describeStates("Connectors", [
   {
     state: "disabled",
     render: body({ status: "ready", connectors: [driveDisabled], asOf: AS_OF }),
+    role: "status",
+    message: "1 connector",
+  },
+  {
+    state: "disabled by manifest drift",
+    render: body({ status: "ready", connectors: [driveDrifted], asOf: AS_OF }),
     role: "status",
     message: "1 connector",
   },

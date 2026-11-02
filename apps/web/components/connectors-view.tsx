@@ -12,6 +12,7 @@ import { expiredUnlockUrl } from "@/lib/auth/unlock"
 import {
   bridgeNotice,
   breakerLabel,
+  disabledByDrift,
   displayName,
   formatDate,
   formatDateTime,
@@ -24,7 +25,7 @@ import {
 type ConnectorsState =
   | { status: "loading" }
   | { status: "error" }
-  | { status: "ready"; connectors: Connector[]; asOf: string }
+  | { status: "ready"; connectors: Connector[]; asOf?: string }
   | { status: "offline" }
 
 function useConnectors(): { state: ConnectorsState; retry: () => void } {
@@ -88,7 +89,11 @@ function ConnectorCard({ connector }: { connector: Connector }) {
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {!connector.enabled ? (
+        {disabledByDrift(connector) ? (
+          <p className="text-sm">
+            Disabled: the tool manifest changed since it was pinned.
+          </p>
+        ) : !connector.enabled ? (
           <p className="text-sm">
             Disabled: the gate refuses reads from this connector until it is
             pinned again.
@@ -106,6 +111,13 @@ function ConnectorCard({ connector }: { connector: Connector }) {
           </p>
         ) : null}
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+          {connector.lastSuccessAt ? (
+            <Fact label="Last sync">
+              <time dateTime={connector.lastSuccessAt}>
+                {formatDateTime(connector.lastSuccessAt)}
+              </time>
+            </Fact>
+          ) : null}
           <Fact label="Failures">{connector.consecutiveFailures}</Fact>
           <Fact label="Breaker">{breakerLabel(connector.health)}</Fact>
           <Fact label="Next probe">
@@ -123,6 +135,36 @@ function ConnectorCard({ connector }: { connector: Connector }) {
             </time>
           </Fact>
         </dl>
+        {connector.manifestHash ? (
+          <div className="flex flex-col gap-0.5">
+            <span className="text-xs text-muted-foreground">Manifest</span>
+            <code className="font-mono text-xs break-all">
+              {connector.manifestHash}
+            </code>
+          </div>
+        ) : null}
+        {disabledByDrift(connector) ? (
+          <section
+            aria-label={`Manifest drift, ${displayName(connector.name)}`}
+            className="flex flex-col gap-1"
+          >
+            <span className="text-xs text-muted-foreground">
+              Manifest drift
+            </span>
+            <ul className="flex flex-col gap-0.5 font-mono text-xs break-all">
+              {connector.drift.added.map((tool) => (
+                <li key={`added-${tool}`}>
+                  <span aria-label="Added">+</span> {tool}
+                </li>
+              ))}
+              {connector.drift.removed.map((tool) => (
+                <li key={`removed-${tool}`}>
+                  <span aria-label="Removed">-</span> {tool}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
         {connector.scopes.length > 0 ? (
           <div className="flex flex-col gap-0.5">
             <span className="text-xs text-muted-foreground">Scopes</span>
@@ -222,7 +264,7 @@ function ConnectorsView() {
       <header className="flex flex-col gap-0.5">
         <h1 className="text-xl font-semibold tracking-tight">Connectors</h1>
         <p className="min-h-5 text-sm text-muted-foreground">
-          {state.status === "ready" && state.connectors.length > 0
+          {state.status === "ready" && state.connectors.length > 0 && state.asOf
             ? `Status as of ${formatDateTime(state.asOf)}`
             : null}
         </p>
