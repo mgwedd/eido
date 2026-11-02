@@ -40,9 +40,9 @@ describe("context pack store", () => {
     expect(packIdFor(HASH)).toBe(`cp_${"ab".repeat(16)}`)
   })
 
-  test("storing the same pack twice adds one row", () => {
-    expect(storeContextPack(db, PACK)).toBe(true)
-    expect(storeContextPack(db, PACK)).toBe(false)
+  test("storing the same pack twice adds one row", async () => {
+    expect(await storeContextPack(db, PACK)).toBe(true)
+    expect(await storeContextPack(db, PACK)).toBe(false)
     expect(readContextPack(db, PACK.id)?.members).toEqual(PACK.members)
   })
 
@@ -50,8 +50,19 @@ describe("context pack store", () => {
     expect(readContextPack(db, "cp_missing")).toBeNull()
   })
 
-  test("malformed stored members are rejected, not cast", () => {
-    storeContextPack(db, PACK)
+  test("reading without the table does not create schema", () => {
+    expect(readContextPack(db, PACK.id)).toBeNull()
+    expect(
+      db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'context_packs'"
+        )
+        .get()
+    ).toBeUndefined()
+  })
+
+  test("malformed stored members are rejected, not cast", async () => {
+    await storeContextPack(db, PACK)
     insertRaw("a", "{}")
     insertRaw("b", "[1]")
     insertRaw(

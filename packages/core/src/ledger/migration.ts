@@ -1,3 +1,5 @@
+import { CONVERSATION_SCHEMA_SQL } from "../conversation/schema"
+
 /**
  * Ledger schema of eido-data.db, applied by `openDataDb` on top of the index schema (`openIndex`).
  * Versioned in `ledger_schema`, separate from the index's `user_version`, so `openIndex` keeps
@@ -12,6 +14,8 @@
  *     carries the same entity as its source document (#259). The checks are triggers, since a
  *     column CHECK cannot be changed in place; they apply to writes from now on and leave rows
  *     stored under v1 as they are.
+ * v3 adds injection provenance to obligations; v4 adds conversation storage and search; v5 adds
+ *     resumable digest section and final digest caches.
  */
 export const LEDGER_MIGRATIONS: readonly string[] = [
   `
@@ -163,6 +167,50 @@ WHEN (NEW.src GLOB 'doc:*' AND NOT EXISTS (SELECT 1 FROM documents WHERE sha256 
   OR (NEW.src GLOB 'ent:*' AND NOT EXISTS (SELECT 1 FROM entities WHERE id = substr(NEW.src, 5)))
   OR (NEW.dst GLOB 'ent:*' AND NOT EXISTS (SELECT 1 FROM entities WHERE id = substr(NEW.dst, 5)))
 BEGIN SELECT RAISE(ABORT, 'link endpoint does not exist'); END;
+`,
+  `
+ALTER TABLE obligations ADD COLUMN injection_suspected INTEGER NOT NULL DEFAULT 0 CHECK (injection_suspected IN (0, 1));
+ALTER TABLE obligations ADD COLUMN injection_reasons TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(injection_reasons) AND json_type(injection_reasons) = 'array' AND injection_suspected = (json_array_length(injection_reasons) > 0));
+CREATE TRIGGER obligations_injection_fixed BEFORE UPDATE OF injection_suspected, injection_reasons ON obligations
+WHEN NEW.injection_suspected IS NOT OLD.injection_suspected OR NEW.injection_reasons IS NOT OLD.injection_reasons
+BEGIN SELECT RAISE(ABORT, 'an obligation keeps its source'); END;
+`,
+  CONVERSATION_SCHEMA_SQL,
+  `
+CREATE TABLE digests (
+  key TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('thread','document')),
+  subject_ref TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  lines_json TEXT NOT NULL,
+  coverage_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX digests_subject ON digests(kind, subject_ref, created_at);
+CREATE TABLE digest_sections (
+  key TEXT PRIMARY KEY,
+  source_fingerprint TEXT NOT NULL,
+  section_identity TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  lines_json TEXT NOT NULL,
+  dropped INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX digest_sections_source ON digest_sections(source_fingerprint);
+`,
+  `
+ALTER TABLE obligations ADD COLUMN direction TEXT CHECK (direction IS NULL OR direction IN ('owed', 'waiting'));
+ALTER TABLE obligations ADD COLUMN thread_id TEXT;
+ALTER TABLE obligations ADD COLUMN anchor_message_id TEXT;
+CREATE UNIQUE INDEX obligations_reply_anchor
+  ON obligations(entity_id, direction, anchor_message_id)
+  WHERE direction IS NOT NULL AND anchor_message_id IS NOT NULL;
+`,
+  `
+ALTER TABLE obligations ADD COLUMN resolution_reason TEXT CHECK (resolution_reason IS NULL OR resolution_reason = 'replied');
 `,
 ]
 

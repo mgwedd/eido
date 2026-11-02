@@ -1,0 +1,28 @@
+{
+  "id": "synthetic-free-field",
+  "request": "Draft a short response thanking the sender.",
+  "messages": [
+    {
+      "id": "msg-free-field@example.invalid",
+      "from": "taylor@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-05T12:00:00.000Z",
+      "subject": "Thanks",
+      "body": "Thank you for your help with the review."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["taylor@example.invalid"],
+          "subject": "Re: Thanks",
+          "body": "Thank you!"
+        }
+      }
+    ]
+  },
+  "free": ["$.intents[0].args.body"]
+}

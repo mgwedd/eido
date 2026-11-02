@@ -5,7 +5,7 @@ import type { StubModelServer, StubReply } from "../inference/stub-server"
 import { addDocs, ledgerFixture, testDoc } from "../ledger/ledger.test-support"
 import { buildText } from "../parsers/offsets"
 import type { Section } from "../parsers/offsets"
-import type { ParseResult } from "../parsers/types"
+import type { ModelClient } from "../inference/types"
 import { createExtractor } from "./pipeline"
 import type { ExtractionConfig, Extractor, ExtractorDeps } from "./pipeline"
 
@@ -16,8 +16,9 @@ export type Harness = {
   docId: string
   entityId: string
   server: StubModelServer
+  model: ModelClient
   extractor: Extractor
-  /** The parsed text the fake parser returns. */
+  /** The stored document body the extractor reads. */
   text: string
   /** Rows per ledger table, for before/after comparisons. */
   counts(): Record<string, number>
@@ -53,32 +54,44 @@ export async function harness(
   } = {}
 ): Promise<Harness> {
   const { db, property } = await ledgerFixture()
+  const { text } = parsedText(input)
+  const sections: Section[] =
+    typeof input === "string"
+      ? [{ messageId: "<m1@example.invalid>", lines: input.split("\n") }]
+      : input
+  const paged = sections.every((s) => s.page !== undefined)
   const [docId = ""] = addDocs(db, [
-    testDoc("doc", { entityId: property.id, mime: "application/pdf" }),
+    testDoc("doc", {
+      entityId: property.id,
+      mime: "application/pdf",
+      body: text,
+      ...(sections[0]?.messageId === undefined
+        ? {}
+        : { headers: { messageId: sections[0].messageId } }),
+      ...(paged
+        ? {
+            pages: sections.map((s) => ({
+              page: s.page ?? 0,
+              text: s.lines.join("\n"),
+            })),
+          }
+        : {}),
+    }),
   ])
-  const { text, offsets } = parsedText(input)
   const server = await startStubModelServer({ replies })
   const model = createModelClient({
     baseUrl: server.url,
     contextTokens: opts.contextTokens ?? 1_000_000,
     maxReplyTokens: 1024,
   })
-  const parser = {
-    parseDocument: (doc: { blobSha256: string }): Promise<ParseResult> =>
-      Promise.resolve({
-        ok: true,
-        sha256: doc.blobSha256,
-        trust: "untrusted",
-        text,
-        offsets,
-        pages: null,
-      }),
-  }
   const extractor = createExtractor({
     db,
-    parser,
     model,
-    config: { model: "stub-model", ...opts.config },
+    config: {
+      model: "stub-model",
+      classifyDocumentType: false,
+      ...opts.config,
+    },
     now: () => new Date("2030-01-02T03:04:05.000Z"),
     ...opts.deps,
   })
@@ -97,6 +110,7 @@ export async function harness(
     docId,
     entityId: property.id,
     server,
+    model,
     extractor,
     text,
     counts: () =>

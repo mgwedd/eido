@@ -1,5 +1,11 @@
 import { estimateTokens } from "../inference/budget"
-import { MATERIAL_RULES, fence, toMaterial } from "../inference/fence"
+import {
+  INJECTION_REASONS,
+  MATERIAL_RULES,
+  fence,
+  toMaterial,
+} from "../inference/fence"
+import type { InjectionReason } from "../inference/fence"
 import type { PromptPart } from "../inference/fence"
 import type { InferenceQueue, Lane } from "../inference/queue"
 import { collectReferences, withPreservedReferences } from "./references"
@@ -89,6 +95,20 @@ function latestAt(turns: readonly Turn[]): string {
     }
   }
   return best
+}
+
+/** Keep reasons already carried by a summary as well as those found in fenced turns. */
+function injectionReasonsOf(turns: readonly Turn[]): InjectionReason[] {
+  const found = new Set<InjectionReason>()
+  for (const turn of turns) {
+    for (const reason of turn.injectionReasons ?? []) found.add(reason)
+    if (turn.role === "user") continue
+    const source = turn.role === "summary" ? "summary" : "assistant"
+    for (const reason of fence(toMaterial(turn.text, { source })).reasons) {
+      found.add(reason)
+    }
+  }
+  return INJECTION_REASONS.filter((reason) => found.has(reason))
 }
 
 function unchanged(turns: Turn[], error?: CompactError): CompactResult {
@@ -251,12 +271,15 @@ export async function compactConversation(
   )
   if (!summarized.ok) return unchanged(turns, summarized.error)
 
+  const injectionReasons = injectionReasonsOf(older)
   const summaryTurn: Turn = {
     id: `summary:${lastOlder.id}`,
     role: "summary",
     text: summarized.text,
     at: latestAt(older),
     sources: summarized.preserved.tags,
+    injectionReasons,
+    injectionSuspected: injectionReasons.length > 0,
   }
   const result = [summaryTurn, ...recent]
   const total = sum(result)

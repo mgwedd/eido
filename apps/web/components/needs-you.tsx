@@ -7,6 +7,7 @@ import { Badge } from "@eido/ui/components/badge"
 import { Button } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import { expiredUnlockUrl } from "@/lib/auth/unlock"
 import { formatWaiting } from "@/lib/relative-time"
 import {
   describeKind,
@@ -21,11 +22,13 @@ const PENDING_URL = "/api/gate/approvals"
 type NeedsYouState =
   | { status: "loading" }
   | { status: "error" }
+  | { status: "unauthenticated" }
   | { status: "ready"; intents: PendingIntent[] }
 
 async function loadPending(signal: AbortSignal): Promise<NeedsYouState> {
   try {
     const response = await fetch(PENDING_URL, { cache: "no-store", signal })
+    if (response.status === 401) return { status: "unauthenticated" }
     if (!response.ok) return { status: "error" }
     const parsed = validateGatePendingIntentList(await response.json())
     return parsed.ok
@@ -50,6 +53,12 @@ function useNeedsYou(): {
     const controller = new AbortController()
     void loadPending(controller.signal).then((next) => {
       if (controller.signal.aborted) return
+      if (next.status === "unauthenticated") {
+        window.location.replace(
+          expiredUnlockUrl(window.location.pathname + window.location.search)
+        )
+        return
+      }
       setLoadedAt(new Date())
       setState(next)
     })

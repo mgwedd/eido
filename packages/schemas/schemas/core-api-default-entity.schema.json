@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiDefaultEntity",
+  "description": "The current profile default entity, or null when cleared.",
+  "type": "object",
+  "properties": {
+    "entityId": {
+      "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    }
+  },
+  "required": ["entityId"],
+  "additionalProperties": false
+}

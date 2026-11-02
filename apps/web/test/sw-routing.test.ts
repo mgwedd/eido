@@ -18,12 +18,21 @@ const source = readFileSync(
   "utf8"
 )
 const exported: unknown = runInNewContext(
-  `${source}\n({ classifyRequest, isCacheableResponse })`,
+  `${source}\n({ classifyRequest, isCacheableResponse, notificationForPush, APPROVAL_QUEUE_URL })`,
   { URL }
 )
-const { classifyRequest, isCacheableResponse } = exported as {
+const {
+  classifyRequest,
+  isCacheableResponse,
+  notificationForPush,
+  APPROVAL_QUEUE_URL,
+} = exported as {
   classifyRequest: (request: Request) => Kind
   isCacheableResponse: (response: Response) => boolean
+  notificationForPush: (
+    payload: string
+  ) => { title: string; body: string } | null
+  APPROVAL_QUEUE_URL: string
 }
 
 const ORIGIN = "https://eido.example.ts.net"
@@ -112,5 +121,92 @@ describe("isCacheableResponse", () => {
     expect(isCacheableResponse({ status: 500, type: "basic" })).toBe(false)
     expect(isCacheableResponse({ status: 206, type: "basic" })).toBe(false)
     expect(isCacheableResponse({ status: 200, type: "opaque" })).toBe(false)
+  })
+})
+
+describe("push notification routing", () => {
+  test("shows only fixed generic copy and the pending count", () => {
+    expect(notificationForPush('{"v":1,"pending":2}')).toEqual({
+      title: "Eido approval queue",
+      body: "2 approvals are waiting for your review.",
+    })
+    expect(notificationForPush('{"v":1,"pending":1}')).toEqual({
+      title: "Eido approval queue",
+      body: "1 approval is waiting for your review.",
+    })
+  })
+
+  test("rejects malformed and non-exact payloads", () => {
+    expect(notificationForPush("not json")).toBeNull()
+    expect(
+      notificationForPush('{"v":1,"pending":2,"intent":"private"}')
+    ).toBeNull()
+    expect(notificationForPush('{"v":2,"pending":2}')).toBeNull()
+    expect(notificationForPush('{"v":1,"pending":-1}')).toBeNull()
+  })
+
+  test("notification clicks target the approval queue", () => {
+    expect(APPROVAL_QUEUE_URL).toBe("/queue")
+  })
+
+  test("clicking focuses an open queue or opens that route when no queue is open", async () => {
+    const workerSource = readFileSync(
+      path.join(__dirname, "..", "public", "sw.js"),
+      "utf8"
+    )
+    const listeners = new Map<string, (event: unknown) => void>()
+    const focused: string[] = []
+    const opened: string[] = []
+    let windows = [
+      {
+        url: `${ORIGIN}/queue`,
+        focus: () => {
+          focused.push("queue")
+          return Promise.resolve()
+        },
+      },
+    ]
+    const worker = {
+      location: { origin: ORIGIN },
+      clients: {
+        matchAll: () => Promise.resolve(windows),
+        openWindow: (url: string) => {
+          opened.push(url)
+          return Promise.resolve()
+        },
+      },
+      addEventListener: (name: string, listener: (event: unknown) => void) => {
+        listeners.set(name, listener)
+      },
+    }
+    runInNewContext(`${source}\n${workerSource}`, {
+      self: worker,
+      URL,
+      importScripts: () => undefined,
+    })
+    const click = listeners.get("notificationclick")
+    if (click === undefined)
+      throw new Error("notification click listener is missing")
+    let waited: Promise<unknown> | undefined
+    let closed = 0
+    const event = {
+      notification: {
+        close: () => {
+          closed++
+        },
+      },
+      waitUntil: (promise: Promise<unknown>) => {
+        waited = promise
+      },
+    }
+    click(event)
+    await waited
+    expect(focused).toEqual(["queue"])
+    expect(opened).toEqual([])
+    windows = []
+    click(event)
+    await waited
+    expect(opened).toEqual([`${ORIGIN}/queue`])
+    expect(closed).toBe(2)
   })
 })

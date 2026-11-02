@@ -53,7 +53,7 @@ export type RefusalReason =
   | "lost_race"
 
 export type ApprovalResult =
-  | { ok: true; intentId: string; state: "approved" }
+  | { ok: true; intentId: string; state: "approved"; nudge: boolean }
   | { ok: false; error: "approval_refused" }
 
 export type PreparedApproval =
@@ -266,11 +266,12 @@ const LOST = new Error("approval lost the race")
  */
 export function commitApproval(
   db: DatabaseSync,
-  approval: VerifiedApproval
+  approval: VerifiedApproval,
+  now: Date = new Date()
 ): boolean {
   try {
     return atomically(db, () => {
-      const now = new Date().toISOString()
+      const decidedAt = now.toISOString()
       const decided = decidePending(
         db,
         approval.intentId,
@@ -290,7 +291,7 @@ export function commitApproval(
         )
       if (Number(changes) !== 1) throw LOST
       db.prepare("UPDATE approval_nonces SET used_at = ? WHERE nonce = ?").run(
-        now,
+        decidedAt,
         approval.nonce
       )
       db.prepare(
@@ -303,7 +304,7 @@ export function commitApproval(
         approval.credentialId,
         approval.signCount,
         approval.nonce,
-        now
+        decidedAt
       )
       return true
     })
@@ -357,13 +358,37 @@ function insertRejection(
 export function verifyApproval(
   db: DatabaseSync,
   config: WebAuthnConfig,
-  request: ApprovalRequest
+  request: ApprovalRequest,
+  options: { now?: () => Date; threshold?: number; windowMs?: number } = {}
 ): ApprovalResult {
   const checked = checkApproval(db, config, request)
   let reason: RefusalReason
   if (checked.ok) {
-    if (commitApproval(db, checked.approval)) {
-      return { ok: true, intentId: request.intentId, state: "approved" }
+    const now = (options.now ?? (() => new Date()))()
+    const threshold = options.threshold ?? 5
+    const windowMs = options.windowMs ?? 120_000
+    if (
+      !Number.isSafeInteger(threshold) ||
+      threshold < 0 ||
+      !Number.isSafeInteger(windowMs) ||
+      windowMs < 1
+    )
+      throw new Error("invalid approval nudge settings")
+    if (commitApproval(db, checked.approval, now)) {
+      const recent = db
+        .prepare(
+          "SELECT count(*) AS count FROM approvals WHERE decision = 'approved' AND decided_at >= ? AND decided_at <= ?"
+        )
+        .get(
+          new Date(now.getTime() - windowMs).toISOString(),
+          now.toISOString()
+        )
+      return {
+        ok: true,
+        intentId: request.intentId,
+        state: "approved",
+        nudge: Number(recent?.["count"] ?? 0) > threshold,
+      }
     }
     reason = "lost_race"
   } else {

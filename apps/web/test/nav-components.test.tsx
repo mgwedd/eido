@@ -23,6 +23,16 @@ test("sidebar lists the nav items and marks the current page", () => {
   expect(html).toContain('aria-current="page"')
 })
 
+test("sidebar signs out with a full navigation", () => {
+  const html = renderToStaticMarkup(
+    <SidebarProvider>
+      <AppSidebar />
+    </SidebarProvider>
+  )
+  expect(html).toContain('href="/auth/logout"')
+  expect(html).toContain("Sign out")
+})
+
 test("sidebar marks nothing current on an unlisted page", () => {
   navigation.pathname = "/elsewhere"
   const html = renderToStaticMarkup(

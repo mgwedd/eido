@@ -9,7 +9,9 @@ export {
   DEFAULT_TRIPWIRE_RATIO,
   connectModelClient,
   createModelClient,
+  loopbackBaseUrl,
   readContextTokens,
+  readModelId,
 } from "./client"
 export {
   InferenceError,

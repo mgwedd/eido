@@ -7,6 +7,7 @@ import {
   toMaterial,
 } from "../inference/index"
 import type {
+  InjectionFlag,
   InferenceQueue,
   InferenceResult,
   PromptPart,
@@ -22,7 +23,7 @@ import type {
 } from "./types"
 
 /** Bumped whenever the prompts or the output handling change, which invalidates cached digests. */
-export const DIGEST_PROMPT_VERSION = "digest-v2"
+export const DIGEST_PROMPT_VERSION = "digest-v3"
 
 const SECTION_SYSTEM = [
   [
@@ -79,6 +80,14 @@ const LINES_SCHEMA = {
 } as const
 
 const MAX_MERGE_ROUNDS = 8
+
+export interface SectionResume {
+  load(identity: string): { lines: RefLine[]; dropped: number } | undefined
+  save(
+    identity: string,
+    result: { lines: RefLine[]; dropped: number }
+  ): Promise<void>
+}
 
 interface RefLine {
   text: string
@@ -143,10 +152,14 @@ function validRefsOf(subject: DigestSubject): Set<string> {
   )
 }
 
-function toCite(subject: DigestSubject, ref: string): Cite {
+function toCite(
+  subject: DigestSubject,
+  ref: string,
+  provenance: InjectionFlag
+): Cite {
   return subject.kind === "thread"
-    ? { messageId: ref }
-    : { docSha256: subject.docSha256, page: Number(ref) }
+    ? { messageId: ref, ...provenance }
+    : { docSha256: subject.docSha256, page: Number(ref), ...provenance }
 }
 
 /**
@@ -157,7 +170,8 @@ function toCite(subject: DigestSubject, ref: string): Cite {
 export async function buildDigestLines(
   queue: InferenceQueue,
   subject: DigestSubject,
-  config: DigestConfig
+  config: DigestConfig,
+  resume?: SectionResume
 ): Promise<{ lines: DigestLine[]; coverage: DigestCoverage }> {
   const validRefs = validRefsOf(subject)
   const plan = planSections(subject, config.sectionTokens)
@@ -166,7 +180,7 @@ export async function buildDigestLines(
   const summarize = async (
     system: string,
     inputs: PromptPart[][]
-  ): Promise<RefLine[][]> => {
+  ): Promise<{ lines: RefLine[]; dropped: number }[]> => {
     const done = await queue.runBatched(
       inputs,
       {
@@ -188,13 +202,28 @@ export async function buildDigestLines(
     if (done.oversize.length > 0) {
       throw new DigestBuildError("a model input exceeds the section budget")
     }
-    return done.batches.map((b) => {
-      dropped += b.output.dropped
-      return b.output.lines
-    })
+    return done.batches.map((b) => b.output)
   }
 
-  let lines = (await summarize(SECTION_SYSTEM, plan.sections)).flat()
+  let lines: RefLine[] = []
+  for (const [index, section] of plan.sections.entries()) {
+    const identity = JSON.stringify([
+      index,
+      plainContent(section, ESTIMATE_BOUNDARY),
+    ])
+    const cached = resume?.load(identity)
+    if (cached !== undefined) {
+      dropped += cached.dropped
+      lines.push(...cached.lines)
+      continue
+    }
+    const [result] = await summarize(SECTION_SYSTEM, [section])
+    if (result === undefined)
+      throw new DigestBuildError("a section produced no result")
+    dropped += result.dropped
+    await resume?.save(identity, result)
+    lines.push(...result.lines)
+  }
 
   if (plan.sections.length > 1) {
     for (let round = 0; ; round += 1) {
@@ -218,14 +247,22 @@ export async function buildDigestLines(
         group.push(rendered)
       }
       if (group.length > 0) groups.push(mergeContent(group))
-      lines = (await summarize(MERGE_SYSTEM, groups)).flat()
+      const merged = await summarize(MERGE_SYSTEM, groups)
+      dropped += merged.reduce((total, result) => total + result.dropped, 0)
+      lines = merged.flatMap((result) => result.lines)
       if (groups.length <= 1) break
     }
   }
 
   const kept: DigestLine[] = lines.map((line) => ({
     text: line.text,
-    cites: line.refs.map((ref) => toCite(subject, ref)),
+    cites: line.refs.map((ref) => {
+      const provenance = plan.provenance.get(ref)
+      if (provenance === undefined) {
+        throw new DigestBuildError(`missing provenance for reference ${ref}`)
+      }
+      return toCite(subject, ref, provenance)
+    }),
   }))
   return {
     lines: kept,

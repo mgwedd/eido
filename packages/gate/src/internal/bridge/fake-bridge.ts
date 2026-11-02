@@ -147,6 +147,27 @@ function quote(value: string): string {
   return `"${value.replace(/["\\]/g, (match) => `\\${match}`)}"`
 }
 
+/** The wire encoding used by IMAP4rev1 servers for non-ASCII mailbox names. */
+function encodeMailboxPath(path: string): string {
+  return path.replace(/[&\x00-\x1f\x7f-\uffff]+/g, (segment) => {
+    const bytes = Buffer.from(segment, "utf16le")
+    bytes.swap16()
+    return `&${bytes.toString("base64").replace(/=+$/, "").replace(/\//g, ",")}-`
+  })
+}
+
+function decodeMailboxPath(path: string): string {
+  return path.replace(/&([A-Za-z0-9+,]*)-/g, (match, encoded: string) => {
+    if (encoded === "") return "&"
+    const base64 = encoded.replace(/,/g, "/")
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4)
+    const bytes = Buffer.from(padded, "base64")
+    if (bytes.length % 2 !== 0) return match
+    bytes.swap16()
+    return bytes.toString("utf16le")
+  })
+}
+
 function header(raw: Buffer, name: string): string | undefined {
   const end = raw.indexOf(`${CRLF}${CRLF}`)
   const head = raw.subarray(0, end === -1 ? raw.length : end).toString("utf8")
@@ -303,12 +324,13 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
     path: string,
     readOnly: boolean
   ) {
-    const box = fake.mailboxes.get(path)
+    const decodedPath = decodeMailboxPath(path)
+    const box = fake.mailboxes.get(decodedPath)
     if (box === undefined || box.listFlags?.includes("\\Noselect")) {
       session.selected = undefined
       return write(session, `${tag} NO no such mailbox`)
     }
-    session.selected = { path, readOnly }
+    session.selected = { path: decodedPath, readOnly }
     write(session, "* FLAGS (\\Seen \\Draft \\Flagged)")
     write(session, `* ${box.messages.length} EXISTS`)
     write(session, `* OK [UIDVALIDITY ${box.uidValidity}] UIDs valid`)
@@ -368,12 +390,15 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
     if (name === "LIST" || name === "LSUB") {
       for (const [path, box] of fake.mailboxes) {
         const flags = [...(box.listFlags ?? []), "\\HasNoChildren"]
-        write(session, `* ${name} (${flags.join(" ")}) "/" ${quote(path)}`)
+        write(
+          session,
+          `* ${name} (${flags.join(" ")}) "/" ${quote(encodeMailboxPath(path))}`
+        )
       }
       return write(session, `${tag} OK ${name} completed`)
     }
     if (name === "STATUS") {
-      const box = fake.mailboxes.get(args[0] ?? "")
+      const box = fake.mailboxes.get(decodeMailboxPath(args[0] ?? ""))
       if (box === undefined) return write(session, `${tag} NO no such mailbox`)
       write(
         session,

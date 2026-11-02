@@ -1,17 +1,29 @@
 import type { DatabaseSync } from "node:sqlite"
 import {
+  INTENT_KINDS,
+  gateAuditDisplayActor,
+  validateGateAuditPageRequest,
   validateGateDecisionRequest,
   validateGateEditRequest,
+  validateGateEnrolOptionsRequest,
+  validateGateEnrolRequest,
   validateGateLoginRequest,
+  validateGatePushRegistration,
 } from "@eido/schemas"
 import type {
+  GateAuditActor,
+  GateAuditPage,
+  GateConnectorSettings,
   GateCredentialStatus,
   GateDecisionResult,
+  GateEnrolOptions,
   GateIntentHistory,
   GateLoginOptions,
   GatePendingIntentList,
   GatePrepareApproval,
   GateSession,
+  GatePasskeyList,
+  GatePermissionList,
 } from "@eido/schemas"
 import { issueNonce, reject, verifyApproval } from "./approvals"
 import type { PreparedApproval } from "./approvals"
@@ -27,6 +39,23 @@ import {
 } from "./intents"
 import type { EditResult } from "./intents"
 import type { Policy } from "./policy"
+import { kindTier } from "./policy"
+import { verifyChain } from "./audit"
+import {
+  beginPhoneRegistration,
+  enrolWithCode,
+  listPasskeys,
+} from "./credentials"
+import { checkEnrolmentCode } from "./enrolment"
+import { getConnectorHealth } from "./connector-health"
+import { getConnectorState } from "./connectors"
+import {
+  checkedSubscription,
+  preparePushRegistration,
+  pushSubscriptions,
+  registerPushSubscription,
+  removePushSubscription,
+} from "./push-subscriptions"
 import {
   beginLogin,
   hasCredential,
@@ -41,9 +70,10 @@ import type { WebAuthnConfig } from "./webauthn"
 // The phone listener (#85): what the PWA calls, through `tailscale serve`, to sign in with its
 // passkey and to list, prepare, edit and decide approvals. It answers only the Host headers it
 // is given (421 otherwise) and only below its base path. Every route outside the table below is
-// 404 before any session check, so the admin routes (enrolment codes, revocation, policy, the
-// audit chain; #78) and the data plane's routes do not exist here, signed in or not. Credential
-// status and login need no session; every other route needs the session cookie (401 without
+// 404 before any session check, so the admin routes (issuing enrolment codes, revocation,
+// policy; #78) and the data plane's routes do not exist here, signed in or not. Credential
+// status, login and enrolment need no session: enrolment needs a single-use code the owner
+// issued on the Mac instead (#202). Every other route needs the session cookie (401 without
 // it). Every POST must be application/json (415 otherwise): a browser sends that cross-origin
 // only after a CORS preflight, which the gate never answers. No response is cacheable.
 
@@ -51,6 +81,8 @@ export type PhoneState = {
   db: DatabaseSync
   policy: Policy
   webAuthn: WebAuthnConfig
+  nudge?: { threshold: number; windowMs: number }
+  push?: { publicKey: () => Promise<string>; notifyPending: () => void }
 }
 
 export type PhoneRoute = {
@@ -65,11 +97,23 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/passkey/status", session: false },
   { method: "POST", path: "/auth/login/options", session: false },
   { method: "POST", path: "/auth/login", session: false },
+  { method: "POST", path: "/passkey/enroll/options", session: false },
+  { method: "POST", path: "/passkey/enroll", session: false },
   { method: "GET", path: "/approvals", session: true },
+  { method: "GET", path: "/audit", session: true },
+  { method: "GET", path: "/audit/chain", session: true },
+  { method: "GET", path: "/connector-settings", session: true },
+  { method: "GET", path: "/passkeys", session: true },
+  { method: "GET", path: "/permissions", session: true },
   { method: "GET", path: "/approvals/:id/history", session: true },
   { method: "POST", path: "/approvals/:id/nonce", session: true },
   { method: "POST", path: "/approvals/:id/decision", session: true },
   { method: "POST", path: "/approvals/:id/edit", session: true },
+  { method: "GET", path: "/push/key", session: true },
+  { method: "GET", path: "/push/subscriptions", session: true },
+  { method: "POST", path: "/push/prepare", session: true },
+  { method: "POST", path: "/push/subscriptions", session: true },
+  { method: "POST", path: "/push/:id/remove", session: true },
 ] as const satisfies readonly PhoneRoute[]
 
 type RoutePath = (typeof PHONE_ROUTES)[number]["path"]
@@ -188,6 +232,53 @@ async function loginRoute(
   }
 }
 
+const ENROL_REFUSED = "the enrolment was refused"
+
+async function enrolOptions(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateEnrolOptionsRequest(body.value)
+  if (!checked.ok)
+    return invalid("an enrolment options request", checked.errors)
+  const code = checkEnrolmentCode(state.db, "phone", checked.value.code, now)
+  if (!code.ok) return apiError(403, "verification_failed", ENROL_REFUSED)
+  const options: GateEnrolOptions = {
+    challenge: beginPhoneRegistration(state.db, now),
+    rpId: state.webAuthn.rpId,
+    expiresAt: code.expiresAt.toISOString(),
+  }
+  return { status: 200, body: options }
+}
+
+async function enrolRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateEnrolRequest(body.value)
+  if (!checked.ok) return invalid("an enrolment request", checked.errors)
+  const result = enrolWithCode(
+    state.db,
+    state.webAuthn,
+    checked.value.code,
+    checked.value.registration,
+    now
+  )
+  if (!result.ok) return apiError(403, "verification_failed", ENROL_REFUSED)
+  const session: GateSession = { expiresAt: result.expiresAt.toISOString() }
+  return {
+    status: 200,
+    body: session,
+    headers: { "set-cookie": sessionCookie(result.token) },
+  }
+}
+
 /** The prepare response for an intent issueNonce just prepared. */
 function prepared(state: PhoneState, approval: PreparedApproval): Reply {
   if (!approval.ok) {
@@ -226,10 +317,186 @@ function history(state: PhoneState, id: string): Reply {
   return { status: 200, body }
 }
 
+function auditActor(value: string): GateAuditActor {
+  switch (value) {
+    case "data-plane":
+    case "policy":
+    case "approver":
+    case "executor":
+    case "system":
+    case "owner":
+    case "gate":
+      return value
+    default:
+      throw new Error("stored audit actor is not recognized")
+  }
+}
+
+function auditPage(state: PhoneState, request: GateRequest): Reply {
+  const raw: Record<string, unknown> = {}
+  for (const key of new Set([...request.query.keys()])) {
+    if (
+      (key !== "before" && key !== "limit") ||
+      request.query.getAll(key).length !== 1
+    ) {
+      return apiError(400, "invalid_request", "invalid audit page query")
+    }
+    const value = request.query.get(key)
+    if (value === null || !/^\d+$/.test(value)) {
+      return apiError(400, "invalid_request", "invalid audit page query")
+    }
+    raw[key] = Number(value)
+  }
+  const checked = validateGateAuditPageRequest(raw)
+  if (!checked.ok) {
+    return apiError(
+      400,
+      "invalid_request",
+      checked.errors[0] ?? "invalid audit page query"
+    )
+  }
+  const { before, limit = 50 } = checked.value
+  const columns = `SELECT a.seq, a.ts, a.actor, a.action, a.target, a.detail_hash,
+      EXISTS (
+        SELECT 1 FROM approvals p
+        JOIN approval_nonces n ON n.nonce = p.nonce AND n.intent_id = p.intent_id
+        JOIN credentials c ON c.credential_id = p.credential_id
+        JOIN intents i ON i.id = p.intent_id
+        WHERE p.intent_id = a.target AND p.decision = 'approved'
+          AND p.signature IS NOT NULL AND p.bundle_hash = i.payload_hash
+          AND n.used_at IS NOT NULL
+          AND (c.revoked_at IS NULL OR c.revoked_at >= p.decided_at)
+          AND p.decided_at <= a.ts
+      ) AS approved,
+      CASE WHEN e.audit_seq = a.seq THEN
+        CASE WHEN u.intent_id IS NOT NULL THEN 'done'
+             WHEN e.inverse_op IS NOT NULL AND i.tier = 'auto' THEN 'available'
+             ELSE 'none' END
+      ELSE 'none' END AS undo
+    FROM audit_log a
+    LEFT JOIN executions e ON e.audit_seq = a.seq
+    LEFT JOIN execution_undos u ON u.intent_id = e.intent_id
+    LEFT JOIN intents i ON i.id = e.intent_id`
+  const selected =
+    before === undefined
+      ? state.db
+          .prepare(`${columns} ORDER BY a.seq DESC LIMIT ?`)
+          .all(limit + 1)
+      : state.db
+          .prepare(`${columns} WHERE a.seq < ? ORDER BY a.seq DESC LIMIT ?`)
+          .all(before, limit + 1)
+  const hasMore = selected.length > limit
+  const pageRows = selected.slice(0, limit)
+  const entries: GateAuditPage["entries"] = pageRows.map((row) => {
+    const actor = auditActor(String(row["actor"]))
+    const approved = Number(row["approved"]) === 1
+    const undo = row["undo"]
+    if (undo !== "available" && undo !== "done" && undo !== "none") {
+      throw new Error("stored undo state is not recognized")
+    }
+    return {
+      seq: Number(row["seq"]),
+      ts: String(row["ts"]),
+      actor,
+      displayActor: gateAuditDisplayActor(actor, approved),
+      action: String(row["action"]),
+      target: String(row["target"]),
+      detailHash: String(row["detail_hash"]),
+      undo,
+    }
+  })
+  const lastEntry = entries.at(-1)
+  const body: GateAuditPage = {
+    entries,
+    ...(hasMore && lastEntry !== undefined
+      ? { nextBefore: lastEntry.seq }
+      : {}),
+  }
+  return { status: 200, body }
+}
+
+function connectorSettings(state: PhoneState, now: Clock): Reply {
+  const health = new Map(
+    getConnectorHealth(state.db).map((connector) => [connector.name, connector])
+  )
+  const connectors: GateConnectorSettings["connectors"] = state.db
+    .prepare(
+      "SELECT name, pinned_at, manifest_hash, last_success_at FROM connectors ORDER BY name"
+    )
+    .all()
+    .map((row) => {
+      const name = String(row["name"])
+      const stored = getConnectorState(state.db, name)
+      const current = health.get(name)
+      if (stored === undefined || current === undefined) {
+        throw new Error("stored connector state is incomplete")
+      }
+      return {
+        name,
+        enabled: stored.enabled,
+        pinnedAt: String(row["pinned_at"]),
+        scopes: [...stored.manifest.auth.scopes],
+        health: current.health,
+        consecutiveFailures: current.consecutiveFailures,
+        ...(current.lastError === undefined
+          ? {}
+          : { lastError: current.lastError }),
+        ...(current.nextAttemptAt === undefined
+          ? {}
+          : { nextAttemptAt: current.nextAttemptAt }),
+        ...(typeof row["last_success_at"] === "string"
+          ? { lastSuccessAt: row["last_success_at"] }
+          : {}),
+        manifestHash: String(row["manifest_hash"]),
+        ...(stored.drift === null || stored.enabled
+          ? {}
+          : {
+              drift: {
+                added: [...stored.drift.added],
+                removed: [...stored.drift.removed],
+              },
+            }),
+      }
+    })
+  const body: GateConnectorSettings = {
+    connectors,
+    asOf: now().toISOString(),
+  }
+  return { status: 200, body }
+}
+
+function passkeyList(state: PhoneState): Reply {
+  const body: GatePasskeyList = { passkeys: listPasskeys(state.db) }
+  return { status: 200, body }
+}
+
+function permissionList(state: PhoneState): Reply {
+  const tiers: GatePermissionList["tiers"] = INTENT_KINDS.map((kind) => {
+    const decision = kindTier(state.db, state.policy, kind)
+    const override = state.policy.overlay?.tiers[kind]
+    const configured = {
+      kind,
+      default: state.policy.shipped.tiers[kind] ?? null,
+      ...(override === undefined ? {} : { override }),
+    }
+    return decision.tier === "forbidden"
+      ? { ...configured, tier: decision.tier, reason: decision.reason }
+      : { ...configured, tier: decision.tier }
+  })
+  const body: GatePermissionList = {
+    tiers,
+    forbiddenKinds: tiers
+      .filter((entry) => entry.tier === "forbidden")
+      .map((entry) => entry.kind),
+  }
+  return { status: 200, body }
+}
+
 async function decision(
   state: PhoneState,
   request: GateRequest,
   id: string,
+  now: Clock,
   execute?: (id: string) => Promise<ExecutionResult>
 ): Promise<Reply> {
   const body = await jsonBody(request)
@@ -241,16 +508,29 @@ async function decision(
     return apiError(400, "invalid_request", "intentId does not match the path")
   }
   if (decided.decision === "approved") {
-    const result = verifyApproval(state.db, state.webAuthn, {
-      intentId: id,
-      nonce: decided.nonce,
-      assertion: decided.assertion,
-    })
+    const result = verifyApproval(
+      state.db,
+      state.webAuthn,
+      {
+        intentId: id,
+        nonce: decided.nonce,
+        assertion: decided.assertion,
+      },
+      {
+        now,
+        threshold: state.nudge?.threshold,
+        windowMs: state.nudge?.windowMs,
+      }
+    )
     if (!result.ok) {
       return apiError(403, "verification_failed", "the approval was refused")
     }
     if (execute !== undefined) await execute(id)
-    const approved: GateDecisionResult = { intentId: id, state: "approved" }
+    const approved: GateDecisionResult = {
+      intentId: id,
+      state: "approved",
+      nudge: result.nudge,
+    }
     return { status: 200, body: approved }
   }
   const result = reject(state.db, id, decided.reasonCode)
@@ -299,7 +579,45 @@ async function edit(
         : message
     return apiError(status, code, detail)
   }
+  state.push?.notifyPending()
   return prepared(state, issueNonce(state.db, result.intentId))
+}
+
+async function preparePush(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  if (state.push === undefined)
+    return apiError(503, "unavailable", "push is not configured")
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  try {
+    checkedSubscription(body.value)
+    return { status: 200, body: preparePushRegistration(state.db, body.value) }
+  } catch {
+    return apiError(400, "invalid_request", "invalid push subscription")
+  }
+}
+
+async function registerPush(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  if (state.push === undefined)
+    return apiError(503, "unavailable", "push is not configured")
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGatePushRegistration(body.value)
+  if (!checked.ok) return invalid("a push registration", checked.errors)
+  try {
+    const id = registerPushSubscription(state.db, checked.value.subscription, {
+      config: state.webAuthn,
+      request: checked.value.approval,
+    })
+    return { status: 201, body: { id } }
+  } catch {
+    return apiError(403, "verification_failed", "push registration refused")
+  }
 }
 
 function route(
@@ -317,18 +635,54 @@ function route(
       return loginOptions(state, now)
     case "/auth/login":
       return loginRoute(state, request, now)
+    case "/passkey/enroll/options":
+      return enrolOptions(state, request, now)
+    case "/passkey/enroll":
+      return enrolRoute(state, request, now)
     case "/approvals": {
       const list: GatePendingIntentList = { intents: pendingIntents(state.db) }
       return { status: 200, body: list }
     }
+    case "/audit":
+      return auditPage(state, request)
+    case "/audit/chain":
+      return { status: 200, body: verifyChain(state.db) }
+    case "/connector-settings":
+      return connectorSettings(state, now)
+    case "/passkeys":
+      return passkeyList(state)
+    case "/permissions":
+      return permissionList(state)
     case "/approvals/:id/history":
       return history(state, matched.id)
     case "/approvals/:id/nonce":
       return prepared(state, issueNonce(state.db, matched.id))
     case "/approvals/:id/decision":
-      return decision(state, request, matched.id, execute)
+      return decision(state, request, matched.id, now, execute)
     case "/approvals/:id/edit":
       return edit(state, request, matched.id)
+    case "/push/key":
+      return state.push === undefined
+        ? apiError(503, "unavailable", "push is not configured")
+        : state.push
+            .publicKey()
+            .then((publicKey) => ({ status: 200, body: { publicKey } }))
+    case "/push/subscriptions":
+      return request.method === "GET"
+        ? {
+            status: 200,
+            body: {
+              subscriptions: pushSubscriptions(state.db).map(({ id }) => ({
+                id,
+              })),
+            },
+          }
+        : registerPush(state, request)
+    case "/push/prepare":
+      return preparePush(state, request)
+    case "/push/:id/remove":
+      removePushSubscription(state.db, matched.id)
+      return { status: 200, body: { id: matched.id } }
   }
 }
 

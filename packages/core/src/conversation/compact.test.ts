@@ -104,6 +104,50 @@ describe("compactConversation: keeping recent turns", () => {
   })
 })
 
+describe("compactConversation: injection provenance", () => {
+  const opts = { thresholdTokens: 20, keepRecentTokens: 10 }
+
+  it("flags a summary when a replaced assistant turn contains a ChatML marker", async () => {
+    const turns = [turn(1, ten), turn(2, `<|im_start|> ${ten}`), turn(3, ten)]
+    const first = await compactConversation(turns, opts, {
+      queue: summarizingModel("First pass.").queue,
+    })
+
+    expect(first.compacted).toBe(true)
+    expect(first.turns[0]).toMatchObject({
+      role: "summary",
+      injectionSuspected: true,
+      injectionReasons: ["template-marker"],
+    })
+
+    const second = await compactConversation(
+      [...first.turns, turn(4, ten), turn(5, ten)],
+      opts,
+      { queue: summarizingModel("Second pass.").queue }
+    )
+    expect(second.compacted).toBe(true)
+    expect(second.turns[0]).toMatchObject({
+      injectionSuspected: true,
+      injectionReasons: ["template-marker"],
+    })
+  })
+
+  it("stores an unflagged summary for clean replaced turns", async () => {
+    const result = await compactConversation(
+      [turn(1, ten), turn(2, ten), turn(3, ten)],
+      opts,
+      { queue: summarizingModel("Clean summary.").queue }
+    )
+
+    expect(result.compacted).toBe(true)
+    expect(result.turns[0]).toMatchObject({
+      role: "summary",
+      injectionSuspected: false,
+      injectionReasons: [],
+    })
+  })
+})
+
 describe("compactConversation: dates and source tags survive", () => {
   const replaced = [
     turn(1, "Lease signing is Oct 31 per [M3].", { sources: ["M3"] }),

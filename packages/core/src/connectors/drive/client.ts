@@ -7,6 +7,8 @@ export type DriveTransport = (
   request: Readonly<{ method: "GET"; url: string }>
 ) => Promise<Response>
 export type DriveFile = { id: string; name: string; mimeType: string }
+export type DriveChange =
+  { kind: "upsert"; file: DriveFile } | { kind: "removed"; fileId: string }
 
 function required(value: unknown, key: string): string {
   const object = asObject(value)
@@ -128,19 +130,22 @@ export function createDriveClient(transport: DriveTransport) {
         fields:
           "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,trashed))",
       })
-      const files = array(body["changes"]).flatMap((raw) => {
+      const changes: DriveChange[] = array(body["changes"]).map((raw) => {
         const change = asObject(raw)
         if (change === undefined) throw new DriveError("invalid_response")
-        if (change["removed"] === true) return []
         const entry = asObject(change["file"])
-        if (entry?.["trashed"] === true) return []
-        return [file(entry)]
+        if (change["removed"] === true || entry?.["trashed"] === true)
+          return {
+            kind: "removed",
+            fileId: required(change, "fileId"),
+          }
+        return { kind: "upsert", file: file(entry) }
       })
       const nextPageToken = optionalString(body, "nextPageToken")
       const newStartPageToken = optionalString(body, "newStartPageToken")
       if (nextPageToken === undefined && newStartPageToken === undefined)
         throw new DriveError("invalid_response")
-      return { files, nextPageToken, newStartPageToken }
+      return { changes, nextPageToken, newStartPageToken }
     },
   }
 }

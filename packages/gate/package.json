@@ -8,19 +8,23 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/main.ts",
+    "enrol-code": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/enrol-code.ts",
     "lint": "eslint",
     "typecheck": "tsc -b",
     "test": "vitest run --coverage",
-    "test:watch": "vitest --watch"
+    "test:watch": "vitest --watch",
+    "passkeys": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/passkeys.ts"
   },
   "dependencies": {
     "@eido/schemas": "workspace:*",
     "imapflow": "2.4.0",
+    "mailparser": "3.7.4",
     "nodemailer": "10.1.4"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",
     "@eido/typescript-config": "workspace:*",
+    "@types/mailparser": "3.4.1",
     "@vitest/coverage-v8": "5.0.5",
     "eslint": "10.12.0",
     "typescript": "5.9.3",

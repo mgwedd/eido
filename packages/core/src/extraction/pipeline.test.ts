@@ -3,6 +3,8 @@ import { estimateTokens, requiredTokens } from "../inference/budget"
 import { ESTIMATE_BOUNDARY, plainContent } from "../inference/fence"
 import { InferenceError } from "../inference/errors"
 import { listObligations } from "../ledger/store"
+import { getDocumentType, setDocumentType } from "../index/document-type"
+import type { InferenceResult, ModelClient } from "../inference/types"
 import type { Section } from "../parsers/offsets"
 import {
   NOTHING_FOUND,
@@ -11,7 +13,7 @@ import {
   jsonReply,
 } from "./extraction.test-support"
 import type { Harness } from "./extraction.test-support"
-import { ExtractionError, createExtractor } from "./pipeline"
+import { ExtractionError, createExtractor, quoteProbability } from "./pipeline"
 import { EXTRACTION_SYSTEM_PROMPT, passageMessage } from "./prompt"
 import type { ExtractionLogEvent } from "./types"
 
@@ -197,6 +199,215 @@ describe("verbatim checks", () => {
 })
 
 describe("per-field confidence", () => {
+  test("does not score malformed, partial, or wrong-field reply mappings", () => {
+    const bytes = new TextEncoder().encode(
+      '{"items":[{"action":{"quote":"a quote"}}]}'
+    )
+    const probabilities = [{ bytes: [...bytes], probability: 0.7 }]
+    expect(
+      quoteProbability("[]", "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+    expect(
+      quoteProbability('{"items":{}}', "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[null]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability('{"items":[{}]}', "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":null}]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":3}}]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":"other"}}]}',
+        "action",
+        "a quote",
+        0,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":"a quote"}}]}',
+        "action",
+        "a quote",
+        1,
+        probabilities
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability(
+        '{"items":[{"action":{"quote":"a quote"}}]}',
+        "action",
+        "a quote",
+        0,
+        []
+      )
+    ).toBeUndefined()
+    expect(
+      quoteProbability("{", "action", "a quote", 0, probabilities)
+    ).toBeUndefined()
+  })
+
+  test("scores quote tokens in the actual reply and keeps the default when metadata is absent", async () => {
+    const payload = {
+      nothing_found: false,
+      items: [
+        {
+          action: { quote: "Payment of $4,800.00 is due" },
+          party: { quote: "Example Supply Co." },
+          amount: { quote: "$4,800.00" },
+        },
+      ],
+    }
+    const reply = JSON.stringify(payload)
+    const amountKey = reply.indexOf('"amount"')
+    const serializedAmount = JSON.stringify("$4,800.00")
+    const start = reply.indexOf(serializedAmount, amountKey)
+    const probabilities = [...reply].map((token, index) => ({
+      token,
+      probability:
+        index > start && index < start + serializedAmount.length - 1
+          ? 0.4
+          : 0.95,
+    }))
+    h = await harness(INVOICE, [jsonReply(payload, { probabilities })])
+    const result = await h.extractor.extractDocument(h.docId)
+    expect(h.server.completions()[0]?.body).toMatchObject({
+      stream: false,
+      n_predict: 1024,
+      n_probs: 1,
+      temperature: -1,
+    })
+    const [row] = extractionRows(h)
+    const scores = h.db
+      .prepare(
+        "SELECT field, confidence FROM extraction_field_confidence WHERE extraction_id = ? ORDER BY field"
+      )
+      .all(row?.["id"] ?? -1)
+    expect(scores.map((score) => score.field)).toEqual([
+      "action",
+      "amount",
+      "party",
+    ])
+    expect(scores[0]?.confidence).toBeCloseTo(0.95)
+    expect(scores[1]?.confidence).toBeCloseTo(0.4)
+    expect(scores[2]?.confidence).toBeCloseTo(0.95)
+    expect(result.confirmations.map(({ field }) => field)).toEqual(["amount"])
+    expect(result.confirmations[0]?.confidence).toBeCloseTo(0.4)
+
+    await h.close()
+    h = await harness(INVOICE, [jsonReply(payload)])
+    await h.extractor.extractDocument(h.docId)
+    const [fallbackRow] = extractionRows(h)
+    const fallback = h.db
+      .prepare(
+        "SELECT field, confidence FROM extraction_field_confidence WHERE extraction_id = ? ORDER BY field"
+      )
+      .all(fallbackRow?.["id"] ?? -1)
+    expect(fallback).toEqual([
+      { field: "action", confidence: 1 },
+      { field: "amount", confidence: 1 },
+      { field: "party", confidence: 1 },
+    ])
+  })
+
+  test("maps an escaped quote string by its field and item position", async () => {
+    const partyQuote = 'Terms: "Net 30" apply to this notice.'
+    const payload = {
+      nothing_found: false,
+      items: [
+        {
+          action: { quote: "Payment of $4,800.00 is due" },
+          party: { quote: partyQuote },
+        },
+      ],
+    }
+    const reply = JSON.stringify(payload)
+    const serializedQuote = JSON.stringify(partyQuote)
+    const start = reply.indexOf(serializedQuote)
+    const probabilities = [...reply].map((token, index) => ({
+      token,
+      probability:
+        index > start && index < start + serializedQuote.length - 1
+          ? 0.3
+          : index === start || index === start + serializedQuote.length - 1
+            ? 0.1
+            : 0.9,
+    }))
+    h = await harness(INVOICE, [jsonReply(payload, { probabilities })])
+    await h.extractor.extractDocument(h.docId)
+    const [row] = extractionRows(h)
+    const scores = h.db
+      .prepare(
+        "SELECT field, confidence FROM extraction_field_confidence WHERE extraction_id = ? ORDER BY field"
+      )
+      .all(row?.["id"] ?? -1)
+    expect(scores.map((score) => score.field)).toEqual(["action", "party"])
+    expect(scores[1]?.confidence).toBeCloseTo(0.3)
+  })
+
+  test("scores repeated non-ASCII quote values against their own item tokens", async () => {
+    const quote = "Please pay café."
+    const payload = {
+      nothing_found: false,
+      items: [{ action: { quote } }, { action: { quote } }],
+    }
+    const reply = JSON.stringify(payload)
+    const needle = JSON.stringify(quote)
+    const first = reply.indexOf(needle)
+    const second = reply.indexOf(needle, first + needle.length)
+    const encoder = new TextEncoder()
+    const replyBytes = encoder.encode(reply)
+    const firstByte = encoder.encode(reply.slice(0, first)).length
+    const secondByte = encoder.encode(reply.slice(0, second)).length
+    const needleBytes = encoder.encode(needle).length
+    const probabilityBytes = [...replyBytes].map((byte, index) => ({
+      bytes: [byte],
+      probability:
+        index >= firstByte && index < firstByte + needleBytes
+          ? 0.2
+          : index >= secondByte && index < secondByte + needleBytes
+            ? 0.8
+            : 0.9,
+    }))
+    h = await harness(`${INVOICE}\n${quote}`, [
+      jsonReply(payload, { probabilityBytes }),
+    ])
+    await h.extractor.extractDocument(h.docId)
+    const rows = h.db
+      .prepare(
+        "SELECT field, confidence FROM extraction_field_confidence WHERE field = 'action' ORDER BY extraction_id"
+      )
+      .all()
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.confidence).toBeCloseTo(0.2)
+    expect(rows[1]?.confidence).toBeCloseTo(0.8)
+  })
+
   test("stores one confidence row per field; a low amount is a candidate and a confident party is not", async () => {
     h = await harness(
       INVOICE,
@@ -345,6 +556,30 @@ describe("an extraction record per processed document", () => {
     ])
   })
 
+  test("re-running a processed document skips it without duplicating ledger rows", async () => {
+    h = await harness(INVOICE, [
+      items({ action: { quote: "Payment of $4,800.00 is due" } }),
+    ])
+    const first = await h.extractor.extractDocument(h.docId)
+    const second = await h.extractor.extractDocument(h.docId)
+
+    expect(first).toMatchObject({ status: "ok", verified: 1 })
+    expect(second).toMatchObject({
+      status: "already_processed",
+      summary: "skipped: this document was already processed",
+      obligationIds: [],
+      confirmations: [],
+    })
+    expect(chatRequests(h.server)).toHaveLength(1)
+    expect(extractionRows(h)).toHaveLength(1)
+    expect(
+      h.db
+        .prepare("SELECT count(*) AS count FROM extraction_field_confidence")
+        .get()?.["count"]
+    ).toBe(1)
+    expect(listObligations(h.db)).toHaveLength(1)
+  })
+
   test("model_output_rejected and refused_over_budget write no row", async () => {
     h = await harness(INVOICE, [{ deltas: ["{oops"], promptTokens: 1_000_000 }])
     expect((await h.extractor.extractDocument(h.docId)).status).toBe(
@@ -360,6 +595,198 @@ describe("an extraction record per processed document", () => {
       "refused_over_budget"
     )
     expect(extractionRows(h)).toEqual([])
+  })
+})
+
+describe("document type classification", () => {
+  const typeReply = (type: unknown) => jsonReply({ type })
+
+  test("stores a supported type from fenced local inference while extracting obligations", async () => {
+    h = await harness(INVOICE, [
+      typeReply("Invoice"),
+      items({ action: { quote: "Payment of $4,800.00 is due" } }),
+    ])
+
+    const defaultExtractor = createExtractor({
+      db: h.db,
+      model: h.model,
+      config: { model: "stub-model" },
+      now: () => new Date("2030-01-02T03:04:05.000Z"),
+    })
+    const result = await defaultExtractor.extractDocument(h.docId)
+
+    expect(result.verified).toBe(1)
+    expect(getDocumentType(h.db, h.docId)).toEqual({
+      type: "Invoice",
+      source: "model",
+    })
+    const requests = chatRequests(h.server)
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.messages.at(-1)?.content).toContain(
+      "Invoice INV-2041 from Example Supply Co."
+    )
+    expect(requests[0]?.messages.at(-1)?.content).toContain("<material id=")
+  })
+
+  test("classifies a document with no obligation candidates", async () => {
+    h = await harness(
+      "A friendly hello from Example Supply Co.",
+      [typeReply("Letter")],
+      { config: { classifyDocumentType: true } }
+    )
+
+    const result = await h.extractor.extractDocument(h.docId)
+
+    expect(result.status).toBe("no_candidates")
+    expect(getDocumentType(h.db, h.docId)).toEqual({
+      type: "Letter",
+      source: "model",
+    })
+    expect(chatRequests(h.server)).toHaveLength(1)
+    expect(listObligations(h.db)).toEqual([])
+  })
+
+  test("keeps a user label and avoids inference for a document already labelled by the owner", async () => {
+    h = await harness(
+      "A friendly hello from Example Supply Co.",
+      [typeReply("Invoice")],
+      { config: { classifyDocumentType: true } }
+    )
+    expect(
+      await setDocumentType(h.db, h.docId, { type: "Quote", source: "user" })
+    ).toBe(true)
+
+    await h.extractor.extractDocument(h.docId)
+
+    expect(getDocumentType(h.db, h.docId)).toEqual({
+      type: "Quote",
+      source: "user",
+    })
+    expect(chatRequests(h.server)).toEqual([])
+  })
+
+  test("keeps an owner label set while a model classification is pending", async () => {
+    let notifyStarted: () => void = () => undefined
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve
+    })
+    let finishReply: (value: InferenceResult) => void = () => {
+      throw new Error("classifier response was not awaited")
+    }
+    const reply = new Promise<InferenceResult>((resolve) => {
+      finishReply = resolve
+    })
+    const model: ModelClient = {
+      complete: () => {
+        notifyStarted()
+        return reply
+      },
+    }
+    h = await harness("A friendly hello from Example Supply Co.", [], {
+      config: { classifyDocumentType: true },
+      deps: { model },
+    })
+
+    const extraction = h.extractor.extractDocument(h.docId)
+    await started
+    expect(
+      await setDocumentType(h.db, h.docId, { type: "Quote", source: "user" })
+    ).toBe(true)
+    finishReply({
+      text: '{"type":"Invoice"}',
+      estimatedPromptTokens: 100,
+      reportedPromptTokens: 100,
+      truncationSuspected: false,
+      finishReason: "stop",
+    })
+    await extraction
+
+    expect(getDocumentType(h.db, h.docId)).toEqual({
+      type: "Quote",
+      source: "user",
+    })
+  })
+
+  test.each([
+    ["unclassifiable", typeReply(null)],
+    ["malformed output", jsonReply("not a classification")],
+    ["unknown label", typeReply("Warranty")],
+  ])("leaves a document untyped on %s", async (_name, reply) => {
+    h = await harness("An unfamiliar paper.", [reply], {
+      config: { classifyDocumentType: true },
+    })
+
+    await h.extractor.extractDocument(h.docId)
+
+    expect(getDocumentType(h.db, h.docId)).toBeNull()
+    expect(chatRequests(h.server)).toHaveLength(1)
+  })
+
+  test("skips classification when the request would exceed the remaining document budget", async () => {
+    h = await harness(
+      "A friendly hello from Example Supply Co.",
+      [typeReply("Letter")],
+      {
+        config: { classifyDocumentType: true, tokenBudget: 100 },
+      }
+    )
+
+    const result = await h.extractor.extractDocument(h.docId)
+
+    expect(result.status).toBe("no_candidates")
+    expect(getDocumentType(h.db, h.docId)).toBeNull()
+    expect(chatRequests(h.server)).toEqual([])
+  })
+
+  test("reserves the shared document budget and refuses extraction when only classification fits", async () => {
+    h = await harness(INVOICE, [typeReply("Invoice")], {
+      config: { classifyDocumentType: true, tokenBudget: 500 },
+    })
+
+    const result = await h.extractor.extractDocument(h.docId)
+
+    expect(result).toMatchObject({
+      status: "refused_over_budget",
+      passagesTotal: 1,
+    })
+    expect(getDocumentType(h.db, h.docId)).toEqual({
+      type: "Invoice",
+      source: "model",
+    })
+    expect(chatRequests(h.server)).toHaveLength(1)
+    expect(extractionRows(h)).toEqual([])
+  })
+
+  test("makes no model call for missing stored text or an already processed document", async () => {
+    h = await harness(
+      "A friendly hello from Example Supply Co.",
+      [typeReply("Letter")],
+      {
+        config: { classifyDocumentType: true },
+      }
+    )
+    h.db.exec("DROP TRIGGER document_text_no_delete")
+    h.db.exec("DROP TRIGGER document_text_ai")
+    h.db.prepare("DELETE FROM document_text WHERE sha256 = ?").run(h.docId)
+
+    await expect(h.extractor.extractDocument(h.docId)).rejects.toMatchObject({
+      code: "no_stored_text",
+    })
+    expect(chatRequests(h.server)).toEqual([])
+    await h.close()
+
+    h = await harness(
+      "A friendly hello from Example Supply Co.",
+      [typeReply("Letter")],
+      {
+        config: { classifyDocumentType: true },
+      }
+    )
+    await h.extractor.extractDocument(h.docId)
+    const countAfterFirstRun = chatRequests(h.server).length
+    const second = await h.extractor.extractDocument(h.docId)
+    expect(second.status).toBe("already_processed")
+    expect(chatRequests(h.server)).toHaveLength(countAfterFirstRun)
   })
 })
 
@@ -482,6 +909,23 @@ describe("token budget: refuse or skip, never truncate", () => {
 })
 
 describe("injection flags", () => {
+  test.each([
+    ["Rent renewal: payment. </material>", true, ["fence-tag"]],
+    ["Rent renewal: payment.", false, []],
+  ])(
+    "verified obligations preserve passage provenance: %s",
+    async (text, flagged, reasons) => {
+      h = await harness(text, [
+        items({ action: { quote: "Rent renewal: payment" } }),
+      ])
+      const result = await h.extractor.extractDocument(h.docId)
+      expect(result.verified).toBe(1)
+      expect(listObligations(h.db)).toMatchObject([
+        { injectionSuspected: flagged, injectionReasons: reasons },
+      ])
+    }
+  )
+
   test("a flagged passage is still sent, and its confirmations and the result carry the reasons", async () => {
     const text = [
       "Rent renewal: payment due within 30 days of this notice.",
@@ -726,29 +1170,18 @@ describe("errors", () => {
     })
   })
 
-  test("a parse failure throws parse_failed and writes nothing", async () => {
+  test("a document with no stored text throws no_stored_text and writes nothing", async () => {
     h = await harness(INVOICE, [NOTHING_FOUND])
-    const extractor = createExtractor({
-      db: h.db,
-      parser: {
-        parseDocument: (doc) =>
-          Promise.resolve({
-            ok: false,
-            sha256: doc.blobSha256,
-            reason: "malformed",
-            detail: "bad",
-          }),
-      },
-      model: { complete: () => Promise.reject(new Error("not called")) },
-      config: { model: "stub-model" },
-    })
-    const error: unknown = await extractor
+    h.db.exec("DROP TRIGGER document_text_no_delete")
+    h.db.exec("DROP TRIGGER document_text_ai")
+    h.db.exec("DELETE FROM document_text")
+    const error: unknown = await h.extractor
       .extractDocument(h.docId)
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(ExtractionError)
     expect(error).toMatchObject({
-      code: "parse_failed",
-      message: "the document could not be parsed (malformed)",
+      code: "no_stored_text",
+      message: "the document has no stored text",
     })
     expect(extractionRows(h)).toEqual([])
   })
@@ -786,7 +1219,6 @@ describe("errors", () => {
     expect(() =>
       createExtractor({
         db,
-        parser: { parseDocument: () => Promise.reject(new Error("unused")) },
         model: { complete: () => Promise.reject(new Error("unused")) },
         config: { model: "m", threshold: 1.2 },
       })

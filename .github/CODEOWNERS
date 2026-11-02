@@ -1,6 +1,6 @@
 /.github/               @mgwedd
 /.claude/               @mgwedd
 /AGENTS.md              @mgwedd
-/.dependency-cruiser.cjs @mgwedd
+/.dependency-cruiser.mts @mgwedd
 /packages/gate/         @mgwedd
 /scripts/               @mgwedd

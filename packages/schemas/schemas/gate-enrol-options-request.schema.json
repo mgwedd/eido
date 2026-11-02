@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateEnrolOptionsRequest",
+  "description": "Body of POST /passkey/enroll/options on the phone listener: the enrolment code issued on the Mac (#78), as typed. Case, spaces and dashes are ignored. The code is checked but not consumed.",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 64
+    }
+  },
+  "required": ["code"],
+  "additionalProperties": false
+}

@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
 import { ingestEntityId } from "../ingest-entity"
+import { writeQueueFor } from "../../db/write-queue"
 import type { IngestAccount, IngestEntities } from "../ingest-entity"
 import type { ProtonConfig } from "./config"
 import { CONNECTOR_NAME } from "./manifest"
@@ -49,7 +50,8 @@ async function toDocuments(
   folder: string,
   uidValidity: string,
   uid: number,
-  entityId: string
+  entityId: string,
+  mailboxId: string
 ): Promise<IndexedDocument[]> {
   const parsed = await parseMessage(raw)
   const contentHash = sha256(raw)
@@ -90,6 +92,16 @@ async function toDocuments(
       })),
     ],
     addresses: extractAddresses(parsed),
+    mailboxId,
+    mailFacts: {
+      listUnsubscribe: parsed.listUnsubscribe,
+      ...(parsed.autoSubmitted === undefined
+        ? {}
+        : { autoSubmitted: parsed.autoSubmitted }),
+      ...(parsed.precedence === undefined
+        ? {}
+        : { precedence: parsed.precedence }),
+    },
     content: raw,
   }
   // One document per attachment, keyed off the message's hash so the same file attached to two
@@ -136,14 +148,18 @@ export async function syncFolder(
     stored.uidvalidity !== state.uidValidity
   if (resynced) {
     // The server renumbered the folder: the old UID cursor means nothing. Start again from UID 1.
-    db.prepare("DELETE FROM cursors WHERE connector = ? AND stream = ?").run(
-      CONNECTOR,
-      folder
-    )
+    await writeQueueFor(db).run(() => {
+      db.prepare("DELETE FROM cursors WHERE connector = ? AND stream = ?").run(
+        CONNECTOR,
+        folder
+      )
+    })
   }
   let covered = resynced || stored === null ? 0 : Number(stored.cursor)
   const known = db.prepare(
-    "SELECT 1 FROM document_text WHERE message_id = ? LIMIT 1"
+    `SELECT 1 FROM document_text t JOIN documents d ON d.sha256 = t.sha256
+     JOIN mail_message_mailboxes m ON m.sha256 = d.sha256
+     WHERE t.message_id = ? AND d.source = ? AND m.mailbox_id = ? LIMIT 1`
   )
   let inserted = 0
   let skipped = 0
@@ -167,10 +183,16 @@ export async function syncFolder(
         folder,
         state.uidValidity,
         message.uid,
-        entityId
+        entityId,
+        account.accountRef
       )
       const id = docs[0]?.headers?.messageId
-      if (id !== undefined && (seen.has(id) || known.get(id) !== undefined)) {
+      if (
+        id !== undefined &&
+        (seen.has(id) ||
+          known.get(id, CONNECTOR, account.accountRef.trim().toLowerCase()) !==
+            undefined)
+      ) {
         duplicates++
         continue
       }
@@ -183,13 +205,15 @@ export async function syncFolder(
       fetched[fetched.length - 1]?.uid ?? from - 1,
       skippedUids[skippedUids.length - 1] ?? from - 1
     )
-    const result = ingestBatch(db, {
-      connector: CONNECTOR,
-      stream: folder,
-      documents,
-      nextCursor: String(last),
-      uidvalidity: state.uidValidity,
-    })
+    const result = await writeQueueFor(db).run(() =>
+      ingestBatch(db, {
+        connector: CONNECTOR,
+        stream: folder,
+        documents,
+        nextCursor: String(last),
+        uidvalidity: state.uidValidity,
+      })
+    )
     inserted += result.inserted
     skipped += result.skipped + duplicates + skippedUids.length
     covered = last
@@ -197,13 +221,15 @@ export async function syncFolder(
   // Records the position reached with an empty tail, and the UIDVALIDITY of a folder with no
   // mail, so a later change is detected.
   if (stored === null || resynced || covered !== Number(stored.cursor)) {
-    ingestBatch(db, {
-      connector: CONNECTOR,
-      stream: folder,
-      documents: [],
-      nextCursor: String(covered),
-      uidvalidity: state.uidValidity,
-    })
+    await writeQueueFor(db).run(() =>
+      ingestBatch(db, {
+        connector: CONNECTOR,
+        stream: folder,
+        documents: [],
+        nextCursor: String(covered),
+        uidvalidity: state.uidValidity,
+      })
+    )
   }
   return { folder, inserted, skipped, resynced }
 }

@@ -1,10 +1,12 @@
-import { generateKeyPairSync } from "node:crypto"
+import { createHash, generateKeyPairSync } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { afterEach, describe, expect, it } from "vitest"
 import { verifyChain } from "./audit"
 import {
   beginRegistration,
+  listPasskeys,
   registerCredential,
+  revokeByFingerprint,
   revokeCredential,
 } from "./credentials"
 import type { Registration } from "./credentials"
@@ -312,5 +314,78 @@ describe("revokeCredential", () => {
       ok: false,
       code: "already_revoked",
     })
+  })
+})
+
+describe("listPasskeys and revokeByFingerprint", () => {
+  // The fingerprint is SHA-256 over the credential id's UTF-8 bytes, as lowercase hex.
+  const fingerprint = (id: string) =>
+    createHash("sha256").update(id, "utf8").digest("hex")
+
+  function insert(control: DatabaseSync, id: string, createdAt: string) {
+    control
+      .prepare(
+        "INSERT INTO credentials (credential_id, public_key, sign_count, created_at) VALUES (?, 'AA', 0, ?)"
+      )
+      .run(id, createdAt)
+  }
+
+  it("lists passkeys oldest first by fingerprint, never by credential id", () => {
+    const control = db()
+    insert(control, "Y3JlZC1uZXc", "2026-10-02T00:00:00.000Z")
+    insert(control, "Y3JlZC1vbGQ", "2026-10-01T00:00:00.000Z")
+    expect(listPasskeys(control)).toEqual([
+      {
+        fingerprint: fingerprint("Y3JlZC1vbGQ"),
+        createdAt: "2026-10-01T00:00:00.000Z",
+        revokedAt: null,
+      },
+      {
+        fingerprint: fingerprint("Y3JlZC1uZXc"),
+        createdAt: "2026-10-02T00:00:00.000Z",
+        revokedAt: null,
+      },
+    ])
+  })
+
+  it("revokes the passkey a fingerprint names and leaves the others", () => {
+    const control = db()
+    insert(control, "Y3JlZC1vbGQ", "2026-10-01T00:00:00.000Z")
+    insert(control, "Y3JlZC1uZXc", "2026-10-02T00:00:00.000Z")
+    expect(
+      revokeByFingerprint(control, "admin", fingerprint("Y3JlZC1uZXc"))
+    ).toEqual({ ok: true })
+    expect(listPasskeys(control).map((p) => p.revokedAt)).toEqual([
+      null,
+      anyString,
+    ])
+    expect(credentialActions(control)).toEqual(["credential.revoked"])
+  })
+
+  it("refuses and audits a fingerprint that names no passkey", () => {
+    const control = db()
+    insert(control, "Y3JlZC1vbGQ", "2026-10-01T00:00:00.000Z")
+    expect(revokeByFingerprint(control, "admin", "ab".repeat(32))).toEqual({
+      ok: false,
+      code: "unknown_credential",
+    })
+    expect(listPasskeys(control)[0]?.revokedAt).toBeNull()
+    expect(credentialActions(control)).toEqual(["credential.revoke_refused"])
+    expect(loggedText(control)).not.toContain("ab".repeat(32))
+  })
+
+  it.each([
+    ["the phone surface", "phone", "admin_only"],
+    ["an already revoked passkey", "admin", "already_revoked"],
+  ] as const)("refuses %s", (_name, surface, code) => {
+    const control = db()
+    insert(control, "Y3JlZC1vbGQ", "2026-10-01T00:00:00.000Z")
+    if (code === "already_revoked") {
+      revokeByFingerprint(control, "admin", fingerprint("Y3JlZC1vbGQ"))
+    }
+    expect(
+      revokeByFingerprint(control, surface, fingerprint("Y3JlZC1vbGQ"))
+    ).toEqual({ ok: false, code })
+    expect(credentialActions(control).at(-1)).toBe("credential.revoke_refused")
   })
 })

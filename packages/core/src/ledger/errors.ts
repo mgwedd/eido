@@ -8,6 +8,10 @@ export type LedgerErrorCode =
   | "entity_mismatch"
   | "invalid_span"
   | "invalid_confidence"
+  | "invalid_injection_provenance"
+  | "obligation_not_found"
+  | "invalid_transition"
+  | "busy"
 
 /** Typed failure of a ledger call. Messages never contain document text or stored values. */
 export class LedgerError extends Error {

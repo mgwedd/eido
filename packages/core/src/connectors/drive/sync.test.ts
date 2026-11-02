@@ -1,6 +1,8 @@
 import type { DatabaseSync } from "node:sqlite"
 import { afterEach, describe, expect, it } from "vitest"
-import { getCursor } from "../../index/index"
+import { countMatches, getCursor, search } from "../../index/index"
+import { countSearched } from "../../ask/ask"
+import { packEntry } from "../../context/assemble"
 import { openDataDb } from "../../ledger/db"
 import { createProfileStore } from "../../profile/store"
 import { EntityRequiredError } from "../ingest-entity"
@@ -58,6 +60,79 @@ const two = {
 }
 
 describe("Drive sync cursor", () => {
+  it("shows only the current version across edit, removal, and restore", async () => {
+    const f = await fixture()
+    f.fake.files.set(one.id, { ...one, text: "oldmarker" })
+    await syncDrive(f)
+    const oldSha = String(
+      f.db
+        .prepare("SELECT sha256 FROM documents WHERE source_ref = 'one'")
+        .get()?.["sha256"]
+    )
+    expect(
+      search(f.db, { text: "oldmarker" }).map((hit) => hit.sha256)
+    ).toEqual([oldSha])
+
+    f.fake.files.set(one.id, { ...one, text: "newmarker" })
+    f.fake.changes.set("end", {
+      files: [one],
+      newStartPageToken: "after-edit",
+    })
+    await syncDrive(f)
+    expect(search(f.db, { text: "oldmarker" })).toEqual([])
+    expect(countMatches(f.db, { text: "oldmarker" })).toBe(0)
+    expect(countMatches(f.db, { text: "newmarker" })).toBe(1)
+    expect(countSearched(f.db, { terms: [], wants: "find" })).toBe(1)
+    expect(() => packEntry(f.db, oldSha, "[M1]", 3)).toThrow(
+      "a pack entry is not in the index"
+    )
+    expect(
+      f.db
+        .prepare("SELECT count(*) AS n FROM documents WHERE source_ref = 'one'")
+        .get()?.["n"]
+    ).toBe(2)
+
+    f.fake.files.delete(one.id)
+    f.fake.changes.set("after-edit", {
+      removed: [one.id],
+      newStartPageToken: "after-remove",
+    })
+    await syncDrive(f)
+    expect(search(f.db, { text: "newmarker" })).toEqual([])
+    expect(countSearched(f.db, { terms: [], wants: "find" })).toBe(0)
+
+    f.fake.files.set(one.id, { ...one, text: "restoredmarker" })
+    f.fake.changes.set("after-remove", {
+      files: [one],
+      newStartPageToken: "after-restore",
+    })
+    await syncDrive(f)
+    expect(countMatches(f.db, { text: "restoredmarker" })).toBe(1)
+    expect(countMatches(f.db, { text: "oldmarker" })).toBe(0)
+  })
+
+  it("applies the last change for a file without fetching a removed file", async () => {
+    const f = await fixture()
+    f.fake.files.set(one.id, { ...one, text: "beforemarker" })
+    await syncDrive(f)
+    f.fake.files.delete(one.id)
+    f.fake.changes.set("end", {
+      files: [one],
+      removed: [one.id],
+      newStartPageToken: "after-remove",
+    })
+    await syncDrive(f)
+    expect(countMatches(f.db, { text: "beforemarker" })).toBe(0)
+    expect(getCursor(f.db, "drive", "files")?.cursor).toBe(
+      '{"phase":"changes","token":"after-remove"}'
+    )
+    expect(
+      f.fake.requests.filter(
+        (request) => request.path === "/drive/v3/files/one"
+      )
+    ).toHaveLength(2)
+  })
+
   it("resumes listing after a failed page, then replays changes without duplicate documents", async () => {
     const f = await fixture()
     f.fake.files.set(one.id, one)
@@ -111,7 +186,10 @@ describe("Drive sync cursor", () => {
     expect(getCursor(f.db, "drive", "files")?.cursor).toBe(
       '{"phase":"changes","token":"page2"}'
     )
+    expect(countMatches(f.db, { text: "First" })).toBe(1)
+    expect(countMatches(f.db, { text: "Second" })).toBe(0)
     expect(await syncDrive(f)).toEqual({ inserted: 1, skipped: 0 })
+    expect(countMatches(f.db, { text: "Second" })).toBe(1)
     expect(documents(f.db).map((row) => row["source_ref"])).toEqual([
       "one",
       "two",

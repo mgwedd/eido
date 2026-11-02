@@ -9,6 +9,7 @@
     "email.reply": "approval",
     "email.forward": "approval",
     "email.trash": "approval",
+    "email.untrash": "approval",
     "calendar.create": "auto",
     "calendar.edit": "auto",
     "calendar.delete": "auto",

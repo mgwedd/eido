@@ -15,4 +15,4 @@ Guidance, not a style essay. Each rule has its reason. `pnpm turbo run lint type
 - No `!` non-null assertion without a comment saying why it holds. Reason: it is a promise to the compiler that nothing checks.
 - Keep logic in small pure functions and the effects at the edges. Reason: pure functions are testable without a browser or network.
 - React Server Components by default; add `'use client'` only for state, effects or browser APIs. Reason: less JavaScript shipped and data stays on the server.
-- Do not write `.js` files; use TypeScript. The few allowed exceptions are listed with reasons in `scripts/check-no-js.mjs`. Reason: JavaScript skips type checking and the type-aware lint rules. (`pnpm turbo run //#check:no-js`)
+- Do not write `.js` files; use TypeScript. The few allowed exceptions are listed with reasons in `scripts/check-no-js.ts`. Reason: JavaScript skips type checking and the type-aware lint rules. (`pnpm turbo run //#check:no-js`)

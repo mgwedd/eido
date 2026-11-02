@@ -1,5 +1,6 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
 import { soundex, tokenize, withinOneEdit } from "./text"
+import { LIVE_DOCUMENT_PREDICATE } from "./heads"
 
 export interface SearchQuery {
   text: string
@@ -14,6 +15,8 @@ export interface SearchHit {
   sha256: string
   source: string
   sourceRef: string
+  /** Source reference of the parent message when this hit is an attachment. */
+  parentSourceRef?: string
   title?: string
   occurredAt?: string
   score: number
@@ -129,15 +132,17 @@ function snippets(body: string, hitTerms: Set<string>): SearchHit["snippets"] {
 }
 
 const FROM_WITH_MATCH = `FROM document_fts JOIN document_text t ON t.rowid = document_fts.rowid
-  JOIN documents d ON d.sha256 = t.sha256 WHERE document_fts MATCH ?`
-const FROM_NO_MATCH = `FROM document_text t JOIN documents d ON d.sha256 = t.sha256 WHERE 1 = 1`
+  JOIN documents d ON d.sha256 = t.sha256
+  WHERE document_fts MATCH ? AND ${LIVE_DOCUMENT_PREDICATE}`
+const FROM_NO_MATCH = `FROM document_text t JOIN documents d ON d.sha256 = t.sha256
+  WHERE ${LIVE_DOCUMENT_PREDICATE}`
 
 /** Ranked search: BM25 (title weighted over body), ties by newest then sha256. */
 export function search(db: DatabaseSync, q: SearchQuery): SearchHit[] {
   const p = plan(db, q)
   if (p === null) return []
   const limit = q.limit ?? DEFAULT_LIMIT
-  const select = `SELECT t.sha256, d.source, d.source_ref, t.title, t.occurred_at, t.body,`
+  const select = `SELECT t.sha256, d.source, d.source_ref, t.title, t.occurred_at, t.body, t.attachment_of,`
   const sql =
     p.match === null
       ? `${select} 0 AS score ${FROM_NO_MATCH}${p.where} ORDER BY t.occurred_at DESC, t.sha256 LIMIT ?`
@@ -151,10 +156,12 @@ export function search(db: DatabaseSync, q: SearchQuery): SearchHit[] {
     .map((r) => {
       const title = r["title"]
       const occurredAt = r["occurred_at"]
+      const parentSourceRef = r["attachment_of"]
       return {
         sha256: String(r["sha256"]),
         source: String(r["source"]),
         sourceRef: String(r["source_ref"]),
+        ...(typeof parentSourceRef === "string" ? { parentSourceRef } : {}),
         ...(typeof title === "string" ? { title } : {}),
         ...(typeof occurredAt === "string" ? { occurredAt } : {}),
         score: Number(r["score"]),

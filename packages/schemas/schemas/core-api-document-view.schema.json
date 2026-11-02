@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiDocumentView",
+  "description": "Response of GET /documents/:sha256?start=&end=. `lines` is the stored text split on newlines; `start` is each line's UTF-16 offset in that text. `highlight` is the requested [start, end) range, or null when none was asked. `extractions` lists the document's extracted rows, oldest first. Text is data only: the client renders it as plain text.",
+  "type": "object",
+  "properties": {
+    "document": { "$ref": "core-api-document-summary.schema.json" },
+    "lines": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "n": { "type": "integer", "minimum": 1 },
+          "start": { "type": "integer", "minimum": 0 },
+          "text": { "type": "string" }
+        },
+        "required": ["n", "start", "text"],
+        "additionalProperties": false
+      }
+    },
+    "highlight": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "properties": {
+            "start": { "type": "integer", "minimum": 0 },
+            "end": { "type": "integer", "minimum": 1 },
+            "text": { "type": "string" },
+            "fromLine": { "type": "integer", "minimum": 1 },
+            "toLine": { "type": "integer", "minimum": 1 }
+          },
+          "required": ["start", "end", "text", "fromLine", "toLine"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "extractions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "minimum": 1 },
+          "createdAt": { "type": "string", "minLength": 1 },
+          "confirmedAt": {
+            "oneOf": [{ "type": "string" }, { "type": "null" }]
+          },
+          "fields": {
+            "type": "array",
+            "items": { "$ref": "core-api-document-field.schema.json" }
+          }
+        },
+        "required": ["id", "createdAt", "confirmedAt", "fields"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["document", "lines", "highlight", "extractions"],
+  "additionalProperties": false
+}

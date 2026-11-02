@@ -13,6 +13,7 @@ function fixture(): ConnectorManifest {
       scopes: ["mail.read", "mail.compose"],
     },
     egress: {
+      local: [],
       hosts: [
         {
           host: "api.example.com",
@@ -89,6 +90,23 @@ describe("validateConnectorManifest", () => {
     })
   })
 
+  test("accepts pinned loopback IMAP and SMTP endpoints and rejects remote local endpoints", () => {
+    const manifest = fixture()
+    manifest.egress.local = [
+      { protocol: "imap", host: "127.0.0.1", port: 1143 },
+      { protocol: "smtp", host: "localhost", port: 1025 },
+    ]
+    expect(validateConnectorManifest(manifest).ok).toBe(true)
+    const imap = manifest.egress.local[0]
+    if (imap === undefined)
+      throw new Error("fixture has no local IMAP endpoint")
+    imap.host = "192.168.1.10"
+    expect(validateConnectorManifest(manifest)).toMatchObject({
+      ok: false,
+      errors: ["$.egress.local[0].host: must be a loopback host"],
+    })
+  })
+
   test("rejects an unknown key", () => {
     expect(
       errorsOf((m) => Object.assign(m.auth, { clientSecret: "x" }))
@@ -104,6 +122,9 @@ describe("validateConnectorManifest", () => {
     ["a trailing dot", "api.example.com."],
     ["an empty label", "api..example.com"],
     ["a single label", "localhost"],
+    ["a loopback IPv4 address", "127.0.0.1"],
+    ["a private IPv4 address", "192.168.1.1"],
+    ["a private IPv4 address", "10.0.0.1"],
     ["a dotted IPv4 literal", "169.254.169.254"],
     ["a single-number IPv4 literal", "2130706433"],
     ["an octal IPv4 literal", "0177.0.0.1"],

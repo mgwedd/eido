@@ -13,6 +13,10 @@
       "type": "string",
       "enum": ["approved", "rejected"],
       "maxLength": 32
+    },
+    "nudge": {
+      "type": "boolean",
+      "description": "Approval burst reminder; never blocks a decision."
     }
   },
   "required": ["intentId", "state"],

@@ -1,6 +1,9 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
 import type { SourceSpan } from "@eido/schemas"
 import type { EntityKind } from "../profile/types"
+import { writeQueueFor } from "../db/write-queue"
+import { INJECTION_REASONS } from "../inference/fence"
+import type { InjectionReason } from "../inference/fence"
 import { LedgerError } from "./errors"
 import type {
   ExtractionFieldName,
@@ -33,20 +36,24 @@ const optionalText = (row: Row, key: string): string | null => {
 }
 
 /**
- * Run `work` in a savepoint, so a ledger write is atomic and still composes with a caller's
- * own transaction (an extraction and its obligation written together by #46).
+ * Run `work` in a savepoint on the connection's write queue, so a ledger write is atomic and
+ * waits for an audited store's open transaction instead of joining it. Called from a job of the
+ * same queue (an extraction and its obligation written together by #46), it runs inline and
+ * composes with that job's transaction.
  */
-function atomically<T>(db: DatabaseSync, work: () => T): T {
-  db.exec("SAVEPOINT ledger_write")
-  try {
-    const result = work()
-    db.exec("RELEASE ledger_write")
-    return result
-  } catch (error) {
-    db.exec("ROLLBACK TO ledger_write")
-    db.exec("RELEASE ledger_write")
-    throw error
-  }
+function atomically<T>(db: DatabaseSync, work: () => T): Promise<T> {
+  return writeQueueFor(db).run(() => {
+    db.exec("SAVEPOINT ledger_write")
+    try {
+      const result = work()
+      db.exec("RELEASE ledger_write")
+      return result
+    } catch (error) {
+      db.exec("ROLLBACK TO ledger_write")
+      db.exec("RELEASE ledger_write")
+      throw error
+    }
+  })
 }
 
 function requireDocument(db: DatabaseSync, docId: string): void {
@@ -86,11 +93,25 @@ function parseSpan(json: string): SourceSpan {
   return value
 }
 
+function parseReasons(json: string): InjectionReason[] {
+  const value: unknown = JSON.parse(json)
+  if (
+    !Array.isArray(value) ||
+    !value.every(
+      (reason: unknown): reason is InjectionReason =>
+        typeof reason === "string" &&
+        INJECTION_REASONS.some((known) => known === reason)
+    )
+  )
+    throw new Error("stored injection reasons are malformed")
+  return value
+}
+
 /** Store one extraction and its per-field confidence rows. Returns the extraction id. */
-export function insertExtraction(
+export async function insertExtraction(
   db: DatabaseSync,
   input: ExtractionInput
-): number {
+): Promise<number> {
   requireDocument(db, input.docId)
   const confidences: [ExtractionFieldName, number][] = []
   if (input.status === "extracted") {
@@ -115,7 +136,7 @@ export function insertExtraction(
   }
   const fieldsJson =
     input.status === "extracted" ? JSON.stringify(input.fields) : "{}"
-  return atomically(db, () => {
+  return await atomically(db, () => {
     const { lastInsertRowid } = db
       .prepare(
         `INSERT INTO extractions (doc_id, schema, status, fields_json, model, created_at)
@@ -145,17 +166,22 @@ export function confirmExtraction(
   db: DatabaseSync,
   id: number,
   at: string
-): void {
-  const row = db
-    .prepare("SELECT confirmed_at FROM extractions WHERE id = ?")
-    .get(id)
-  if (row === undefined) {
-    throw new LedgerError("extraction_not_found", "no such extraction")
-  }
-  if (row["confirmed_at"] !== null) {
-    throw new LedgerError("already_confirmed", "extraction already confirmed")
-  }
-  db.prepare("UPDATE extractions SET confirmed_at = ? WHERE id = ?").run(at, id)
+): Promise<void> {
+  return writeQueueFor(db).run(() => {
+    const row = db
+      .prepare("SELECT confirmed_at FROM extractions WHERE id = ?")
+      .get(id)
+    if (row === undefined) {
+      throw new LedgerError("extraction_not_found", "no such extraction")
+    }
+    if (row["confirmed_at"] !== null) {
+      throw new LedgerError("already_confirmed", "extraction already confirmed")
+    }
+    db.prepare("UPDATE extractions SET confirmed_at = ? WHERE id = ?").run(
+      at,
+      id
+    )
+  })
 }
 
 /**
@@ -165,46 +191,62 @@ export function confirmExtraction(
 export function insertObligation(
   db: DatabaseSync,
   input: ObligationInput
-): number {
-  requireDocument(db, input.docId)
-  if (!isSpan(input.span)) {
-    throw new LedgerError(
-      "invalid_span",
-      "source span needs integer start >= 0 and end > start"
-    )
-  }
-  if (
-    db.prepare("SELECT 1 FROM entities WHERE id = ?").get(input.entityId) ===
-    undefined
-  ) {
-    throw new LedgerError("entity_not_found", "no such entity")
-  }
-  // A document has one entity, and an obligation belongs to it (migration v2, #259).
-  if (
-    db
-      .prepare("SELECT entity_id FROM documents WHERE sha256 = ?")
-      .get(input.docId)?.["entity_id"] !== input.entityId
-  ) {
-    throw new LedgerError(
-      "entity_mismatch",
-      "obligation entity differs from its document entity"
-    )
-  }
-  const { lastInsertRowid } = db
-    .prepare(
-      `INSERT INTO obligations (entity_id, party, action, due_at, status, doc_id, source_span)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      input.entityId,
-      input.party ?? null,
-      input.action,
-      input.dueAt ?? null,
-      input.status,
-      input.docId,
-      JSON.stringify(input.span)
-    )
-  return Number(lastInsertRowid)
+): Promise<number> {
+  return writeQueueFor(db).run(() => {
+    if (
+      (input.injectionSuspected ?? false) !==
+      (input.injectionReasons?.length ?? 0) > 0
+    ) {
+      throw new LedgerError(
+        "invalid_injection_provenance",
+        "injection flag must match the presence of reasons"
+      )
+    }
+    requireDocument(db, input.docId)
+    if (!isSpan(input.span)) {
+      throw new LedgerError(
+        "invalid_span",
+        "source span needs integer start >= 0 and end > start"
+      )
+    }
+    if (
+      db.prepare("SELECT 1 FROM entities WHERE id = ?").get(input.entityId) ===
+      undefined
+    ) {
+      throw new LedgerError("entity_not_found", "no such entity")
+    }
+    // A document has one entity, and an obligation belongs to it (migration v2, #259).
+    if (
+      db
+        .prepare("SELECT entity_id FROM documents WHERE sha256 = ?")
+        .get(input.docId)?.["entity_id"] !== input.entityId
+    ) {
+      throw new LedgerError(
+        "entity_mismatch",
+        "obligation entity differs from its document entity"
+      )
+    }
+    const { lastInsertRowid } = db
+      .prepare(
+        `INSERT INTO obligations (entity_id, party, action, due_at, status, doc_id, source_span, injection_suspected, injection_reasons, direction, thread_id, anchor_message_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.entityId,
+        input.party ?? null,
+        input.action,
+        input.dueAt ?? null,
+        input.status,
+        input.docId,
+        JSON.stringify(input.span),
+        input.injectionSuspected ? 1 : 0,
+        JSON.stringify(input.injectionReasons ?? []),
+        input.direction ?? null,
+        input.threadId ?? null,
+        input.anchorMessageId ?? null
+      )
+    return Number(lastInsertRowid)
+  })
 }
 
 function toObligation(row: Row): Obligation {
@@ -224,6 +266,15 @@ function toObligation(row: Row): Obligation {
     status: text(row, "status") as ObligationStatus,
     docId: text(row, "doc_id"),
     span: parseSpan(text(row, "source_span")),
+    injectionSuspected: row["injection_suspected"] === 1,
+    injectionReasons: parseReasons(text(row, "injection_reasons")),
+    direction:
+      row["direction"] === "owed" || row["direction"] === "waiting"
+        ? row["direction"]
+        : null,
+    threadId: optionalText(row, "thread_id"),
+    anchorMessageId: optionalText(row, "anchor_message_id"),
+    resolutionReason: row["resolution_reason"] === "replied" ? "replied" : null,
   }
 }
 
@@ -235,7 +286,8 @@ export function listObligations(
   return db
     .prepare(
       `SELECT o.id, o.entity_id, e.kind AS entity_kind, e.name AS entity_name, e.tag AS entity_tag,
-              o.party, o.action, o.due_at, o.status, o.doc_id, o.source_span
+              o.party, o.action, o.due_at, o.status, o.doc_id, o.source_span, o.injection_suspected, o.injection_reasons,
+              o.direction, o.thread_id, o.anchor_message_id, o.resolution_reason
        FROM obligations o JOIN entities e ON e.id = o.entity_id
        WHERE ($entityId IS NULL OR o.entity_id = $entityId)
          AND ($status IS NULL OR o.status = $status)
@@ -257,7 +309,7 @@ export function getObligationSource(
 ): ObligationSource | null {
   const row = db
     .prepare(
-      `SELECT o.doc_id, d.blob_path, o.source_span
+      `SELECT o.doc_id, d.blob_path, o.source_span, o.injection_suspected, o.injection_reasons
        FROM obligations o JOIN documents d ON d.sha256 = o.doc_id WHERE o.id = ?`
     )
     .get(id)
@@ -266,11 +318,16 @@ export function getObligationSource(
     docId: text(row, "doc_id"),
     blobPath: optionalText(row, "blob_path"),
     span: parseSpan(text(row, "source_span")),
+    injectionSuspected: row["injection_suspected"] === 1,
+    injectionReasons: parseReasons(text(row, "injection_reasons")),
   }
 }
 
 /** Store links; one already stored (same src, dst and kind) is left as is. Returns how many were new. */
-export function insertLinks(db: DatabaseSync, links: readonly Link[]): number {
+export function insertLinks(
+  db: DatabaseSync,
+  links: readonly Link[]
+): Promise<number> {
   return atomically(db, () => {
     const insert = db.prepare(
       `INSERT INTO links (src, dst, kind, confidence, origin) VALUES (?, ?, ?, ?, ?)

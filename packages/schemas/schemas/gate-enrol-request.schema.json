@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateEnrolRequest",
+  "description": "Body of POST /passkey/enroll on the phone listener: the enrolment code and the registration over the challenge from the enrol options. The response is a GateSession and sets the session cookie.",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 64
+    },
+    "registration": {
+      "$ref": "gate-webauthn-registration.schema.json"
+    }
+  },
+  "required": ["code", "registration"],
+  "additionalProperties": false
+}

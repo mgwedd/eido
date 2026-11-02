@@ -1,0 +1,28 @@
+{
+  "id": "synthetic-call-draft",
+  "request": "Draft a reply to the sender confirming I will review this next week.",
+  "messages": [
+    {
+      "id": "msg-call-draft@example.invalid",
+      "from": "alex@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-01T12:00:00.000Z",
+      "subject": "Planning notes",
+      "body": "Please review the planning notes when you have time."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["alex@example.invalid"],
+          "subject": "Re: Planning notes",
+          "body": "I will review this next week."
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body"]
+}

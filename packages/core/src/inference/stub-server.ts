@@ -5,7 +5,9 @@ import type { AddressInfo } from "node:net"
 // Test support, not a runtime fallback: production code never starts or falls back to this.
 // It speaks the subset of llama-server the client uses, so tests and Windows development run
 // with no model:
+// - `GET /health`, answering ready;
 // - `GET /props` with `default_generation_settings.n_ctx`;
+// - `GET /v1/models` with one model id;
 // - `POST /apply-template`, rendering a ChatML template (tools in the system turn);
 // - `POST /tokenize`, a byte tokenizer: ids 0-255 are UTF-8 bytes, and with `parse_special`
 //   the control-token strings of common chat formats become ids from 256 up;
@@ -46,6 +48,10 @@ export interface StubReply {
   status?: number
   /** Content pieces, one SSE chunk each. Default: none. */
   deltas?: string[]
+  /** Optional aligned probability for each generated token spelling. */
+  probabilities?: { token: string; probability: number }[]
+  /** Raw byte variant for malformed UTF-8 metadata cases. */
+  probabilityBytes?: { bytes: number[]; probability: number }[]
   /** Reported `tokens_evaluated`. Default: the prompt's length. Null leaves it out. */
   promptTokens?: number | null
   /** "stop" (eos), "length" (limit), or any other `stop_type` sent as is. Default "stop". */
@@ -57,17 +63,25 @@ export interface StubReply {
   splitInside?: string[]
   /** Send the first piece, then keep the stream open until the client goes away. */
   hang?: boolean
+  /** Called after the first streaming chunk is written; test synchronization only. */
+  onFirstChunk?: () => void
   /** Replaces the whole streamed body, for malformed-stream tests. */
   rawBody?: string
 }
 
 export interface StubScript {
+  /** Listen on this 127.0.0.1 port. Default: a free one. */
+  port?: number
+  /** `/v1/models` reports this id. Default "local". */
+  modelId?: string
   /** `/props` reports this as `default_generation_settings.n_ctx`. Default 4096. */
   contextTokens?: number
   /** Request n gets reply n; requests past the end get the last one. */
   replies: StubReply[]
   /** Routes this server lacks: they answer 404, as an older llama-server would. */
   missing?: ("apply-template" | "tokenize")[]
+  /** Number of initial `/v1/models` requests that return an error. */
+  modelMetadataFailures?: number
   /** `/tokenize` parses special tokens whatever `parse_special` says. */
   ignoreParseSpecial?: boolean
   /** Rewrites the `/apply-template` answer's prompt, for template tests. */
@@ -230,6 +244,41 @@ export function streamBody(reply: StubReply, promptLength = 0): string {
   return parts.join("")
 }
 
+function completionJson(reply: StubReply, promptLength: number): unknown {
+  const content = (reply.deltas ?? []).join("")
+  const finish = reply.finishReason ?? "stop"
+  return {
+    content,
+    stop: true,
+    stop_type: STOP_TYPE[finish] ?? finish,
+    tokens_evaluated: reply.promptTokens ?? promptLength,
+    ...(reply.probabilities === undefined &&
+    reply.probabilityBytes === undefined
+      ? {}
+      : {
+          completion_probabilities: (
+            reply.probabilityBytes ??
+            reply.probabilities?.map(({ token, probability }) => ({
+              bytes: [...encoder.encode(token)],
+              probability,
+            })) ??
+            []
+          ).map(({ bytes, probability }) => ({
+            bytes,
+            logprob: Math.log(probability),
+            token: new TextDecoder().decode(new Uint8Array(bytes)),
+            top_logprobs: [
+              {
+                token: "decoy",
+                bytes: [100, 101, 99, 111, 121],
+                logprob: -0.0001,
+              },
+            ],
+          })),
+        }),
+  }
+}
+
 /** `bytes` cut after the first byte of the first occurrence of each of `chars`. */
 export function splitBytes(
   bytes: Uint8Array,
@@ -282,17 +331,23 @@ function notFound(res: ServerResponse): void {
 async function writeReply(
   res: ServerResponse,
   reply: StubReply,
-  promptLength: number
+  promptLength: number,
+  streaming: boolean
 ): Promise<void> {
   const status = reply.status ?? 200
   if (status < 200 || status > 299) {
     json(res, status, { error: { code: status, message: "stub error" } })
     return
   }
+  if (!streaming) {
+    json(res, status, completionJson(reply, promptLength))
+    return
+  }
   res.writeHead(status, { "content-type": "text/event-stream" })
   res.flushHeaders()
   if (reply.hang === true) {
     res.write(sse({ content: reply.deltas?.[0] ?? "", stop: false }))
+    reply.onFirstChunk?.()
     return
   }
   const pieces = splitBytes(
@@ -329,6 +384,7 @@ export async function startStubModelServer(
 ): Promise<StubModelServer> {
   const requests: RecordedRequest[] = []
   const missing = new Set(script.missing ?? [])
+  let modelMetadataFailures = script.modelMetadataFailures ?? 0
   let completions = 0
   const handle = async (
     req: IncomingMessage,
@@ -337,11 +393,24 @@ export async function startStubModelServer(
     const body = await readBody(req)
     const path = req.url ?? "/"
     requests.push({ method: req.method ?? "", path, body })
+    if (req.method === "GET" && path === "/health") {
+      json(res, 200, { status: "ok" })
+      return
+    }
     if (req.method === "GET" && path === "/props") {
       json(res, 200, {
         default_generation_settings: { n_ctx: script.contextTokens ?? 4096 },
         total_slots: 1,
       })
+      return
+    }
+    if (req.method === "GET" && path === "/v1/models") {
+      if (modelMetadataFailures > 0) {
+        modelMetadataFailures -= 1
+        json(res, 503, { error: { message: "metadata unavailable" } })
+        return
+      }
+      json(res, 200, { data: [{ id: script.modelId ?? "local" }] })
       return
     }
     if (req.method !== "POST") return notFound(res)
@@ -370,7 +439,14 @@ export async function startStubModelServer(
       completions += 1
       const reply = script.replies[index]
       if (reply !== undefined) {
-        await writeReply(res, reply, parseCompletion(body).tokens.length)
+        await writeReply(
+          res,
+          reply,
+          parseCompletion(body).tokens.length,
+          parseCompletion(body).body.stream !== false ||
+            reply.rawBody !== undefined ||
+            reply.hang === true
+        )
         return
       }
     }
@@ -387,7 +463,9 @@ export async function startStubModelServer(
     })
   })
   server.on("connection", (socket) => socket.setNoDelay(true))
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  await new Promise<void>((resolve) =>
+    server.listen(script.port ?? 0, "127.0.0.1", resolve)
+  )
   const { port } = server.address() as AddressInfo
   return {
     url: `http://127.0.0.1:${String(port)}`,

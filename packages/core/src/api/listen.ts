@@ -1,6 +1,11 @@
 import type { AddressInfo } from "node:net"
+import type { KnownAccount } from "../connectors/accounts"
+import type { IntentClient } from "@eido/gate"
 import type { GateConnectorHealth } from "@eido/schemas"
+import type { AskResult } from "../ask/types"
+import type { ObligationStateStore } from "../ledger/obligation-state"
 import type { ProfileStore } from "../profile/store"
+import type { DocumentsDeps } from "./documents-route"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
 import { createApiServer } from "./server"
@@ -57,6 +62,15 @@ export type CoreApiOptions = {
   profile: ProfileStore
   /** Gate-owned read-only connector health projection for the Today page. */
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
+  /** Accounts the configured connectors have reported, behind `/connectors/accounts`. */
+  connectorAccounts?: () => readonly KnownAccount[]
+  /** The Proton account behind `/connectors/send-from`. */
+  sendFrom?: string
+  ask?: (question: string) => Promise<AskResult>
+  propose?: IntentClient["propose"]
+  obligations?: ObligationStateStore
+  /** The data DB behind `/documents`. */
+  documents?: DocumentsDeps
   host: LoopbackHost
   /** 0 picks a free port. */
   port: number
@@ -81,6 +95,12 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
     createApiHandler({
       profile: options.profile,
       connectorHealth: options.connectorHealth,
+      connectorAccounts: options.connectorAccounts,
+      sendFrom: options.sendFrom,
+      ask: options.ask,
+      propose: options.propose,
+      obligations: options.obligations,
+      documents: options.documents,
       allowedHosts,
       basePath: options.basePath,
     })

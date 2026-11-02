@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { getCursor, ingestBatch } from "../../index/index"
 import type { IndexedDocument } from "../../index/index"
 import { ingestEntityId } from "../ingest-entity"
+import { writeQueueFor } from "../../db/write-queue"
 import type { IngestAccount } from "../ingest-entity"
 import { isPdfMime, attachmentText, parseMessage } from "../mail/parse"
 import { pdfAttachmentText } from "../mail/pdf-text"
@@ -58,7 +59,8 @@ function readCursor(db: DatabaseSync, label: string): StreamCursor | undefined {
 async function toDocuments(
   message: RawMessage,
   entityId: string,
-  parser: Parser | undefined
+  parser: Parser | undefined,
+  mailboxId: string
 ): Promise<IndexedDocument[]> {
   const parsed = await parseMessage(message.raw)
   const contentHash = sha256(message.raw)
@@ -102,15 +104,29 @@ async function toDocuments(
       })),
     ],
     addresses: extractAddresses(parsed),
+    mailboxId,
+    mailFacts: {
+      listUnsubscribe: parsed.listUnsubscribe,
+      ...(parsed.autoSubmitted === undefined
+        ? {}
+        : { autoSubmitted: parsed.autoSubmitted }),
+      ...(parsed.precedence === undefined
+        ? {}
+        : { precedence: parsed.precedence }),
+    },
     content: message.raw,
   }
   const attachments: IndexedDocument[] = []
   for (const [index, attachment] of parsed.attachments.entries()) {
-    // A PDF's text comes from the sandboxed parser; one it cannot read is indexed with no text.
-    const body =
+    // A PDF's text and pages come from the sandboxed parser. If parsing fails, it has no
+    // page provenance, so it remains searchable but no page-citing digest is scheduled.
+    const pdf =
       parser !== undefined && isPdfMime(attachment.mime)
         ? await pdfAttachmentText(parser, attachment)
-        : attachmentText(attachment)
+        : null
+    const body =
+      pdf?.text ??
+      (isPdfMime(attachment.mime) ? null : attachmentText(attachment))
     attachments.push({
       sha256: sha256(`${contentHash}:${index}`),
       source: GMAIL_SOURCE,
@@ -119,6 +135,7 @@ async function toDocuments(
       entityId,
       title: attachment.filename,
       body: body ?? "",
+      ...(pdf === null ? {} : { pages: pdf.pages }),
       headers: { attachmentOf: message.id },
     })
   }
@@ -128,6 +145,10 @@ async function toDocuments(
 export type SyncOptions = {
   /** Reads PDF attachments. Without it a PDF is indexed with no text. */
   parser?: Parser
+  /** Called after the transaction commits, with documents submitted to that batch. */
+  onIngested?: (documents: readonly IndexedDocument[]) => void
+  /** Called after every committed page, including pages that only backfill parsed metadata. */
+  onBatchCommitted?: () => void
 }
 
 type Totals = { inserted: number; skipped: number }
@@ -139,26 +160,55 @@ type LabelRun = {
   label: string
   config: GmailConfig
   entityId: string
+  mailboxId: string
   totals: Totals
   parser: Parser | undefined
+  onIngested: SyncOptions["onIngested"]
+  onBatchCommitted: SyncOptions["onBatchCommitted"]
 }
 
 /**
- * Fetches and parses the messages not yet in the index, then commits them with `nextCursor` in one
- * transaction. Ids already indexed are skipped before any fetch, so a repeated batch costs no
- * duplicate document; a message deleted since it was listed is skipped too.
+ * Fetches and parses messages not yet in the index, then commits them with `nextCursor` in one
+ * transaction. Indexed messages are skipped unless a PDF attachment lacks stored parser pages;
+ * that bounded full-sync reparse can add provenance without replacing the immutable document.
+ * A message deleted since it was listed is skipped too.
  */
 async function commitBatch(
-  { db, client, label, entityId, totals, parser }: LabelRun,
+  {
+    db,
+    client,
+    label,
+    entityId,
+    mailboxId,
+    totals,
+    parser,
+    onIngested,
+    onBatchCommitted,
+  }: LabelRun,
   ids: readonly string[],
   nextCursor: StreamCursor
 ): Promise<void> {
   const known = db.prepare(
-    "SELECT 1 FROM documents WHERE source = ? AND source_ref = ? LIMIT 1"
+    `SELECT 1 FROM documents d JOIN mail_message_mailboxes m ON m.sha256 = d.sha256
+     WHERE d.source = ? AND d.source_ref = ? AND m.mailbox_id = ? LIMIT 1`
+  )
+  const missingPdfPages = db.prepare(
+    `SELECT 1 FROM documents d
+     JOIN document_text t ON t.sha256 = d.sha256
+     WHERE d.source = ? AND t.attachment_of = ? AND d.mime = 'application/pdf'
+       AND NOT EXISTS (
+         SELECT 1 FROM document_pages p WHERE p.sha256 = d.sha256
+       )
+     LIMIT 1`
   )
   const documents: IndexedDocument[] = []
   for (const id of new Set(ids)) {
-    if (known.get(GMAIL_SOURCE, id) !== undefined) {
+    if (
+      known.get(GMAIL_SOURCE, id, mailboxId.trim().toLowerCase()) !==
+        undefined &&
+      (parser === undefined ||
+        missingPdfPages.get(GMAIL_SOURCE, id) === undefined)
+    ) {
       totals.skipped++
       continue
     }
@@ -169,16 +219,20 @@ async function commitBatch(
       if (error instanceof GmailError && error.code === "not_found") continue
       throw error
     }
-    documents.push(...(await toDocuments(message, entityId, parser)))
+    documents.push(...(await toDocuments(message, entityId, parser, mailboxId)))
   }
-  const result = ingestBatch(db, {
-    connector: GMAIL_CONNECTOR,
-    stream: label,
-    documents,
-    nextCursor: JSON.stringify(nextCursor),
-  })
+  const result = await writeQueueFor(db).run(() =>
+    ingestBatch(db, {
+      connector: GMAIL_CONNECTOR,
+      stream: label,
+      documents,
+      nextCursor: JSON.stringify(nextCursor),
+    })
+  )
   totals.inserted += result.inserted
   totals.skipped += result.skipped
+  if (result.inserted > 0 || result.pagesStored > 0) onIngested?.(documents)
+  onBatchCommitted?.()
 }
 
 /**
@@ -256,6 +310,7 @@ export async function syncGmailLabel(
   options: SyncOptions = {}
 ): Promise<LabelSyncResult> {
   const entityId = await ingestEntityId(GMAIL_CONNECTOR, account)
+  const mailboxId = account.accountRef
   const totals: Totals = { inserted: 0, skipped: 0 }
   const run: LabelRun = {
     db,
@@ -263,8 +318,11 @@ export async function syncGmailLabel(
     label,
     config,
     entityId,
+    mailboxId,
     totals,
     parser: options.parser,
+    onIngested: options.onIngested,
+    onBatchCommitted: options.onBatchCommitted,
   }
   const cursor = readCursor(db, label)
   if (cursor === undefined) {

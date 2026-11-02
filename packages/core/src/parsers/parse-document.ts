@@ -3,6 +3,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createLimiter } from "./limiter"
 import { runInChild } from "./sandbox"
+import { preparePrivateScratchRoot } from "./private-scratch"
 import { blobPath, isSha256, storeOriginal } from "./store"
 import { FAILURE_REASONS, resolveLimits } from "./types"
 import type { OffsetEntry, ParseLimits, ParseResult } from "./types"
@@ -107,6 +108,7 @@ export function createParser(config: ParserConfig): Parser {
   const base = resolveLimits(config.limits)
   const limit = createLimiter(config.maxConcurrent ?? 2)
   const tmpRoot = join(config.dataDir, "parse-tmp")
+  preparePrivateScratchRoot(tmpRoot)
 
   async function parse(
     input: { blobSha256: string; mime: string },

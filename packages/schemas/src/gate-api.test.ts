@@ -20,11 +20,13 @@ import {
   validateGateMailFolderState,
   validateGateMailMessagePage,
   validateGatePendingIntentList,
+  validateGatePermissionList,
   validateGatePrepareApproval,
   validateGateProposeRefusal,
   validateGateProposeResult,
   validateGateRejectReason,
   validateGateSession,
+  gateAuditDisplayActor,
 } from "./index"
 import type { ValidationResult } from "./index"
 
@@ -52,6 +54,46 @@ const PENDING_ITEM = {
   origin: "reactive",
   createdAt: AT,
 }
+
+describe("permission list", () => {
+  const row = { kind: "email.archive", tier: "approval", default: "auto" }
+  const list = { tiers: [row], forbiddenKinds: [] }
+
+  test("accepts defaults, optional overrides and an explicitly absent shipped default", () => {
+    expect(validateGatePermissionList(list).ok).toBe(true)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, override: "approval" }],
+      }).ok
+    ).toBe(true)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, default: null }],
+      }).ok
+    ).toBe(true)
+  })
+
+  test("requires the default and refuses non-configurable tiers in configuration fields", () => {
+    expect(
+      validateGatePermissionList({ ...list, tiers: [without(row, "default")] })
+        .ok
+    ).toBe(false)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, default: "forbidden" }],
+      }).ok
+    ).toBe(false)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, override: "forbidden" }],
+      }).ok
+    ).toBe(false)
+  })
+})
 
 describe("pending intent list", () => {
   const list = {
@@ -181,7 +223,7 @@ describe("intent history", () => {
         })
       )
     ).toEqual([
-      '$.entries[0].actor: must be one of "data-plane", "policy", "approver", "executor", "system"',
+      '$.entries[0].actor: must be one of "data-plane", "policy", "approver", "executor", "system", "owner", "gate"',
     ])
   })
 })
@@ -442,6 +484,8 @@ describe("audit page", () => {
     seq: 7,
     ts: AT,
     actor: "executor",
+    displayActor: "auto",
+    undo: "none",
     action: "intent.transition",
     target: "i-1",
     detailHash: HASH,
@@ -505,6 +549,17 @@ describe("audit page", () => {
     expect(errorsOf(validateGateAuditPageRequest({ limit: 51 }))).toEqual([
       "$.limit: must be at most 50",
     ])
+  })
+})
+
+describe("audit display actors", () => {
+  test("covers stored actor types and distinguishes signed executor actions", () => {
+    expect(gateAuditDisplayActor("approver")).toBe("you")
+    expect(gateAuditDisplayActor("policy")).toBe("auto")
+    expect(gateAuditDisplayActor("data-plane")).toBe("auto")
+    expect(gateAuditDisplayActor("executor")).toBe("auto")
+    expect(gateAuditDisplayActor("executor", true)).toBe("you")
+    expect(gateAuditDisplayActor("system")).toBe("gate")
   })
 })
 
@@ -757,7 +812,7 @@ describe("audit record request and result", () => {
         validateGateAuditRecordRequest({ ...entry, action: "email.send" })
       )
     ).toEqual([
-      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign"',
+      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen", "defaultEntity"',
     ])
   })
 

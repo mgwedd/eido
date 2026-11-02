@@ -339,8 +339,8 @@ describe("executor", () => {
     async (field) => {
       const f = fixture()
       const build = f.writer.buildRequest
-      f.writer.buildRequest = (intent) => {
-        const request = build(intent)
+      f.writer.buildRequest = async (intent) => {
+        const request = await build(intent)
         if (field === "body")
           request.body = {
             provider_arguments: { messageIds: ["other"], add: ["work"] },
@@ -358,12 +358,66 @@ describe("executor", () => {
     }
   )
 
+  it("rechecks stored authority after asynchronous request preparation", async () => {
+    const f = fixture()
+    const build = f.writer.buildRequest
+    f.writer.buildRequest = async (intent) => {
+      const request = await build(intent)
+      s.db.prepare("UPDATE intents SET state='failed' WHERE id=?").run(f.id)
+      return request
+    }
+    expect(await f.executor.execute(f.id)).toEqual({
+      ok: false,
+      code: "invalid_state",
+    })
+    expect(f.transport).not.toHaveBeenCalled()
+    expect(
+      s.db.prepare("SELECT count(*) AS n FROM execution_attempts").get()?.["n"]
+    ).toBe(0)
+  })
+
+  it("refuses approval revoked during asynchronous preparation", async () => {
+    const f = fixture()
+    approved(f.id)
+    s.db.prepare("UPDATE intents SET state='approved' WHERE id=?").run(f.id)
+    const build = f.writer.buildRequest
+    f.writer.buildRequest = async (intent) => {
+      const request = await build(intent)
+      s.db
+        .prepare(
+          "UPDATE credentials SET revoked_at='now' WHERE credential_id='credential'"
+        )
+        .run()
+      return request
+    }
+    expect(await f.executor.execute(f.id)).toEqual({
+      ok: false,
+      code: "missing_approval",
+    })
+    expect(f.transport).not.toHaveBeenCalled()
+  })
+
+  it("claims only one write when asynchronous preparations race", async () => {
+    const f = fixture()
+    const build = f.writer.buildRequest
+    f.writer.buildRequest = async (intent) => {
+      await Promise.resolve()
+      return build(intent)
+    }
+    const results = await Promise.all([
+      f.executor.execute(f.id),
+      f.executor.execute(f.id),
+    ])
+    expect(results.filter((result) => result.ok)).toHaveLength(1)
+    expect(f.transport).toHaveBeenCalledTimes(1)
+  })
+
   it("passes an immutable snapshot of the checked request to transport", async () => {
     const f = fixture()
     let built: UpstreamRequest | undefined
     const build = f.writer.buildRequest
-    f.writer.buildRequest = (intent) => {
-      built = build(intent)
+    f.writer.buildRequest = async (intent) => {
+      built = await build(intent)
       return built
     }
     const decode = f.writer.intentFromRequest
@@ -671,7 +725,10 @@ describe("executor", () => {
   ])("refuses unsafe write URL %s", async (badUrl) => {
     const f = fixture()
     const build = f.writer.buildRequest
-    f.writer.buildRequest = (intent) => ({ ...build(intent), url: badUrl })
+    f.writer.buildRequest = async (intent) => ({
+      ...(await build(intent)),
+      url: badUrl,
+    })
     expect(await f.executor.execute(f.id)).toEqual({
       ok: false,
       code: "hash_mismatch",
@@ -746,7 +803,10 @@ describe("executor", () => {
     async (target) => {
       const f = fixture()
       const build = f.writer.buildRequest
-      f.writer.buildRequest = (intent) => ({ ...build(intent), url: target })
+      f.writer.buildRequest = async (intent) => ({
+        ...(await build(intent)),
+        url: target,
+      })
       f.writer.intentFromRequest = () => ({ ...label, connector: "mail" })
       expect(await f.executor.execute(f.id)).toEqual({
         ok: false,
@@ -862,8 +922,8 @@ describe("executor", () => {
     ]
     signedPin(s.db, mail, "system")
     const build = f.writer.buildRequest
-    f.writer.buildRequest = (intent) => ({
-      ...build(intent),
+    f.writer.buildRequest = async (intent) => ({
+      ...(await build(intent)),
       url: "https://mail.example.com/v1/labels/msg-1?tag=work&format=json",
     })
     f.writer.intentFromRequest = () => ({ ...label, connector: "mail" })

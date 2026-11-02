@@ -13,19 +13,98 @@ import {
   INTENT_KINDS,
   INTENT_PROMPT_TEXT,
   INTENT_RESULT_JSON_SCHEMA,
+  DOCUMENT_TYPE_LABELS,
+  DOCUMENT_TYPE_CLASSIFICATION_PROMPT,
+  DOCUMENT_TYPE_CLASSIFICATION_JSON_SCHEMA,
   SCHEMA_VERSION,
   validateIntent,
   validateIntentResult,
+  validateCoreApiAskResponse,
+  validateDocumentTypeClassification,
 } from "./index"
 import type { JsonSchema } from "./index"
 import { validate } from "./validate"
 
 const pkgRoot = join(import.meta.dirname, "..")
 const schemaDir = join(pkgRoot, "schemas")
-const codegen = join(pkgRoot, "scripts", "codegen.mjs")
+const codegen = join(pkgRoot, "scripts", "codegen.ts")
 
 const ISO = "2030-01-02T09:00:00Z"
 const ISO_END = "2030-01-02T10:00:00+01:00"
+
+describe("Core API Ask response metadata", () => {
+  const response = {
+    status: "answered",
+    answer: "Found it [M1].",
+    citations: [],
+    coverage: {
+      searched: 4,
+      matched: 1,
+      readInFull: 1,
+      label: "read 1 of 1 matching messages in full",
+    },
+    facts: { matchCount: 1 },
+    figures: [
+      { key: "matched", value: 1, location: "/coverage/matched" },
+      { key: "searched", value: 4, location: "/coverage/searched" },
+      { key: "readInFull", value: 1, location: "/coverage/readInFull" },
+    ],
+    followUps: [
+      {
+        label: "Archive email",
+        intent: {
+          kind: "email.archive",
+          args: { messageIds: ["fake-message"] },
+        },
+      },
+    ],
+    droppedTags: [],
+    possiblyTruncated: false,
+  }
+
+  test("accepts code-valued figures and a schema-valid intent candidate", () => {
+    expect(validateCoreApiAskResponse(response).ok).toBe(true)
+  })
+
+  test("rejects a malformed candidate intent", () => {
+    expect(
+      validateCoreApiAskResponse({
+        ...response,
+        followUps: [
+          {
+            label: "Archive email",
+            intent: { kind: "email.archive", args: { messageIds: [] } },
+          },
+        ],
+      }).ok
+    ).toBe(false)
+  })
+})
+
+describe("document type classification schema", () => {
+  test("the generated classifier prompt and grammar share the closed label set", () => {
+    expect(DOCUMENT_TYPE_CLASSIFICATION_PROMPT).toContain(
+      DOCUMENT_TYPE_LABELS.join(", ")
+    )
+    expect(DOCUMENT_TYPE_CLASSIFICATION_JSON_SCHEMA).toMatchObject({
+      properties: {
+        type: {
+          oneOf: [
+            { type: "string", enum: [...DOCUMENT_TYPE_LABELS] },
+            { type: "null" },
+          ],
+        },
+      },
+    })
+    expect(validateDocumentTypeClassification({ type: "Invoice" }).ok).toBe(
+      true
+    )
+    expect(validateDocumentTypeClassification({ type: "Warranty" }).ok).toBe(
+      false
+    )
+    expect(validateDocumentTypeClassification({ type: null }).ok).toBe(true)
+  })
+})
 
 // Synthetic payloads: example.com addresses and fake ids only.
 const VALID: Record<string, unknown> = {
@@ -60,6 +139,11 @@ const VALID: Record<string, unknown> = {
     note: "FYI",
   },
   "email.trash": { messageIds: ["m1"] },
+  "email.untrash": {
+    sourceIntentId: "trash-1",
+    messageIds: ["m1"],
+    priorLabels: [{ messageId: "m1", labels: ["INBOX"] }],
+  },
   "calendar.create": {
     entity: "personal",
     category: "health",
@@ -382,12 +466,19 @@ describe("schema walk", () => {
     expect([...removal].sort()).toEqual([
       "calendar.delete",
       "email.trash",
+      "email.untrash",
       "file.delete",
     ])
   })
 })
 
 describe("codegen", () => {
+  test("generated intent prompt lines never contain undefined", () => {
+    for (const line of INTENT_PROMPT_TEXT.split("\n")) {
+      expect(line).not.toContain("undefined")
+    }
+  })
+
   function run(dir: string, out: string): void {
     execFileSync(process.execPath, [codegen, "--schemas", dir, "--out", out], {
       stdio: "pipe",

@@ -10,6 +10,7 @@
     "build": {
       "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "env": ["EIDO_TAILNET_HOST"],
       "outputs": [".next/**", "!.next/cache/**", "!.next/dev/**", "dist/**"]
     },
     "lint": {
@@ -39,7 +40,7 @@
       "inputs": [
         "apps/**/*.{ts,tsx,js,mjs,cjs,json}",
         "packages/**/*.{ts,tsx,js,mjs,cjs,json}",
-        ".dependency-cruiser.cjs",
+        ".dependency-cruiser.mts",
         "tsconfig*.json",
         "!**/node_modules/**",
         "!**/.turbo/**",
@@ -52,22 +53,22 @@
       "dependsOn": ["//#check:deps"],
       "inputs": [
         "fixtures/boundary-violation/**",
-        ".dependency-cruiser.cjs",
-        "scripts/check-boundary-fixture.mjs"
+        ".dependency-cruiser.mts",
+        "scripts/check-boundary-fixture.ts"
       ]
     },
     "//#check:gate-deps": {
       "inputs": [
         "packages/gate/package.json",
         "packages/gate/ALLOWED_DEPENDENCIES",
-        "scripts/check-gate-deps.mjs"
+        "scripts/check-gate-deps.ts"
       ]
     },
     "//#check:lint-coverage": {
       "inputs": [
         "apps/**",
         "packages/**",
-        "scripts/check-lint-coverage.mjs",
+        "scripts/**",
         "tsconfig*.json",
         "!**/node_modules/**",
         "!**/.turbo/**",
@@ -78,7 +79,7 @@
     },
     "//#check:invariants": {
       "inputs": [
-        "scripts/check-invariant-tests.mjs",
+        "scripts/check-invariant-tests.ts",
         "packages/gate/src/internal/approvals.test.ts",
         "packages/gate/src/internal/audit.test.ts",
         "packages/gate/src/internal/connectors.test.ts",
@@ -99,7 +100,25 @@
       ]
     },
     "//#check:no-js-fixture": {
-      "inputs": ["scripts/check-no-js.mjs"]
+      "inputs": ["scripts/check-no-js.ts"]
+    },
+    "//#check:no-telemetry": {
+      "inputs": [
+        "apps/**/*.{ts,tsx,js,jsx,mjs,cjs,swift,json}",
+        "apps/*/package.json",
+        "packages/*/package.json",
+        "package.json",
+        "pnpm-lock.yaml",
+        "scripts/check-no-telemetry.ts",
+        "!**/node_modules/**",
+        "!**/.turbo/**",
+        "!**/coverage/**",
+        "!**/.next/**",
+        "!**/dist/**"
+      ]
+    },
+    "//#check:no-telemetry-fixture": {
+      "inputs": ["scripts/check-no-telemetry.ts"]
     },
     "//#check:secrets": {
       "inputs": [
@@ -116,8 +135,10 @@
         "package.json",
         "apps/*/package.json",
         "packages/*/package.json",
+        "infra/package.json",
+        "scripts/package.json",
         ".node-version",
-        "scripts/check-exact-versions.mjs"
+        "scripts/check-exact-versions.ts"
       ]
     },
     "//#format:check": {

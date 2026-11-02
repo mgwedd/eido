@@ -13,6 +13,10 @@ import {
   gmailLabelWriter,
   gmailMarkReadWriter,
   gmailTrashWriter,
+  gmailDraftWriter,
+  gmailSendWriter,
+  gmailReplyWriter,
+  gmailForwardWriter,
 } from "./gmail-writers"
 import { intentHistory, intentSummary, propose } from "./intents"
 import {
@@ -54,6 +58,7 @@ function pinnedGmail(): Setup {
     "email.label",
     "email.archive",
     "email.trash",
+    "email.untrash",
   ]) {
     const operation = gmail.operations.find((op) => op.intentKind === kind)
     if (operation === undefined) throw new Error(`fixture lacks ${kind}`)
@@ -470,6 +475,33 @@ describe("gmailLabelWriter", () => {
     }
   )
 
+  it("decodes raw MIME content rather than trusting an intent envelope", async () => {
+    const intent: Intent = {
+      kind: "email.send",
+      connector: "gmail",
+      args: {
+        to: ["person@example.invalid"],
+        subject: "Hi",
+        body: "Original body",
+      },
+    }
+    const request = await gmailSendWriter.buildRequest(intent)
+    if (
+      typeof request.body !== "object" ||
+      request.body === null ||
+      !("raw" in request.body) ||
+      typeof request.body.raw !== "string"
+    )
+      throw new Error("writer did not build raw MIME")
+    const raw = Buffer.from(request.body.raw, "base64url").toString("utf8")
+    const changed = raw.replace("Original body", "Changed body")
+    const decoded = await gmailSendWriter.intentFromRequest(
+      { ...request, body: { raw: Buffer.from(changed).toString("base64url") } },
+      "gmail"
+    )
+    expect(decoded).not.toEqual(intent)
+  })
+
   it.each([
     ["another URL", { url: `https://${GMAIL_HOST}/gmail/v1/users/me/labels` }],
     ["another method", { method: "PUT" }],
@@ -648,10 +680,24 @@ describe("the Gmail writers", () => {
     ["label", gmailLabelWriter, sample("email.archive")],
     ["archive", gmailArchiveWriter, sample("email.trash")],
     ["trash", gmailTrashWriter, sample("email.archive")],
-  ])("%s builds its own kind only", (_name, writer, other) => {
-    expect(() => writer.buildRequest(other)).toThrow("wrong intent kind")
+  ])("%s builds its own kind only", async (_name, writer, other) => {
+    await expect(
+      Promise.resolve().then(() => writer.buildRequest(other))
+    ).rejects.toThrow("wrong intent kind")
     expect(writer.inverse(other, { priorLabels: {} })).toBeNull()
   })
+
+  it.each([sample("email.send"), sample("email.draft")])(
+    "draft and send reject a mismatched intent kind",
+    async (other) => {
+      const writer =
+        other.kind === "email.send" ? gmailDraftWriter : gmailSendWriter
+      await expect(writer.buildRequest(other)).rejects.toThrow(
+        "wrong intent kind"
+      )
+      expect(writer.inverse(other, { priorLabels: {} })).toBeNull()
+    }
+  )
 
   it("decode only their own kind, though they share one route", () => {
     const archive = gmailArchiveWriter.buildRequest(sample("email.archive"))
@@ -670,7 +716,125 @@ describe("the Gmail writers", () => {
       "gmail:email.label",
       "gmail:email.archive",
       "gmail:email.trash",
+      "gmail:email.untrash",
+      "gmail:email.draft",
+      "gmail:email.send",
+      "gmail:email.reply",
+      "gmail:email.forward",
     ])
+  })
+
+  it.each([
+    [
+      gmailDraftWriter,
+      {
+        kind: "email.draft",
+        connector: "gmail",
+        args: { to: ["person@example.invalid"], subject: "Hi", body: "Body" },
+      } satisfies Intent,
+    ],
+    [
+      gmailSendWriter,
+      {
+        kind: "email.send",
+        connector: "gmail",
+        args: { to: ["person@example.invalid"], subject: "Hi", body: "Body" },
+      } satisfies Intent,
+    ],
+    [
+      gmailSendWriter,
+      {
+        kind: "email.send",
+        connector: "gmail",
+        args: {
+          to: ["person@example.invalid"],
+          subject: "Hi",
+          body: "Body",
+          draftId: "draft-1",
+        },
+      } satisfies Intent,
+    ],
+  ])(
+    "round-trips approved $1 mail intent and records no inverse",
+    async (_writer, intent) => {
+      const writer =
+        intent.kind === "email.draft" ? gmailDraftWriter : gmailSendWriter
+      const request = await writer.buildRequest(intent)
+      expect(await writer.intentFromRequest(request, "gmail")).toEqual(intent)
+      expect(writer.inverse(intent, { id: "upstream" })).toBeNull()
+    }
+  )
+
+  it("rejects malformed or unsupported raw mail", async () => {
+    await expect(
+      Promise.resolve().then(() =>
+        gmailDraftWriter.intentFromRequest({
+          method: "PUT",
+          url: "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+          body: {},
+        })
+      )
+    ).rejects.toThrow("not a Gmail mail request")
+    await expect(
+      Promise.resolve().then(() =>
+        gmailDraftWriter.intentFromRequest({
+          method: "POST",
+          url: "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+          body: { message: { raw: 3 } },
+        })
+      )
+    ).rejects.toThrow("not a Gmail raw mail request")
+    await expect(
+      Promise.resolve().then(() =>
+        gmailSendWriter.intentFromRequest({
+          method: "POST",
+          url: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+          body: { raw: Buffer.from("no mail headers").toString("base64url") },
+        })
+      )
+    ).rejects.toThrow("Gmail raw message lacks required headers or text body")
+  })
+
+  it.each([
+    [
+      gmailReplyWriter,
+      {
+        kind: "email.reply",
+        connector: "gmail",
+        args: {
+          messageId: "original-249",
+          messageSha256: "ab".repeat(32),
+          replyAll: true,
+          to: ["person@example.invalid"],
+          cc: ["copy@example.invalid"],
+          body: "Approved reply.",
+        },
+      } satisfies Intent,
+    ],
+    [
+      gmailForwardWriter,
+      {
+        kind: "email.forward",
+        connector: "gmail",
+        args: {
+          messageId: "original-249",
+          messageSha256: "cd".repeat(32),
+          to: ["person@example.invalid"],
+          note: "See attached.",
+        },
+      } satisfies Intent,
+    ],
+  ])("round-trips approved $1 intent without an inverse", (writer, intent) => {
+    const request = writer.buildRequest(intent)
+    expect(writer.intentFromRequest(request, "gmail")).toEqual(intent)
+    expect(writer.inverse(intent, { id: "sent-message" })).toBeNull()
+    const changedBody = {
+      ...request,
+      body: { ...request.body, unrelated: "unapproved" },
+    }
+    expect(() => writer.intentFromRequest(changedBody, "gmail")).toThrow(
+      "not a Gmail reply or forward request"
+    )
   })
 
   it.each(["./gmail-writers.ts", "./gmail-transport.ts"])(

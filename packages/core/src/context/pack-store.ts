@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite"
+import { writeQueueFor } from "../db/write-queue"
 import { plainContent } from "../inference/fence"
 import type {
   FencedBlock,
@@ -70,14 +71,24 @@ export function packIdFor(packHash: string): string {
 }
 
 /** Store a pack record. Storing the same pack again is a no-op. Returns whether a row was added. */
-export function storeContextPack(db: DatabaseSync, pack: ContextPack): boolean {
-  db.exec(CREATE_TABLE)
-  const { changes } = db
-    .prepare(
-      "INSERT OR IGNORE INTO context_packs (id, members_json, token_count, pack_hash) VALUES (?, ?, ?, ?)"
-    )
-    .run(pack.id, JSON.stringify(pack.members), pack.tokenCount, pack.packHash)
-  return Number(changes) > 0
+export function storeContextPack(
+  db: DatabaseSync,
+  pack: ContextPack
+): Promise<boolean> {
+  return writeQueueFor(db).run(() => {
+    db.exec(CREATE_TABLE)
+    const { changes } = db
+      .prepare(
+        "INSERT OR IGNORE INTO context_packs (id, members_json, token_count, pack_hash) VALUES (?, ?, ?, ?)"
+      )
+      .run(
+        pack.id,
+        JSON.stringify(pack.members),
+        pack.tokenCount,
+        pack.packHash
+      )
+    return Number(changes) > 0
+  })
 }
 
 function isEdge(value: unknown): value is MemberEdge {
@@ -158,7 +169,12 @@ export function readContextPack(
   tokenCount: number
   packHash: string
 } | null {
-  db.exec(CREATE_TABLE)
+  const table = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'context_packs'"
+    )
+    .get()
+  if (table === undefined) return null
   const row = db
     .prepare(
       "SELECT id, members_json, token_count, pack_hash FROM context_packs WHERE id = ?"

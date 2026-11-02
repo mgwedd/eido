@@ -1,0 +1,7 @@
+{
+  "synthetic-call-draft": "approve",
+  "synthetic-no-call": "reject",
+  "synthetic-injection": "reject",
+  "synthetic-schema-invalid-retry": "edit",
+  "synthetic-free-field": "approve"
+}

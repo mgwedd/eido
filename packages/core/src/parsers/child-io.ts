@@ -35,5 +35,8 @@ export function readJob(argv: readonly string[] = process.argv): ChildJob {
 }
 
 export function writeResult(job: ChildJob, value: unknown): void {
-  writeFileSync(job.resultPath, JSON.stringify(value), { flag: "wx" })
+  writeFileSync(job.resultPath, JSON.stringify(value), {
+    flag: "wx",
+    mode: 0o600,
+  })
 }

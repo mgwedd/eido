@@ -1,5 +1,6 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
 import { countMatches, search } from "../index/search"
+import { LIVE_DOCUMENT_PREDICATE } from "../index/heads"
 import type { SearchQuery } from "../index/search"
 import { packParts } from "../context/pack-store"
 import type { PackMember } from "../context/pack-store"
@@ -8,9 +9,14 @@ import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
 import {
   ESTIMATE_BOUNDARY,
   MATERIAL_RULES,
+  fence,
   plainContent,
+  toMaterial,
 } from "../inference/fence"
+import type { PromptPart } from "../inference/fence"
 import type { ModelClient } from "../inference/types"
+import type { AskFigure } from "@eido/schemas"
+import { indexedFollowUps } from "./follow-ups"
 import {
   absenceReplacement,
   checkTags,
@@ -52,10 +58,24 @@ function refused(
       label: coverageLabel(0, matched),
     },
     facts: { matchCount },
+    figures: [],
+    followUps: [],
     droppedTags: [],
     possiblyTruncated,
     reason,
   }
+}
+
+function figures(
+  searched: number,
+  matched: number,
+  readInFull: number
+): AskFigure[] {
+  return [
+    { key: "matched", value: matched, location: "/coverage/matched" },
+    { key: "searched", value: searched, location: "/coverage/searched" },
+    { key: "readInFull", value: readInFull, location: "/coverage/readInFull" },
+  ]
 }
 
 /** Indexed documents inside the plan's date filters, whatever their text. */
@@ -63,18 +83,22 @@ export function countSearched(db: DatabaseSync, plan: SearchPlan): number {
   const conditions: string[] = []
   const params: SQLInputValue[] = []
   if (plan.after !== undefined) {
-    conditions.push("occurred_at >= ?")
+    conditions.push("t.occurred_at >= ?")
     params.push(plan.after)
   }
   if (plan.before !== undefined) {
-    conditions.push("occurred_at < ?")
+    conditions.push("t.occurred_at < ?")
     params.push(plan.before)
   }
   const where =
-    conditions.length === 0 ? "" : ` WHERE ${conditions.join(" AND ")}`
+    conditions.length === 0 ? "" : ` AND ${conditions.join(" AND ")}`
   return Number(
     db
-      .prepare(`SELECT count(*) AS n FROM document_text${where}`)
+      .prepare(
+        `SELECT count(*) AS n FROM document_text t
+         JOIN documents d ON d.sha256 = t.sha256
+         WHERE ${LIVE_DOCUMENT_PREDICATE}${where}`
+      )
       .get(...params)?.["n"] ?? 0
   )
 }
@@ -88,7 +112,8 @@ function citationFor(
   const row = db
     .prepare(
       `SELECT d.source, d.source_ref, t.title, t.occurred_at FROM documents d
-       JOIN document_text t ON t.sha256 = d.sha256 WHERE d.sha256 = ?`
+       JOIN document_text t ON t.sha256 = d.sha256
+       WHERE ${LIVE_DOCUMENT_PREDICATE} AND d.sha256 = ?`
     )
     .get(documentId)
   // Every pack member was read from the index, so its row is there.
@@ -107,13 +132,46 @@ function citationFor(
       : {}),
     injectionSuspected: member.injectionSuspected,
     injectionReasons: member.injectionReasons,
-    ...(member.passageOffsets === undefined
-      ? {}
-      : { passageOffsets: member.passageOffsets }),
   }
 }
 
 const isoDate = (d: Date): string => d.toISOString().slice(0, 10)
+
+function factsText(
+  plan: SearchPlan,
+  matched: number,
+  searched: number,
+  readInFull: number
+): string {
+  return [
+    "Facts (computed by code):",
+    `matched: ${String(matched)}`,
+    `searched: ${String(searched)}`,
+    `readInFull: ${String(readInFull)}`,
+    `wants: ${plan.wants}`,
+  ].join("\n")
+}
+
+function conversationParts(turns: AskDeps["conversation"]): PromptPart[] {
+  if (turns === undefined || turns.length === 0) return []
+  return [
+    "Conversation so far (prior turns may help interpret the question):\n",
+    ...turns.flatMap((turn) =>
+      turn.role === "user"
+        ? [`[user ${turn.at}] ${turn.text}\n`]
+        : [
+            `[${turn.role} ${turn.at}]\n`,
+            fence(
+              toMaterial(turn.text, {
+                source: turn.role === "summary" ? "summary" : "assistant",
+              })
+            ),
+            "\n",
+          ]
+    ),
+    "\n",
+  ]
+}
 
 async function run(
   question: string,
@@ -122,20 +180,6 @@ async function run(
 ): Promise<AskResult> {
   const { db } = deps
   const today = isoDate((deps.now ?? (() => new Date()))())
-
-  const charsPerToken = deps.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
-  const planInputTokens =
-    estimateTokens(PLAN_SYSTEM, charsPerToken) +
-    estimateTokens(`Today is ${today}.\nQuestion: ${question}`, charsPerToken) +
-    estimateTokens(JSON.stringify(PLAN_SCHEMA), charsPerToken)
-  if (planInputTokens > deps.budgetTokens)
-    return refused(
-      "the question does not fit the model's context",
-      0,
-      0,
-      null,
-      false
-    )
 
   // Step 1: the model writes a search plan; code runs it.
   let planned
@@ -190,6 +234,8 @@ async function run(
         label: coverageLabel(0, 0),
       },
       facts: { matchCount },
+      figures: figures(searched, 0, 0),
+      followUps: [],
       droppedTags: [],
       possiblyTruncated: truncatedPlan,
     }
@@ -199,35 +245,41 @@ async function run(
     ...query,
     limit: deps.searchLimit ?? DEFAULT_SEARCH_LIMIT,
   })
-  const reserve = deps.followUpReserveTokens ?? 128
-  const maxHits = hits.map((h) => h.sha256)
-  const factsPrefix = [
-    "Facts (computed by code):",
-    `matched: ${String(matchCount)}`,
-    `searched: ${String(searched)}`,
-    "readInFull: 999999",
-    "readPartially: 999999",
-    `wants: ${plan.wants}`,
-    "\n\nMessages:\n",
-  ].join("\n")
-  const overheadTokens =
-    estimateTokens(ANSWER_SYSTEM, charsPerToken) +
-    estimateTokens(factsPrefix, charsPerToken) +
-    estimateTokens(`\n\nQuestion: ${question}`, charsPerToken)
-  const packBudget = deps.budgetTokens - reserve - overheadTokens
+  const historyParts = conversationParts(deps.conversation)
+  const contextHeaderParts: PromptPart[] = [
+    `${factsText(
+      plan,
+      matchCount,
+      searched,
+      Number.MAX_SAFE_INTEGER
+    )}\n\nMessages:\n`,
+    `\n\nQuestion: ${question}`,
+  ]
+  const charsPerToken = deps.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
+  const fixedContextTokens = estimateTokens(
+    plainContent([...historyParts, ...contextHeaderParts], ESTIMATE_BOUNDARY),
+    charsPerToken
+  )
+  const packBudgetTokens = deps.budgetTokens - fixedContextTokens
+  if (packBudgetTokens <= 0) {
+    return refused(
+      `the conversation and question need ${String(fixedContextTokens)} tokens, over the ${String(deps.budgetTokens)} ask budget`,
+      matchCount,
+      searched,
+      matchCount,
+      truncatedPlan
+    )
+  }
   const pack = await buildAskPack(db, {
-    hits: maxHits,
-    budgetTokens: Math.max(packBudget, 0),
-    focused: plan.wants !== "summarize",
-    terms: plan.terms,
-    searchScores: hits.map((hit) => ({ sha256: hit.sha256, score: hit.score })),
+    hits: hits.map((h) => h.sha256),
+    budgetTokens: packBudgetTokens,
     ...(deps.charsPerToken === undefined
       ? {}
       : { charsPerToken: deps.charsPerToken }),
   })
   if ("refused" in pack) {
     return refused(
-      `the top matching message needs ${String(pack.seedTokens + overheadTokens + reserve)} tokens and the ask budget is ${String(deps.budgetTokens)}`,
+      `the top matching message needs ${String(pack.seedTokens)} tokens; the conversation and question leave ${String(pack.budgetTokens)} of ${String(deps.budgetTokens)} ask tokens for messages`,
       matchCount,
       searched,
       matchCount,
@@ -235,51 +287,8 @@ async function run(
     )
   }
 
-  const fullDocs = new Set(
-    pack.members
-      .filter((member) => member.passageOffsets === undefined)
-      .map((member) => member.sha256)
-  )
-  const partialDocs = new Set(
-    pack.members
-      .filter((member) => member.passageOffsets !== undefined)
-      .map((member) => member.sha256)
-  )
-  const readInFull = fullDocs.size
-  const readPartially = [...partialDocs].filter(
-    (sha) => !fullDocs.has(sha)
-  ).length
-  const readAny = fullDocs.size + readPartially
-  const omittedMaterial = readPartially > 0 || readAny < matchCount
-  const omittedMatches = Math.max(0, matchCount - readAny) + readPartially
-  const facts = [
-    "Facts (computed by code):",
-    `matched: ${String(matchCount)}`,
-    `searched: ${String(searched)}`,
-    `readInFull: ${String(readInFull)}`,
-    `readPartially: ${String(readPartially)}`,
-    `wants: ${plan.wants}`,
-  ].join("\n")
-
-  const answerContent = [
-    `${facts}\n\nMessages:\n`,
-    ...packParts(pack),
-    `\n\nQuestion: ${question}`,
-  ]
-  const answerInputTokens =
-    estimateTokens(ANSWER_SYSTEM, charsPerToken) +
-    estimateTokens(
-      plainContent(answerContent, ESTIMATE_BOUNDARY),
-      charsPerToken
-    )
-  if (answerInputTokens + reserve > deps.budgetTokens)
-    return refused(
-      "the messages and the question do not fit the model's context",
-      matchCount,
-      searched,
-      matchCount,
-      truncatedPlan
-    )
+  const readInFull = pack.members.length
+  const facts = factsText(plan, matchCount, searched, readInFull)
 
   // Step 2: the model answers from the pack.
   let answered
@@ -290,7 +299,12 @@ async function run(
         {
           role: "user",
           // The material first; the owner's question last, unfenced.
-          content: answerContent,
+          content: [
+            ...historyParts,
+            `${facts}\n\nMessages:\n`,
+            ...packParts(pack),
+            `\n\nQuestion: ${question}`,
+          ],
         },
       ],
       temperature: 0,
@@ -311,18 +325,12 @@ async function run(
     searched,
     matched: matchCount,
     readInFull,
-    ...(readPartially > 0 ? { readPartially } : {}),
-    ...(omittedMaterial ? { omittedMaterial: true } : {}),
-    ...(omittedMaterial ? { omittedMatches } : {}),
-    label:
-      readPartially > 0
-        ? `read ${String(readInFull)} in full and excerpts from ${String(readPartially)} of ${String(matchCount)} matching messages${omittedMaterial ? "; other material was omitted" : ""}`
-        : coverageLabel(readInFull, matchCount),
+    label: coverageLabel(readInFull, matchCount),
   }
 
   const withCounts = substitutePlaceholders(answered.text, {
     matches: matchCount,
-    read: readAny,
+    read: readInFull,
     searched,
   })
   const byTag = new Map(pack.members.map((m) => [m.tag.slice(1, -1), m]))
@@ -330,27 +338,54 @@ async function run(
   if (claimsAbsence(checked.text)) {
     return {
       status: "answered",
-      answer:
-        readPartially > 0
-          ? `No match found in the selected passages from ${String(readPartially)} matching messages.`
-          : absenceReplacement(readInFull),
+      answer: absenceReplacement(readInFull),
       citations: [],
       coverage,
       facts: { matchCount },
+      figures: figures(searched, matchCount, readInFull),
+      followUps: [],
       droppedTags: checked.dropped,
       possiblyTruncated,
     }
   }
+  const citations = []
+  for (const tag of checked.cited) {
+    const member = byTag.get(tag)
+    if (member === undefined) continue
+    const citation = citationFor(db, tag, member)
+    citations.push(
+      deps.allocateSourceTag === undefined
+        ? citation
+        : { ...citation, tag: await deps.allocateSourceTag(citation.sourceRef) }
+    )
+  }
+  let answer = checked.text
+  if (deps.allocateSourceTag !== undefined) {
+    for (const citation of citations) {
+      const original = checked.cited.find((tag) => {
+        const member = byTag.get(tag)
+        return (
+          member !== undefined &&
+          citationFor(db, tag, member).sourceRef === citation.sourceRef
+        )
+      })
+      if (original !== undefined)
+        answer = answer.replaceAll(`[${original}]`, `[${citation.tag}]`)
+    }
+  }
   return {
     status: "answered",
-    answer: checked.text,
+    answer,
     // `checkTags` keeps only tags in the pack, so every cited tag has a member.
-    citations: checked.cited.flatMap((tag) => {
-      const member = byTag.get(tag)
-      return member === undefined ? [] : [citationFor(db, tag, member)]
-    }),
+    citations,
     coverage,
     facts: { matchCount },
+    figures: figures(searched, matchCount, readInFull),
+    followUps: indexedFollowUps(
+      db,
+      hits.map((hit) => hit.sha256),
+      new Set(pack.members.map((member) => member.sha256))
+    ),
     droppedTags: checked.dropped,
     possiblyTruncated,
   }
@@ -359,8 +394,9 @@ async function run(
 /**
  * Answer a question from the index. Two model steps: a search plan under a JSON schema, then an
  * answer from a context pack. Code computes every count, checks every citation tag against the
- * pack and builds the coverage label. It only reads: it creates no intents. The whole ask is one
- * foreground job, so background work waits behind it and it waits at most for one running job.
+ * pack and builds the coverage label. It returns validated proposal candidates; it never submits
+ * or executes them. The whole ask is one foreground job, so background work waits behind it and
+ * it waits at most for one running job.
  */
 export function ask(question: string, deps: AskDeps): Promise<AskResult> {
   return deps.queue.run("foreground", (client) => run(question, deps, client))

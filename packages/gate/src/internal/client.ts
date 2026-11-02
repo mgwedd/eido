@@ -3,11 +3,13 @@ import {
   validateGateApiError,
   validateGateAuditRecordResult,
   validateGateConnectorHealth,
+  validateGateEnrolmentCode,
   validateGateIntentHistory,
   validateGateIntentStatus,
   validateGateMailFolderList,
   validateGateMailFolderState,
   validateGateMailMessagePage,
+  validateGatePasskeyList,
   validateGatePendingIntentList,
   validateGateProposeRefusal,
   validateGateProposeResult,
@@ -16,10 +18,12 @@ import type {
   GateAuditRecordRequest,
   GateAuditRecordResult,
   GateConnectorHealth,
+  GateEnrolmentCode,
   GateIntentHistory,
   GateIntentProposal,
   GateIntentStatus,
   GateMailFolderState,
+  GatePasskeyList,
   GatePendingIntentList,
   GateProposeResult,
   ValidationResult,
@@ -72,6 +76,8 @@ export type IntentProposal = Omit<GateIntentProposal, "intent"> & {
 export type IntentClient = {
   /** Resolves for a stored intent, including one policy refused (state rejected). */
   propose: (proposal: IntentProposal) => Promise<GateProposeResult>
+  /** Creates a fresh approval-tier restore proposal from an executed Gmail trash receipt. */
+  restoreTrash: (trashIntentId: string) => Promise<GateProposeResult>
   status: (id: string) => Promise<GateIntentStatus>
   history: (id: string) => Promise<GateIntentHistory["entries"]>
   listPending: () => Promise<GatePendingIntentList["intents"]>
@@ -81,8 +87,8 @@ export type IntentClient = {
 
 export type AuditClient = {
   /**
-   * Appends one hash-only audit.profile.* row to the gate's audit log (#181). Resolves once the
-   * row is written; rejects with GateRequestError when the gate refuses the entry and with
+   * Appends one hash-only audit.profile.* (#181) or audit.ledger.* (#104) row to the gate's
+   * audit log. Resolves once the row is written; rejects with GateRequestError when the gate refuses the entry and with
    * GateUnavailableError when the gate cannot be reached, so the caller can roll back.
    */
   record: (entry: GateAuditRecordRequest) => Promise<GateAuditRecordResult>
@@ -192,6 +198,18 @@ export function createIntentClient(options: IntentClientOptions): IntentClient {
         "GateProposeResult"
       )
     },
+    restoreTrash: async (trashIntentId) =>
+      expect(
+        await call(
+          resolved,
+          "POST",
+          `${intentPath(trashIntentId)}/restore`,
+          {}
+        ),
+        [201],
+        validateGateProposeResult,
+        "GateProposeResult"
+      ),
     status: async (id) =>
       expect(
         await call(resolved, "GET", intentPath(id)),
@@ -317,5 +335,57 @@ export function createProtonMailClient(
         skipped: page.skipped,
       }
     },
+  }
+}
+
+/**
+ * The owner's client for the gate's control socket (#78), used by the Mac-side `enrol-code`
+ * command. The control socket is readable by the gate user only; core never gets this client.
+ */
+export function createEnrolmentClient(options: IntentClientOptions): {
+  issueCode: () => Promise<GateEnrolmentCode>
+} {
+  const resolved = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  return {
+    issueCode: async () =>
+      expect(
+        await call(resolved, "POST", "/enrolment-codes"),
+        [201],
+        validateGateEnrolmentCode,
+        "GateEnrolmentCode"
+      ),
+  }
+}
+
+/**
+ * The owner's passkey client for the control socket (#419), used by the Mac-side `passkeys`
+ * command. Revoking a passkey signs its phone out; the phone listener has no revoke route.
+ */
+export function createPasskeyAdminClient(options: IntentClientOptions): {
+  list: () => Promise<GatePasskeyList>
+  revoke: (fingerprint: string) => Promise<GatePasskeyList>
+} {
+  const resolved = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  return {
+    list: async () =>
+      expect(
+        await call(resolved, "GET", "/passkeys"),
+        [200],
+        validateGatePasskeyList,
+        "GatePasskeyList"
+      ),
+    revoke: async (fingerprint) =>
+      expect(
+        await call(resolved, "POST", "/passkeys/revoke", { fingerprint }),
+        [200],
+        validateGatePasskeyList,
+        "GatePasskeyList"
+      ),
   }
 }

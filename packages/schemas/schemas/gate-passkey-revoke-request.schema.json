@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePasskeyRevokeRequest",
+  "description": "Body of POST /passkeys/revoke on the gate's control socket (#419): the SHA-256 fingerprint of the credential id, as GET /passkeys lists it. Only the Mac-side control socket serves this route; the phone listener has none.",
+  "type": "object",
+  "properties": {
+    "fingerprint": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "required": ["fingerprint"],
+  "additionalProperties": false
+}

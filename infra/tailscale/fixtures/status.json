@@ -1,0 +1,4 @@
+{
+  "BackendState": "Running",
+  "Self": { "DNSName": "node.example.ts.net.", "HostName": "node" }
+}

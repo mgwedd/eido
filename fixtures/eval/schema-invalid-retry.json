@@ -1,0 +1,23 @@
+{
+  "id": "synthetic-schema-invalid-retry",
+  "request": "Create a reminder to review the proposal.",
+  "messages": [
+    {
+      "id": "msg-reminder@example.invalid",
+      "from": "jules@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-04T12:00:00.000Z",
+      "subject": "Proposal",
+      "body": "The proposal is ready for review."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "reminder.create",
+        "args": { "list": "Work", "title": "Review proposal" }
+      }
+    ]
+  }
+}

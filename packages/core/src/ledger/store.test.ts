@@ -31,9 +31,19 @@ beforeEach(async () => {
   ])
 })
 
-function codeOf(fn: () => unknown): string {
+async function codeOf(fn: () => unknown): Promise<string> {
   try {
-    fn()
+    await fn()
+  } catch (error) {
+    if (error instanceof LedgerError) return error.code
+    throw error
+  }
+  return "none"
+}
+
+async function codeOfAsync(fn: () => Promise<unknown>): Promise<string> {
+  try {
+    await fn()
   } catch (error) {
     if (error instanceof LedgerError) return error.code
     throw error
@@ -111,26 +121,28 @@ describe("no ledger row without a source link", () => {
     ).toThrow(/NOT NULL/)
   })
 
-  test("insertObligation fails with a typed error for a missing document, span or entity", () => {
+  test("insertObligation fails with a typed error for a missing document, span or entity", async () => {
     expect(
-      codeOf(() => insertObligation(db, obligation({ docId: "f".repeat(64) })))
+      await codeOf(() =>
+        insertObligation(db, obligation({ docId: "f".repeat(64) }))
+      )
     ).toBe("document_not_found")
     expect(
-      codeOf(() =>
+      await codeOf(() =>
         insertObligation(db, obligation({ span: { start: 4, end: 4 } }))
       )
     ).toBe("invalid_span")
     expect(
-      codeOf(() =>
+      await codeOf(() =>
         insertObligation(db, obligation({ entityId: "no-such-entity" }))
       )
     ).toBe("entity_not_found")
     expect(listObligations(db)).toEqual([])
   })
 
-  test("insertExtraction fails with a typed error for a missing document", () => {
+  test("insertExtraction fails with a typed error for a missing document", async () => {
     expect(
-      codeOf(() =>
+      await codeOfAsync(() =>
         insertExtraction(db, {
           docId: "f".repeat(64),
           schema: "extracted-fields",
@@ -159,8 +171,8 @@ describe("per-field confidence", () => {
       )
       .run(id, field, confidence)
 
-  test("two fields of one extraction store different confidences", () => {
-    const id = rawExtraction()
+  test("two fields of one extraction store different confidences", async () => {
+    const id = await rawExtraction()
     expect(confidences(id)).toEqual([
       ["action", 0.9],
       ["amount", 0.4],
@@ -210,8 +222,8 @@ describe("per-field confidence", () => {
     ])
   })
 
-  test("a processed_empty extraction has '{}', no confidence rows and accepts none", () => {
-    const id = insertExtraction(db, {
+  test("a processed_empty extraction has '{}', no confidence rows and accepts none", async () => {
+    const id = await insertExtraction(db, {
       docId: docA,
       schema: "extracted-fields",
       status: "processed_empty",
@@ -237,7 +249,7 @@ describe("per-field confidence", () => {
     ).toThrow(/CHECK/)
   })
 
-  test("insertExtraction refuses a present field without confidence, or a confidence without its field", () => {
+  test("insertExtraction refuses a present field without confidence, or a confidence without its field", async () => {
     const base = {
       docId: docA,
       schema: "extracted-fields",
@@ -247,12 +259,12 @@ describe("per-field confidence", () => {
       createdAt: "2030-01-01T00:00:00.000Z",
     }
     expect(
-      codeOf(() =>
+      await codeOfAsync(() =>
         insertExtraction(db, { ...base, confidence: { action: 0.9 } })
       )
     ).toBe("invalid_confidence")
     expect(
-      codeOf(() =>
+      await codeOfAsync(() =>
         insertExtraction(db, {
           ...base,
           confidence: { action: 0.9, amount: 0.4, party: 0.5 },
@@ -264,9 +276,9 @@ describe("per-field confidence", () => {
     ).toBe(0)
   })
 
-  test("a confidence outside 0..1 is refused before anything is written", () => {
+  test("a confidence outside 0..1 is refused before anything is written", async () => {
     expect(
-      codeOf(() =>
+      await codeOfAsync(() =>
         insertExtraction(db, {
           docId: docA,
           schema: "extracted-fields",
@@ -283,8 +295,8 @@ describe("per-field confidence", () => {
     ).toBe(0)
   })
 
-  test("stored extractions and confidences cannot be changed or deleted", () => {
-    const id = rawExtraction()
+  test("stored extractions and confidences cannot be changed or deleted", async () => {
+    const id = await rawExtraction()
     expect(() =>
       db.exec("UPDATE extraction_field_confidence SET confidence = 0.1")
     ).toThrow(/append-only/)
@@ -320,19 +332,19 @@ describe("obligation status", () => {
     }
   )
 
-  test("rejects a due date that is not YYYY-MM-DD", () => {
-    expect(() =>
+  test("rejects a due date that is not YYYY-MM-DD", async () => {
+    await expect(
       insertObligation(db, obligation({ dueAt: "1 Feb 2030" }))
-    ).toThrow(/real date/)
+    ).rejects.toThrow(/real date/)
   })
 
   test.each(["2030-13-45", "2030-02-30", "2030-00-10", "2031-02-29"])(
     "rejects the impossible date %s, on insert and on update",
-    (dueAt) => {
-      expect(() => insertObligation(db, obligation({ dueAt }))).toThrow(
+    async (dueAt) => {
+      await expect(insertObligation(db, obligation({ dueAt }))).rejects.toThrow(
         /real date/
       )
-      const id = insertObligation(db, obligation())
+      const id = await insertObligation(db, obligation())
       expect(() =>
         db
           .prepare("UPDATE obligations SET due_at = ? WHERE id = ?")
@@ -343,25 +355,30 @@ describe("obligation status", () => {
 
   test.each(["2030-02-28", "2032-02-29"])(
     "accepts the real date %s",
-    (dueAt) => {
-      insertObligation(db, obligation({ dueAt }))
+    async (dueAt) => {
+      await insertObligation(db, obligation({ dueAt }))
       expect(listObligations(db).map((o) => o.dueAt)).toEqual([dueAt])
     }
   )
 })
 
 describe("an obligation has its document's entity", () => {
-  test("insertObligation refuses another entity with entity_mismatch", () => {
+  test("insertObligation refuses another entity with entity_mismatch", async () => {
     expect(
-      codeOf(() => insertObligation(db, obligation({ entityId: company.id })))
+      await codeOf(() =>
+        insertObligation(db, obligation({ entityId: company.id }))
+      )
     ).toBe("entity_mismatch")
     expect(listObligations(db)).toEqual([])
     expect(
-      insertObligation(db, obligation({ docId: docB, entityId: company.id }))
+      await insertObligation(
+        db,
+        obligation({ docId: docB, entityId: company.id })
+      )
     ).toBe(1)
   })
 
-  test("the database refuses a mismatch written directly, on insert and on update", () => {
+  test("the database refuses a mismatch written directly, on insert and on update", async () => {
     expect(() =>
       db
         .prepare(
@@ -370,7 +387,7 @@ describe("an obligation has its document's entity", () => {
         )
         .run(company.id, docA)
     ).toThrow(/document entity/)
-    const id = insertObligation(db, obligation())
+    const id = await insertObligation(db, obligation())
     expect(() =>
       db
         .prepare("UPDATE obligations SET entity_id = ? WHERE id = ?")
@@ -380,16 +397,16 @@ describe("an obligation has its document's entity", () => {
 })
 
 describe("confirmed_at", () => {
-  test("can be set once, then cannot be changed or cleared", () => {
-    const id = rawExtraction()
-    confirmExtraction(db, id, "2030-01-02T00:00:00.000Z")
+  test("can be set once, then cannot be changed or cleared", async () => {
+    const id = await rawExtraction()
+    await confirmExtraction(db, id, "2030-01-02T00:00:00.000Z")
     expect(
       db.prepare("SELECT confirmed_at FROM extractions WHERE id = ?").get(id)?.[
         "confirmed_at"
       ]
     ).toBe("2030-01-02T00:00:00.000Z")
     expect(
-      codeOf(() => confirmExtraction(db, id, "2030-01-03T00:00:00.000Z"))
+      await codeOf(() => confirmExtraction(db, id, "2030-01-03T00:00:00.000Z"))
     ).toBe("already_confirmed")
     const set = (value: string | null) =>
       db
@@ -404,8 +421,8 @@ describe("confirmed_at", () => {
     ).toBe("2030-01-02T00:00:00.000Z")
   })
 
-  test("cannot be cleared before it is set, and other columns cannot change", () => {
-    const id = rawExtraction()
+  test("cannot be cleared before it is set, and other columns cannot change", async () => {
+    const id = await rawExtraction()
     expect(() =>
       db
         .prepare("UPDATE extractions SET confirmed_at = NULL WHERE id = ?")
@@ -416,22 +433,25 @@ describe("confirmed_at", () => {
     ).toThrow(/immutable/)
   })
 
-  test("confirming an unknown extraction fails", () => {
+  test("confirming an unknown extraction fails", async () => {
     expect(
-      codeOf(() => confirmExtraction(db, 999, "2030-01-02T00:00:00.000Z"))
+      await codeOf(() => confirmExtraction(db, 999, "2030-01-02T00:00:00.000Z"))
     ).toBe("extraction_not_found")
   })
 })
 
 describe("listObligations", () => {
-  test("returns only the entity's rows, ordered by due date with no due date last", () => {
-    const late = insertObligation(db, obligation({ dueAt: "2030-03-01" }))
-    const none = insertObligation(
+  test("returns only the entity's rows, ordered by due date with no due date last", async () => {
+    const late = await insertObligation(db, obligation({ dueAt: "2030-03-01" }))
+    const none = await insertObligation(
       db,
       obligation({ dueAt: undefined, party: undefined })
     )
-    const early = insertObligation(db, obligation({ dueAt: "2030-01-15" }))
-    insertObligation(
+    const early = await insertObligation(
+      db,
+      obligation({ dueAt: "2030-01-15" })
+    )
+    await insertObligation(
       db,
       obligation({ entityId: company.id, docId: docB, dueAt: "2030-01-01" })
     )
@@ -451,6 +471,12 @@ describe("listObligations", () => {
       status: "open",
       docId: docA,
       span: { start: 10, end: 25 },
+      injectionSuspected: false,
+      injectionReasons: [],
+      direction: null,
+      threadId: null,
+      anchorMessageId: null,
+      resolutionReason: null,
     })
     expect(listObligations(db).map((o) => o.entity.name)).toEqual([
       "Test Company",
@@ -460,11 +486,14 @@ describe("listObligations", () => {
     ])
   })
 
-  test("filters by status and by due date (exclusive, no due date left out)", () => {
-    const open = insertObligation(db, obligation({ dueAt: "2030-01-10" }))
-    insertObligation(db, obligation({ dueAt: "2030-01-05", status: "done" }))
-    insertObligation(db, obligation({ dueAt: "2030-02-01" }))
-    insertObligation(db, obligation({ dueAt: undefined }))
+  test("filters by status and by due date (exclusive, no due date left out)", async () => {
+    const open = await insertObligation(db, obligation({ dueAt: "2030-01-10" }))
+    await insertObligation(
+      db,
+      obligation({ dueAt: "2030-01-05", status: "done" })
+    )
+    await insertObligation(db, obligation({ dueAt: "2030-02-01" }))
+    await insertObligation(db, obligation({ dueAt: undefined }))
     expect(
       listObligations(db, { status: "open", dueBefore: "2030-02-01" }).map(
         (o) => o.id
@@ -475,7 +504,7 @@ describe("listObligations", () => {
 
 describe("entities come from the profile store (#80)", () => {
   test("a rename through the profile store shows in listObligations", async () => {
-    insertObligation(db, obligation())
+    await insertObligation(db, obligation())
     await profile.updateEntity(property.id, {
       name: "Renamed Property",
       tag: "RP",
@@ -495,7 +524,10 @@ describe("entities come from the profile store (#80)", () => {
     const [docSpare = ""] = addDocs(db, [
       testDoc("spare", { entityId: spare.id }),
     ])
-    insertObligation(db, obligation({ entityId: spare.id, docId: docSpare }))
+    await insertObligation(
+      db,
+      obligation({ entityId: spare.id, docId: docSpare })
+    )
     const refusal = async (id: string) => {
       try {
         await profile.deleteEntity(id)
@@ -522,8 +554,8 @@ describe("entities come from the profile store (#80)", () => {
 })
 
 describe("an obligation keeps its source", () => {
-  test("its status can change, its document and span cannot, and it is never deleted", () => {
-    const id = insertObligation(db, obligation())
+  test("its status can change, its document and span cannot, and it is never deleted", async () => {
+    const id = await insertObligation(db, obligation())
     db.prepare("UPDATE obligations SET status = 'done' WHERE id = ?").run(id)
     expect(listObligations(db).map((o) => o.status)).toEqual(["done"])
     expect(() =>
@@ -539,14 +571,14 @@ describe("an obligation keeps its source", () => {
     ).toThrow(/not deleted/)
   })
 
-  test("an obligation id is never reused", () => {
-    const first = insertObligation(db, obligation())
+  test("an obligation id is never reused", async () => {
+    const first = await insertObligation(db, obligation())
     db.exec("DROP TRIGGER obligations_no_delete")
     db.prepare("DELETE FROM obligations WHERE id = ?").run(first)
-    expect(insertObligation(db, obligation())).toBe(first + 1)
+    expect(await insertObligation(db, obligation())).toBe(first + 1)
   })
 
-  test("a span stored as a BLOB, or with a mistyped optional field, is refused", () => {
+  test("a span stored as a BLOB, or with a mistyped optional field, is refused", async () => {
     expect(() =>
       db
         .prepare(
@@ -556,7 +588,7 @@ describe("an obligation keeps its source", () => {
         .run(property.id, docA, new TextEncoder().encode('{"start":0,"end":3}'))
     ).toThrow(/CHECK/)
     expect(
-      codeOf(() =>
+      await codeOf(() =>
         insertObligation(
           db,
           obligation({
@@ -572,20 +604,22 @@ describe("an obligation keeps its source", () => {
 })
 
 describe("getObligationSource", () => {
-  test("returns the document's blob path and the stored span", () => {
+  test("returns the document's blob path and the stored span", async () => {
     const span = {
       start: 3,
       end: 18,
       message_id: "<m1@example.invalid>",
       line: 2,
     }
-    const id = insertObligation(db, obligation({ span }))
+    const id = await insertObligation(db, obligation({ span }))
     expect(getObligationSource(db, id)).toEqual({
       docId: docA,
       blobPath: "blobs/a.eml",
       span,
+      injectionSuspected: false,
+      injectionReasons: [],
     })
-    const noBlob = insertObligation(
+    const noBlob = await insertObligation(
       db,
       obligation({ docId: docB, entityId: company.id })
     )
@@ -593,8 +627,8 @@ describe("getObligationSource", () => {
     expect(getObligationSource(db, 999)).toBeNull()
   })
 
-  test("a span corrupted outside the ledger is reported, not returned", () => {
-    const id = insertObligation(db, obligation())
+  test("a span corrupted outside the ledger is reported, not returned", async () => {
+    const id = await insertObligation(db, obligation())
     // A file edited by hand, outside the ledger's constraints and triggers.
     db.exec("DROP TRIGGER obligations_source_fixed")
     db.exec("PRAGMA ignore_check_constraints = ON")
@@ -606,7 +640,7 @@ describe("getObligationSource", () => {
 })
 
 describe("parameterized statements only", () => {
-  test("a hostile document, obligation and extraction round-trip as data", () => {
+  test("a hostile document, obligation and extraction round-trip as data", async () => {
     const hostile = `O'Brien'); DROP TABLE obligations; -- "quoted" ; DROP TABLE documents;`
     const [doc = ""] = addDocs(db, [
       testDoc("hostile", {
@@ -615,11 +649,11 @@ describe("parameterized statements only", () => {
         body: hostile,
       }),
     ])
-    const id = insertObligation(
+    const id = await insertObligation(
       db,
       obligation({ docId: doc, party: hostile, action: hostile })
     )
-    const extraction = insertExtraction(db, {
+    const extraction = await insertExtraction(db, {
       docId: doc,
       schema: hostile,
       status: "extracted",
@@ -647,5 +681,72 @@ describe("parameterized statements only", () => {
       }),
     })
     expect(search(db, { text: "O'Brien" }).map((h) => h.sha256)).toEqual([doc])
+  })
+})
+
+describe("injection provenance", () => {
+  test("inconsistent flags and reasons fail before writing, including direct SQL", async () => {
+    expect(
+      await codeOf(() =>
+        insertObligation(db, obligation({ injectionSuspected: true }))
+      )
+    ).toBe("invalid_injection_provenance")
+    expect(
+      await codeOf(() =>
+        insertObligation(db, obligation({ injectionReasons: ["fence-tag"] }))
+      )
+    ).toBe("invalid_injection_provenance")
+    expect(listObligations(db)).toEqual([])
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO obligations (entity_id, action, status, doc_id, source_span, injection_suspected) VALUES (?, 'Pay', 'open', ?, '{"start":0,"end":3}', 1)`
+        )
+        .run(property.id, docA)
+    ).toThrow(/CHECK/)
+  })
+  test("flagged and clean obligations retain their passage flags on both read paths", async () => {
+    const flagged = await insertObligation(
+      db,
+      obligation({
+        injectionSuspected: true,
+        injectionReasons: ["fence-tag", "hidden-characters"],
+      })
+    )
+    const clean = await insertObligation(
+      db,
+      obligation({ injectionSuspected: false, injectionReasons: [] })
+    )
+    expect(
+      listObligations(db).map((row) => [
+        row.injectionSuspected,
+        row.injectionReasons,
+      ])
+    ).toEqual([
+      [true, ["fence-tag", "hidden-characters"]],
+      [false, []],
+    ])
+    expect(getObligationSource(db, flagged)).toMatchObject({
+      injectionSuspected: true,
+      injectionReasons: ["fence-tag", "hidden-characters"],
+    })
+    expect(getObligationSource(db, clean)).toMatchObject({
+      injectionSuspected: false,
+      injectionReasons: [],
+    })
+    expect(() =>
+      db
+        .prepare("UPDATE obligations SET injection_suspected = 0 WHERE id = ?")
+        .run(flagged)
+    ).toThrow(/keeps its source/)
+  })
+  test("malformed stored reasons are reported instead of returned", async () => {
+    const id = await insertObligation(db, obligation())
+    db.exec("DROP TRIGGER obligations_injection_fixed")
+    db.exec("PRAGMA ignore_check_constraints = ON")
+    db.prepare(
+      "UPDATE obligations SET injection_reasons = '[1]' WHERE id = ?"
+    ).run(id)
+    expect(() => getObligationSource(db, id)).toThrow(/malformed/)
   })
 })

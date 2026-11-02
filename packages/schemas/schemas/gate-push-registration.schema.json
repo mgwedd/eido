@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePushRegistration",
+  "type": "object",
+  "properties": {
+    "subscription": {
+      "$ref": "gate-push-subscription.schema.json"
+    },
+    "approval": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "nonce": {
+          "type": "string"
+        },
+        "assertion": {
+          "$ref": "gate-webauthn-assertion.schema.json"
+        }
+      },
+      "required": ["id", "nonce", "assertion"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["subscription", "approval"],
+  "additionalProperties": false
+}

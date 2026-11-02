@@ -160,6 +160,8 @@ out/
 # production
 build
 # turbo
+.eval-results/
+eval-local/
 # misc
 .DS_Store
 *.pem

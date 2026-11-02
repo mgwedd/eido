@@ -1,8 +1,11 @@
+import type { InjectionFlag } from "../inference/index"
+
 // Digests of long threads and documents. Data plane only: no network, no tokens. A digest is a
 // lossy summary, so it never answers whether something happened; that goes to search.
 
 /** A source a digest line points to: a message of a thread, or a page of a document. */
-export type Cite = { messageId: string } | { docSha256: string; page: number }
+export type Cite = InjectionFlag &
+  ({ messageId: string } | { docSha256: string; page: number })
 
 /** One summary line. A stored line always has at least one cite. */
 export interface DigestLine {

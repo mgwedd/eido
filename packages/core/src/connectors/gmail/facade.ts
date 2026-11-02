@@ -244,6 +244,10 @@ export function createGmailFacade(deps: GmailFacadeDeps) {
       ),
     trash: (args: EmailTrashIntent["args"], note?: ProposalNote) =>
       propose({ kind: "email.trash", args }, note),
+    restore_trash: async (args: { sourceIntentId: string }) => {
+      const result = await intents.restoreTrash(args.sourceIntentId)
+      return { intentId: result.id }
+    },
   }
 }
 

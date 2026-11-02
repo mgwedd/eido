@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiDocumentType",
+  "description": "Response of PUT /documents/:sha256/type: the stored type of the document and who set it (always user for this route).",
+  "type": "object",
+  "properties": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "type": { "$ref": "document-type-label.schema.json" },
+    "typeSource": { "enum": ["model", "user"] }
+  },
+  "required": ["sha256", "type", "typeSource"],
+  "additionalProperties": false
+}

@@ -1,25 +1,52 @@
 import { GateUnavailableError } from "@eido/gate"
 import type {
+  CoreApiAccountList,
   CoreApiAssignmentList,
+  CoreApiAskRequest,
+  CoreApiAskResponse,
   CoreApiEntity,
   CoreApiEntityList,
+  CoreApiDefaultEntity,
   CoreApiError,
   CoreApiProfile,
   CoreApiProfileResponse,
+  CoreApiSendFrom,
   GateConnectorHealth,
+  GateProposeResult,
   ProfileAccountAssignment,
 } from "@eido/schemas"
+import {
+  validateCoreApiAskRequest,
+  validateCoreApiDefaultEntityRequest,
+  validateGateIntentProposal,
+  validateIntent,
+} from "@eido/schemas"
+import type { IntentClient, IntentProposal } from "@eido/gate"
 import type { AskResult } from "../ask/types"
+import { assignableAccounts } from "../connectors/accounts"
+import type { KnownAccount } from "../connectors/accounts"
+import type { ObligationStateStore } from "../ledger/obligation-state"
+import {
+  DOCUMENT_TYPE_PATH,
+  documentsRoute,
+  setOwnerDocumentType,
+} from "./documents-route"
+import type { DocumentsDeps } from "./documents-route"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
 import type { ProfileStore } from "../profile/store"
+import { OBLIGATION_CHANGE_PATH, changeObligation } from "./obligations-route"
 
 export interface ApiDeps {
   profile: ProfileStore
   /** Read-only projection from the gate; no connector credentials or mail payloads. */
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
+  /** Accounts the configured connectors have reported. Absent: none are configured. */
+  connectorAccounts?: () => readonly KnownAccount[]
+  /** The Proton account the assistant sends from. Absent: Proton is not configured. */
+  sendFrom?: string
   /**
-   * Host header values core answers to, such as `127.0.0.1:8787`. A request with any other
+   * Host header values core answers to, such as `127.0.0.1:8789`. A request with any other
    * Host gets 421. Core has no auth, so this stops a page that rebinds its own domain to the
    * listen address (DNS rebinding) from driving core through the owner's browser.
    */
@@ -35,6 +62,12 @@ export interface ApiDeps {
    * served.
    */
   ask?: (question: string) => Promise<AskResult>
+  /** Proposes a validated intent through the gate; absent when the gate client is unavailable. */
+  propose?: IntentClient["propose"]
+  /** Local obligation state changes (#104). When absent, `/obligations/...` is not served. */
+  obligations?: ObligationStateStore
+  /** The data DB the Documents list and viewer read. When absent, `/documents` is not served. */
+  documents?: DocumentsDeps
 }
 
 export type ApiHandler = (request: Request) => Promise<Response>
@@ -47,6 +80,7 @@ const STATUS: Record<ErrorCode, number> = {
   duplicate_tag: 409,
   not_found: 404,
   entity_in_use: 409,
+  invalid_transition: 409,
   bad_request: 400,
   unsupported_media_type: 415,
   payload_too_large: 413,
@@ -147,23 +181,8 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
-/** Longest question `/ask` accepts, in characters (code points). */
-export const MAX_QUESTION_CHARS = 2000
-
-/** The question from an `/ask` body: a non-empty string of at most MAX_QUESTION_CHARS. */
-function readQuestion(body: unknown): string {
-  const question: unknown =
-    body !== null && typeof body === "object"
-      ? Reflect.get(body, "question")
-      : undefined
-  if (typeof question !== "string" || question.trim() === "")
-    throw new HttpError("bad_request", "question must be a non-empty string")
-  if ([...question].length > MAX_QUESTION_CHARS)
-    throw new HttpError(
-      "bad_request",
-      `question must be at most ${String(MAX_QUESTION_CHARS)} characters`
-    )
-  return question.trim()
+function readQuestion(body: CoreApiAskRequest): string {
+  return body.question.trim()
 }
 
 const ENTITY_PATH = /^\/entities\/([^/]+)$/
@@ -213,6 +232,30 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return notAllowed("GET", "PATCH")
     }
 
+    if (path === "/default-entity") {
+      if (method === "GET") {
+        const body: CoreApiDefaultEntity = {
+          entityId: await profile.getDefaultEntityId(),
+        }
+        return json(body)
+      }
+      if (method === "PUT") {
+        const validation = validateCoreApiDefaultEntityRequest(
+          await readJson(request)
+        )
+        if (!validation.ok) {
+          return failure("invalid", "invalid input", {
+            fields: toFieldErrors(validation.errors),
+          })
+        }
+        const body: CoreApiDefaultEntity = {
+          entityId: await profile.setDefaultEntityId(validation.value.entityId),
+        }
+        return json(body)
+      }
+      return notAllowed("GET", "PUT")
+    }
+
     if (path === "/connectors/health") {
       if (method !== "GET") return notAllowed("GET")
       if (deps.connectorHealth === undefined) {
@@ -221,6 +264,28 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       const body: GateConnectorHealth = {
         connectors: await deps.connectorHealth(),
       }
+      return json(body)
+    }
+
+    if (path === "/connectors/accounts") {
+      if (method !== "GET") return notAllowed("GET")
+      const known = deps.connectorAccounts?.() ?? []
+      if (known.length > 0 && deps.connectorHealth === undefined) {
+        return failure("gate_unavailable", "connector health unavailable")
+      }
+      const health =
+        deps.connectorHealth === undefined || known.length === 0
+          ? []
+          : await deps.connectorHealth()
+      const body: CoreApiAccountList = {
+        accounts: assignableAccounts(known, health),
+      }
+      return json(body)
+    }
+
+    if (path === "/connectors/send-from") {
+      if (method !== "GET") return notAllowed("GET")
+      const body: CoreApiSendFrom = { address: deps.sendFrom ?? null }
       return json(body)
     }
 
@@ -264,9 +329,66 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
 
     if (path === "/ask" && deps.ask !== undefined) {
       if (method !== "POST") return notAllowed("POST")
-      const question = readQuestion(await readJson(request))
-      const body: AskResult = await deps.ask(question)
+      const raw = await readJson(request)
+      const validation = validateCoreApiAskRequest(raw)
+      if (!validation.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(validation.errors),
+        })
+      }
+      const question = readQuestion(validation.value)
+      let result: AskResult
+      try {
+        result = await deps.ask(question)
+      } catch {
+        return failure("busy", "ask is temporarily unavailable")
+      }
+      const body: CoreApiAskResponse = result
       return json(body)
+    }
+
+    if (path === "/intents" && deps.propose !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const validation = validateGateIntentProposal(await readJson(request))
+      if (!validation.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(validation.errors),
+        })
+      }
+      if (validation.value.origin !== "reactive") {
+        return failure("invalid", "origin must be reactive", {
+          fields: [{ field: "origin", message: "must be reactive" }],
+        })
+      }
+      const intent = validateIntent(validation.value.intent)
+      if (!intent.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(intent.errors),
+        })
+      }
+      const proposal: IntentProposal = {
+        ...validation.value,
+        intent: intent.value,
+        origin: "reactive",
+      }
+      const result: GateProposeResult = await deps.propose(proposal)
+      return json({ id: result.id, tier: result.tier, state: result.state })
+    }
+
+    const obligationMatch = OBLIGATION_CHANGE_PATH.exec(path)
+    if (obligationMatch && deps.obligations !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const result = await changeObligation(
+        deps.obligations,
+        obligationMatch,
+        await readJson(request)
+      )
+      if (result.ok) return json(result.body)
+      return failure(
+        result.code,
+        result.message,
+        result.fields ? { fields: result.fields } : {}
+      )
     }
 
     if (path === "/entity-assignments") {
@@ -303,6 +425,34 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return new Response(null, { status: 204 })
       }
       return notAllowed("GET", "PUT", "DELETE")
+    }
+
+    const typeMatch = DOCUMENT_TYPE_PATH.exec(path)
+    if (typeMatch !== null && deps.documents !== undefined) {
+      if (method !== "PUT") return notAllowed("PUT")
+      const result = await setOwnerDocumentType(
+        deps.documents,
+        typeMatch,
+        await readJson(request)
+      )
+      if (result.ok) return json(result.body)
+      const { code, message, fields } = result
+      return failure(code, message, fields ? { fields } : {})
+    }
+
+    if (deps.documents !== undefined) {
+      const result = documentsRoute(
+        method,
+        path,
+        url.searchParams,
+        deps.documents
+      )
+      if (result !== null) {
+        if (result.ok) return json(result.body)
+        if (result.code === "method_not_allowed") return notAllowed("GET")
+        const { code, message, fields } = result
+        return failure(code, message, fields ? { fields } : {})
+      }
     }
 
     return failure("not_found", "no such route")

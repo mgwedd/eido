@@ -179,6 +179,7 @@ describe("a valid approval", () => {
       ok: true,
       intentId: id,
       state: "approved",
+      nudge: false,
     })
     expect(intentStatus(w.db, id)?.state).toBe("approved")
     expect(approvalRows(w.db)).toEqual([
@@ -210,6 +211,52 @@ describe("a valid approval", () => {
       expect(verifyApproval(w.db, WEBAUTHN, request).ok).toBe(true)
     }
     expect(storedSignCount(w.db, w.auth.credentialId)).toBe(0)
+  })
+})
+
+describe("an origin with an explicit port (ADR 0004)", () => {
+  const PORTED = {
+    rpId: "node.example.ts.net",
+    origin: "https://node.example.ts.net:8443",
+  }
+  const fromPage = { rpId: PORTED.rpId, origin: PORTED.origin }
+
+  function portedWorld(): World {
+    current = setup()
+    const auth = testAuthenticator()
+    const begun = beginRegistration(current.db, "admin")
+    if (!begun.ok) throw new Error("enrolment challenge refused")
+    const enrolled = registerCredential(
+      current.db,
+      PORTED,
+      "admin",
+      registration(auth, begun.challenge, fromPage)
+    )
+    if (!enrolled.ok) throw new Error(`enrolment refused: ${enrolled.code}`)
+    return { db: current.db, policy: current.policy, auth }
+  }
+
+  it("verifies an assertion from the :8443 origin", () => {
+    const w = portedWorld()
+    const id = pendingSend(w)
+    const request = signed(w.auth, prepare(w.db, id), fromPage)
+    expect(verifyApproval(w.db, PORTED, request).ok).toBe(true)
+    expect(intentStatus(w.db, id)?.state).toBe("approved")
+  })
+
+  it.each([
+    ["the same host on another port", "https://node.example.ts.net:8444"],
+    ["the same host with no port", "https://node.example.ts.net"],
+  ])("refuses an assertion from %s", (_name, origin) => {
+    const w = portedWorld()
+    const id = pendingSend(w)
+    const request = signed(w.auth, prepare(w.db, id), {
+      rpId: PORTED.rpId,
+      origin,
+    })
+    expect(verifyApproval(w.db, PORTED, request)).toEqual(REFUSED)
+    expect(intentStatus(w.db, id)?.state).toBe("pending")
+    expect(actions(w.db, id)).toContain("approval.refused.wrong_origin")
   })
 })
 
@@ -562,6 +609,27 @@ describe("signCountAccepted", () => {
     [5, 4, false],
   ])("stored %i, received %i: %s", (stored, received, accepted) => {
     expect(signCountAccepted(stored, received)).toBe(accepted)
+  })
+})
+
+describe("approval burst nudge", () => {
+  it("flags only approvals above the configured rolling threshold", () => {
+    const w = world()
+    let time = new Date("2026-10-25T12:00:00.000Z")
+    const approve = (number: number) => {
+      const id = pendingSend(w, `Burst ${number}`)
+      return verifyApproval(w.db, WEBAUTHN, signed(w.auth, prepare(w.db, id)), {
+        now: () => time,
+        threshold: 5,
+        windowMs: 120_000,
+      })
+    }
+    for (let number = 1; number <= 5; number++) {
+      expect(approve(number)).toMatchObject({ ok: true, nudge: false })
+    }
+    expect(approve(6)).toMatchObject({ ok: true, nudge: true })
+    time = new Date("2026-10-25T12:02:01.000Z")
+    expect(approve(7)).toMatchObject({ ok: true, nudge: false })
   })
 })
 

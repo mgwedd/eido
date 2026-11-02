@@ -135,6 +135,6 @@ export async function ocrImage(
   }
   counter += 1
   const path = join(config.workDir, `page-${String(counter)}.pgm`)
-  writeFileSync(path, toPgm(image), { flag: "wx" })
+  writeFileSync(path, toPgm(image), { flag: "wx", mode: 0o600 })
   return ocrFile(path, config)
 }

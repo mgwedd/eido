@@ -20,6 +20,8 @@ type StateCase = {
   fetch?: ProbeOutcome
   /** The live region that announces the state. */
   role: "status" | "alert"
+  /** Select a state's own region when a page has several independent announcements. */
+  selector?: string
   /**
    * The state's own message, written as a literal in the test. `null` asserts the region
    * is present and says nothing (the state has no message).
@@ -67,7 +69,9 @@ function describeStates(name: string, cases: readonly StateCase[]) {
           root.render(row.render())
           await new Promise((resolve) => setTimeout(resolve, 0))
         })
-        const region = container.querySelector(`[role="${row.role}"]`)
+        const region = container.querySelector(
+          row.selector ?? `[role="${row.role}"]`
+        )
         expect(region, `no element with role="${row.role}"`).not.toBeNull()
         const text = (region?.textContent ?? "").trim()
         if (row.message === null) expect(text).toBe("")

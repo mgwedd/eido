@@ -1,4 +1,5 @@
 import type { ExtractedFields, SourceSpan } from "@eido/schemas"
+import type { InjectionReason } from "../inference/fence"
 import type { EntityKind } from "../profile/types"
 
 export type ExtractionFieldName = keyof ExtractedFields
@@ -25,6 +26,7 @@ export type ExtractionInput =
     }
 
 export type ObligationStatus = "open" | "done" | "dismissed"
+export type ObligationDirection = "owed" | "waiting"
 
 export interface ObligationInput {
   entityId: string
@@ -35,6 +37,11 @@ export interface ObligationInput {
   status: ObligationStatus
   docId: string
   span: SourceSpan
+  injectionSuspected?: boolean
+  injectionReasons?: InjectionReason[]
+  direction?: ObligationDirection
+  threadId?: string
+  anchorMessageId?: string
 }
 
 export interface Obligation {
@@ -46,6 +53,12 @@ export interface Obligation {
   status: ObligationStatus
   docId: string
   span: SourceSpan
+  injectionSuspected: boolean
+  injectionReasons: InjectionReason[]
+  direction: ObligationDirection | null
+  threadId: string | null
+  anchorMessageId: string | null
+  resolutionReason: "replied" | null
 }
 
 export interface ObligationFilter {
@@ -59,6 +72,8 @@ export interface ObligationSource {
   docId: string
   blobPath: string | null
   span: SourceSpan
+  injectionSuspected: boolean
+  injectionReasons: InjectionReason[]
 }
 
 export type LinkEndpoint =

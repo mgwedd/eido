@@ -1,23 +1,49 @@
-import { createHash } from "node:crypto"
+import { createECDH, createHash, randomBytes } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
+  validateGateAuditChainStatus,
+  validateGateAuditPage,
+  validateGateConnectorSettings,
   validateGateCredentialStatus,
   validateGateDecisionResult,
+  validateGateEnrolOptions,
   validateGateIntentHistory,
   validateGateLoginOptions,
   validateGatePendingIntentList,
   validateGatePrepareApproval,
   validateGateSession,
+  validateGatePasskeyList,
+  validateGatePermissionList,
 } from "@eido/schemas"
 import type { Body, GateRequest, Reply } from "./http"
+import { append } from "./audit"
+import {
+  beginConnectorRead,
+  recordConnectorReadFailure,
+  recordConnectorReadSuccess,
+} from "./connector-health"
+import { checkDrift, manifestHash } from "./connectors"
+import { payloadHash } from "./canonical"
+import { loadPolicy, SHIPPED_DEFAULT_PATH } from "./policy"
 import { propose } from "./intents"
+import { revokeCredential } from "./credentials"
+import { issueEnrolmentCode } from "./enrolment"
 import { matchRoute, phoneHandler, routePath } from "./phone-routes"
+import { preparePushRegistration } from "./push-subscriptions"
 import type { PhoneState } from "./phone-routes"
 import {
   assertion,
+  auditRows,
+  controlAuthorization,
+  loggedText,
+  registration,
+  FILE_OPS,
+  manifest,
   deviceChallenge,
   sample,
   setup,
+  signedPolicy,
   testAuthenticator,
   WEBAUTHN,
 } from "./test-fixtures"
@@ -39,6 +65,7 @@ type Options = {
   raw?: Body
   contentType?: string | null
   basePath?: string
+  query?: URLSearchParams
 }
 
 async function call(
@@ -62,8 +89,8 @@ async function call(
       : { ok: true, text: JSON.stringify(options.body) })
   const request: GateRequest = {
     method,
-    path,
-    query: new URLSearchParams(),
+    path: path.split("?")[0] ?? path,
+    query: options.query ?? new URLSearchParams(path.split("?")[1] ?? ""),
     headers: {
       ...(host === null ? {} : { host }),
       ...(options.cookie === undefined ? {} : { cookie: options.cookie }),
@@ -133,6 +160,579 @@ beforeEach(() => {
   auth = testAuthenticator()
 })
 
+describe("phoneHandler: push subscriptions", () => {
+  it("returns unavailable when the gate has no configured push vault", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    expect((await call("GET", "/push/key", { cookie })).status).toBe(503)
+    expect(
+      (await call("POST", "/push/prepare", { cookie, body: {} })).status
+    ).toBe(503)
+    expect(
+      (await call("POST", "/push/subscriptions", { cookie, body: {} })).status
+    ).toBe(503)
+  })
+
+  it("refuses a signed registration whose endpoint changed after preparation", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    state.push = {
+      publicKey: () => Promise.resolve("synthetic-public-key"),
+      notifyPending: () => undefined,
+    }
+    const receiver = createECDH("prime256v1")
+    receiver.generateKeys()
+    const subscription = {
+      endpoint: "https://push.example.invalid/one",
+      p256dh: receiver
+        .getPublicKey(undefined, "uncompressed")
+        .toString("base64url"),
+      auth: randomBytes(16).toString("base64url"),
+    }
+    const authorization = controlAuthorization(
+      s.db,
+      preparePushRegistration(s.db, subscription)
+    )
+    const changed = {
+      ...subscription,
+      endpoint: "https://other.example.invalid/one",
+    }
+    const reply = await call("POST", "/push/subscriptions", {
+      cookie,
+      body: { subscription: changed, approval: authorization.request },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect((await call("GET", "/push/subscriptions", { cookie })).body).toEqual(
+      { subscriptions: [] }
+    )
+  })
+
+  it("requires a session and a signed binding, then lists and removes the subscription", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    state.push = {
+      publicKey: () => Promise.resolve("synthetic-public-key"),
+      notifyPending: () => undefined,
+    }
+    const receiver = createECDH("prime256v1")
+    receiver.generateKeys()
+    const subscription = {
+      endpoint: "https://push.example.invalid/one",
+      p256dh: receiver
+        .getPublicKey(undefined, "uncompressed")
+        .toString("base64url"),
+      auth: randomBytes(16).toString("base64url"),
+    }
+    expect((await call("GET", "/push/key")).status).toBe(401)
+    expect((await call("GET", "/push/key", { cookie })).body).toEqual({
+      publicKey: "synthetic-public-key",
+    })
+    const prepared = await call("POST", "/push/prepare", {
+      cookie,
+      body: subscription,
+    })
+    expect(prepared.status).toBe(200)
+    if (
+      typeof prepared.body !== "object" ||
+      prepared.body === null ||
+      !("challenge" in prepared.body) ||
+      !("purpose" in prepared.body)
+    )
+      throw new Error("push preparation did not return a challenge")
+    expect(prepared.body.purpose).toBe("policy.set")
+    expect(typeof prepared.body.challenge).toBe("string")
+    expect(
+      (
+        await call("POST", "/push/prepare", {
+          cookie,
+          body: { ...subscription, endpoint: "http://localhost/send" },
+        })
+      ).status
+    ).toBe(400)
+    const unsigned = await call("POST", "/push/subscriptions", {
+      cookie,
+      body: { subscription, approval: {} },
+    })
+    expect(unsigned.status).toBe(400)
+    const ceremony = preparePushRegistration(s.db, subscription)
+    const authorization = controlAuthorization(s.db, ceremony)
+    const registered = await call("POST", "/push/subscriptions", {
+      cookie,
+      body: { subscription, approval: authorization.request },
+    })
+    expect(registered.status).toBe(201)
+    if (
+      typeof registered.body !== "object" ||
+      registered.body === null ||
+      !("id" in registered.body) ||
+      typeof registered.body.id !== "string"
+    )
+      throw new Error("registration did not return an id")
+    const id = registered.body.id
+    expect((await call("GET", "/push/subscriptions", { cookie })).body).toEqual(
+      { subscriptions: [{ id }] }
+    )
+    expect((await call("POST", `/push/${id}/remove`, { cookie })).status).toBe(
+      200
+    )
+    expect((await call("GET", "/push/subscriptions", { cookie })).body).toEqual(
+      { subscriptions: [] }
+    )
+  })
+})
+
+describe("phoneHandler: connector settings detail", () => {
+  it("serves last success, manifest hash and asOf for healthy, open and drift-disabled connectors", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const READ = Date.parse("2026-10-19T08:30:00.000Z")
+    recordConnectorReadSuccess(
+      s.db,
+      "mail",
+      beginConnectorRead(s.db, "mail", READ),
+      READ
+    )
+    for (let i = 0; i < 5; i += 1) {
+      recordConnectorReadFailure(
+        s.db,
+        "calendar",
+        "timeout",
+        beginConnectorRead(s.db, "calendar", READ + i),
+        READ + i
+      )
+    }
+    checkDrift(s.db, "files", ["files.unpinned_tool"])
+    at = new Date("2026-10-19T09:00:00.000Z")
+
+    const reply = await call("GET", "/connector-settings", { cookie })
+    const checked = validateGateConnectorSettings(reply.body)
+    if (!checked.ok) throw new Error("connector settings are invalid")
+    expect(checked.value.asOf).toBe(at.toISOString())
+    const byName = new Map(checked.value.connectors.map((c) => [c.name, c]))
+
+    const mail = byName.get("mail")
+    expect(mail).toMatchObject({
+      enabled: true,
+      health: "healthy",
+      lastSuccessAt: new Date(READ).toISOString(),
+    })
+    expect(mail?.manifestHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(mail).not.toHaveProperty("drift")
+
+    const calendar = byName.get("calendar")
+    expect(calendar).toMatchObject({ enabled: true, health: "open" })
+    expect(calendar).not.toHaveProperty("lastSuccessAt")
+    expect(calendar).not.toHaveProperty("drift")
+
+    const files = byName.get("files")
+    expect(files?.enabled).toBe(false)
+    expect(files?.drift?.added).toEqual(["files.unpinned_tool"])
+    expect(files?.drift?.removed.length).toBeGreaterThan(0)
+    expect(files?.manifestHash).toBe(manifestHash(manifest("files", FILE_OPS)))
+    expect(JSON.stringify(reply.body)).not.toMatch(/token|secret/i)
+  })
+})
+
+describe("phoneHandler: authenticated settings reads", () => {
+  it("reports every shipped default independently of the effective tier", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("GET", "/permissions", { cookie })
+    const checked = validateGatePermissionList(reply.body)
+    if (!checked.ok) throw new Error("permission list is invalid")
+    const shipped: unknown = JSON.parse(
+      readFileSync(SHIPPED_DEFAULT_PATH, "utf8")
+    )
+    expect({
+      version: 1,
+      tiers: Object.fromEntries(
+        checked.value.tiers
+          .filter((row) => row.default !== null)
+          .map((row) => [row.kind, row.default])
+      ),
+    }).toEqual(shipped)
+    expect(checked.value.tiers.every((row) => !("override" in row))).toBe(true)
+  })
+
+  it("reports only active signed overrides, including one equal to the default", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    signedPolicy(s.db, {
+      version: 1,
+      tiers: { "email.archive": "approval", "email.label": "auto" },
+    })
+    state.policy = loadPolicy(s.db, s.options).policy
+    const reply = await call("GET", "/permissions", { cookie })
+    const checked = validateGatePermissionList(reply.body)
+    if (!checked.ok) throw new Error("permission list is invalid")
+    expect(
+      checked.value.tiers.filter((row) => row.override !== undefined)
+    ).toEqual([
+      { kind: "email.label", default: "auto", override: "auto", tier: "auto" },
+      {
+        kind: "email.archive",
+        default: "auto",
+        override: "approval",
+        tier: "approval",
+      },
+    ])
+    // A file proposal is not an approved policy and must never appear as an override.
+    s.writeOverlay({ version: 1, tiers: { "email.send": "auto" } })
+    state.policy = loadPolicy(s.db, s.options).policy
+    const unapproved = await call("GET", "/permissions", { cookie })
+    const parsed = validateGatePermissionList(unapproved.body)
+    if (!parsed.ok) throw new Error("permission list is invalid")
+    expect(parsed.value.tiers.find((row) => row.kind === "email.send")).toEqual(
+      {
+        kind: "email.send",
+        default: "approval",
+        tier: "approval",
+      }
+    )
+  })
+
+  it("keeps configured tiers visible when a connector is disabled or a default is absent", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    signedPolicy(s.db, { version: 1, tiers: { "email.archive": "approval" } })
+    state.policy = loadPolicy(s.db, s.options).policy
+    delete state.policy.shipped.tiers["email.send"]
+    checkDrift(s.db, "mail", ["unexpected_tool"])
+    const reply = await call("GET", "/permissions", { cookie })
+    const checked = validateGatePermissionList(reply.body)
+    if (!checked.ok) throw new Error("permission list is invalid")
+    expect(
+      checked.value.tiers.find((row) => row.kind === "email.archive")
+    ).toEqual({
+      kind: "email.archive",
+      default: "auto",
+      override: "approval",
+      tier: "forbidden",
+      reason: "connector_disabled",
+    })
+    expect(
+      checked.value.tiers.find((row) => row.kind === "email.send")
+    ).toEqual({
+      kind: "email.send",
+      default: null,
+      tier: "forbidden",
+      reason: "connector_disabled",
+    })
+  })
+
+  it("rejects every settings read without a valid session cookie", async () => {
+    for (const path of [
+      "/audit",
+      "/audit/chain",
+      "/connector-settings",
+      "/passkeys",
+      "/permissions",
+    ]) {
+      expect((await call("GET", path)).status, path).toBe(401)
+    }
+  })
+
+  it("returns live connector, passkey, policy and chain state after login", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const connectors = await call("GET", "/connector-settings", { cookie })
+    const checkedConnectors = validateGateConnectorSettings(connectors.body)
+    expect(checkedConnectors.ok).toBe(true)
+    if (!checkedConnectors.ok) throw new Error("connector settings are invalid")
+    const mail = checkedConnectors.value.connectors.find(
+      (connector) => connector.name === "mail"
+    )
+    expect(mail).toMatchObject({ enabled: true, scopes: ["write"] })
+    expect(Date.parse(mail?.pinnedAt ?? "")).not.toBeNaN()
+
+    const passkeys = await call("GET", "/passkeys", { cookie })
+    const checkedPasskeys = validateGatePasskeyList(passkeys.body)
+    expect(checkedPasskeys.ok).toBe(true)
+    if (!checkedPasskeys.ok) throw new Error("passkey list is invalid")
+    expect(checkedPasskeys.value.passkeys).toContainEqual({
+      fingerprint: createHash("sha256").update(auth.credentialId).digest("hex"),
+      createdAt: START.toISOString(),
+      revokedAt: null,
+    })
+
+    const permissions = await call("GET", "/permissions", { cookie })
+    const checkedPermissions = validateGatePermissionList(permissions.body)
+    expect(checkedPermissions.ok).toBe(true)
+    if (!checkedPermissions.ok) throw new Error("permission list is invalid")
+    expect(checkedPermissions.value.tiers).toContainEqual({
+      kind: "email.archive",
+      tier: "auto",
+      default: "auto",
+    })
+    expect(checkedPermissions.value.tiers).toContainEqual({
+      kind: "email.send",
+      tier: "approval",
+      default: "approval",
+    })
+
+    const chain = await call("GET", "/audit/chain", { cookie })
+    expect(validateGateAuditChainStatus(chain.body)).toMatchObject({ ok: true })
+
+    append(s.db, {
+      actor: "owner",
+      action: "owner.settings_read",
+      target: "settings",
+      detailHash: payloadHash({ source: "test" }),
+    })
+    append(s.db, {
+      actor: "gate",
+      action: "gate.settings_read",
+      target: "settings",
+      detailHash: payloadHash({ source: "test" }),
+    })
+    const audit = await call("GET", "/audit", { cookie })
+    const checkedAudit = validateGateAuditPage(audit.body)
+    expect(checkedAudit.ok).toBe(true)
+    if (!checkedAudit.ok) throw new Error("audit page is invalid")
+    expect(checkedAudit.value.entries).toContainEqual(
+      expect.objectContaining({ actor: "owner", displayActor: "you" })
+    )
+    expect(checkedAudit.value.entries).toContainEqual(
+      expect.objectContaining({ actor: "gate", displayActor: "gate" })
+    )
+  })
+
+  it("labels executor rows only for matching approved signatures already valid at that row", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const id = pendingSend()
+    const beforeApproval = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: id,
+      detailHash: payloadHash({ result: "before-approval" }),
+      ts: new Date(START.getTime() - 1000).toISOString(),
+    })
+    at = new Date(START.getTime() + 2000)
+    const preparedReply = await call("POST", `/approvals/${id}/nonce`, {
+      cookie,
+    })
+    const prepared = validateGatePrepareApproval(preparedReply.body)
+    if (!prepared.ok)
+      throw new Error(
+        `${JSON.stringify(preparedReply.body)}: ${prepared.errors.join("; ")}`
+      )
+    await call("POST", `/approvals/${id}/decision`, {
+      cookie,
+      body: {
+        intentId: id,
+        decision: "approved",
+        nonce: prepared.value.nonce,
+        assertion: assertion(
+          auth,
+          deviceChallenge(prepared.value.payloadHash, id, prepared.value.nonce)
+        ),
+      },
+    })
+    const afterApproval = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: id,
+      detailHash: payloadHash({ result: "after-approval" }),
+      ts: new Date(at.getTime() + 1000).toISOString(),
+    })
+
+    const otherId = pendingSend()
+    const otherPreparedReply = await call(
+      "POST",
+      `/approvals/${otherId}/nonce`,
+      { cookie }
+    )
+    const otherPrepared = validateGatePrepareApproval(otherPreparedReply.body)
+    if (!otherPrepared.ok) throw new Error(otherPrepared.errors.join("; "))
+    await call("POST", `/approvals/${otherId}/decision`, {
+      cookie,
+      body: {
+        intentId: otherId,
+        decision: "approved",
+        nonce: otherPrepared.value.nonce,
+        assertion: assertion(
+          auth,
+          deviceChallenge(
+            otherPrepared.value.payloadHash,
+            otherId,
+            otherPrepared.value.nonce
+          )
+        ),
+      },
+    })
+    s.db
+      .prepare("UPDATE approvals SET bundle_hash = ? WHERE intent_id = ?")
+      .run("0".repeat(64), otherId)
+    const mismatched = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: otherId,
+      detailHash: payloadHash({ result: "wrong-bundle" }),
+      ts: new Date(at.getTime() + 1000).toISOString(),
+    })
+
+    const reply = await call("GET", "/audit", { cookie })
+    const parsed = validateGateAuditPage(reply.body)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error("audit page is invalid")
+    expect(
+      parsed.value.entries.find((entry) => entry.seq === beforeApproval.seq)
+    ).toMatchObject({ displayActor: "auto" })
+    expect(
+      parsed.value.entries.find((entry) => entry.seq === afterApproval.seq)
+    ).toMatchObject({ displayActor: "you" })
+    expect(
+      parsed.value.entries.find((entry) => entry.seq === mismatched.seq)
+    ).toMatchObject({ displayActor: "auto" })
+  })
+
+  it("does not label a signed rejection's executor row as the owner", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const id = pendingSend()
+    const preparedReply = await call("POST", `/approvals/${id}/nonce`, {
+      cookie,
+    })
+    const prepared = validateGatePrepareApproval(preparedReply.body)
+    if (!prepared.ok) throw new Error(prepared.errors.join("; "))
+    await call("POST", `/approvals/${id}/decision`, {
+      cookie,
+      body: { intentId: id, decision: "rejected" },
+    })
+    const signedAt = new Date().toISOString()
+    s.db
+      .prepare(
+        "UPDATE approvals SET signature = ?, credential_id = ?, sign_count = 0, nonce = ? WHERE intent_id = ?"
+      )
+      .run("synthetic-signature", auth.credentialId, prepared.value.nonce, id)
+    s.db
+      .prepare("UPDATE approval_nonces SET used_at = ? WHERE nonce = ?")
+      .run(signedAt, prepared.value.nonce)
+    const execution = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: id,
+      detailHash: payloadHash({ result: "rejected" }),
+    })
+
+    const reply = await call("GET", "/audit", { cookie })
+    const parsed = validateGateAuditPage(reply.body)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error("audit page is invalid")
+    expect(
+      parsed.value.entries.find((entry) => entry.seq === execution.seq)
+    ).toMatchObject({ displayActor: "auto" })
+  })
+
+  it("pages audit rows by seq and derives undo from execution records", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const firstPage = await call("GET", "/audit?limit=1", { cookie })
+    const first = validateGateAuditPage(firstPage.body)
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("audit page is invalid")
+    expect(first.value.entries).toHaveLength(1)
+    expect(first.value.nextBefore).toBeDefined()
+
+    const priorPage = await call(
+      "GET",
+      `/audit?before=${first.value.nextBefore}&limit=1`,
+      { cookie }
+    )
+    const prior = validateGateAuditPage(priorPage.body)
+    expect(prior.ok).toBe(true)
+    if (!prior.ok) throw new Error("audit cursor page is invalid")
+    expect(prior.value.entries[0]?.seq).toBeLessThan(
+      first.value.entries[0]?.seq ?? 0
+    )
+
+    const automatic = propose(s.db, s.policy, {
+      intent: sample("email.archive"),
+      origin: "reactive",
+    })
+    if (!automatic.ok) throw new Error("automatic intent was refused")
+    const executed = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: automatic.intentId,
+      detailHash: payloadHash({ result: "synthetic" }),
+    })
+    s.db
+      .prepare("UPDATE intents SET state = 'executed' WHERE id = ?")
+      .run(automatic.intentId)
+    s.db
+      .prepare(
+        "INSERT INTO executions (intent_id, upstream_ref, result, inverse_op, audit_seq) VALUES (?, ?, ?, ?, ?)"
+      )
+      .run(automatic.intentId, "synthetic-ref", "{}", "{}", executed.seq)
+
+    const completedUndo = append(s.db, {
+      actor: "executor",
+      action: "undo",
+      target: automatic.intentId,
+      detailHash: payloadHash({ result: "restored" }),
+    })
+    s.db
+      .prepare(
+        "INSERT INTO execution_undos (intent_id, upstream_ref, result, audit_seq) VALUES (?, ?, ?, ?)"
+      )
+      .run(automatic.intentId, "synthetic-ref", "{}", completedUndo.seq)
+
+    const allRows = await call("GET", "/audit", { cookie })
+    const parsed = validateGateAuditPage(allRows.body)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error("audit page is invalid")
+    const executeRow = parsed.value.entries.find(
+      (entry) => entry.seq === executed.seq
+    )
+    expect(executeRow).toMatchObject({ displayActor: "auto", undo: "done" })
+  })
+
+  it("marks a reversible automatic execution as undoable until an undo is recorded", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const automatic = propose(s.db, s.policy, {
+      intent: sample("email.archive"),
+      origin: "reactive",
+    })
+    if (!automatic.ok) throw new Error("automatic intent was refused")
+    const executed = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: automatic.intentId,
+      detailHash: payloadHash({ result: "synthetic" }),
+    })
+    s.db
+      .prepare("UPDATE intents SET state = 'executed' WHERE id = ?")
+      .run(automatic.intentId)
+    s.db
+      .prepare(
+        "INSERT INTO executions (intent_id, upstream_ref, result, inverse_op, audit_seq) VALUES (?, ?, ?, ?, ?)"
+      )
+      .run(automatic.intentId, "synthetic-ref", "{}", "{}", executed.seq)
+
+    const reply = await call("GET", "/audit", { cookie })
+    const parsed = validateGateAuditPage(reply.body)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) throw new Error("audit page is invalid")
+    expect(
+      parsed.value.entries.find((entry) => entry.seq === executed.seq)
+    ).toMatchObject({ undo: "available" })
+  })
+
+  it("rejects malformed and unsupported audit page query parameters", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    expect((await call("GET", "/audit?limit=bad", { cookie })).status).toBe(400)
+    expect((await call("GET", "/audit?limit=0", { cookie })).status).toBe(400)
+    expect(
+      (await call("GET", "/audit?limit=1&limit=2", { cookie })).status
+    ).toBe(400)
+    expect((await call("GET", "/audit?unknown=1", { cookie })).status).toBe(400)
+  })
+})
+
 afterEach(() => {
   s.cleanup()
 })
@@ -178,9 +778,9 @@ describe("phoneHandler: listener rules", () => {
     ["POST", "/passkey/register/options"],
     ["POST", "/passkey/register"],
     ["POST", "/credentials/revoke"],
+    ["POST", "/passkeys/revoke"],
     ["POST", "/policy"],
     ["POST", "/connectors/mail/pin"],
-    ["GET", "/audit/chain"],
     ["POST", "/audit"],
     ["POST", "/intents"],
     ["GET", "/intents"],
@@ -280,6 +880,18 @@ describe("phoneHandler: session", () => {
         cookie: `eido_gate_session=${"A".repeat(43)}`,
       })
       expect(reply.status).toBe(401)
+    }
+  )
+
+  // The web app's Auth0 sign-in (apps/web) sets its own `__session` cookie. It proves who
+  // opened the web app, not who may decide; the gate must still demand its passkey session.
+  it.each(gated)(
+    "401s %s %s with only the web app's sign-in cookie",
+    async (method, path) => {
+      const reply = await call(method, path, {
+        cookie: `__session=${"A".repeat(200)}`,
+      })
+      expect([reply.status, code(reply)]).toEqual([401, "unauthenticated"])
     }
   )
 
@@ -457,7 +1069,7 @@ describe("phoneHandler: approvals", () => {
     expect(reply.status).toBe(200)
     expect(validateGateDecisionResult(reply.body)).toEqual({
       ok: true,
-      value: { intentId: id, state: "approved" },
+      value: { intentId: id, state: "approved", nudge: false },
     })
     expect(intentState(id)).toBe("approved")
   })
@@ -593,6 +1205,7 @@ describe("phoneHandler: approvals", () => {
       expect(signed.body).toEqual({
         intentId: card.intentId,
         state: "approved",
+        nudge: false,
       })
     })
 
@@ -666,5 +1279,239 @@ describe("phoneHandler: approvals", () => {
       const reply = await call("POST", "/approvals/x/edit", { cookie, raw })
       expect(reply.status).toBe(status)
     })
+  })
+})
+
+describe("phoneHandler: passkey enrolment with a code (#202)", () => {
+  const MINUTE = 60 * 1000
+
+  function issue(): string {
+    const issued = issueEnrolmentCode(s.db, "admin", () => at)
+    if (!issued.ok) throw new Error("the code was not issued")
+    return issued.code
+  }
+
+  async function challengeFor(enrolmentCode: string): Promise<string> {
+    const reply = await call("POST", "/passkey/enroll/options", {
+      body: { code: enrolmentCode },
+    })
+    const parsed = validateGateEnrolOptions(reply.body)
+    if (!parsed.ok) throw new Error(`no options: ${String(code(reply))}`)
+    return parsed.value.challenge
+  }
+
+  function credentialIds(): string[] {
+    return s.db
+      .prepare("SELECT credential_id FROM credentials ORDER BY credential_id")
+      .all()
+      .map((row) => String(row["credential_id"]))
+  }
+
+  function codeUsed(enrolmentCode: string): boolean {
+    const hash = createHash("sha256")
+      .update(enrolmentCode.replace(/-/g, ""))
+      .digest("hex")
+    const row = s.db
+      .prepare("SELECT used_at FROM enrolment_codes WHERE code_hash = ?")
+      .get(hash)
+    return row?.["used_at"] !== null
+  }
+
+  /** The detail hash of a refused code, computed here from the spec: outcome and code hash. */
+  function refusalHash(outcome: string, enrolmentCode: string): string {
+    return payloadHash({
+      outcome,
+      code_sha256: createHash("sha256")
+        .update(enrolmentCode.replace(/-/g, ""))
+        .digest("hex"),
+    })
+  }
+
+  function lastAudit(action: string): string | undefined {
+    return auditRows(s.db)
+      .filter((row) => row.action === action)
+      .at(-1)?.detail_hash
+  }
+
+  it("stores one credential, consumes the code and signs the phone in", async () => {
+    const enrolmentCode = issue()
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: enrolmentCode },
+    })
+    expect(options.status).toBe(200)
+    expect(options.body).toMatchObject({
+      rpId: "eido.example.invalid",
+      expiresAt: "2026-10-19T08:10:00.000Z",
+    })
+    const challenge = await challengeFor(enrolmentCode)
+    const reply = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(auth, challenge),
+      },
+    })
+    expect(reply.status).toBe(200)
+    expect(reply.body).toEqual({ expiresAt: "2026-10-19T20:00:00.000Z" })
+    expect(credentialIds()).toEqual([auth.credentialId])
+    expect(codeUsed(enrolmentCode)).toBe(true)
+    const cookie = (reply.headers?.["set-cookie"] ?? "").split(";")[0] ?? ""
+    expect((await call("GET", "/approvals", { cookie })).status).toBe(200)
+    expect((await call("GET", "/passkey/status", { cookie })).body).toEqual({
+      enrolled: true,
+      sessionExpiresAt: "2026-10-19T20:00:00.000Z",
+    })
+  })
+
+  it("reports no enrolment before the code is used", async () => {
+    issue()
+    expect((await call("GET", "/passkey/status")).body).toEqual({
+      enrolled: false,
+      sessionExpiresAt: null,
+    })
+  })
+
+  it("refuses an expired code at options and at enrolment, and stores nothing", async () => {
+    const enrolmentCode = issue()
+    const challenge = await challengeFor(enrolmentCode)
+    at = new Date(START.getTime() + 10 * MINUTE)
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: enrolmentCode },
+    })
+    expect([options.status, code(options)]).toEqual([
+      403,
+      "verification_failed",
+    ])
+    const reply = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(auth, challenge),
+      },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect(reply.headers?.["set-cookie"]).toBeUndefined()
+    expect(credentialIds()).toEqual([])
+    expect(lastAudit("enrolment_code.refused")).toBe(
+      refusalHash("expired", enrolmentCode)
+    )
+    expect(loggedText(s.db)).not.toContain(enrolmentCode.replace(/-/g, ""))
+  })
+
+  it("refuses a reused code, so a second phone cannot enrol with it", async () => {
+    const enrolmentCode = issue()
+    const first = await challengeFor(enrolmentCode)
+    const second = await challengeFor(enrolmentCode)
+    const other = testAuthenticator()
+    await call("POST", "/passkey/enroll", {
+      body: { code: enrolmentCode, registration: registration(auth, first) },
+    })
+    const reply = await call("POST", "/passkey/enroll", {
+      body: { code: enrolmentCode, registration: registration(other, second) },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect(credentialIds()).toEqual([auth.credentialId])
+    expect(lastAudit("enrolment_code.refused")).toBe(
+      refusalHash("reused", enrolmentCode)
+    )
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: enrolmentCode },
+    })
+    expect(options.status).toBe(403)
+  })
+
+  it("refuses an unknown code and leaves the issued one unused", async () => {
+    const enrolmentCode = issue()
+    const challenge = await challengeFor(enrolmentCode)
+    const unknown = "ABCD-EFGH-JKMN-PQRS"
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: unknown },
+    })
+    expect(options.status).toBe(403)
+    const reply = await call("POST", "/passkey/enroll", {
+      body: { code: unknown, registration: registration(auth, challenge) },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect(credentialIds()).toEqual([])
+    expect(codeUsed(enrolmentCode)).toBe(false)
+    expect(lastAudit("enrolment_code.refused")).toBe(
+      refusalHash("unknown", unknown)
+    )
+    expect(loggedText(s.db)).not.toContain("ABCDEFGHJKMNPQRS")
+  })
+
+  it("keeps the code when the registration fails its checks", async () => {
+    const enrolmentCode = issue()
+    const challenge = await challengeFor(enrolmentCode)
+    const bad = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(auth, challenge, {
+          origin: "https://evil.example.invalid",
+        }),
+      },
+    })
+    expect([bad.status, code(bad)]).toEqual([403, "verification_failed"])
+    expect(codeUsed(enrolmentCode)).toBe(false)
+    const retry = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(auth, await challengeFor(enrolmentCode)),
+      },
+    })
+    expect(retry.status).toBe(200)
+  })
+
+  it("keeps a revoked credential revoked, and refuses to enrol it again", async () => {
+    enrol(auth)
+    expect(revokeCredential(s.db, "admin", auth.credentialId)).toEqual({
+      ok: true,
+    })
+    const revokedAt = s.db
+      .prepare("SELECT revoked_at FROM credentials WHERE credential_id = ?")
+      .get(auth.credentialId)?.["revoked_at"]
+    const enrolmentCode = issue()
+    const again = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(auth, await challengeFor(enrolmentCode)),
+      },
+    })
+    expect(again.status).toBe(403)
+    expect(codeUsed(enrolmentCode)).toBe(false)
+    const replacement = testAuthenticator()
+    const reply = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(
+          replacement,
+          await challengeFor(enrolmentCode)
+        ),
+      },
+    })
+    expect(reply.status).toBe(200)
+    expect(
+      s.db
+        .prepare("SELECT revoked_at FROM credentials WHERE credential_id = ?")
+        .get(auth.credentialId)?.["revoked_at"]
+    ).toBe(revokedAt)
+    expect(revokedAt).toEqual(expect.any(String))
+  })
+
+  it("answers 400 for a body that is not an enrolment request", async () => {
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: 7 },
+    })
+    expect([options.status, code(options)]).toEqual([400, "invalid_request"])
+    const reply = await call("POST", "/passkey/enroll", {
+      body: { code: issue() },
+    })
+    expect([reply.status, code(reply)]).toEqual([400, "invalid_request"])
+    const raw = await call("POST", "/passkey/enroll", {
+      raw: { ok: true, text: "{" },
+    })
+    expect(raw.status).toBe(400)
+    const rawOptions = await call("POST", "/passkey/enroll/options", {
+      raw: { ok: true, text: "{" },
+    })
+    expect(rawOptions.status).toBe(400)
   })
 })

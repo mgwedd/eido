@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite"
+import { writeQueueFor } from "../db/write-queue"
 import { deriveDigestFingerprint, fingerprintTurns } from "./fingerprint"
 import type { SummaryStart } from "./compact"
-import { ensureConversationSchema } from "./schema"
 import {
   ensureIndex,
   indexTurn,
@@ -22,7 +22,7 @@ export type ContextHit = ConversationDigest & { score: number }
 
 export interface ConversationStore {
   /** Add a raw turn, once. It is never edited or deleted. Creates the conversation on its first turn. */
-  appendTurn(conversationId: string, turn: RawTurn): void
+  appendTurn(conversationId: string, turn: RawTurn): Promise<void>
   /** The raw turns of a conversation in order; empty when it does not exist. */
   getTurns(conversationId: string): RawTurn[]
   /** Fingerprint of the raw turns (#48), or undefined for an unknown conversation. */
@@ -40,7 +40,7 @@ export interface ConversationStore {
     parentRawFingerprint: string,
     createdAt: string,
     start: SummaryStart
-  ): ConversationDigest
+  ): Promise<ConversationDigest>
   getConversationDigest(conversationId: string): ConversationDigest | undefined
   /** The stored digest's summary and turn count, for the next build to fold new turns into. */
   digestStart(conversationId: string): SummaryStart | undefined
@@ -49,7 +49,7 @@ export interface ConversationStore {
   /** Idle for at least `ttlMinutes` at `now`, and no digest of its current raw transcript. */
   dueForDigest(now: Date, ttlMinutes: number): string[]
   /** The tag of `sourceRef` in this conversation: the existing one, or the next unused `M<n>`. */
-  allocateSourceTag(conversationId: string, sourceRef: string): string
+  allocateSourceTag(conversationId: string, sourceRef: string): Promise<string>
   resolveSourceTag(conversationId: string, tag: string): string | undefined
   sourceTags(conversationId: string): SourceTag[]
 }
@@ -90,16 +90,19 @@ function toDigest(row: Record<string, unknown>): ConversationDigest {
   }
 }
 
-function transaction<T>(db: DatabaseSync, work: () => T): T {
-  db.exec("BEGIN IMMEDIATE")
-  try {
-    const result = work()
-    db.exec("COMMIT")
-    return result
-  } catch (error) {
-    db.exec("ROLLBACK")
-    throw error
-  }
+/** `work` in its own transaction, on the connection's write queue. */
+function transaction<T>(db: DatabaseSync, work: () => T): Promise<T> {
+  return writeQueueFor(db).run(() => {
+    db.exec("BEGIN IMMEDIATE")
+    try {
+      const result = work()
+      db.exec("COMMIT")
+      return result
+    } catch (error) {
+      db.exec("ROLLBACK")
+      throw error
+    }
+  })
 }
 
 export function createConversationStore(
@@ -107,8 +110,6 @@ export function createConversationStore(
 ): ConversationStore {
   const { db, index } = deps
   const now = deps.now ?? ((): Date => new Date())
-  ensureConversationSchema(db)
-
   function getTurns(conversationId: string): RawTurn[] {
     return db
       .prepare(
@@ -156,11 +157,11 @@ export function createConversationStore(
   })
 
   return {
-    appendTurn(conversationId, turn) {
+    async appendTurn(conversationId, turn) {
       if (Number.isNaN(Date.parse(turn.at))) {
         throw new RangeError("a turn's `at` must be an ISO 8601 timestamp")
       }
-      const seq = transaction(db, () => {
+      const seq = await transaction(db, () => {
         const stamp = now().toISOString()
         db.prepare(
           "INSERT OR IGNORE INTO conversations (id, created_at, last_activity_at) VALUES (?, ?, ?)"
@@ -203,7 +204,13 @@ export function createConversationStore(
       return searchIndex(index, query, opts)
     },
 
-    putDigest(conversationId, text, parentRawFingerprint, createdAt, start) {
+    async putDigest(
+      conversationId,
+      text,
+      parentRawFingerprint,
+      createdAt,
+      start
+    ) {
       const digest: ConversationDigest = {
         conversationId,
         fingerprint: deriveDigestFingerprint(parentRawFingerprint, text),
@@ -211,7 +218,7 @@ export function createConversationStore(
         text,
         createdAt,
       }
-      transaction(db, () => {
+      await transaction(db, () => {
         db.prepare(
           "DELETE FROM conversation_digests WHERE conversation_id = ?"
         ).run(conversationId)

@@ -1,16 +1,74 @@
 import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdirSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
-import { createAuditClient, createIntentClient } from "@eido/gate"
+import {
+  createAuditClient,
+  createIntentClient,
+  createProtonMailClient,
+} from "@eido/gate"
 import type { IntentClient } from "@eido/gate"
+import { ask } from "./ask/ask"
+import type { AskDeps } from "./ask/types"
+import { coverageLabel } from "./ask/answer"
+import type { AskFigure } from "@eido/schemas"
 import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
 import { openIndex } from "./index/schema"
 import { openDataDb } from "./ledger/db"
+import {
+  connectModelClient,
+  loopbackBaseUrl,
+  readContextTokens,
+  readModelId,
+  createInferenceQueue,
+} from "./inference/index"
 import { LedgerError } from "./ledger/errors"
+import { createObligationStateStore } from "./ledger/obligation-state"
+import type { ObligationStateStore } from "./ledger/obligation-state"
+import { createConversationStore } from "./conversation/store"
+import type { ConversationStore } from "./conversation/store"
+import { openConversationIndex } from "./conversation/search-index"
+import {
+  compactConversation,
+  dispatchCommand,
+  runDigestSweep,
+} from "./conversation/index"
+import { DEFAULT_DIGEST_IDLE_TTL_MINUTES } from "./conversation/digest"
 import { createProfileStore, readDefaultEntityId } from "./profile/store"
 import type { ProfileStore } from "./profile/store"
+import type { InferenceQueue } from "./inference/queue"
+import { createDigestService } from "./digest/service"
+import type { DigestService } from "./digest/service"
+import { scheduleIngestedDigests } from "./digest/ingest"
+import type { IndexedDocument } from "./index/ingest"
+import { DEFAULT_SECTION_TOKENS } from "./digest/types"
+import { createParser } from "./parsers/index"
+import type { Parser } from "./parsers/index"
+import {
+  createGmailClient,
+  createGmailEgressTransport,
+  GMAIL_DEFAULTS,
+  resolveGmailConfig,
+  syncGmailWithHealth,
+} from "./connectors/gmail/index"
+import type { GmailClient } from "./connectors/gmail/client"
+import type { GmailConfig } from "./connectors/gmail/config"
+import type { ConnectorHealthReader } from "./connectors/health-aware-sync"
+import { createAccountRegistry } from "./connectors/accounts"
+import type { KnownAccount } from "./connectors/accounts"
+import { GMAIL_CONNECTOR } from "./connectors/gmail/routes"
+import { CONNECTOR_NAME as PROTON_HEALTH_NAME } from "./connectors/proton/manifest"
+import {
+  CONNECTOR as PROTON_CONNECTOR,
+  resolveConfig as resolveProtonConfig,
+  syncProtonWithHealth,
+} from "./connectors/proton/index"
+import type { ProtonMailSource } from "./connectors/proton/index"
+import { syncReplyObligations } from "./obligations/replies"
+import { writeQueueFor } from "./db/write-queue"
+import type { RepliesConfig } from "./obligations/replies"
 
 // The data-plane process (ADR 0003). It owns eido-data.db, serves core's API on loopback, and
 // reaches the gate only through the intent and audit clients on the gate's data-plane socket.
@@ -21,16 +79,23 @@ import type { ProfileStore } from "./profile/store"
 /**
  * The only variables the data plane may see: data dir, gate socket, llama-server address, and
  * where core's API listens (loopback host, port, base path, extra Host headers to answer).
+ * `EIDO_PROTON_USERNAME` is the Bridge account address, not a secret: the gate holds the password.
  */
 export const DATA_PLANE_ENV = [
   "EIDO_DATA_DIR",
   "EIDO_GATE_SOCKET",
   "EIDO_LLAMA_HOST",
   "EIDO_LLAMA_PORT",
+  "EIDO_LLAMA_CHAT_TEMPLATE_KWARGS",
   "EIDO_CORE_HOST",
   "EIDO_CORE_PORT",
   "EIDO_CORE_BASE_PATH",
   "EIDO_CORE_ALLOWED_HOSTS",
+  "EIDO_GMAIL_PROXY_URL",
+  "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
+  "EIDO_DIGEST_SECTION_TOKENS",
+  "EIDO_REPLIES_CONFIG",
+  "EIDO_PROTON_USERNAME",
 ] as const
 
 /**
@@ -48,9 +113,26 @@ export const DATA_PLANE_LOG_FILE = "data-plane.log"
 
 /** Where core's API listens unless EIDO_CORE_HOST and EIDO_CORE_PORT say otherwise. */
 export const DEFAULT_CORE_HOST = "127.0.0.1"
-export const DEFAULT_CORE_PORT = 8787
+export const DEFAULT_CORE_PORT = 8789
+export const ASK_CONTEXT_BUDGET_TOKENS = 3000
+export const ASK_REPLY_TOKENS = 512
+export const GMAIL_SYNC_INTERVAL_MS = 5 * 60_000
+export const PROTON_SYNC_INTERVAL_MS = 5 * 60_000
+export const CONVERSATION_DIGEST_SWEEP_INTERVAL_MS = 60_000
 
 type Env = Readonly<Record<string, string | undefined>>
+
+/** Start the periodic idle conversation compaction job and return its stop function. */
+export function startConversationDigestTimer(
+  sweep: () => Promise<void>
+): () => void {
+  const timer = setInterval(
+    () => void sweep(),
+    CONVERSATION_DIGEST_SWEEP_INTERVAL_MS
+  )
+  timer.unref()
+  return () => clearInterval(timer)
+}
 
 /** The allowlisted, non-empty variables of `env`. */
 export function dataPlaneEnv(env: Env): Record<string, string> {
@@ -77,6 +159,24 @@ export type CoreApiConfig = {
   basePath: string
   /** Host headers answered besides the listen address, such as the one serve forwards. */
   allowedHosts: string[]
+  /** Present only when a local llama-server host and port are configured. */
+  modelBaseUrl?: string
+  /**
+   * The pinned model's chat template kwargs (`EIDO_LLAMA_CHAT_TEMPLATE_KWARGS`, a JSON object),
+   * sent as `chat_template_kwargs` on every `/apply-template` call, as the eval does for its
+   * candidate. Absent when unset, which leaves request bodies unchanged.
+   */
+  chatTemplateKwargs?: Record<string, unknown>
+  /** Gate egress proxy URL. Gmail sync is disabled when this is not configured. */
+  gmailProxyUrl?: string
+  /**
+   * The Proton Bridge account (`EIDO_PROTON_USERNAME`), which is also the assistant's sending
+   * address. Proton sync is disabled when this is not configured.
+   */
+  protonUsername?: string
+  conversationDigestIdleTtlMinutes: number
+  digest: { sectionTokens: number }
+  replies?: Omit<RepliesConfig, "db">
 }
 
 export type DataPlaneConfig = {
@@ -87,11 +187,11 @@ export type DataPlaneConfig = {
   api: CoreApiConfig
 }
 
-function portOf(value: string): number {
+function portOf(value: string, name = "EIDO_CORE_PORT"): number {
   const port = Number(value)
   if (!/^\d+$/.test(value) || port > 65535) {
     throw new Error(
-      `EIDO_CORE_PORT must be a port number, not ${JSON.stringify(value)}`
+      `${name} must be a port number, not ${JSON.stringify(value)}`
     )
   }
   return port
@@ -99,6 +199,51 @@ function portOf(value: string): number {
 
 /** Core's API settings. A bind address other than 127.0.0.1 or ::1 throws: core has no auth. */
 export function coreApiConfig(env: Env): CoreApiConfig {
+  const modelHost = env["EIDO_LLAMA_HOST"]
+  const modelPort = env["EIDO_LLAMA_PORT"]
+  if (
+    (modelHost === undefined || modelHost === "") !==
+    (modelPort === undefined || modelPort === "")
+  ) {
+    throw new Error(
+      "EIDO_LLAMA_HOST and EIDO_LLAMA_PORT must be configured together"
+    )
+  }
+  const modelBaseUrl =
+    modelHost && modelPort
+      ? (() => {
+          const port = portOf(modelPort, "EIDO_LLAMA_PORT")
+          if (port === 0)
+            throw new Error("EIDO_LLAMA_PORT must be between 1 and 65535")
+          const host = modelHost.includes(":") ? `[${modelHost}]` : modelHost
+          return loopbackBaseUrl(`http://${host}:${String(port)}`)
+        })()
+      : undefined
+  const chatTemplateKwargs = chatTemplateKwargsOf(
+    env["EIDO_LLAMA_CHAT_TEMPLATE_KWARGS"]
+  )
+  const gmailProxyUrl = env["EIDO_GMAIL_PROXY_URL"]
+  const configuredGmailProxyUrl =
+    gmailProxyUrl === undefined || gmailProxyUrl === ""
+      ? undefined
+      : (() => {
+          try {
+            return loopbackBaseUrl(gmailProxyUrl)
+          } catch {
+            throw new Error("EIDO_GMAIL_PROXY_URL must be a loopback HTTP URL")
+          }
+        })()
+  const protonUsername = env["EIDO_PROTON_USERNAME"]
+  const configuredProtonUsername =
+    protonUsername === undefined || protonUsername === ""
+      ? undefined
+      : (() => {
+          try {
+            return resolveProtonConfig({ username: protonUsername }).username
+          } catch {
+            throw new Error("EIDO_PROTON_USERNAME must be an address")
+          }
+        })()
   return {
     host: loopbackHost(env["EIDO_CORE_HOST"] || DEFAULT_CORE_HOST),
     port: portOf(env["EIDO_CORE_PORT"] || String(DEFAULT_CORE_PORT)),
@@ -107,7 +252,106 @@ export function coreApiConfig(env: Env): CoreApiConfig {
       .split(",")
       .map((host) => host.trim())
       .filter((host) => host !== ""),
+    conversationDigestIdleTtlMinutes: positiveInteger(
+      env["EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES"] ??
+        String(DEFAULT_DIGEST_IDLE_TTL_MINUTES),
+      "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES"
+    ),
+    digest: {
+      sectionTokens: positiveInteger(
+        env["EIDO_DIGEST_SECTION_TOKENS"] ?? String(DEFAULT_SECTION_TOKENS),
+        "EIDO_DIGEST_SECTION_TOKENS"
+      ),
+    },
+    ...(env["EIDO_REPLIES_CONFIG"] === undefined ||
+    env["EIDO_REPLIES_CONFIG"] === ""
+      ? {}
+      : { replies: parseRepliesConfig(env["EIDO_REPLIES_CONFIG"]) }),
+    ...(modelBaseUrl === undefined ? {} : { modelBaseUrl }),
+    ...(chatTemplateKwargs === undefined ? {} : { chatTemplateKwargs }),
+    ...(configuredGmailProxyUrl === undefined
+      ? {}
+      : { gmailProxyUrl: configuredGmailProxyUrl }),
+    ...(configuredProtonUsername === undefined
+      ? {}
+      : { protonUsername: configuredProtonUsername }),
   }
+}
+
+function chatTemplateKwargsOf(
+  value: string | undefined
+): Record<string, unknown> | undefined {
+  if (value === undefined || value === "") return undefined
+  const invalid = new Error(
+    'EIDO_LLAMA_CHAT_TEMPLATE_KWARGS must be a JSON object, such as {"enable_thinking": false}'
+  )
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    throw invalid
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    throw invalid
+  return parsed as Record<string, unknown>
+}
+
+function parseRepliesConfig(raw: string): Omit<RepliesConfig, "db"> {
+  const parsed: unknown = JSON.parse(raw)
+  if (typeof parsed !== "object" || parsed === null)
+    throw new Error("EIDO_REPLIES_CONFIG must be a JSON object")
+  const read = (key: string): unknown => Reflect.get(parsed, key)
+  const me = read("me")
+  const repliesOwed = read("repliesOwed") ?? { afterDays: 2 }
+  const waitingOn = read("waitingOn") ?? { afterDays: 5 }
+  const excludeSenders = read("excludeSenders") ?? []
+  const ownerEntityId = read("ownerEntityId")
+  const days = (value: unknown): value is { afterDays: number } =>
+    typeof value === "object" &&
+    value !== null &&
+    Number.isSafeInteger(Reflect.get(value, "afterDays")) &&
+    Number(Reflect.get(value, "afterDays")) >= 0 &&
+    Number(Reflect.get(value, "afterDays")) <= 3650
+  if (
+    !Array.isArray(me) ||
+    !me.every(
+      (address) => typeof address === "string" && address.includes("@")
+    ) ||
+    me.length === 0 ||
+    !days(repliesOwed) ||
+    !days(waitingOn) ||
+    !Array.isArray(excludeSenders) ||
+    !excludeSenders.every((pattern) => typeof pattern === "string") ||
+    (ownerEntityId !== undefined && typeof ownerEntityId !== "string")
+  ) {
+    throw new Error(
+      "EIDO_REPLIES_CONFIG requires me, repliesOwed.afterDays, waitingOn.afterDays, and excludeSenders"
+    )
+  }
+  for (const pattern of excludeSenders) {
+    try {
+      new RegExp(pattern, "i")
+    } catch {
+      throw new Error(
+        "EIDO_REPLIES_CONFIG excludeSenders contains an invalid regular expression"
+      )
+    }
+  }
+  return {
+    me,
+    ...(ownerEntityId === undefined ? {} : { ownerEntityId }),
+    repliesOwed,
+    waitingOn,
+    excludeSenders,
+  }
+}
+
+function positiveInteger(value: string, name: string): number {
+  const parsed = Number(value)
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer`)
+  }
+  return parsed
 }
 
 export function dataPlaneConfig(env: Env): DataPlaneConfig {
@@ -131,12 +375,203 @@ export function dataPlaneConfig(env: Env): DataPlaneConfig {
 
 export type DataPlane = {
   db: DatabaseSync
+  conversation?: ConversationStore
+  conversationIndex: DatabaseSync
   gate: IntentClient
   /** The owner profile and entities; each entity or assignment change is audited by the gate. */
   profile: ProfileStore
+  /** Local obligation state changes (#104); each is audited by the gate. */
+  obligations: ObligationStateStore
   log: (event: string, fields?: Readonly<Record<string, string>>) => void
   /** Waits for the profile store's queued calls to settle, then closes eido-data.db. */
   close: () => Promise<void>
+  stopGmailSync: () => void
+  stopProtonSync: () => void
+  /** Accounts the configured connectors have reported: Proton's at startup, Gmail's per run. */
+  connectorAccounts: () => readonly KnownAccount[]
+  getInferenceQueue: () => Promise<InferenceQueue>
+  getModelContextTokens: () => number
+  /** Schedule digests for documents committed by a connector batch. */
+  scheduleIngestedDocuments: (documents: readonly IndexedDocument[]) => void
+  /** Schedule deterministic reply lifecycle detection after a committed sync batch. */
+  scheduleReplyObligations: () => void
+}
+
+type GmailSyncRuntime = {
+  db: DatabaseSync
+  gate: ConnectorHealthReader
+  profile: ProfileStore
+  client: GmailClient
+  parser?: Parser
+  config?: GmailConfig
+  onIngested?: (documents: readonly IndexedDocument[]) => void
+  onBatchCommitted?: () => void
+  /** Called with the account address each run reads from Gmail's profile. */
+  onAccount?: (accountRef: string) => void
+  log: DataPlane["log"]
+}
+
+/** A Gmail runtime must always have a sandboxed document parser. */
+export function createGmailSyncRuntime(
+  input: Omit<GmailSyncRuntime, "config"> & { config?: GmailConfig }
+): () => Promise<void> {
+  if (input.parser === undefined) {
+    throw new Error(
+      "Gmail sync requires a configured sandboxed document parser"
+    )
+  }
+  const config = resolveGmailConfig(input.config ?? GMAIL_DEFAULTS)
+  let running: Promise<void> | undefined
+  return async () => {
+    if (running !== undefined) return running
+    running = (async () => {
+      try {
+        const account = await input.client.getProfile()
+        if (account.emailAddress === undefined || account.emailAddress === "") {
+          throw new Error("Gmail profile did not provide an account address")
+        }
+        input.onAccount?.(account.emailAddress)
+        await syncGmailWithHealth(
+          input.gate,
+          input.db,
+          input.client,
+          config,
+          { accountRef: account.emailAddress, entities: input.profile },
+          {
+            parser: input.parser,
+            onIngested: input.onIngested,
+            onBatchCommitted: input.onBatchCommitted,
+          }
+        )
+      } catch (error) {
+        input.log("gmail_sync_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        })
+      } finally {
+        running = undefined
+      }
+    })()
+    return running
+  }
+}
+
+type ProtonSyncRuntime = {
+  db: DatabaseSync
+  gate: ConnectorHealthReader
+  profile: ProfileStore
+  source: ProtonMailSource
+  /** The Bridge account; every folder it mirrors is ingested under it. */
+  username: string
+  onBatchCommitted?: () => void
+  log: DataPlane["log"]
+}
+
+/**
+ * One Proton sync run at a time over the configured folders. The gate's connector health decides
+ * whether a run may try the source; a failure is logged and the next tick tries again.
+ */
+export function createProtonSyncRuntime(
+  input: ProtonSyncRuntime
+): () => Promise<void> {
+  const config = resolveProtonConfig({ username: input.username })
+  let running: Promise<void> | undefined
+  return async () => {
+    if (running !== undefined) return running
+    running = (async () => {
+      try {
+        const run = await syncProtonWithHealth(
+          input.gate,
+          input.db,
+          input.source,
+          config,
+          input.profile
+        )
+        if (run.status === "synced") input.onBatchCommitted?.()
+      } catch (error) {
+        input.log("proton_sync_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        })
+      } finally {
+        running = undefined
+      }
+    })()
+    return running
+  }
+}
+
+/** Runs `sync` now and every `intervalMs`, unref'd, and tracks the run in flight. */
+function startSyncTimer(
+  sync: () => Promise<void>,
+  intervalMs: number
+): { stop: () => void; inFlight: () => Promise<void> | undefined } {
+  let current: Promise<void> | undefined
+  const run = (): void => {
+    const started = sync()
+    current = started
+    const clear = (): void => {
+      if (current === started) current = undefined
+    }
+    void started.then(clear, clear)
+  }
+  const timer = setInterval(run, intervalMs)
+  timer.unref()
+  run()
+  return { stop: () => clearInterval(timer), inFlight: () => current }
+}
+
+function gmailParser(dataDir: string | undefined): Parser {
+  if (dataDir === undefined || dataDir === "") {
+    throw new Error("Gmail sync requires EIDO_DATA_DIR to configure its parser")
+  }
+  return createParser({ dataDir })
+}
+
+function createModelQueueProvider(
+  modelBaseUrl: string | undefined,
+  chatTemplateKwargs?: Readonly<Record<string, unknown>>
+): {
+  getQueue: () => Promise<InferenceQueue>
+  getModelId: () => Promise<string>
+  getContextTokens: () => number
+} {
+  let queuePromise: Promise<InferenceQueue> | undefined
+  let modelIdPromise: Promise<string> | undefined
+  let modelContextTokens = 0
+  const getQueue = async (): Promise<InferenceQueue> => {
+    if (modelBaseUrl === undefined)
+      throw new Error("local model is not configured")
+    if (queuePromise === undefined) {
+      queuePromise = (async () => {
+        try {
+          const contextTokens = await readContextTokens(modelBaseUrl)
+          const client = await connectModelClient({
+            baseUrl: modelBaseUrl,
+            contextTokens,
+            maxReplyTokens: ASK_REPLY_TOKENS,
+            ...(chatTemplateKwargs === undefined ? {} : { chatTemplateKwargs }),
+          })
+          modelContextTokens = contextTokens
+          return createInferenceQueue(client)
+        } catch (error) {
+          queuePromise = undefined
+          throw error
+        }
+      })()
+    }
+    return queuePromise
+  }
+  const getModelId = async (): Promise<string> => {
+    if (modelBaseUrl === undefined)
+      throw new Error("local model is not configured")
+    if (modelIdPromise === undefined) {
+      modelIdPromise = readModelId(modelBaseUrl).catch((error: unknown) => {
+        modelIdPromise = undefined
+        throw error
+      })
+    }
+    return modelIdPromise
+  }
+  return { getQueue, getModelId, getContextTokens: () => modelContextTokens }
 }
 
 /**
@@ -175,6 +610,14 @@ export function openDataPlaneDb(
  * POST /audit, and logs the configuration and variable names.
  */
 export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
+  const model = createModelQueueProvider(
+    config.api.modelBaseUrl,
+    config.api.chatTemplateKwargs
+  )
+  const parser =
+    config.api.gmailProxyUrl === undefined
+      ? undefined
+      : gmailParser(config.dataDir)
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
   const log: DataPlane["log"] = (event, fields = {}) => {
     appendFileSync(
@@ -184,9 +627,133 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     )
   }
   const db = openDataPlaneDb(config.dbPath, log)
+  const conversationIndex = openConversationIndex(
+    join(dirname(config.dbPath), "conversation-index.db")
+  )
+  const conversationTables = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_turns'"
+    )
+    .get()
+  const conversation =
+    conversationTables === undefined
+      ? undefined
+      : createConversationStore({ db, index: conversationIndex })
   const gate = createIntentClient({ socketPath: config.gateSocket })
   const audit = createAuditClient({ socketPath: config.gateSocket })
   const profile = createProfileStore(db, { audit: audit.record })
+  const obligations = createObligationStateStore(db, { audit: audit.record })
+  let digestService: DigestService | undefined
+  let digestServicePromise: Promise<DigestService> | undefined
+  const getDigestService = async (): Promise<DigestService> => {
+    if (digestServicePromise === undefined) {
+      digestServicePromise = Promise.all([model.getQueue(), model.getModelId()])
+        .then(([queue, modelId]) => {
+          digestService = createDigestService({
+            db,
+            queue,
+            modelId,
+            config: { sectionTokens: config.api.digest.sectionTokens },
+            onError: (error) =>
+              log("digest_build_failed", {
+                reason:
+                  error instanceof Error ? error.message : "unknown error",
+              }),
+          })
+          return digestService
+        })
+        .catch((error: unknown) => {
+          digestServicePromise = undefined
+          throw error
+        })
+    }
+    return digestServicePromise
+  }
+  let digestScheduling = Promise.resolve()
+  let replyScheduling = Promise.resolve()
+  const scheduleReplies = (): void => {
+    const repliesConfig = config.api.replies
+    if (repliesConfig === undefined) return
+    replyScheduling = replyScheduling.then(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      try {
+        const result = await writeQueueFor(db).run(() =>
+          syncReplyObligations(new Date(), { ...repliesConfig, db })
+        )
+        if (result.created > 0 || result.resolved > 0)
+          log("reply_obligations_synced", {
+            created: String(result.created),
+            resolved: String(result.resolved),
+          })
+      } catch (error) {
+        log("reply_obligations_sync_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        })
+      }
+    })
+  }
+  const onIngested = (documents: readonly IndexedDocument[]): void => {
+    digestScheduling = digestScheduling.then(async () => {
+      try {
+        scheduleIngestedDigests(db, await getDigestService(), documents)
+      } catch (error) {
+        log("digest_schedule_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        })
+      }
+    })
+  }
+  const accounts = createAccountRegistry()
+  let gmailTimer: ReturnType<typeof startSyncTimer> | undefined
+  if (config.api.gmailProxyUrl !== undefined) {
+    if (parser === undefined) {
+      throw new Error(
+        "Gmail sync requires a configured sandboxed document parser"
+      )
+    }
+    const sync = createGmailSyncRuntime({
+      db,
+      gate,
+      profile,
+      client: createGmailClient(
+        createGmailEgressTransport({ proxyUrl: config.api.gmailProxyUrl })
+      ),
+      parser,
+      onIngested,
+      onBatchCommitted: scheduleReplies,
+      onAccount: (accountRef) =>
+        accounts.add({
+          connector: GMAIL_CONNECTOR,
+          healthName: GMAIL_CONNECTOR,
+          accountRef,
+          label: "Gmail",
+        }),
+      log,
+    })
+    gmailTimer = startSyncTimer(sync, GMAIL_SYNC_INTERVAL_MS)
+  }
+  let protonTimer: ReturnType<typeof startSyncTimer> | undefined
+  if (config.api.protonUsername !== undefined) {
+    accounts.add({
+      connector: PROTON_CONNECTOR,
+      healthName: PROTON_HEALTH_NAME,
+      accountRef: config.api.protonUsername,
+      label: "Proton Mail",
+    })
+    const sync = createProtonSyncRuntime({
+      db,
+      gate,
+      profile,
+      source: createProtonMailClient({ socketPath: config.gateSocket }),
+      username: config.api.protonUsername,
+      onBatchCommitted: scheduleReplies,
+      log,
+    })
+    protonTimer = startSyncTimer(sync, PROTON_SYNC_INTERVAL_MS)
+  }
+  const stopGmailSync = (): void => gmailTimer?.stop()
+  const stopProtonSync = (): void => protonTimer?.stop()
+  scheduleReplies()
   log("started", {
     dataDir: config.dataDir,
     db: config.dbPath,
@@ -195,11 +762,30 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   })
   return {
     db,
+    ...(conversation === undefined ? {} : { conversation }),
+    conversationIndex,
     gate,
     profile,
+    obligations,
     log,
+    stopGmailSync,
+    stopProtonSync,
+    connectorAccounts: accounts.list,
+    getInferenceQueue: model.getQueue,
+    getModelContextTokens: model.getContextTokens,
+    scheduleIngestedDocuments: onIngested,
+    scheduleReplyObligations: scheduleReplies,
     close: async () => {
+      stopGmailSync()
+      stopProtonSync()
+      await gmailTimer?.inFlight()
+      await protonTimer?.inFlight()
+      await digestScheduling
+      await replyScheduling
+      await digestService?.whenIdle()
       await profile.drain()
+      await obligations.drain()
+      conversationIndex.close()
       db.close()
       log("stopped")
     },
@@ -211,11 +797,113 @@ export async function serveDataPlane(
   plane: DataPlane,
   config: CoreApiConfig
 ): Promise<CoreApi> {
+  const modelBaseUrl = config.modelBaseUrl
+  const conversation = plane.conversation
+  const getQueue = plane.getInferenceQueue
+  const ask =
+    modelBaseUrl === undefined
+      ? undefined
+      : async (question: string) => {
+          if (conversation === undefined) {
+            if (question.trim() === "/compact") {
+              return compactAskResult("Nothing to compact yet")
+            }
+            return askPipeline(question, plane.db, await getQueue())
+          }
+          const queue = await getQueue()
+          const conversationId = "ask"
+          const askBudgetTokens = Math.max(
+            1,
+            Math.min(
+              ASK_CONTEXT_BUDGET_TOKENS,
+              Math.floor(plane.getModelContextTokens() / 2)
+            )
+          )
+          const compactOptions = {
+            thresholdTokens: Math.max(1, Math.floor(askBudgetTokens / 2)),
+            keepRecentTokens: Math.max(1, Math.floor(askBudgetTokens / 4)),
+          }
+          const command = await dispatchCommand(question, conversationId, {
+            store: conversation,
+            queue,
+            options: compactOptions,
+          })
+          if (command.handled) {
+            return compactAskResult(command.reply)
+          }
+          const priorTurns = conversation.getTurns(conversationId)
+          await conversation.appendTurn(conversationId, {
+            id: randomUUID(),
+            role: "user",
+            text: question,
+            at: new Date().toISOString(),
+            sources: [],
+          })
+          const compacted = await compactConversation(
+            priorTurns,
+            compactOptions,
+            { queue }
+          )
+          const result = await askPipeline(question, plane.db, queue, {
+            budgetTokens: askBudgetTokens,
+            conversation: compacted.turns,
+            allocateSourceTag: (sourceRef) =>
+              conversation.allocateSourceTag(conversationId, sourceRef),
+          })
+          await conversation.appendTurn(conversationId, {
+            id: randomUUID(),
+            role: "assistant",
+            text: result.answer,
+            at: new Date().toISOString(),
+            sources: result.citations.map((citation) => citation.tag),
+          })
+          return result
+        }
+  let sweeping = false
+  const sweep = async (): Promise<void> => {
+    if (
+      sweeping ||
+      modelBaseUrl === undefined ||
+      plane.conversation === undefined
+    )
+      return
+    sweeping = true
+    try {
+      const result = await runDigestSweep(plane.conversation, {
+        queue: await getQueue(),
+        now: () => new Date(),
+        config: {
+          digestIdleTtlMinutes: config.conversationDigestIdleTtlMinutes,
+        },
+      })
+      if (result.failed.length > 0) {
+        plane.log("conversation_digest_sweep_failed", {
+          count: String(result.failed.length),
+        })
+      }
+    } catch {
+      plane.log("conversation_digest_sweep_failed", { count: "unknown" })
+    } finally {
+      sweeping = false
+    }
+  }
+  const stopDigestTimer = startConversationDigestTimer(sweep)
   const api = await listenCoreApi({
     profile: plane.profile,
+    obligations: plane.obligations,
     connectorHealth: plane.gate.getConnectorHealth,
+    connectorAccounts: plane.connectorAccounts,
+    sendFrom: config.protonUsername,
+    ...(ask === undefined ? {} : { ask }),
+    propose: plane.gate.propose,
+    documents: { db: plane.db },
     ...config,
   })
+  const closeApi = api.close.bind(api)
+  api.close = async () => {
+    stopDigestTimer()
+    await closeApi()
+  }
   plane.log("listening", {
     host: api.host,
     port: String(api.port),
@@ -223,6 +911,45 @@ export async function serveDataPlane(
     allowedHosts: api.allowedHosts.join(","),
   })
   return api
+}
+
+function askPipeline(
+  question: string,
+  db: DatabaseSync,
+  queue: ReturnType<typeof createInferenceQueue>,
+  conversation: Partial<
+    Pick<AskDeps, "budgetTokens" | "conversation" | "allocateSourceTag">
+  > = {}
+) {
+  return ask(question, {
+    db,
+    queue,
+    budgetTokens: conversation.budgetTokens ?? ASK_CONTEXT_BUDGET_TOKENS,
+    ...conversation,
+  })
+}
+
+function compactAskResult(answer: string) {
+  return {
+    status: "answered" as const,
+    answer,
+    citations: [],
+    coverage: {
+      searched: 0,
+      matched: 0,
+      readInFull: 0,
+      label: coverageLabel(0, 0),
+    },
+    facts: { matchCount: 0 },
+    figures: [
+      { key: "matched", value: 0, location: "/coverage/matched" },
+      { key: "searched", value: 0, location: "/coverage/searched" },
+      { key: "readInFull", value: 0, location: "/coverage/readInFull" },
+    ] satisfies AskFigure[],
+    followUps: [],
+    droppedTags: [],
+    possiblyTruncated: false,
+  }
 }
 
 const SIGNALS = ["SIGTERM", "SIGINT"] as const

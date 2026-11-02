@@ -253,6 +253,31 @@ describe("parseFallbackId", () => {
 })
 
 describe("reads against the fake Bridge", () => {
+  it("lists, selects and fetches a mailbox through modified UTF-7 paths", async () => {
+    const folder = "Entwürfe & Arbeit"
+    const { bridge, fake } = await start({
+      mailboxes: {
+        ...mailboxes(),
+        [folder]: box(1700000042, [{ uid: 4, raw: first }]),
+      },
+    })
+
+    expect(await bridge.listFolders()).toContain(folder)
+    expect(await bridge.folderState(folder)).toEqual({
+      uidValidity: "1700000042",
+      uidNext: 5,
+    })
+    expect(await bridge.fetchRaw(folder, 1, 10)).toEqual({
+      messages: [{ uid: 4, raw: first }],
+      skipped: [],
+    })
+    expect(
+      fake.imapCommands.some(
+        (command) => command.startsWith("EXAMINE") && command.includes("&APw-")
+      )
+    ).toBe(true)
+  })
+
   it("lists selectable folders only", async () => {
     const { bridge } = await start({ mailboxes: mailboxes() })
     expect((await bridge.listFolders()).sort()).toEqual([

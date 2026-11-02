@@ -14,7 +14,7 @@ packages/ui            shadcn/ui components (presentational)
 packages/eslint-config shared ESLint config
 packages/typescript-config shared tsconfig bases
 services/              Python services for later waves: placeholder
-infra/                 launchd, pf, Tailscale, llama-server: placeholder
+infra/                 tailscale serve routes (@eido/infra); launchd, pf, llama-server later
 fixtures/              test fixtures, including the boundary-violation fixture
 docs/                  documentation, including docs/adr/
 scripts/               repo checks (gate allowlist, secret scan, boundary fixture, exact versions)

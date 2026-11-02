@@ -160,28 +160,42 @@ describe("parseAuthenticatorData", () => {
 })
 
 describe("checkWebAuthnConfig", () => {
-  it("accepts https://<rpId>", () => {
-    expect(() =>
-      checkWebAuthnConfig({
-        rpId: "a.example.invalid",
-        origin: "https://a.example.invalid",
-      })
-    ).not.toThrow()
+  const rpId = "node.example.ts.net"
+
+  it.each([
+    ["https://<rpId>", `https://${rpId}`],
+    ["https://<rpId>:8443", `https://${rpId}:8443`],
+    ["the lowest port", `https://${rpId}:1`],
+    ["the highest port", `https://${rpId}:65535`],
+  ])("accepts %s", (_name, origin) => {
+    expect(() => checkWebAuthnConfig({ rpId, origin })).not.toThrow()
   })
 
   it.each([
+    ["an http origin", rpId, `http://${rpId}`],
+    ["an http origin with a port", rpId, `http://${rpId}:8443`],
+    ["an origin on another host", rpId, "https://other.example.ts.net:8443"],
     [
-      "an http origin",
-      { rpId: "a.example.invalid", origin: "http://a.example.invalid" },
+      "a host that only starts with the RP id",
+      rpId,
+      `https://${rpId}.evil:8443`,
     ],
-    [
-      "an origin on another host",
-      { rpId: "a.example.invalid", origin: "https://b.example.invalid" },
-    ],
-    ["an empty RP id", { rpId: "", origin: "https://" }],
-  ])("refuses %s", (_name, config) => {
-    expect(() => checkWebAuthnConfig(config)).toThrow(
-      "the WebAuthn origin must be https://<rpId>"
+    ["a path", rpId, `https://${rpId}:8443/app`],
+    ["a query", rpId, `https://${rpId}:8443?x=1`],
+    ["a query without a port", rpId, `https://${rpId}?x=1`],
+    ["userinfo", rpId, `https://user@${rpId}:8443`],
+    ["a trailing slash", rpId, `https://${rpId}/`],
+    ["a trailing slash after the port", rpId, `https://${rpId}:8443/`],
+    ["an empty port", rpId, `https://${rpId}:`],
+    ["a non-numeric port", rpId, `https://${rpId}:https`],
+    ["port 0", rpId, `https://${rpId}:0`],
+    ["a port above 65535", rpId, `https://${rpId}:65536`],
+    ["a port with a leading zero", rpId, `https://${rpId}:08443`],
+    ["the default port, which browsers omit", rpId, `https://${rpId}:443`],
+    ["an empty RP id", "", "https://"],
+  ])("refuses %s", (_name, configRpId, origin) => {
+    expect(() => checkWebAuthnConfig({ rpId: configRpId, origin })).toThrow(
+      "the WebAuthn origin must be https://<rpId> or https://<rpId>:<port>"
     )
   })
 })

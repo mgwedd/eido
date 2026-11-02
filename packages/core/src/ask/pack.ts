@@ -243,6 +243,6 @@ export async function buildAskPack(
     droppedMembers: base.droppedMembers,
     packHash,
   }
-  storeContextPack(db, pack)
+  await storeContextPack(db, pack)
   return pack
 }
