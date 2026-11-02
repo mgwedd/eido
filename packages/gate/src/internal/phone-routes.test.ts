@@ -15,6 +15,7 @@ import {
   validateGateSession,
   validateGatePasskeyList,
   validateGatePermissionList,
+  validateGateUndoResult,
 } from "@eido/schemas"
 import type { Body, GateRequest, Reply } from "./http"
 import { append } from "./audit"
@@ -30,6 +31,7 @@ import { propose } from "./intents"
 import { revokeCredential } from "./credentials"
 import { issueEnrolmentCode } from "./enrolment"
 import { matchRoute, phoneHandler, routePath } from "./phone-routes"
+import type { ExecutionResult } from "./executor"
 import { preparePushRegistration } from "./push-subscriptions"
 import type { PhoneState } from "./phone-routes"
 import {
@@ -66,6 +68,7 @@ type Options = {
   contentType?: string | null
   basePath?: string
   query?: URLSearchParams
+  undo?: (id: string) => Promise<ExecutionResult>
 }
 
 async function call(
@@ -78,6 +81,7 @@ async function call(
     allowedHosts: [HOST],
     basePath: options.basePath ?? "",
     now: () => at,
+    undo: options.undo,
   })
   const host = options.host === undefined ? HOST : options.host
   const contentType =
@@ -863,6 +867,7 @@ describe("phoneHandler: session", () => {
     ["POST", "/approvals/x/nonce"],
     ["POST", "/approvals/x/decision"],
     ["POST", "/approvals/x/edit"],
+    ["POST", "/executions/x/undo"],
   ]
 
   it.each(gated)(
@@ -872,6 +877,67 @@ describe("phoneHandler: session", () => {
       expect([reply.status, code(reply)]).toEqual([401, "unauthenticated"])
     }
   )
+
+  it("requires an empty body and configured undo before running it", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    let calls = 0
+    const undo = (): Promise<ExecutionResult> => {
+      calls += 1
+      return Promise.resolve({ ok: true, upstreamRef: null, result: {} })
+    }
+    const unknownField = await call("POST", "/executions/x/undo", {
+      cookie,
+      body: { inverse: {} },
+      undo,
+    })
+    expect([unknownField.status, code(unknownField), calls]).toEqual([
+      400,
+      "invalid_request",
+      0,
+    ])
+
+    const unavailable = await call("POST", "/executions/x/undo", {
+      cookie,
+      body: {},
+    })
+    expect([unavailable.status, code(unavailable), calls]).toEqual([
+      503,
+      "unavailable",
+      0,
+    ])
+
+    const longId = await call("POST", `/executions/${"x".repeat(65)}/undo`, {
+      cookie,
+      body: {},
+      undo,
+    })
+    expect([longId.status, code(longId), calls]).toEqual([
+      400,
+      "invalid_request",
+      0,
+    ])
+
+    const reply = await call("POST", "/executions/x/undo", {
+      cookie,
+      body: {},
+      undo,
+    })
+    expect(reply.status).toBe(200)
+    expect(validateGateUndoResult(reply.body)).toMatchObject({
+      ok: true,
+      value: { id: "x", undone: true },
+    })
+    expect(calls).toBe(1)
+
+    const failed = await call("POST", "/executions/y/undo", {
+      cookie,
+      body: {},
+      undo: () => Promise.reject(new Error("secretmarker")),
+    })
+    expect([failed.status, code(failed)]).toEqual([503, "unavailable"])
+    expect(JSON.stringify(failed.body)).not.toContain("secretmarker")
+  })
 
   it.each(gated)(
     "401s %s %s with a cookie the gate did not issue",
