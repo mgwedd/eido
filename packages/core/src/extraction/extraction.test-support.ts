@@ -5,6 +5,7 @@ import type { StubModelServer, StubReply } from "../inference/stub-server"
 import { addDocs, ledgerFixture, testDoc } from "../ledger/ledger.test-support"
 import { buildText } from "../parsers/offsets"
 import type { Section } from "../parsers/offsets"
+import type { ModelClient } from "../inference/types"
 import { createExtractor } from "./pipeline"
 import type { ExtractionConfig, Extractor, ExtractorDeps } from "./pipeline"
 
@@ -15,6 +16,7 @@ export type Harness = {
   docId: string
   entityId: string
   server: StubModelServer
+  model: ModelClient
   extractor: Extractor
   /** The stored document body the extractor reads. */
   text: string
@@ -85,7 +87,11 @@ export async function harness(
   const extractor = createExtractor({
     db,
     model,
-    config: { model: "stub-model", ...opts.config },
+    config: {
+      model: "stub-model",
+      classifyDocumentType: false,
+      ...opts.config,
+    },
     now: () => new Date("2030-01-02T03:04:05.000Z"),
     ...opts.deps,
   })
@@ -104,6 +110,7 @@ export async function harness(
     docId,
     entityId: property.id,
     server,
+    model,
     extractor,
     text,
     counts: () =>

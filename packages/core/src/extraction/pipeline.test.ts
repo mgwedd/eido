@@ -3,6 +3,8 @@ import { estimateTokens, requiredTokens } from "../inference/budget"
 import { ESTIMATE_BOUNDARY, plainContent } from "../inference/fence"
 import { InferenceError } from "../inference/errors"
 import { listObligations } from "../ledger/store"
+import { getDocumentType, setDocumentType } from "../index/document-type"
+import type { InferenceResult, ModelClient } from "../inference/types"
 import type { Section } from "../parsers/offsets"
 import {
   NOTHING_FOUND,
@@ -593,6 +595,198 @@ describe("an extraction record per processed document", () => {
       "refused_over_budget"
     )
     expect(extractionRows(h)).toEqual([])
+  })
+})
+
+describe("document type classification", () => {
+  const typeReply = (type: unknown) => jsonReply({ type })
+
+  test("stores a supported type from fenced local inference while extracting obligations", async () => {
+    h = await harness(INVOICE, [
+      typeReply("Invoice"),
+      items({ action: { quote: "Payment of $4,800.00 is due" } }),
+    ])
+
+    const defaultExtractor = createExtractor({
+      db: h.db,
+      model: h.model,
+      config: { model: "stub-model" },
+      now: () => new Date("2030-01-02T03:04:05.000Z"),
+    })
+    const result = await defaultExtractor.extractDocument(h.docId)
+
+    expect(result.verified).toBe(1)
+    expect(getDocumentType(h.db, h.docId)).toEqual({
+      type: "Invoice",
+      source: "model",
+    })
+    const requests = chatRequests(h.server)
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.messages.at(-1)?.content).toContain(
+      "Invoice INV-2041 from Example Supply Co."
+    )
+    expect(requests[0]?.messages.at(-1)?.content).toContain("<material id=")
+  })
+
+  test("classifies a document with no obligation candidates", async () => {
+    h = await harness(
+      "A friendly hello from Example Supply Co.",
+      [typeReply("Letter")],
+      { config: { classifyDocumentType: true } }
+    )
+
+    const result = await h.extractor.extractDocument(h.docId)
+
+    expect(result.status).toBe("no_candidates")
+    expect(getDocumentType(h.db, h.docId)).toEqual({
+      type: "Letter",
+      source: "model",
+    })
+    expect(chatRequests(h.server)).toHaveLength(1)
+    expect(listObligations(h.db)).toEqual([])
+  })
+
+  test("keeps a user label and avoids inference for a document already labelled by the owner", async () => {
+    h = await harness(
+      "A friendly hello from Example Supply Co.",
+      [typeReply("Invoice")],
+      { config: { classifyDocumentType: true } }
+    )
+    expect(
+      setDocumentType(h.db, h.docId, { type: "Quote", source: "user" })
+    ).toBe(true)
+
+    await h.extractor.extractDocument(h.docId)
+
+    expect(getDocumentType(h.db, h.docId)).toEqual({
+      type: "Quote",
+      source: "user",
+    })
+    expect(chatRequests(h.server)).toEqual([])
+  })
+
+  test("keeps an owner label set while a model classification is pending", async () => {
+    let notifyStarted: () => void = () => undefined
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve
+    })
+    let finishReply: (value: InferenceResult) => void = () => {
+      throw new Error("classifier response was not awaited")
+    }
+    const reply = new Promise<InferenceResult>((resolve) => {
+      finishReply = resolve
+    })
+    const model: ModelClient = {
+      complete: () => {
+        notifyStarted()
+        return reply
+      },
+    }
+    h = await harness("A friendly hello from Example Supply Co.", [], {
+      config: { classifyDocumentType: true },
+      deps: { model },
+    })
+
+    const extraction = h.extractor.extractDocument(h.docId)
+    await started
+    expect(
+      setDocumentType(h.db, h.docId, { type: "Quote", source: "user" })
+    ).toBe(true)
+    finishReply({
+      text: '{"type":"Invoice"}',
+      estimatedPromptTokens: 100,
+      reportedPromptTokens: 100,
+      truncationSuspected: false,
+      finishReason: "stop",
+    })
+    await extraction
+
+    expect(getDocumentType(h.db, h.docId)).toEqual({
+      type: "Quote",
+      source: "user",
+    })
+  })
+
+  test.each([
+    ["unclassifiable", typeReply(null)],
+    ["malformed output", jsonReply("not a classification")],
+    ["unknown label", typeReply("Warranty")],
+  ])("leaves a document untyped on %s", async (_name, reply) => {
+    h = await harness("An unfamiliar paper.", [reply], {
+      config: { classifyDocumentType: true },
+    })
+
+    await h.extractor.extractDocument(h.docId)
+
+    expect(getDocumentType(h.db, h.docId)).toBeNull()
+    expect(chatRequests(h.server)).toHaveLength(1)
+  })
+
+  test("skips classification when the request would exceed the remaining document budget", async () => {
+    h = await harness(
+      "A friendly hello from Example Supply Co.",
+      [typeReply("Letter")],
+      {
+        config: { classifyDocumentType: true, tokenBudget: 100 },
+      }
+    )
+
+    const result = await h.extractor.extractDocument(h.docId)
+
+    expect(result.status).toBe("no_candidates")
+    expect(getDocumentType(h.db, h.docId)).toBeNull()
+    expect(chatRequests(h.server)).toEqual([])
+  })
+
+  test("reserves the shared document budget and refuses extraction when only classification fits", async () => {
+    h = await harness(INVOICE, [typeReply("Invoice")], {
+      config: { classifyDocumentType: true, tokenBudget: 500 },
+    })
+
+    const result = await h.extractor.extractDocument(h.docId)
+
+    expect(result).toMatchObject({
+      status: "refused_over_budget",
+      passagesTotal: 1,
+    })
+    expect(getDocumentType(h.db, h.docId)).toEqual({
+      type: "Invoice",
+      source: "model",
+    })
+    expect(chatRequests(h.server)).toHaveLength(1)
+    expect(extractionRows(h)).toEqual([])
+  })
+
+  test("makes no model call for missing stored text or an already processed document", async () => {
+    h = await harness(
+      "A friendly hello from Example Supply Co.",
+      [typeReply("Letter")],
+      {
+        config: { classifyDocumentType: true },
+      }
+    )
+    h.db.exec("DROP TRIGGER document_text_no_delete")
+    h.db.exec("DROP TRIGGER document_text_ai")
+    h.db.prepare("DELETE FROM document_text WHERE sha256 = ?").run(h.docId)
+
+    await expect(h.extractor.extractDocument(h.docId)).rejects.toMatchObject({
+      code: "no_stored_text",
+    })
+    expect(chatRequests(h.server)).toEqual([])
+    await h.close()
+
+    h = await harness(
+      "A friendly hello from Example Supply Co.",
+      [typeReply("Letter")],
+      {
+        config: { classifyDocumentType: true },
+      }
+    )
+    await h.extractor.extractDocument(h.docId)
+    const countAfterFirstRun = chatRequests(h.server).length
+    const second = await h.extractor.extractDocument(h.docId)
+    expect(second.status).toBe("already_processed")
+    expect(chatRequests(h.server)).toHaveLength(countAfterFirstRun)
   })
 })
 
