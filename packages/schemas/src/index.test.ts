@@ -444,6 +444,12 @@ describe("schema walk", () => {
 })
 
 describe("codegen", () => {
+  test("generated intent prompt lines never contain undefined", () => {
+    for (const line of INTENT_PROMPT_TEXT.split("\n")) {
+      expect(line).not.toContain("undefined")
+    }
+  })
+
   function run(dir: string, out: string): void {
     execFileSync(process.execPath, [codegen, "--schemas", dir, "--out", out], {
       stdio: "pipe",
