@@ -9,7 +9,12 @@ type Chain = Parameters<typeof ChainBanner>[0]["state"]
 type Hist = Parameters<typeof HistoryBody>[0]["state"]
 const noop = () => undefined
 const list = (state: List) => () => (
-  <ActivityBody state={state} onRetry={noop} onLoadMore={noop} />
+  <ActivityBody
+    state={state}
+    onRetry={noop}
+    onLoadMore={noop}
+    onUndoSettled={noop}
+  />
 )
 const chain = (state: Chain) => () => (
   <ChainBanner state={state} onVerify={noop} />

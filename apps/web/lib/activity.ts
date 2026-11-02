@@ -121,6 +121,26 @@ export function nextCursor(
   return Math.min(...loaded.map((entry) => entry.seq))
 }
 
+/**
+ * Folds a re-read first page into the loaded list: the fresh rows replace every loaded row
+ * at or above the page's lowest seq (new rows and updated undo projections), and loaded
+ * rows below it stay. The cursor is the loaded one while older rows remain, else the page's.
+ */
+export function mergeRefresh(
+  loaded: readonly AuditEntry[],
+  cursor: number | null,
+  fresh: readonly AuditEntry[],
+  freshNextBefore: number | undefined
+): { entries: AuditEntry[]; cursor: number | null } {
+  if (fresh.length === 0) return { entries: [...loaded], cursor }
+  const floor = Math.min(...fresh.map((entry) => entry.seq))
+  const older = loaded.filter((entry) => entry.seq < floor)
+  return {
+    entries: [...fresh, ...older],
+    cursor: older.length > 0 ? cursor : nextCursor(fresh, freshNextBefore),
+  }
+}
+
 export function chainBrokenMessage(
   status: Extract<GateAuditChainStatus, { ok: false }>
 ): string {
