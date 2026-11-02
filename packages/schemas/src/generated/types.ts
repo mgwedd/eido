@@ -173,6 +173,18 @@ export interface CoreApiDocumentSummary {
   typeSource: "model" | "user" | null
 }
 
+/** Request body of PUT /documents/:sha256/type: the type the owner sets on a stored document. It is stored with source user and is not replaced by a later model classification. */
+export interface CoreApiDocumentTypeRequest {
+  type: DocumentTypeLabel
+}
+
+/** Response of PUT /documents/:sha256/type: the stored type of the document and who set it (always user for this route). */
+export interface CoreApiDocumentType {
+  sha256: string
+  type: DocumentTypeLabel
+  typeSource: "model" | "user"
+}
+
 /** Response of GET /documents/:sha256?start=&end=. `lines` is the stored text split on newlines; `start` is each line's UTF-16 offset in that text. `highlight` is the requested [start, end) range, or null when none was asked. `extractions` lists the document's extracted rows, oldest first. Text is data only: the client renders it as plain text. */
 export interface CoreApiDocumentView {
   document: CoreApiDocumentSummary
@@ -245,6 +257,9 @@ export interface CoreApiProfile {
   }>
   updatedAt: string
 }
+
+/** The semantic types the owner can set on a stored document, and the set the document classifier (#398) picks from. Closed on purpose: a label outside it is refused. */
+export type DocumentTypeLabel = "Invoice" | "Quote" | "Receipt" | "Tax bill" | "Contract" | "Insurance policy" | "Statement" | "Letter" | "Other"
 
 export interface ExtractedFields {
   action: {
@@ -371,7 +386,7 @@ export interface GateConnectorHealth {
   }>
 }
 
-/** Authenticated phone view of each pinned connector's live health, declared auth scopes and pin timestamp. It contains no credentials. */
+/** Authenticated phone view of each pinned connector's live health, declared auth scopes, pin timestamp, pinned manifest hash, last successful read and manifest drift detail, with the gate's own time. Fields other than the original ones are optional per connector. It contains no credentials. */
 export interface GateConnectorSettings {
   connectors: Array<{
     name: string
@@ -382,7 +397,14 @@ export interface GateConnectorSettings {
     consecutiveFailures: number
     lastError?: string
     nextAttemptAt?: string
+    lastSuccessAt?: string
+    manifestHash?: string
+    drift?: {
+      added: Array<string>
+      removed: Array<string>
+    }
   }>
+  asOf?: string
 }
 
 /** Response of GET /passkey/status on the phone listener, which needs no session. enrolled is true when the gate holds at least one unrevoked passkey; when it is false the PWA blocks Approve and links to /enroll. sessionExpiresAt is when the session cookie sent with the request ends, or null when there is no valid session. */

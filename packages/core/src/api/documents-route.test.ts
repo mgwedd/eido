@@ -392,10 +392,10 @@ describe("GET /documents/:sha256", () => {
       },
     }
 
-    const store = (
+    const store = async (
       fields: ExtractedFields,
       confidence: Partial<Record<keyof ExtractedFields, number>>
-    ): number =>
+    ): Promise<number> =>
       insertExtraction(db, {
         docId: invoice,
         schema: "invoice.v1",
@@ -407,7 +407,7 @@ describe("GET /documents/:sha256", () => {
       })
 
     test("lists fields with value, line, confidence and verified", async () => {
-      const id = store(FIELDS, {
+      const id = await store(FIELDS, {
         action: 0.95,
         party: 0.9,
         amount: 0.99,
@@ -462,7 +462,7 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("low confidence is unverified until the extraction is confirmed", async () => {
-      const id = store({ action: FIELDS.action }, { action: 0.5 })
+      const id = await store({ action: FIELDS.action }, { action: 0.5 })
       expect((await view(invoice)).extractions[0]?.fields[0]?.verified).toBe(
         false
       )
@@ -473,7 +473,7 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("a confidence threshold can be configured", async () => {
-      store({ action: FIELDS.action }, { action: 0.85 })
+      await store({ action: FIELDS.action }, { action: 0.85 })
       const strict = createApiHandler({
         profile,
         allowedHosts: ["core.test"],
@@ -487,7 +487,7 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("a field that did not parse is never verified", async () => {
-      store(
+      await store(
         {
           action: FIELDS.action,
           amount: {
@@ -508,7 +508,7 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("a quote that differs from the stored text is unverified", async () => {
-      store(
+      await store(
         {
           action: { raw: "Please pay", span: party },
           reference_number: {
@@ -526,7 +526,7 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("a span starting past the stored text has no line", async () => {
-      store(
+      await store(
         {
           action: {
             raw: "Please pay",
@@ -540,15 +540,15 @@ describe("GET /documents/:sha256", () => {
     })
 
     test("empty extractions are left out; rows come oldest first", async () => {
-      insertExtraction(db, {
+      await insertExtraction(db, {
         docId: invoice,
         schema: "invoice.v1",
         status: "processed_empty",
         model: "none",
         createdAt: "2030-01-04T00:00:00.000Z",
       })
-      const first = store({ action: FIELDS.action }, { action: 0.9 })
-      const second = store(
+      const first = await store({ action: FIELDS.action }, { action: 0.9 })
+      const second = await store(
         { party: FIELDS.party, action: FIELDS.action },
         {
           action: 0.9,
@@ -565,4 +565,97 @@ test("documents are not served without the documents dependency", async () => {
   const bare = createApiHandler({ profile, allowedHosts: ["core.test"] })
   const response = await bare(new Request("http://core.test/documents"))
   expect(response.status).toBe(404)
+})
+
+describe("PUT /documents/:sha256/type", () => {
+  const put = (
+    sha256: string,
+    body: unknown,
+    raw?: string
+  ): Promise<Response> =>
+    handle(
+      new Request(`http://core.test/api/core/documents/${sha256}/type`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: raw ?? JSON.stringify(body),
+      })
+    )
+
+  test("sets the type with source user and the list reports it", async () => {
+    const response = await put(pdf, { type: "Tax bill" })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      sha256: pdf,
+      type: "Tax bill",
+      typeSource: "user",
+    })
+    const listed = (await list("?type=Tax%20bill")).documents
+    expect(listed).toHaveLength(1)
+    expect(listed[0]).toMatchObject({
+      sha256: pdf,
+      type: "Tax bill",
+      typeSource: "user",
+    })
+  })
+
+  test("replaces a model label with the user's", async () => {
+    expect((await put(invoice, { type: "Receipt" })).status).toBe(200)
+    expect((await view(invoice)).document).toMatchObject({
+      type: "Receipt",
+      typeSource: "user",
+    })
+  })
+
+  test("a later model classification does not replace it", async () => {
+    await put(pdf, { type: "Contract" })
+    expect(setDocumentType(db, pdf, { type: "Quote", source: "model" })).toBe(
+      true
+    )
+    const [doc] = (await list("?source=upload")).documents
+    expect(doc).toMatchObject({ type: "Contract", typeSource: "user" })
+  })
+
+  test("refuses a type outside the set with 400 and stores nothing", async () => {
+    for (const body of [
+      { type: "Memo" },
+      { type: "" },
+      { type: 7 },
+      {},
+      { type: "Quote", extra: true },
+    ]) {
+      const response = await put(pdf, body)
+      expect(response.status).toBe(400)
+      const error = (await response.json()) as CoreApiError
+      expect(error.error.code).toBe("bad_request")
+    }
+    expect((await put(pdf, null, "not json")).status).toBe(400)
+    expect((await list("?source=upload")).documents[0]).toMatchObject({
+      type: null,
+      typeSource: null,
+    })
+  })
+
+  test("404 for an unknown document", async () => {
+    for (const id of ["f".repeat(64), "nope"]) {
+      const response = await put(id, { type: "Quote" })
+      expect(response.status).toBe(404)
+      expect(((await response.json()) as CoreApiError).error.code).toBe(
+        "not_found"
+      )
+    }
+  })
+
+  test("only PUT is served and the body must be JSON", async () => {
+    const wrong = await get(`/documents/${pdf}/type`)
+    expect(wrong.status).toBe(405)
+    expect(wrong.headers.get("allow")).toBe("PUT")
+    const form = await handle(
+      new Request(`http://core.test/api/core/documents/${pdf}/type`, {
+        method: "PUT",
+        headers: { "content-type": "text/plain" },
+        body: '{"type":"Quote"}',
+      })
+    )
+    expect(form.status).toBe(415)
+  })
 })

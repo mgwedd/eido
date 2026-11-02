@@ -357,12 +357,14 @@ function auditPage(state: PhoneState, request: GateRequest): Reply {
   return { status: 200, body }
 }
 
-function connectorSettings(state: PhoneState): Reply {
+function connectorSettings(state: PhoneState, now: Clock): Reply {
   const health = new Map(
     getConnectorHealth(state.db).map((connector) => [connector.name, connector])
   )
   const connectors: GateConnectorSettings["connectors"] = state.db
-    .prepare("SELECT name, pinned_at FROM connectors ORDER BY name")
+    .prepare(
+      "SELECT name, pinned_at, manifest_hash, last_success_at FROM connectors ORDER BY name"
+    )
     .all()
     .map((row) => {
       const name = String(row["name"])
@@ -384,9 +386,24 @@ function connectorSettings(state: PhoneState): Reply {
         ...(current.nextAttemptAt === undefined
           ? {}
           : { nextAttemptAt: current.nextAttemptAt }),
+        ...(typeof row["last_success_at"] === "string"
+          ? { lastSuccessAt: row["last_success_at"] }
+          : {}),
+        manifestHash: String(row["manifest_hash"]),
+        ...(stored.drift === null || stored.enabled
+          ? {}
+          : {
+              drift: {
+                added: [...stored.drift.added],
+                removed: [...stored.drift.removed],
+              },
+            }),
       }
     })
-  const body: GateConnectorSettings = { connectors }
+  const body: GateConnectorSettings = {
+    connectors,
+    asOf: now().toISOString(),
+  }
   return { status: 200, body }
 }
 
@@ -577,7 +594,7 @@ function route(
     case "/audit/chain":
       return { status: 200, body: verifyChain(state.db) }
     case "/connector-settings":
-      return connectorSettings(state)
+      return connectorSettings(state, now)
     case "/passkeys":
       return passkeyList(state)
     case "/permissions":

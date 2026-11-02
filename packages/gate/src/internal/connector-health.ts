@@ -130,7 +130,8 @@ export function releaseConnectorProbe(
 export function recordConnectorReadSuccess(
   db: DatabaseSync,
   name: string,
-  attempt: ReadAttempt
+  attempt: ReadAttempt,
+  now = Date.now()
 ): void {
   const row = db
     .prepare(
@@ -150,18 +151,25 @@ export function recordConnectorReadSuccess(
     db.prepare(
       `UPDATE connectors SET health = 'healthy', consecutive_failures = 0,
          next_attempt_at = NULL, last_error = NULL, probe_started_at = NULL,
-         probe_lease_id = NULL, health_generation = health_generation + 1
+         probe_lease_id = NULL, health_generation = health_generation + 1,
+         last_success_at = ?
        WHERE name = ? AND health = 'open' AND health_generation = ?
          AND probe_lease_id = ?`
-    ).run(name, attempt.generation, attempt.probeLeaseId ?? "")
+    ).run(
+      new Date(now).toISOString(),
+      name,
+      attempt.generation,
+      attempt.probeLeaseId ?? ""
+    )
   } else {
     db.prepare(
       `UPDATE connectors SET health = 'healthy', consecutive_failures = 0,
          next_attempt_at = NULL, last_error = NULL, probe_started_at = NULL,
-         probe_lease_id = NULL, health_generation = health_generation + 1
+         probe_lease_id = NULL, health_generation = health_generation + 1,
+         last_success_at = ?
        WHERE name = ? AND health_generation = ? AND health != 'open'
          AND probe_started_at IS NULL`
-    ).run(name, attempt.generation)
+    ).run(new Date(now).toISOString(), name, attempt.generation)
   }
 }
 

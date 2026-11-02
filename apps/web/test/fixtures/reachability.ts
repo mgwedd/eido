@@ -1,5 +1,5 @@
 // Synthetic fixtures for the reachability states. Imported by tests only; never by app code
-// (enforced by the `web-test-fixtures-are-test-only` rule in .dependency-cruiser.cjs).
+// (enforced by the `web-test-fixtures-are-test-only` rule in .dependency-cruiser.mts).
 import type { ProbeOutcome } from "../render-states"
 
 /** What the same-origin health probe returns in each state. */

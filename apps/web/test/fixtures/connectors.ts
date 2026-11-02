@@ -1,5 +1,5 @@
 // Synthetic fixtures for the Connectors page. Imported by tests only; never by app code
-// (enforced by the `web-test-fixtures-are-test-only` rule in .dependency-cruiser.cjs).
+// (enforced by the `web-test-fixtures-are-test-only` rule in .dependency-cruiser.mts).
 import type { GateConnectorSettings } from "@eido/schemas"
 
 type Connector = GateConnectorSettings["connectors"][number]

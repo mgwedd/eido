@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest"
-import { validateCoreApiDocumentList, validateCoreApiDocumentView } from "."
+import {
+  validateCoreApiDocumentList,
+  validateCoreApiDocumentType,
+  validateCoreApiDocumentTypeRequest,
+  validateCoreApiDocumentView,
+} from "."
 
 // Synthetic payloads only: invented names, ids and amounts.
 const summary = {
@@ -91,5 +96,30 @@ describe("documents API schemas", () => {
         ],
       }).ok
     ).toBe(false)
+  })
+})
+
+describe("document type schemas", () => {
+  test("the request accepts a type from the set and nothing else", () => {
+    expect(validateCoreApiDocumentTypeRequest({ type: "Tax bill" }).ok).toBe(
+      true
+    )
+    expect(validateCoreApiDocumentTypeRequest({ type: "Memo" }).ok).toBe(false)
+    expect(validateCoreApiDocumentTypeRequest({}).ok).toBe(false)
+    expect(
+      validateCoreApiDocumentTypeRequest({ type: "Quote", extra: 1 }).ok
+    ).toBe(false)
+  })
+
+  test("the response needs a stored type and its source", () => {
+    const ok = {
+      sha256: "a".repeat(64),
+      type: "Quote",
+      typeSource: "user",
+    }
+    expect(validateCoreApiDocumentType(ok).ok).toBe(true)
+    expect(validateCoreApiDocumentType({ ...ok, typeSource: "guess" }).ok).toBe(
+      false
+    )
   })
 })

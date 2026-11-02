@@ -193,6 +193,9 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      last_attempt_at INTEGER
    ) STRICT;
    INSERT INTO push_state (singleton) VALUES (1);`,
+  // Time of the last successful connector read, for the phone's connector settings (#397).
+  // Existing rows have no recorded success.
+  `ALTER TABLE connectors ADD COLUMN last_success_at TEXT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {
