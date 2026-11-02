@@ -778,6 +778,7 @@ describe("phoneHandler: listener rules", () => {
     ["POST", "/passkey/register/options"],
     ["POST", "/passkey/register"],
     ["POST", "/credentials/revoke"],
+    ["POST", "/passkeys/revoke"],
     ["POST", "/policy"],
     ["POST", "/connectors/mail/pin"],
     ["POST", "/audit"],

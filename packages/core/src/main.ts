@@ -895,6 +895,7 @@ export async function serveDataPlane(
     connectorAccounts: plane.connectorAccounts,
     sendFrom: config.protonUsername,
     ...(ask === undefined ? {} : { ask }),
+    propose: plane.gate.propose,
     documents: { db: plane.db },
     ...config,
   })
