@@ -31,81 +31,116 @@ function expectPack(result: ContextPack | ContextRefusal): ContextPack {
 const THREAD = ["t-1-m2", "t-1-m1", "t-1-m0"].map(sha)
 
 describe("buildAskPack", () => {
-  test("focused packs rank long-document passages and preserve stable source offsets", async () => {
+  const focusOn = (...terms: string[]) => ({
+    terms: new Set(terms),
+    searchScores: new Map<string, number>(),
+  })
+
+  test("focused packs send only the matching passages of a long document, with their offsets", async () => {
+    const passage = "Invoice paid Friday. Invoice confirmed by finance."
     const body = [
       "Background material. ".repeat(90),
-      "Invoice paid Friday. Invoice confirmed by finance.",
+      passage,
       "Archive material. ".repeat(90),
     ].join("\n\n")
     ingest(db, [
       mail({ id: "long-invoice", date: "2031-02-01T00:00:00Z", body }),
     ])
-    const sha256 = sha("long-invoice")
-    const first = expectPack(
-      await buildAskPack(db, {
-        hits: [sha256],
-        budgetTokens: 500,
-        focused: true,
-        terms: ["invoice"],
-      })
-    )
-    const second = expectPack(
-      await buildAskPack(db, {
-        hits: [sha256],
-        budgetTokens: 500,
-        focused: true,
-        terms: ["invoice"],
-      })
-    )
-    expect(packText(first)).toContain("Invoice paid Friday.")
+    const build = async () =>
+      expectPack(
+        await buildAskPack(db, {
+          hits: [sha("long-invoice")],
+          budgetTokens: 500,
+          focus: focusOn("invoice"),
+        })
+      )
+    const first = await build()
+    const start = body.indexOf(passage)
+    expect(packText(first)).toContain(passage)
     expect(packText(first)).not.toContain("Background material.")
-    expect(first.members[0]?.passageOffsets).toEqual([
+    expect(packText(first)).not.toContain("Archive material.")
+    expect(first.members).toMatchObject([
       {
-        start: body.indexOf("Invoice paid Friday."),
-        end:
-          body.indexOf("Invoice paid Friday.") +
-          "Invoice paid Friday. Invoice confirmed by finance.".length,
+        tag: "[M1]",
+        sha256: sha("long-invoice"),
+        edge: "seed",
+        excerpt: {
+          passages: [{ start, end: start + passage.length }],
+          omittedChars: body.length - passage.length,
+        },
       },
     ])
-    expect(second.members).toEqual(first.members)
+    const second = await build()
     expect(second.packHash).toBe(first.packHash)
-    expect(readContextPack(db, first.id)?.members[0]?.passageOffsets).toEqual(
-      first.members[0]?.passageOffsets
-    )
+    expect(readContextPack(db, first.id)?.members).toEqual(first.members)
   })
 
-  test("a higher-ranked passage wins regardless of candidate input order", async () => {
+  test("a short document is sent whole, without an excerpt", async () => {
+    const pack = expectPack(
+      await buildAskPack(db, {
+        hits: [sha("solo-a")],
+        budgetTokens: 500,
+        focus: focusOn("alpha"),
+      })
+    )
+    expect(pack.members).toMatchObject([
+      { tag: "[M1]", sha256: sha("solo-a"), edge: "seed" },
+    ])
+    expect(pack.members[0]?.excerpt).toBeUndefined()
+    expect(packText(pack)).toContain("Alpha note.")
+  })
+
+  test("a higher-ranked passage wins regardless of hit order, and ties break on stable keys", async () => {
+    const filler = (word: string) => `${word} `.repeat(120)
     ingest(db, [
       mail({
         id: "low-passage",
-        date: "2031-02-01T00:00:00Z",
-        body: `${"Archive. ".repeat(120)}\n\nInvoice paid.\n\n${"Old text. ".repeat(120)}`,
+        date: "2031-02-02T00:00:00Z",
+        body: `${filler("Archive.")}\n\nInvoice paid.\n\n${filler("Old.")}`,
       }),
       mail({
         id: "high-passage",
-        date: "2031-02-02T00:00:00Z",
-        body: `${"Archive. ".repeat(120)}\n\nInvoice invoice invoice paid.\n\n${"Old text. ".repeat(120)}`,
+        date: "2031-02-01T00:00:00Z",
+        body: `${filler("Archive.")}\n\nInvoice invoice invoice paid.\n\n${filler("Old.")}`,
       }),
     ])
-    const budgetTokens = 500
-    const first = expectPack(
-      await buildAskPack(db, {
-        hits: [sha("low-passage"), sha("high-passage")],
-        budgetTokens,
-        focused: true,
-        terms: ["invoice"],
-      })
+    const build = async (hits: string[], budgetTokens: number) =>
+      expectPack(
+        await buildAskPack(db, {
+          hits,
+          budgetTokens,
+          focus: focusOn("invoice"),
+        })
+      )
+    const forward = [sha("low-passage"), sha("high-passage")]
+    const roomy = await build(forward, 500)
+    expect(roomy.members.map((m) => m.sha256)).toEqual([
+      sha("high-passage"),
+      sha("low-passage"),
+    ])
+    expect((await build([...forward].reverse(), 500)).members).toEqual(
+      roomy.members
     )
-    const reversed = expectPack(
-      await buildAskPack(db, {
-        hits: [sha("high-passage"), sha("low-passage")],
-        budgetTokens,
-        focused: true,
-        terms: ["invoice"],
-      })
-    )
-    expect(first.members[0]?.sha256).toBe(sha("high-passage"))
-    expect(reversed.members).toEqual(first.members)
+    // Room for one passage only: the higher-ranked one, even when the lower-ranked hit is first
+    // and newer.
+    const tight = roomy.tokenCount - 5
+    const one = await build(forward, tight)
+    expect(one.members.map((m) => m.sha256)).toEqual([sha("high-passage")])
+    expect(one.droppedMembers).toBe(1)
+    expect(one.tokenCount).toBeLessThanOrEqual(tight)
+  })
+
+  test("a focused pack whose best unit does not fit refuses", async () => {
+    const result = await buildAskPack(db, {
+      hits: [sha("solo-a")],
+      budgetTokens: 5,
+      focus: focusOn("alpha"),
+    })
+    expect(result).toMatchObject({
+      refused: true,
+      reason: "seed_too_large",
+      budgetTokens: 5,
+    })
   })
 
   test("seeds on the top hit with its thread, then appends hits not yet included", async () => {

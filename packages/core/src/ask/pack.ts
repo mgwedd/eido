@@ -4,169 +4,220 @@ import { assembleContext, packEntry } from "../context/assemble"
 import type { ContextRefusal } from "../context/assemble"
 import {
   ESTIMATE_BOUNDARY,
+  blockParts,
   packIdFor,
   packParts,
   packText,
   storeContextPack,
 } from "../context/pack-store"
-import type { ContextPack } from "../context/pack-store"
+import type { ContextPack, PackBlock, PackMember } from "../context/pack-store"
+import { COMPACTION_LEGEND } from "../context/compact"
 import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
 import { fence, plainContent, toMaterial } from "../inference/fence"
-import { tokenize } from "../index/text"
-import { COMPACTION_LEGEND } from "../context/compact"
+import { LIVE_DOCUMENT_PREDICATE } from "../index/heads"
+import { compareUnits, matchingPassages, termHits } from "./passages"
+import type { Passage, RankedUnit } from "./passages"
 
 export interface AskPackArgs {
   /** sha256 of each search hit, best first. The first one seeds the pack. */
   hits: string[]
   budgetTokens: number
   charsPerToken?: number
-  /** Focused requests may use ranked body passages from long documents. */
-  focused?: boolean
-  terms?: string[]
-  searchScores?: { sha256: string; score: number }[]
+  /** Set for a focused request: the pack is ranked passages and whole documents, not a thread. */
+  focus?: AskFocus
 }
 
-interface Passage {
+export interface AskFocus {
+  /** The normalized terms the search matched on, fuzzy variants included. */
+  terms: ReadonlySet<string>
+  /** Each hit's search score by sha256; a hit without one scores 0. */
+  searchScores: ReadonlyMap<string, number>
+}
+
+interface FocusDoc {
   sha256: string
-  source: string
-  sourceRef: string
+  label: string
   title: string
-  occurredAt: string
   body: string
-  start: number
-  end: number
-  score: number
-  searchScore: number
-  full: boolean
+  occurredAt: string
+  from: string | undefined
+  attachment: boolean
 }
 
-function passageCandidates(
-  db: DatabaseSync,
-  hits: string[],
-  terms: string[],
-  searchScores: Map<string, number>
-): Passage[] {
-  const wanted = new Set(terms.map((term) => term.toLocaleLowerCase()))
-  const candidates: Passage[] = []
-  for (const sha256 of hits) {
-    const row = db
-      .prepare(
-        `SELECT d.source, d.source_ref, t.title, t.body, t.occurred_at
-         FROM documents d JOIN document_text t ON t.sha256 = d.sha256 WHERE d.sha256 = ?`
-      )
-      .get(sha256)
-    if (row === undefined) continue
-    const body = String(row["body"])
-    const paragraphs: { start: number; end: number; text: string }[] = []
-    const paragraphPattern = /[^\n]+(?:\n(?!\n)[^\n]+)*/gu
-    for (const match of body.matchAll(paragraphPattern)) {
-      const text = match[0]
-      const start = match.index
-      const end = start + text.length
-      const matches = tokenize(text).filter((term) => wanted.has(term)).length
-      if (matches > 0) paragraphs.push({ start, end, text })
-    }
-    const matchingLength = paragraphs.reduce(
-      (total, paragraph) => total + paragraph.text.length,
-      0
+function focusDoc(db: DatabaseSync, sha256: string): FocusDoc {
+  const row = db
+    .prepare(
+      `SELECT d.source, t.title, t.body, t.occurred_at, t.attachment_of,
+         (SELECT address FROM mail_addresses a WHERE a.sha256 = d.sha256 AND a.role = 'from'
+          ORDER BY position LIMIT 1) AS sender
+       FROM documents d JOIN document_text t ON t.sha256 = d.sha256
+       WHERE ${LIVE_DOCUMENT_PREDICATE} AND d.sha256 = ?`
     )
-    const usePassages =
-      paragraphs.length > 0 &&
-      body.length >= 1200 &&
-      matchingLength * 2 < body.length
-    const selected = usePassages
-      ? paragraphs
-      : [{ start: 0, end: body.length, text: body }]
-    for (const paragraph of selected) {
-      const words = tokenize(paragraph.text)
-      const score = words.reduce(
-        (total, word) => total + (wanted.has(word) ? 1 : 0),
-        0
-      )
-      candidates.push({
-        sha256,
-        source: String(row["source"]),
-        sourceRef: String(row["source_ref"]),
-        title: String(row["title"] ?? ""),
-        occurredAt: String(row["occurred_at"] ?? ""),
-        body: paragraph.text,
-        start: paragraph.start,
-        end: paragraph.end,
-        score,
-        searchScore: searchScores.get(sha256) ?? 0,
-        full: !usePassages,
-      })
-    }
+    .get(sha256)
+  if (row === undefined) throw new Error("a pack entry is not in the index")
+  const text = (value: unknown): string =>
+    typeof value === "string" ? value : ""
+  const sender = text(row["sender"])
+  return {
+    sha256,
+    label: String(row["source"]),
+    title: text(row["title"]),
+    body: String(row["body"]),
+    occurredAt: text(row["occurred_at"]),
+    from: sender === "" ? undefined : sender,
+    attachment: text(row["attachment_of"]) !== "",
   }
-  return candidates.sort(
-    (a, b) =>
-      b.score - a.score ||
-      b.searchScore - a.searchScore ||
-      (a.occurredAt < b.occurredAt
-        ? 1
-        : a.occurredAt > b.occurredAt
-          ? -1
-          : 0) ||
-      (a.sha256 < b.sha256 ? -1 : a.sha256 > b.sha256 ? 1 : 0) ||
-      a.start - b.start ||
-      a.end - b.end
-  )
 }
 
-function buildFocusedPack(
+/** The document's selected passages, in body order, as one fenced excerpt under `tag`. */
+function excerptEntry(
+  doc: FocusDoc,
+  passages: readonly Passage[],
+  tag: string
+): PackBlock {
+  const text = passages
+    .map((p) => doc.body.slice(p.start, p.end))
+    .join("\n[…]\n")
+  return {
+    tag,
+    label: doc.label,
+    block: fence(
+      toMaterial(`${doc.title} | ${doc.occurredAt}\n${text}`, {
+        source: doc.attachment ? "attachment" : "mail",
+        part: "excerpt",
+        ...(doc.from === undefined ? {} : { from: doc.from }),
+      })
+    ),
+  }
+}
+
+const entryTokens = (entry: PackBlock, charsPerToken: number): number =>
+  estimateTokens(
+    plainContent(blockParts(entry), ESTIMATE_BOUNDARY),
+    charsPerToken
+  )
+
+const byStart = (a: Passage, b: Passage): number => a.start - b.start
+
+interface Chosen {
+  doc: FocusDoc
+  /** null: the whole document. */
+  passages: Passage[] | null
+  tokens: number
+}
+
+/**
+ * A focused pack: every hit becomes ranked units (the passages that hold a search term, when they
+ * are materially smaller than the body, or else the whole document), and units join best first
+ * while they fit. A document's passages share one member. The best unit is the seed: if it does
+ * not fit, the request is refused, never truncated.
+ */
+async function buildFocusedPack(
   db: DatabaseSync,
-  hits: string[],
-  terms: string[],
-  searchScores: Map<string, number>,
+  hits: readonly string[],
+  focus: AskFocus,
   budgetTokens: number,
   charsPerToken: number
-): ContextPack | ContextRefusal {
-  const passages = passageCandidates(db, hits, terms, searchScores)
-  const blocks: ContextPack["blocks"] = []
-  const members: ContextPack["members"] = []
-  const includedFull = new Set<string>()
-  let used = estimateTokens(COMPACTION_LEGEND, charsPerToken)
-  for (const passage of passages) {
-    if (passage.full && includedFull.has(passage.sha256)) continue
-    const tag = `[M${String(members.length + 1)}]`
-    const label = passage.source
-    const source =
-      passage.source === "gmail" || passage.source === "proton"
-        ? "mail"
-        : "document"
-    const content = passage.full
-      ? `${passage.title}\n${passage.body}`
-      : `${passage.title}\n${passage.body}`
-    const block = fence(toMaterial(content, { source }))
-    const entry = { tag, label, block }
-    const tokens = estimateTokens(
-      plainContent([`\n\n${tag} ${label}\n`, block], "0".repeat(32)),
-      charsPerToken
-    )
-    if (members.length === 0 && used + tokens > budgetTokens) {
-      return {
-        refused: true,
-        reason: "seed_too_large",
-        seedTokens: used + tokens,
-        budgetTokens,
-      }
+): Promise<ContextPack | ContextRefusal> {
+  const docs = new Map<string, FocusDoc>()
+  const units: { unit: RankedUnit; doc: FocusDoc }[] = []
+  for (const sha256 of hits) {
+    if (docs.has(sha256)) continue
+    const doc = focusDoc(db, sha256)
+    docs.set(sha256, doc)
+    const base = {
+      sha256,
+      searchScore: focus.searchScores.get(sha256) ?? 0,
+      occurredAt: doc.occurredAt,
     }
-    if (used + tokens > budgetTokens) continue
-    used += tokens
+    const passages = matchingPassages(doc.body, focus.terms)
+    if (passages === null)
+      units.push({
+        unit: { ...base, score: termHits(doc.body, focus.terms) },
+        doc,
+      })
+    else
+      for (const passage of passages)
+        units.push({
+          unit: {
+            ...base,
+            score: termHits(
+              doc.body.slice(passage.start, passage.end),
+              focus.terms
+            ),
+            passage,
+          },
+          doc,
+        })
+  }
+  units.sort((a, b) => compareUnits(a.unit, b.unit))
+
+  // Estimated with the widest tag any member could get, so the real pack never estimates above.
+  const widestTag = `[M${String(docs.size)}]`
+  const chosen = new Map<string, Chosen>()
+  let used = estimateTokens(COMPACTION_LEGEND, charsPerToken)
+  for (const { unit, doc } of units) {
+    const previous = chosen.get(unit.sha256)
+    const passages =
+      unit.passage === undefined
+        ? null
+        : [...(previous?.passages ?? []), unit.passage].sort(byStart)
+    const tokens =
+      passages === null
+        ? packEntry(db, doc.sha256, widestTag, charsPerToken).member.tokens
+        : entryTokens(excerptEntry(doc, passages, widestTag), charsPerToken)
+    const added = tokens - (previous?.tokens ?? 0)
+    if (used + added > budgetTokens) {
+      if (chosen.size === 0)
+        return {
+          refused: true,
+          reason: "seed_too_large",
+          seedTokens: used + added,
+          budgetTokens,
+        }
+      continue
+    }
+    used += added
+    chosen.set(unit.sha256, { doc, passages, tokens })
+  }
+
+  const blocks: PackBlock[] = []
+  const members: PackMember[] = []
+  for (const { doc, passages } of chosen.values()) {
+    const tag = `[M${String(members.length + 1)}]`
+    if (passages === null) {
+      const { entry, member } = packEntry(db, doc.sha256, tag, charsPerToken)
+      blocks.push(entry)
+      members.push(member)
+      continue
+    }
+    const entry = excerptEntry(doc, passages, tag)
     blocks.push(entry)
     members.push({
       tag,
-      sha256: passage.sha256,
+      sha256: doc.sha256,
       edge: "seed",
-      tokens,
-      injectionSuspected: block.injectionSuspected,
-      injectionReasons: [...block.reasons],
-      ...(!passage.full
-        ? { passageOffsets: [{ start: passage.start, end: passage.end }] }
-        : {}),
+      tokens: entryTokens(entry, charsPerToken),
+      injectionSuspected: entry.block.injectionSuspected,
+      injectionReasons: [...entry.block.reasons],
+      excerpt: {
+        passages: passages.map(({ start, end }) => ({ start, end })),
+        omittedChars:
+          doc.body.length -
+          passages.reduce((sum, p) => sum + p.end - p.start, 0),
+      },
     })
-    if (passage.full) includedFull.add(passage.sha256)
   }
+  return finishPack(db, blocks, members, docs.size - chosen.size, charsPerToken)
+}
+
+async function finishPack(
+  db: DatabaseSync,
+  blocks: PackBlock[],
+  members: PackMember[],
+  droppedMembers: number,
+  charsPerToken: number
+): Promise<ContextPack> {
   const packHash = createHash("sha256")
     .update(packText({ blocks }))
     .digest("hex")
@@ -178,17 +229,18 @@ function buildFocusedPack(
       plainContent(packParts({ blocks }), ESTIMATE_BOUNDARY),
       charsPerToken
     ),
-    droppedMembers: passages.length - members.length,
+    droppedMembers,
     packHash,
   }
-  storeContextPack(db, pack)
+  await storeContextPack(db, pack)
   return pack
 }
 
 /**
- * The pack for one ask: `assembleContext` seeded on the top hit (with its reply chain, thread
- * and attachments), extended with the next hits whose blocks fit the remaining budget. Hits
- * already in the pack are skipped. A seed that does not fit returns the context refusal.
+ * The pack for one ask. Broad (no `focus`): `assembleContext` seeded on the top hit (with its
+ * reply chain, thread and attachments), extended with the next hits whose blocks fit the
+ * remaining budget; hits already in the pack are skipped. Focused: ranked passages and whole
+ * documents (see `buildFocusedPack`). A seed that does not fit returns the context refusal.
  */
 export async function buildAskPack(
   db: DatabaseSync,
@@ -197,12 +249,11 @@ export async function buildAskPack(
   const charsPerToken = args.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
   const [top, ...rest] = args.hits
   if (top === undefined) throw new Error("an ask pack needs at least one hit")
-  if (args.focused && args.terms !== undefined)
+  if (args.focus !== undefined)
     return buildFocusedPack(
       db,
       args.hits,
-      args.terms,
-      new Map((args.searchScores ?? []).map((hit) => [hit.sha256, hit.score])),
+      args.focus,
       args.budgetTokens,
       charsPerToken
     )
@@ -228,21 +279,5 @@ export async function buildAskPack(
     included.add(hit)
   }
   if (members.length === base.members.length) return base
-
-  const packHash = createHash("sha256")
-    .update(packText({ blocks }))
-    .digest("hex")
-  const pack: ContextPack = {
-    id: packIdFor(packHash),
-    blocks,
-    members,
-    tokenCount: estimateTokens(
-      plainContent(packParts({ blocks }), ESTIMATE_BOUNDARY),
-      charsPerToken
-    ),
-    droppedMembers: base.droppedMembers,
-    packHash,
-  }
-  await storeContextPack(db, pack)
-  return pack
+  return finishPack(db, blocks, members, base.droppedMembers, charsPerToken)
 }

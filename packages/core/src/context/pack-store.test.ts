@@ -82,5 +82,37 @@ describe("context pack store", () => {
     expect(() => readContextPack(db, "c")).toThrow("malformed field")
     expect(() => readContextPack(db, "d")).toThrow("malformed field")
     expect(() => readContextPack(db, "e")).toThrow("malformed field")
+    // An excerpt that is not an object, has no passages, a negative omitted count, an empty or
+    // fractional range, or a passage that is not an object.
+    insertRaw(
+      "f",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":"some"}]'
+    )
+    insertRaw(
+      "g",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":{"passages":[],"omittedChars":0}}]'
+    )
+    insertRaw(
+      "h",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":{"passages":[{"start":0,"end":5}],"omittedChars":-1}}]'
+    )
+    insertRaw(
+      "i",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":{"passages":[{"start":5,"end":5}],"omittedChars":0}}]'
+    )
+    insertRaw(
+      "j",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":{"passages":[{"start":0.5,"end":5}],"omittedChars":0}}]'
+    )
+    insertRaw(
+      "k",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":{"passages":[7],"omittedChars":0}}]'
+    )
+    expect(() => readContextPack(db, "f")).toThrow("malformed field")
+    expect(() => readContextPack(db, "g")).toThrow("malformed field")
+    expect(() => readContextPack(db, "h")).toThrow("malformed field")
+    expect(() => readContextPack(db, "i")).toThrow("malformed field")
+    expect(() => readContextPack(db, "j")).toThrow("malformed field")
+    expect(() => readContextPack(db, "k")).toThrow("malformed field")
   })
 })

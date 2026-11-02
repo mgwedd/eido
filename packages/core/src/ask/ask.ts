@@ -1,5 +1,5 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
-import { countMatches, search } from "../index/search"
+import { countMatches, matchTerms, search } from "../index/search"
 import { LIVE_DOCUMENT_PREDICATE } from "../index/heads"
 import type { SearchQuery } from "../index/search"
 import { packParts } from "../context/pack-store"
@@ -26,10 +26,11 @@ import {
   substitutePlaceholders,
 } from "./answer"
 import { buildAskPack } from "./pack"
-import { PLAN_SCHEMA, PLAN_SYSTEM, parsePlan } from "./plan"
+import { PLAN_SCHEMA, PLAN_SYSTEM, askScope, parsePlan } from "./plan"
 import type { AskCitation, AskDeps, AskResult, SearchPlan } from "./types"
 
 const DEFAULT_SEARCH_LIMIT = 20
+export const DEFAULT_FOLLOW_UP_RESERVE_TOKENS = 256
 
 /** Stable across requests, so the server's prompt cache keeps it. */
 export const ANSWER_SYSTEM = [
@@ -55,6 +56,8 @@ function refused(
       searched,
       matched,
       readInFull: 0,
+      readPartially: 0,
+      notRead: matched,
       label: coverageLabel(0, matched),
     },
     facts: { matchCount },
@@ -130,6 +133,7 @@ function citationFor(
     ...(typeof occurredAt === "string" && occurredAt !== ""
       ? { occurredAt }
       : {}),
+    ...(member.excerpt === undefined ? {} : { excerpt: member.excerpt }),
     injectionSuspected: member.injectionSuspected,
     injectionReasons: member.injectionReasons,
   }
@@ -141,13 +145,15 @@ function factsText(
   plan: SearchPlan,
   matched: number,
   searched: number,
-  readInFull: number
+  readInFull: number,
+  readPartially: number
 ): string {
   return [
     "Facts (computed by code):",
     `matched: ${String(matched)}`,
     `searched: ${String(searched)}`,
     `readInFull: ${String(readInFull)}`,
+    `readPartially: ${String(readPartially)}`,
     `wants: ${plan.wants}`,
   ].join("\n")
 }
@@ -180,15 +186,28 @@ async function run(
 ): Promise<AskResult> {
   const { db } = deps
   const today = isoDate((deps.now ?? (() => new Date()))())
+  const charsPerToken = deps.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
+  const cap = deps.budgetTokens
 
   // Step 1: the model writes a search plan; code runs it.
+  const planContent = `Today is ${today}.\nQuestion: ${question}`
+  const planTokens =
+    estimateTokens(PLAN_SYSTEM, charsPerToken) +
+    estimateTokens(JSON.stringify(PLAN_SCHEMA), charsPerToken) +
+    estimateTokens(planContent, charsPerToken)
+  if (planTokens > cap)
+    return refused(
+      "the question does not fit the model's context",
+      0,
+      0,
+      null,
+      false
+    )
   let planned
   try {
     planned = await client.complete({
       system: PLAN_SYSTEM,
-      messages: [
-        { role: "user", content: `Today is ${today}.\nQuestion: ${question}` },
-      ],
+      messages: [{ role: "user", content: planContent }],
       jsonSchema: PLAN_SCHEMA,
       temperature: 0,
     })
@@ -231,6 +250,8 @@ async function run(
         searched,
         matched: 0,
         readInFull: 0,
+        readPartially: 0,
+        notRead: 0,
         label: coverageLabel(0, 0),
       },
       facts: { matchCount },
@@ -251,19 +272,27 @@ async function run(
       plan,
       matchCount,
       searched,
+      Number.MAX_SAFE_INTEGER,
       Number.MAX_SAFE_INTEGER
     )}\n\nMessages:\n`,
     `\n\nQuestion: ${question}`,
   ]
-  const charsPerToken = deps.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
-  const fixedContextTokens = estimateTokens(
-    plainContent([...historyParts, ...contextHeaderParts], ESTIMATE_BOUNDARY),
-    charsPerToken
-  )
-  const packBudgetTokens = deps.budgetTokens - fixedContextTokens
+  // One cap for the whole answer request: the system prompt, the conversation, the facts and
+  // the question, the room kept for a follow-up lookup, and what is left for the messages.
+  // The parts are estimated apart, and the sum of rounded-up parts is never below the whole.
+  const reserveTokens =
+    deps.followUpReserveTokens ?? DEFAULT_FOLLOW_UP_RESERVE_TOKENS
+  const fixedTokens =
+    estimateTokens(ANSWER_SYSTEM, charsPerToken) +
+    estimateTokens(
+      plainContent([...historyParts, ...contextHeaderParts], ESTIMATE_BOUNDARY),
+      charsPerToken
+    ) +
+    reserveTokens
+  const packBudgetTokens = cap - fixedTokens
   if (packBudgetTokens <= 0) {
     return refused(
-      `the conversation and question need ${String(fixedContextTokens)} tokens, over the ${String(deps.budgetTokens)} ask budget`,
+      `the prompt, conversation, question and follow-up reserve need ${String(fixedTokens)} tokens, over the ${String(cap)} ask budget`,
       matchCount,
       searched,
       matchCount,
@@ -276,10 +305,18 @@ async function run(
     ...(deps.charsPerToken === undefined
       ? {}
       : { charsPerToken: deps.charsPerToken }),
+    ...(askScope(plan) === "focused"
+      ? {
+          focus: {
+            terms: matchTerms(db, query),
+            searchScores: new Map(hits.map((h) => [h.sha256, h.score])),
+          },
+        }
+      : {}),
   })
   if ("refused" in pack) {
     return refused(
-      `the top matching message needs ${String(pack.seedTokens)} tokens; the conversation and question leave ${String(pack.budgetTokens)} of ${String(deps.budgetTokens)} ask tokens for messages`,
+      `the top matching message needs ${String(pack.seedTokens)} tokens; the prompt, conversation, question and follow-up reserve leave ${String(pack.budgetTokens)} of ${String(cap)} ask tokens for messages`,
       matchCount,
       searched,
       matchCount,
@@ -287,8 +324,11 @@ async function run(
     )
   }
 
-  const readInFull = pack.members.length
-  const facts = factsText(plan, matchCount, searched, readInFull)
+  const readPartially = pack.members.filter(
+    (m) => m.excerpt !== undefined
+  ).length
+  const readInFull = pack.members.length - readPartially
+  const facts = factsText(plan, matchCount, searched, readInFull, readPartially)
 
   // Step 2: the model answers from the pack.
   let answered
@@ -325,12 +365,14 @@ async function run(
     searched,
     matched: matchCount,
     readInFull,
-    label: coverageLabel(readInFull, matchCount),
+    readPartially,
+    notRead: Math.max(0, matchCount - readInFull - readPartially),
+    label: coverageLabel(readInFull, matchCount, readPartially),
   }
 
   const withCounts = substitutePlaceholders(answered.text, {
     matches: matchCount,
-    read: readInFull,
+    read: readInFull + readPartially,
     searched,
   })
   const byTag = new Map(pack.members.map((m) => [m.tag.slice(1, -1), m]))
@@ -338,7 +380,7 @@ async function run(
   if (claimsAbsence(checked.text)) {
     return {
       status: "answered",
-      answer: absenceReplacement(readInFull),
+      answer: absenceReplacement(readInFull, readPartially),
       citations: [],
       coverage,
       facts: { matchCount },
