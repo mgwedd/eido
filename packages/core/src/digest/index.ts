@@ -26,3 +26,5 @@ export type {
   DocumentPage,
   ThreadMessage,
 } from "./types"
+export { loadThread, threadKeyOf, threadSubjectId } from "./thread"
+export type { LoadedThread, ThreadKey } from "./thread"
