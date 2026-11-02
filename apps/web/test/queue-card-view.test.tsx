@@ -40,13 +40,13 @@ const PAYLOAD = JSON.stringify({
 const HASH = createHash("sha256").update(PAYLOAD).digest("hex")
 const NONCE = "n".repeat(43)
 
-function prepared(hash: string) {
+function prepared(hash: string, payload = PAYLOAD) {
   return {
     intentId: "intent-a",
     kind: "email.reply",
     origin: "reactive",
     state: "pending",
-    payload: PAYLOAD,
+    payload,
     payloadHash: hash,
     nonce: NONCE,
     documentIds: ["d1", "d2"],
@@ -56,6 +56,7 @@ function prepared(hash: string) {
 
 type Routes = {
   hash?: string
+  payload?: string
   history?: "ok" | "fail" | "empty"
   decision?: number
 }
@@ -80,7 +81,9 @@ function routed(routes: Routes = {}) {
     if (url.endsWith("/approvals"))
       return Promise.resolve(Response.json({ intents: queued }))
     if (url.endsWith("/nonce"))
-      return Promise.resolve(Response.json(prepared(routes.hash ?? HASH)))
+      return Promise.resolve(
+        Response.json(prepared(routes.hash ?? HASH, routes.payload))
+      )
     if (url.endsWith("/history"))
       return Promise.resolve(
         routes.history === "fail"
@@ -178,21 +181,42 @@ describe("Queue card", () => {
     expect(view.textContent).toContain("Context used · 2 linked sources")
     expect(view.textContent).toContain("The thread waited three days.")
     expect(view.textContent).toContain(
-      `Payload hash · ${HASH.slice(0, 4)} ${HASH.slice(4, 8)}`
+      `Hashed on this device · ${HASH.slice(0, 4)} ${HASH.slice(4, 8)}`
     )
     expect(view.querySelector("time")?.getAttribute("title")).toBe(
       "2026-10-17T10:00:00.000Z"
     )
   })
 
-  // prepareApproval now refuses a payload that fails the device-side hash check, so the card
-  // reaches its generic failure state until it maps payload_changed to the mismatch alert (#94
-  // follow-up: web: show device hash verification on the approval card).
-  test("a payload that does not match its hash shows an alert and no Approve", async () => {
+  test("the footer hash is computed from the payload bytes and changes with them", async () => {
+    const changed = PAYLOAD.replace("Hello there", "Hello there!")
+    const changedHash = createHash("sha256").update(changed).digest("hex")
+    routed({ payload: changed, hash: changedHash })
+    const view = await render()
+    expect(view.textContent).toContain(
+      `Hashed on this device · ${changedHash.slice(0, 4)} ${changedHash.slice(4, 8)}`
+    )
+  })
+
+  test("a payload_changed result at sign time shows the mismatch alert and no Approve", async () => {
+    routed()
+    signApproval.mockResolvedValue({
+      ok: false,
+      error: { code: "payload_changed", message: "x" },
+    })
+    const view = await render()
+    await click("Approve")
+    expect(view.querySelector('[role="alert"]')?.textContent).toBe(
+      "Payload changed. Reload the card."
+    )
+    expect(button("Approve")?.disabled).toBe(true)
+  })
+
+  test("a payload that does not match its hash shows the mismatch alert and no Approve", async () => {
     routed({ hash: "0".repeat(64) })
     const view = await render()
     expect(view.querySelector('[role="alert"]')?.textContent).toBe(
-      "Could not load the payload."
+      "Payload changed. Reload the card."
     )
     expect(button("Approve")?.disabled).toBe(true)
   })
