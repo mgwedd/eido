@@ -8,6 +8,7 @@ import {
   loadChain,
   loadHistory,
   mergePage,
+  mergeRefresh,
   nextCursor,
   rowKind,
   shortHash,
@@ -81,6 +82,33 @@ describe("paging", () => {
     expect(nextCursor(rows(50, 51), 51)).toBe(51)
     expect(nextCursor(rows(50, 51), undefined)).toBeNull()
     expect(nextCursor([], 5)).toBeNull()
+  })
+})
+
+describe("refresh", () => {
+  test("fresh rows replace the loaded top, older loaded rows and their cursor stay", () => {
+    const loaded = rows(4, 1).map((e) =>
+      e.seq === 3 ? { ...e, undo: "available" as const } : e
+    )
+    const fresh = [entry(5), entry(4), entry(3, { undo: "done" })]
+    const merged = mergeRefresh(loaded, 1, fresh, 3)
+    expect(merged.entries.map((e) => e.seq)).toEqual([5, 4, 3, 2, 1])
+    expect(merged.entries[2]?.undo).toBe("done")
+    expect(merged.cursor).toBe(1)
+  })
+
+  test("when the fresh page covers everything loaded, its own cursor applies", () => {
+    expect(mergeRefresh(rows(2, 1), null, rows(3, 1), undefined).cursor).toBe(
+      null
+    )
+    expect(mergeRefresh(rows(2, 2), null, rows(3, 2), 2).cursor).toBe(2)
+  })
+
+  test("an empty fresh page leaves the list as it was", () => {
+    expect(mergeRefresh(rows(2, 1), 1, [], undefined)).toEqual({
+      entries: rows(2, 1),
+      cursor: 1,
+    })
   })
 })
 

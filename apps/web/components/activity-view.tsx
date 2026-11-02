@@ -14,6 +14,7 @@ import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Button } from "@eido/ui/components/button"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { ActivityHistory } from "@/components/activity-history"
+import { UndoControl } from "@/components/undo-control"
 import { expiredUnlockUrl } from "@/lib/auth/unlock"
 import {
   ACTOR_LABEL,
@@ -27,6 +28,7 @@ import {
   loadAudit,
   loadChain,
   mergePage,
+  mergeRefresh,
   nextCursor,
   rowKind,
   shortHash,
@@ -123,7 +125,28 @@ function useAuditList() {
     },
     []
   )
-  return { state, retry, loadMore }
+
+  /** Re-reads the first page into the list; a failed read leaves the list as it is. */
+  const refresh = React.useCallback(() => {
+    void loadAudit(new AbortController().signal).then((next) => {
+      if (next.status === "unauthenticated") return signedOut()
+      if (next.status !== "ready") return
+      setState((current) =>
+        current.status === "ready"
+          ? {
+              ...current,
+              ...mergeRefresh(
+                current.entries,
+                current.cursor,
+                next.entries,
+                next.nextBefore
+              ),
+            }
+          : current
+      )
+    })
+  }, [])
+  return { state, retry, loadMore, refresh }
 }
 
 function ChainBanner({
@@ -195,14 +218,20 @@ const ACTOR_STYLE: Record<AuditEntry["displayActor"], string> = {
   gate: "text-muted-foreground",
 }
 
-function ActivityRow({ entry }: { entry: AuditEntry }) {
+function ActivityRow({
+  entry,
+  onUndoSettled,
+}: {
+  entry: AuditEntry
+  onUndoSettled: () => void
+}) {
   const kind = rowKind(entry.action)
   const label = ROW_KIND_LABEL[kind]
   const intentId = intentIdOf(entry)
   return (
     <li
       data-kind={kind}
-      className="grid min-h-11 gap-0.5 border-b px-1 py-2 text-sm md:grid-cols-[6.5rem_4.5rem_minmax(0,1fr)_minmax(0,1.5fr)_5.5rem] md:items-center md:gap-x-3"
+      className="grid min-h-11 gap-0.5 border-b px-1 py-2 text-sm md:grid-cols-[6.5rem_4.5rem_minmax(0,1fr)_minmax(0,1.5fr)_5.5rem_7rem] md:items-center md:gap-x-3"
     >
       <div className="flex min-w-0 flex-col gap-0.5 md:contents">
         <span className="flex min-w-0 flex-wrap items-center gap-x-2 md:order-3 md:min-w-0">
@@ -248,6 +277,16 @@ function ActivityRow({ entry }: { entry: AuditEntry }) {
           {shortHash(entry.detailHash)}
         </span>
       </div>
+      {entry.undo === "none" ? null : (
+        <div className="flex min-w-0 items-center md:order-6">
+          <UndoControl
+            executionId={entry.target}
+            projection={entry.undo}
+            onSettled={onUndoSettled}
+            onSignedOut={signedOut}
+          />
+        </div>
+      )}
     </li>
   )
 }
@@ -256,18 +295,25 @@ function ColumnHeader() {
   return (
     <div
       aria-hidden
-      className="hidden grid-cols-[6.5rem_4.5rem_minmax(0,1fr)_minmax(0,1.5fr)_5.5rem] gap-x-3 border-b px-1 py-2 text-xs text-muted-foreground md:grid"
+      className="hidden grid-cols-[6.5rem_4.5rem_minmax(0,1fr)_minmax(0,1.5fr)_5.5rem_7rem] gap-x-3 border-b px-1 py-2 text-xs text-muted-foreground md:grid"
     >
       <span>Time</span>
       <span>Actor</span>
       <span>Action</span>
       <span>Target</span>
       <span>Hash</span>
+      <span />
     </div>
   )
 }
 
-function EntryGroups({ entries }: { entries: readonly AuditEntry[] }) {
+function EntryGroups({
+  entries,
+  onUndoSettled,
+}: {
+  entries: readonly AuditEntry[]
+  onUndoSettled: () => void
+}) {
   const groups = groupByDay(entries)
   return (
     <div className="flex flex-col">
@@ -282,7 +328,11 @@ function EntryGroups({ entries }: { entries: readonly AuditEntry[] }) {
           </h2>
           <ul>
             {group.entries.map((entry) => (
-              <ActivityRow key={entry.seq} entry={entry} />
+              <ActivityRow
+                key={entry.seq}
+                entry={entry}
+                onUndoSettled={onUndoSettled}
+              />
             ))}
           </ul>
         </section>
@@ -295,10 +345,13 @@ function ActivityBody({
   state,
   onRetry,
   onLoadMore,
+  onUndoSettled,
 }: {
   state: ListState
   onRetry: () => void
   onLoadMore: () => void
+  /** Re-reads the audit log after every undo answer. */
+  onUndoSettled: () => void
 }) {
   if (state.status === "loading")
     return (
@@ -348,7 +401,7 @@ function ActivityBody({
           ? "1 entry loaded"
           : `${state.entries.length} entries loaded`}
       </p>
-      <EntryGroups entries={state.entries} />
+      <EntryGroups entries={state.entries} onUndoSettled={onUndoSettled} />
       {state.more === "error" ? (
         <p role="alert" className="text-sm">
           Could not load more entries.
@@ -387,6 +440,7 @@ function ActivityList() {
         onLoadMore={() => {
           if (list.state.status === "ready") list.loadMore(list.state)
         }}
+        onUndoSettled={list.refresh}
       />
     </>
   )
