@@ -662,6 +662,22 @@ export interface GateProposeResult {
   reason?: string
 }
 
+/** Response of GET /push/key on the phone listener (#16): the VAPID public key the browser passes to pushManager.subscribe as applicationServerKey, an uncompressed P-256 point as unpadded base64url. */
+export interface GatePushKey {
+  publicKey: string
+}
+
+/** Response of POST /push/prepare on the phone listener (#16): a signed control ceremony for registering one push subscription. The device rebuilds target, payloadHash and the challenge from the subscription it sent and refuses a mismatch. */
+export interface GatePushPrepared {
+  id: string
+  purpose: "policy.set"
+  target: string
+  payload: string
+  payloadHash: string
+  nonce: string
+  challenge: string
+}
+
 export interface GatePushRegistration {
   subscription: GatePushSubscription
   approval: {
@@ -669,6 +685,16 @@ export interface GatePushRegistration {
     nonce: string
     assertion: GateWebAuthnAssertion
   }
+}
+
+/** Response of GET /push/subscriptions on the phone listener (#16): the ids of the live subscriptions. Endpoints and keys are never returned. */
+export interface GatePushSubscriptionList {
+  subscriptions: Array<GatePushSubscriptionRef>
+}
+
+/** One push subscription by id: the response of POST /push/subscriptions (201) and POST /push/:id/remove, and each entry of GET /push/subscriptions (#16). */
+export interface GatePushSubscriptionRef {
+  id: string
 }
 
 export interface GatePushSubscription {

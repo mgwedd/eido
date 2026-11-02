@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePushSubscriptionRef",
+  "description": "One push subscription by id: the response of POST /push/subscriptions (201) and POST /push/:id/remove, and each entry of GET /push/subscriptions (#16).",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    }
+  },
+  "required": ["id"],
+  "additionalProperties": false
+}
