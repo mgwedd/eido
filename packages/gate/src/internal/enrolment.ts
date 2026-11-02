@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
-import type { Surface } from "./credentials"
+import type { Surface } from "./surface"
 import type { Clock } from "./sessions"
 import { atomically } from "./transaction"
 import { sha256 } from "./webauthn"
@@ -27,6 +27,9 @@ export type IssueResult =
 export type ConsumeRefusal = "unknown" | "reused" | "expired" | "superseded"
 
 export type ConsumeResult = { ok: true } | { ok: false; code: ConsumeRefusal }
+
+export type CheckResult =
+  { ok: true; expiresAt: Date } | { ok: false; code: ConsumeRefusal }
 
 /** 80 bits as 16 Crockford base32 characters. */
 function encode(bytes: Buffer): string {
@@ -115,6 +118,38 @@ function refusal(db: DatabaseSync, codeHash: string): ConsumeRefusal {
   if (row["used_at"] !== null) return "reused"
   // The atomic update failed on an unused, current row: only the expiry is left.
   return row["superseded_at"] !== null ? "superseded" : "expired"
+}
+
+/**
+ * Checks that an enrolment code could be consumed now, without consuming it: the phone's enrol
+ * options route (#202) asks before it issues a registration challenge. A refusal is audited.
+ */
+export function checkEnrolmentCode(
+  db: DatabaseSync,
+  surface: Surface,
+  input: string,
+  now: Clock
+): CheckResult {
+  const at = now()
+  const code = normaliseEnrolmentCode(input)
+  const codeHash = hex(code ?? input)
+  const row =
+    code === undefined
+      ? undefined
+      : db
+          .prepare(
+            "SELECT expires_at FROM enrolment_codes WHERE code_hash = ? AND used_at IS NULL AND superseded_at IS NULL AND expires_at > ?"
+          )
+          .get(codeHash, at.toISOString())
+  if (row !== undefined) {
+    return { ok: true, expiresAt: new Date(String(row["expires_at"])) }
+  }
+  const reason = code === undefined ? "unknown" : refusal(db, codeHash)
+  audit(db, surface, "enrolment_code.refused", {
+    outcome: reason,
+    code_sha256: codeHash,
+  })
+  return { ok: false, code: reason }
 }
 
 /**

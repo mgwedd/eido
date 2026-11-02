@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateWebAuthnRegistration",
+  "description": "navigator.credentials.create response with attestation \"none\", each binary field as unpadded base64url.",
+  "type": "object",
+  "properties": {
+    "credentialId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "PublicKeyCredential rawId."
+    },
+    "clientDataJSON": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "AuthenticatorAttestationResponse clientDataJSON."
+    },
+    "authenticatorData": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "AuthenticatorAttestationResponse.getAuthenticatorData()."
+    },
+    "publicKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "AuthenticatorAttestationResponse.getPublicKey(): SubjectPublicKeyInfo DER."
+    },
+    "publicKeyAlgorithm": {
+      "type": "integer",
+      "description": "AuthenticatorAttestationResponse.getPublicKeyAlgorithm(): a COSE algorithm id. The gate accepts only -7 (ES256)."
+    }
+  },
+  "required": [
+    "credentialId",
+    "clientDataJSON",
+    "authenticatorData",
+    "publicKey",
+    "publicKeyAlgorithm"
+  ],
+  "additionalProperties": false
+}

@@ -7,6 +7,7 @@ import {
   validateGateConnectorSettings,
   validateGateCredentialStatus,
   validateGateDecisionResult,
+  validateGateEnrolOptions,
   validateGateIntentHistory,
   validateGateLoginOptions,
   validateGatePendingIntentList,
@@ -26,12 +27,17 @@ import { checkDrift, manifestHash } from "./connectors"
 import { payloadHash } from "./canonical"
 import { loadPolicy, SHIPPED_DEFAULT_PATH } from "./policy"
 import { propose } from "./intents"
+import { revokeCredential } from "./credentials"
+import { issueEnrolmentCode } from "./enrolment"
 import { matchRoute, phoneHandler, routePath } from "./phone-routes"
 import { preparePushRegistration } from "./push-subscriptions"
 import type { PhoneState } from "./phone-routes"
 import {
   assertion,
+  auditRows,
   controlAuthorization,
+  loggedText,
+  registration,
   FILE_OPS,
   manifest,
   deviceChallenge,
@@ -1272,5 +1278,239 @@ describe("phoneHandler: approvals", () => {
       const reply = await call("POST", "/approvals/x/edit", { cookie, raw })
       expect(reply.status).toBe(status)
     })
+  })
+})
+
+describe("phoneHandler: passkey enrolment with a code (#202)", () => {
+  const MINUTE = 60 * 1000
+
+  function issue(): string {
+    const issued = issueEnrolmentCode(s.db, "admin", () => at)
+    if (!issued.ok) throw new Error("the code was not issued")
+    return issued.code
+  }
+
+  async function challengeFor(enrolmentCode: string): Promise<string> {
+    const reply = await call("POST", "/passkey/enroll/options", {
+      body: { code: enrolmentCode },
+    })
+    const parsed = validateGateEnrolOptions(reply.body)
+    if (!parsed.ok) throw new Error(`no options: ${String(code(reply))}`)
+    return parsed.value.challenge
+  }
+
+  function credentialIds(): string[] {
+    return s.db
+      .prepare("SELECT credential_id FROM credentials ORDER BY credential_id")
+      .all()
+      .map((row) => String(row["credential_id"]))
+  }
+
+  function codeUsed(enrolmentCode: string): boolean {
+    const hash = createHash("sha256")
+      .update(enrolmentCode.replace(/-/g, ""))
+      .digest("hex")
+    const row = s.db
+      .prepare("SELECT used_at FROM enrolment_codes WHERE code_hash = ?")
+      .get(hash)
+    return row?.["used_at"] !== null
+  }
+
+  /** The detail hash of a refused code, computed here from the spec: outcome and code hash. */
+  function refusalHash(outcome: string, enrolmentCode: string): string {
+    return payloadHash({
+      outcome,
+      code_sha256: createHash("sha256")
+        .update(enrolmentCode.replace(/-/g, ""))
+        .digest("hex"),
+    })
+  }
+
+  function lastAudit(action: string): string | undefined {
+    return auditRows(s.db)
+      .filter((row) => row.action === action)
+      .at(-1)?.detail_hash
+  }
+
+  it("stores one credential, consumes the code and signs the phone in", async () => {
+    const enrolmentCode = issue()
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: enrolmentCode },
+    })
+    expect(options.status).toBe(200)
+    expect(options.body).toMatchObject({
+      rpId: "eido.example.invalid",
+      expiresAt: "2026-10-19T08:10:00.000Z",
+    })
+    const challenge = await challengeFor(enrolmentCode)
+    const reply = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(auth, challenge),
+      },
+    })
+    expect(reply.status).toBe(200)
+    expect(reply.body).toEqual({ expiresAt: "2026-10-19T20:00:00.000Z" })
+    expect(credentialIds()).toEqual([auth.credentialId])
+    expect(codeUsed(enrolmentCode)).toBe(true)
+    const cookie = (reply.headers?.["set-cookie"] ?? "").split(";")[0] ?? ""
+    expect((await call("GET", "/approvals", { cookie })).status).toBe(200)
+    expect((await call("GET", "/passkey/status", { cookie })).body).toEqual({
+      enrolled: true,
+      sessionExpiresAt: "2026-10-19T20:00:00.000Z",
+    })
+  })
+
+  it("reports no enrolment before the code is used", async () => {
+    issue()
+    expect((await call("GET", "/passkey/status")).body).toEqual({
+      enrolled: false,
+      sessionExpiresAt: null,
+    })
+  })
+
+  it("refuses an expired code at options and at enrolment, and stores nothing", async () => {
+    const enrolmentCode = issue()
+    const challenge = await challengeFor(enrolmentCode)
+    at = new Date(START.getTime() + 10 * MINUTE)
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: enrolmentCode },
+    })
+    expect([options.status, code(options)]).toEqual([
+      403,
+      "verification_failed",
+    ])
+    const reply = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(auth, challenge),
+      },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect(reply.headers?.["set-cookie"]).toBeUndefined()
+    expect(credentialIds()).toEqual([])
+    expect(lastAudit("enrolment_code.refused")).toBe(
+      refusalHash("expired", enrolmentCode)
+    )
+    expect(loggedText(s.db)).not.toContain(enrolmentCode.replace(/-/g, ""))
+  })
+
+  it("refuses a reused code, so a second phone cannot enrol with it", async () => {
+    const enrolmentCode = issue()
+    const first = await challengeFor(enrolmentCode)
+    const second = await challengeFor(enrolmentCode)
+    const other = testAuthenticator()
+    await call("POST", "/passkey/enroll", {
+      body: { code: enrolmentCode, registration: registration(auth, first) },
+    })
+    const reply = await call("POST", "/passkey/enroll", {
+      body: { code: enrolmentCode, registration: registration(other, second) },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect(credentialIds()).toEqual([auth.credentialId])
+    expect(lastAudit("enrolment_code.refused")).toBe(
+      refusalHash("reused", enrolmentCode)
+    )
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: enrolmentCode },
+    })
+    expect(options.status).toBe(403)
+  })
+
+  it("refuses an unknown code and leaves the issued one unused", async () => {
+    const enrolmentCode = issue()
+    const challenge = await challengeFor(enrolmentCode)
+    const unknown = "ABCD-EFGH-JKMN-PQRS"
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: unknown },
+    })
+    expect(options.status).toBe(403)
+    const reply = await call("POST", "/passkey/enroll", {
+      body: { code: unknown, registration: registration(auth, challenge) },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect(credentialIds()).toEqual([])
+    expect(codeUsed(enrolmentCode)).toBe(false)
+    expect(lastAudit("enrolment_code.refused")).toBe(
+      refusalHash("unknown", unknown)
+    )
+    expect(loggedText(s.db)).not.toContain("ABCDEFGHJKMNPQRS")
+  })
+
+  it("keeps the code when the registration fails its checks", async () => {
+    const enrolmentCode = issue()
+    const challenge = await challengeFor(enrolmentCode)
+    const bad = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(auth, challenge, {
+          origin: "https://evil.example.invalid",
+        }),
+      },
+    })
+    expect([bad.status, code(bad)]).toEqual([403, "verification_failed"])
+    expect(codeUsed(enrolmentCode)).toBe(false)
+    const retry = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(auth, await challengeFor(enrolmentCode)),
+      },
+    })
+    expect(retry.status).toBe(200)
+  })
+
+  it("keeps a revoked credential revoked, and refuses to enrol it again", async () => {
+    enrol(auth)
+    expect(revokeCredential(s.db, "admin", auth.credentialId)).toEqual({
+      ok: true,
+    })
+    const revokedAt = s.db
+      .prepare("SELECT revoked_at FROM credentials WHERE credential_id = ?")
+      .get(auth.credentialId)?.["revoked_at"]
+    const enrolmentCode = issue()
+    const again = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(auth, await challengeFor(enrolmentCode)),
+      },
+    })
+    expect(again.status).toBe(403)
+    expect(codeUsed(enrolmentCode)).toBe(false)
+    const replacement = testAuthenticator()
+    const reply = await call("POST", "/passkey/enroll", {
+      body: {
+        code: enrolmentCode,
+        registration: registration(
+          replacement,
+          await challengeFor(enrolmentCode)
+        ),
+      },
+    })
+    expect(reply.status).toBe(200)
+    expect(
+      s.db
+        .prepare("SELECT revoked_at FROM credentials WHERE credential_id = ?")
+        .get(auth.credentialId)?.["revoked_at"]
+    ).toBe(revokedAt)
+    expect(revokedAt).toEqual(expect.any(String))
+  })
+
+  it("answers 400 for a body that is not an enrolment request", async () => {
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: 7 },
+    })
+    expect([options.status, code(options)]).toEqual([400, "invalid_request"])
+    const reply = await call("POST", "/passkey/enroll", {
+      body: { code: issue() },
+    })
+    expect([reply.status, code(reply)]).toEqual([400, "invalid_request"])
+    const raw = await call("POST", "/passkey/enroll", {
+      raw: { ok: true, text: "{" },
+    })
+    expect(raw.status).toBe(400)
+    const rawOptions = await call("POST", "/passkey/enroll/options", {
+      raw: { ok: true, text: "{" },
+    })
+    expect(rawOptions.status).toBe(400)
   })
 })

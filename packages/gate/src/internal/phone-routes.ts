@@ -6,6 +6,8 @@ import {
   validateGateAuditPageRequest,
   validateGateDecisionRequest,
   validateGateEditRequest,
+  validateGateEnrolOptionsRequest,
+  validateGateEnrolRequest,
   validateGateLoginRequest,
   validateGatePushRegistration,
 } from "@eido/schemas"
@@ -15,6 +17,7 @@ import type {
   GateConnectorSettings,
   GateCredentialStatus,
   GateDecisionResult,
+  GateEnrolOptions,
   GateIntentHistory,
   GateLoginOptions,
   GatePendingIntentList,
@@ -39,6 +42,8 @@ import type { EditResult } from "./intents"
 import type { Policy } from "./policy"
 import { kindTier } from "./policy"
 import { verifyChain } from "./audit"
+import { beginPhoneRegistration, enrolWithCode } from "./credentials"
+import { checkEnrolmentCode } from "./enrolment"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
 import {
@@ -62,9 +67,10 @@ import type { WebAuthnConfig } from "./webauthn"
 // The phone listener (#85): what the PWA calls, through `tailscale serve`, to sign in with its
 // passkey and to list, prepare, edit and decide approvals. It answers only the Host headers it
 // is given (421 otherwise) and only below its base path. Every route outside the table below is
-// 404 before any session check, so the admin routes (enrolment codes, revocation, policy, the
-// audit chain; #78) and the data plane's routes do not exist here, signed in or not. Credential
-// status and login need no session; every other route needs the session cookie (401 without
+// 404 before any session check, so the admin routes (issuing enrolment codes, revocation,
+// policy; #78) and the data plane's routes do not exist here, signed in or not. Credential
+// status, login and enrolment need no session: enrolment needs a single-use code the owner
+// issued on the Mac instead (#202). Every other route needs the session cookie (401 without
 // it). Every POST must be application/json (415 otherwise): a browser sends that cross-origin
 // only after a CORS preflight, which the gate never answers. No response is cacheable.
 
@@ -88,6 +94,8 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/passkey/status", session: false },
   { method: "POST", path: "/auth/login/options", session: false },
   { method: "POST", path: "/auth/login", session: false },
+  { method: "POST", path: "/passkey/enroll/options", session: false },
+  { method: "POST", path: "/passkey/enroll", session: false },
   { method: "GET", path: "/approvals", session: true },
   { method: "GET", path: "/audit", session: true },
   { method: "GET", path: "/audit/chain", session: true },
@@ -213,6 +221,53 @@ async function loginRoute(
   if (!result.ok) {
     return apiError(403, "verification_failed", "the login was refused")
   }
+  const session: GateSession = { expiresAt: result.expiresAt.toISOString() }
+  return {
+    status: 200,
+    body: session,
+    headers: { "set-cookie": sessionCookie(result.token) },
+  }
+}
+
+const ENROL_REFUSED = "the enrolment was refused"
+
+async function enrolOptions(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateEnrolOptionsRequest(body.value)
+  if (!checked.ok)
+    return invalid("an enrolment options request", checked.errors)
+  const code = checkEnrolmentCode(state.db, "phone", checked.value.code, now)
+  if (!code.ok) return apiError(403, "verification_failed", ENROL_REFUSED)
+  const options: GateEnrolOptions = {
+    challenge: beginPhoneRegistration(state.db, now),
+    rpId: state.webAuthn.rpId,
+    expiresAt: code.expiresAt.toISOString(),
+  }
+  return { status: 200, body: options }
+}
+
+async function enrolRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateEnrolRequest(body.value)
+  if (!checked.ok) return invalid("an enrolment request", checked.errors)
+  const result = enrolWithCode(
+    state.db,
+    state.webAuthn,
+    checked.value.code,
+    checked.value.registration,
+    now
+  )
+  if (!result.ok) return apiError(403, "verification_failed", ENROL_REFUSED)
   const session: GateSession = { expiresAt: result.expiresAt.toISOString() }
   return {
     status: 200,
@@ -591,6 +646,10 @@ function route(
       return loginOptions(state, now)
     case "/auth/login":
       return loginRoute(state, request, now)
+    case "/passkey/enroll/options":
+      return enrolOptions(state, request, now)
+    case "/passkey/enroll":
+      return enrolRoute(state, request, now)
     case "/approvals": {
       const list: GatePendingIntentList = { intents: pendingIntents(state.db) }
       return { status: 200, body: list }

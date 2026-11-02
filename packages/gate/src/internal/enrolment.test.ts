@@ -7,6 +7,7 @@ import {
   revokeCredential,
 } from "./credentials"
 import {
+  checkEnrolmentCode,
   consumeEnrolmentCode,
   issueEnrolmentCode,
   normaliseEnrolmentCode,
@@ -224,5 +225,41 @@ describe("re-enrolment after a revoke", () => {
       },
       { credential_id: replacement.credentialId, revoked_at: null },
     ])
+  })
+})
+
+describe("checkEnrolmentCode", () => {
+  it("accepts a live code without consuming it, and reports its expiry", () => {
+    const d = db()
+    const issued = issueEnrolmentCode(d, "admin", clock)
+    if (!issued.ok) throw new Error("not issued")
+    expect(checkEnrolmentCode(d, "phone", issued.code, clock)).toEqual({
+      ok: true,
+      expiresAt: new Date("2026-10-19T08:10:00.000Z"),
+    })
+    expect(consumeEnrolmentCode(d, "phone", issued.code, clock)).toEqual({
+      ok: true,
+    })
+  })
+
+  it("refuses a superseded code and audits the refusal with its hash", () => {
+    const d = db()
+    const first = issueEnrolmentCode(d, "admin", clock)
+    issueEnrolmentCode(d, "admin", clock)
+    if (!first.ok) throw new Error("not issued")
+    expect(checkEnrolmentCode(d, "phone", first.code, clock)).toEqual({
+      ok: false,
+      code: "superseded",
+    })
+    expect(auditRows(d).at(-1)?.action).toBe("enrolment_code.refused")
+    expect(loggedText(d)).not.toContain(first.code.replace(/-/g, ""))
+  })
+
+  it("refuses text that cannot be a code as unknown", () => {
+    const d = db()
+    expect(checkEnrolmentCode(d, "phone", "not a code", clock)).toEqual({
+      ok: false,
+      code: "unknown",
+    })
   })
 })

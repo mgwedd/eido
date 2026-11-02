@@ -456,6 +456,24 @@ export interface GateEditRequest {
   intent: Record<string, unknown>
 }
 
+/** Body of POST /passkey/enroll/options on the phone listener: the enrolment code issued on the Mac (#78), as typed. Case, spaces and dashes are ignored. The code is checked but not consumed. */
+export interface GateEnrolOptionsRequest {
+  code: string
+}
+
+/** Response of POST /passkey/enroll/options: a single-use registration challenge for navigator.credentials.create with attestation "none". It can be used only while the enrolment code is valid, so it expires with the code. */
+export interface GateEnrolOptions {
+  challenge: string
+  rpId: string
+  expiresAt: string
+}
+
+/** Body of POST /passkey/enroll on the phone listener: the enrolment code and the registration over the challenge from the enrol options. The response is a GateSession and sets the session cookie. */
+export interface GateEnrolRequest {
+  code: string
+  registration: GateWebAuthnRegistration
+}
+
 /** Response of POST /enrolment-codes on the gate's control socket (#78): a single-use code for enrolling a phone, shown once on the Mac. Only its hash is stored; it expires ten minutes after issue and supersedes any earlier unused code. */
 export interface GateEnrolmentCode {
   code: string
@@ -636,6 +654,15 @@ export interface GateWebAuthnAssertion {
   authenticatorData: string
   clientDataJSON: string
   signature: string
+}
+
+/** navigator.credentials.create response with attestation "none", each binary field as unpadded base64url. */
+export interface GateWebAuthnRegistration {
+  credentialId: string
+  clientDataJSON: string
+  authenticatorData: string
+  publicKey: string
+  publicKeyAlgorithm: number
 }
 
 /** Send an iCalendar invitation (METHOD:REQUEST) from the assistant identity. The gate assigns the event UID. */
