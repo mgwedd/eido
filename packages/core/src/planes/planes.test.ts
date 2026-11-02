@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto"
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
 import { join, relative, sep } from "node:path"
@@ -222,7 +228,31 @@ describe(
       )
     })
 
-    it("audits every profile change in the gate's chain, as hashes only", async () => {
+    it("rolls back a profile change when the running gate loses its audit key", async () => {
+      const vaultPath = join(planes.paths.gateDir, "test-vault.json")
+      const saved = readFileSync(vaultPath)
+      const before = await auditChain()
+      rmSync(vaultPath)
+      try {
+        const response = await fetch(`${planes.coreUrl}/entities`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "company",
+            name: "Key loss company",
+            tag: "KEYLOSS",
+          }),
+        })
+        expect(response.status).toBe(500)
+        const entities = await fetch(`${planes.coreUrl}/entities`)
+        expect(await entities.text()).not.toContain("Key loss company")
+        expect(await auditChain()).toEqual(before)
+      } finally {
+        writeFileSync(vaultPath, saved, { mode: 0o600 })
+      }
+    })
+
+    it("audits every profile change in the gate's chain with keyed tags", async () => {
       const before = await auditChain()
       const write = async (
         method: string,
@@ -266,19 +296,29 @@ describe(
       expect(await auditChain()).toEqual({ ok: true, rows: before.rows + 5 })
       const control = await planes.inspectControlDb()
       const account = hashOf([CLEAR.connector, CLEAR.accountRef])
-      expect(
-        auditActions(control).filter((row) =>
-          String(row.action).startsWith("audit.profile.")
-        )
-      ).toEqual([
-        { action: "audit.profile.entity.create", target: hashOf(entityId) },
-        { action: "audit.profile.entity.update", target: hashOf(entityId) },
-        { action: "audit.profile.account.assign", target: account },
-        { action: "audit.profile.account.unassign", target: account },
-        { action: "audit.profile.entity.delete", target: hashOf(entityId) },
+      const profileRows = auditActions(control).filter((row) =>
+        String(row.action).startsWith("audit.profile.")
+      )
+      expect(profileRows.map((row) => row.action)).toEqual([
+        "audit.profile.entity.create",
+        "audit.profile.entity.update",
+        "audit.profile.account.assign",
+        "audit.profile.account.unassign",
+        "audit.profile.entity.delete",
       ])
+      for (const row of profileRows)
+        expect(row.target).toMatch(/^hmac:v1:1:[a-f0-9]{64}:[a-f0-9]{64}$/)
+      expect(profileRows[0]?.target).toBe(profileRows[1]?.target)
+      expect(profileRows[0]?.target).toBe(profileRows[4]?.target)
+      expect(profileRows[2]?.target).toBe(profileRows[3]?.target)
+      expect(profileRows[0]?.target).not.toBe(profileRows[2]?.target)
       const stored = JSON.stringify(control)
-      for (const clear of [...Object.values(CLEAR), entityId]) {
+      for (const clear of [
+        ...Object.values(CLEAR),
+        entityId,
+        account,
+        hashOf(entityId),
+      ]) {
         expect(stored).not.toContain(clear)
       }
     })

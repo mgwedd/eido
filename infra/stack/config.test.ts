@@ -108,6 +108,21 @@ describe("buildStackConfig", () => {
     )
   })
 
+  it("passes the profile audit rotation epoch to the gate alone", () => {
+    const config = buildStackConfig(
+      input({ env: { EIDO_PROFILE_AUDIT_EPOCH: "rotation_2" } })
+    )
+    expect(byName(config, "gate").env["EIDO_PROFILE_AUDIT_EPOCH"]).toBe(
+      "rotation_2"
+    )
+    expect(byName(config, "core").env).not.toHaveProperty(
+      "EIDO_PROFILE_AUDIT_EPOCH"
+    )
+    expect(byName(config, "web").env).not.toHaveProperty(
+      "EIDO_PROFILE_AUDIT_EPOCH"
+    )
+  })
+
   it("never sets the llama, Gmail or Bridge variables", () => {
     const config = buildStackConfig(input())
     const keys = config.processes.flatMap((p) => Object.keys(p.env))

@@ -205,6 +205,11 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      used_at TEXT,
      superseded_at TEXT
    ) STRICT;`,
+  // Profile audit HMAC key fingerprints bind each epoch to its vault secret (#204).
+  `CREATE TABLE profile_audit_keys (
+     epoch TEXT PRIMARY KEY,
+     key_hash TEXT NOT NULL
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {
