@@ -50,6 +50,17 @@ describe("context pack store", () => {
     expect(readContextPack(db, "cp_missing")).toBeNull()
   })
 
+  test("reading without the table does not create schema", () => {
+    expect(readContextPack(db, PACK.id)).toBeNull()
+    expect(
+      db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'context_packs'"
+        )
+        .get()
+    ).toBeUndefined()
+  })
+
   test("malformed stored members are rejected, not cast", async () => {
     await storeContextPack(db, PACK)
     insertRaw("a", "{}")

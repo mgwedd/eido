@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite"
+import { writeQueueFor } from "../db/write-queue"
 
 export type DocumentTypeSource = "model" | "user"
 
@@ -19,20 +20,22 @@ export function setDocumentType(
   sha256: string,
   value: DocumentType,
   now: Date = new Date()
-): boolean {
-  const type = value.type.trim()
-  if (type === "" || type.length > MAX_DOCUMENT_TYPE_LENGTH) return false
-  const stored = db
-    .prepare("SELECT 1 AS ok FROM documents WHERE sha256 = ?")
-    .get(sha256)
-  if (stored === undefined) return false
-  db.prepare(
-    `INSERT INTO document_types (sha256, type, source, set_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT (sha256) DO UPDATE SET type = excluded.type, source = excluded.source,
-       set_at = excluded.set_at
-     WHERE NOT (document_types.source = 'user' AND excluded.source = 'model')`
-  ).run(sha256, type, value.source, now.toISOString())
-  return true
+): Promise<boolean> {
+  return writeQueueFor(db).run(() => {
+    const type = value.type.trim()
+    if (type === "" || type.length > MAX_DOCUMENT_TYPE_LENGTH) return false
+    const stored = db
+      .prepare("SELECT 1 AS ok FROM documents WHERE sha256 = ?")
+      .get(sha256)
+    if (stored === undefined) return false
+    db.prepare(
+      `INSERT INTO document_types (sha256, type, source, set_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (sha256) DO UPDATE SET type = excluded.type, source = excluded.source,
+         set_at = excluded.set_at
+       WHERE NOT (document_types.source = 'user' AND excluded.source = 'model')`
+    ).run(sha256, type, value.source, now.toISOString())
+    return true
+  })
 }
 
 /** The stored type of a document, or null when it has none. */

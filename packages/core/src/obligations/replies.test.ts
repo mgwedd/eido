@@ -104,7 +104,7 @@ const run = (day: number) =>
   syncReplyObligations(new Date(Date.UTC(2026, 0, day)), cfg)
 
 describe("reply obligations", () => {
-  test("creates one sourced owed obligation at N days and deduplicates the same message across mailboxes and runs", () => {
+  test("creates one sourced owed obligation at N days and deduplicates the same message across mailboxes and runs", async () => {
     const sha = mail({
       id: "incoming",
       at: at(1),
@@ -112,12 +112,12 @@ describe("reply obligations", () => {
       to: [own],
       body: "Please send the quote.",
     })
-    expect(run(2).created).toBe(0)
+    expect((await run(2)).created).toBe(0)
     expect(detectReplies(new Date(Date.UTC(2026, 0, 3)), cfg)[0]?.dueAt).toBe(
       "2026-01-03T00:00:00.000Z"
     )
-    expect(run(3)).toEqual({ created: 1, resolved: 0 })
-    expect(run(4).created).toBe(0)
+    expect(await run(3)).toEqual({ created: 1, resolved: 0 })
+    expect((await run(4)).created).toBe(0)
     mail({
       id: "incoming",
       at: at(1),
@@ -126,7 +126,7 @@ describe("reply obligations", () => {
       body: "Please send the quote.",
       source: "proton",
     })
-    expect(run(4).created).toBe(0)
+    expect((await run(4)).created).toBe(0)
     const [obligation] = listObligations(fixture.db)
     expect(obligation).toMatchObject({
       direction: "owed",
@@ -149,7 +149,7 @@ describe("reply obligations", () => {
     ["bulk precedence", { precedence: "bulk" }],
     ["no-reply sender", { from: "no-reply@example.com" }],
     ["Bcc-only owner", { to: [], bcc: [own] }],
-  ])("does not create owed obligations for %s", (_name, extras) => {
+  ])("does not create owed obligations for %s", async (_name, extras) => {
     const base = {
       id: "auto",
       at: at(1),
@@ -158,10 +158,10 @@ describe("reply obligations", () => {
       body: "Please reply.",
     }
     mail({ ...base, ...extras })
-    expect(run(8).created).toBe(0)
+    expect((await run(8)).created).toBe(0)
   })
 
-  test("resolves an owed obligation on a newer plain reply without requiring another ask", () => {
+  test("resolves an owed obligation on a newer plain reply without requiring another ask", async () => {
     mail({
       id: "request",
       at: at(1),
@@ -169,7 +169,7 @@ describe("reply obligations", () => {
       to: [own],
       body: "Can you review this?",
     })
-    run(4)
+    await run(4)
     mail({
       id: "answer",
       at: at(4),
@@ -179,14 +179,14 @@ describe("reply obligations", () => {
       replyTo: "<request@example.com>",
       refs: ["<request@example.com>"],
     })
-    expect(run(4)).toEqual({ created: 0, resolved: 1 })
+    expect(await run(4)).toEqual({ created: 0, resolved: 1 })
     expect(listObligations(fixture.db)[0]).toMatchObject({
       status: "done",
       resolutionReason: "replied",
     })
   })
 
-  test("uses the full References chain and resolves after any newer opposite-side message", () => {
+  test("uses the full References chain and resolves after any newer opposite-side message", async () => {
     mail({
       id: "root",
       at: at(1),
@@ -194,7 +194,7 @@ describe("reply obligations", () => {
       to: [own],
       body: "Please review.",
     })
-    run(4)
+    await run(4)
     mail({
       id: "owner-reply",
       at: at(4),
@@ -213,7 +213,7 @@ describe("reply obligations", () => {
       replyTo: "<owner-reply@example.com>",
       refs: ["<root@example.com>", "<owner-reply@example.com>"],
     })
-    expect(run(5)).toMatchObject({ created: 0, resolved: 1 })
+    expect(await run(5)).toMatchObject({ created: 0, resolved: 1 })
     mail({
       id: "owner-second-reply",
       at: at(6),
@@ -227,11 +227,11 @@ describe("reply obligations", () => {
         "<partner-followup@example.com>",
       ],
     })
-    expect(run(8).created).toBe(0)
+    expect((await run(8)).created).toBe(0)
     expect(listObligations(fixture.db)[0]?.status).toBe("done")
   })
 
-  test("finds an obligation's current component after late ancestry joins its thread", () => {
+  test("finds an obligation's current component after late ancestry joins its thread", async () => {
     mail({
       id: "unlinked-inbound",
       at: at(2),
@@ -239,7 +239,7 @@ describe("reply obligations", () => {
       to: [own],
       body: "Please reply.",
     })
-    run(4)
+    await run(4)
     mail({
       id: "late-ancestor",
       at: at(1),
@@ -247,7 +247,7 @@ describe("reply obligations", () => {
       to: [other],
       body: "Original note.",
     })
-    run(4)
+    await run(4)
     mail({
       id: "later-owner-reply",
       at: at(5),
@@ -257,14 +257,14 @@ describe("reply obligations", () => {
       replyTo: "<unlinked-inbound@example.com>",
       refs: ["<late-ancestor@example.com>", "<unlinked-inbound@example.com>"],
     })
-    expect(run(5).resolved).toBe(1)
+    expect((await run(5)).resolved).toBe(1)
     expect(listObligations(fixture.db)[0]).toMatchObject({
       status: "done",
       resolutionReason: "replied",
     })
   })
 
-  test("tracks only asks and resolves waiting when an inbound reply arrives", () => {
+  test("tracks only asks and resolves waiting when an inbound reply arrives", async () => {
     mail({
       id: "sent",
       at: at(1),
@@ -272,8 +272,8 @@ describe("reply obligations", () => {
       to: [other],
       body: "Please confirm the date.",
     })
-    expect(run(5).created).toBe(0)
-    expect(run(6).created).toBe(1)
+    expect((await run(5)).created).toBe(0)
+    expect((await run(6)).created).toBe(1)
     mail({
       id: "reply",
       at: at(6),
@@ -283,7 +283,7 @@ describe("reply obligations", () => {
       replyTo: "<sent@example.com>",
       refs: ["<sent@example.com>"],
     })
-    expect(run(6)).toEqual({ created: 0, resolved: 1 })
+    expect(await run(6)).toEqual({ created: 0, resolved: 1 })
     expect(listObligations(fixture.db)[0]).toMatchObject({
       status: "done",
       direction: "waiting",
@@ -291,7 +291,7 @@ describe("reply obligations", () => {
     })
   })
 
-  test("applies configured sender patterns to the counterparty address", () => {
+  test("applies configured sender patterns to the counterparty address", async () => {
     mail({
       id: "excluded",
       at: at(1),
@@ -300,20 +300,24 @@ describe("reply obligations", () => {
       body: "Please reply.",
     })
     expect(
-      syncReplyObligations(new Date(Date.UTC(2026, 0, 4)), {
-        ...cfg,
-        excludeSenders: ["partner@example\\.com"],
-      }).created
+      (
+        await syncReplyObligations(new Date(Date.UTC(2026, 0, 4)), {
+          ...cfg,
+          excludeSenders: ["partner@example\\.com"],
+        })
+      ).created
     ).toBe(0)
     expect(
-      syncReplyObligations(new Date(Date.UTC(2026, 0, 4)), {
-        ...cfg,
-        excludeSenders: ["blocked@example\\.com"],
-      }).created
+      (
+        await syncReplyObligations(new Date(Date.UTC(2026, 0, 4)), {
+          ...cfg,
+          excludeSenders: ["blocked@example\\.com"],
+        })
+      ).created
     ).toBe(1)
   })
 
-  test("does not create a waiting obligation without a counterparty recipient or source text", () => {
+  test("does not create a waiting obligation without a counterparty recipient or source text", async () => {
     mail({ id: "no-recipient", at: at(1), from: own, body: "Please confirm." })
     mail({
       id: "empty-body",
@@ -322,10 +326,10 @@ describe("reply obligations", () => {
       to: [other],
       body: "  \n  ",
     })
-    expect(run(8).created).toBe(0)
+    expect((await run(8)).created).toBe(0)
   })
 
-  test("preserves a dismissed anchor across later runs", () => {
+  test("preserves a dismissed anchor across later runs", async () => {
     mail({
       id: "dismiss",
       at: at(1),
@@ -333,13 +337,13 @@ describe("reply obligations", () => {
       to: [own],
       body: "Please reply.",
     })
-    run(4)
+    await run(4)
     fixture.db.prepare("UPDATE obligations SET status = 'dismissed'").run()
-    expect(run(5).created).toBe(0)
+    expect((await run(5)).created).toBe(0)
     expect(listObligations(fixture.db)[0]?.status).toBe("dismissed")
   })
 
-  test("does not duplicate an anchor after closing and reopening the ledger", () => {
+  test("does not duplicate an anchor after closing and reopening the ledger", async () => {
     const path = join(
       mkdtempSync(join(tmpdir(), "eido-replies-restart-")),
       "data.db"
@@ -376,21 +380,27 @@ describe("reply obligations", () => {
     })
     const restartedConfig = { ...cfg, db, ownerEntityId: "restart-entity" }
     expect(
-      syncReplyObligations(new Date(Date.UTC(2026, 0, 4)), restartedConfig)
-        .created
+      (
+        await syncReplyObligations(
+          new Date(Date.UTC(2026, 0, 4)),
+          restartedConfig
+        )
+      ).created
     ).toBe(1)
     db.close()
     const reopened = openDataDb(path)
     expect(
-      syncReplyObligations(new Date(Date.UTC(2026, 0, 5)), {
-        ...restartedConfig,
-        db: reopened,
-      }).created
+      (
+        await syncReplyObligations(new Date(Date.UTC(2026, 0, 5)), {
+          ...restartedConfig,
+          db: reopened,
+        })
+      ).created
     ).toBe(0)
     reopened.close()
   })
 
-  test("defers writes while another ledger transaction is active and retries afterward", () => {
+  test("defers writes while another ledger transaction is active and retries afterward", async () => {
     mail({
       id: "external-transaction",
       at: at(1),
@@ -399,15 +409,15 @@ describe("reply obligations", () => {
       body: "Please reply.",
     })
     fixture.db.exec("BEGIN")
-    expect(() => run(4)).toThrow(
+    await expect(run(4)).rejects.toThrow(
       "reply obligation sync deferred while a ledger transaction is active"
     )
     expect(listObligations(fixture.db)).toEqual([])
     fixture.db.exec("ROLLBACK")
-    expect(run(4).created).toBe(1)
+    expect((await run(4)).created).toBe(1)
   })
 
-  test("isolates same RFC thread identifiers across entities", () => {
+  test("isolates same RFC thread identifiers across entities", async () => {
     mail({
       id: "first",
       threadId: "same-thread",
@@ -425,10 +435,10 @@ describe("reply obligations", () => {
       body: "Please reply.",
       entity: fixture.company.id,
     })
-    expect(run(4).created).toBe(2)
+    expect((await run(4)).created).toBe(2)
   })
 
-  test("groups connector-native thread IDs when RFC ancestry headers are absent", () => {
+  test("groups connector-native thread IDs when RFC ancestry headers are absent", async () => {
     mail({
       id: "native-first",
       threadId: "gmail-thread-1",
@@ -445,13 +455,13 @@ describe("reply obligations", () => {
       to: [own],
       body: "Following up.",
     })
-    expect(run(4).created).toBe(1)
+    expect((await run(4)).created).toBe(1)
     expect(listObligations(fixture.db)[0]?.anchorMessageId).toBe(
       "<native-last@example.com>"
     )
   })
 
-  test("does not merge equal connector-native thread IDs from different mailbox accounts", () => {
+  test("does not merge equal connector-native thread IDs from different mailbox accounts", async () => {
     mail({
       id: "account-one",
       threadId: "shared-thread-id",
@@ -470,10 +480,10 @@ describe("reply obligations", () => {
       to: [own],
       body: "Please reply.",
     })
-    expect(run(4).created).toBe(2)
+    expect((await run(4)).created).toBe(2)
   })
 
-  test("does not treat a legacy message without stored delivery facts as clean", () => {
+  test("does not treat a legacy message without stored delivery facts as clean", async () => {
     const raw = new TextEncoder().encode("synthetic legacy RFC822")
     const digest = sha(new TextDecoder().decode(raw))
     ingestBatch(fixture.db, {
@@ -497,7 +507,7 @@ describe("reply obligations", () => {
         },
       ],
     })
-    expect(run(4).created).toBe(0)
+    expect((await run(4)).created).toBe(0)
     ingestBatch(fixture.db, {
       connector: "gmail",
       stream: "legacy-resync",
@@ -521,6 +531,6 @@ describe("reply obligations", () => {
         },
       ],
     })
-    expect(run(4).created).toBe(1)
+    expect((await run(4)).created).toBe(1)
   })
 })

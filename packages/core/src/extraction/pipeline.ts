@@ -582,7 +582,7 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         verified += 1
         const { fields } = outcome
         obligationIds.push(
-          insertObligation(db, {
+          await insertObligation(db, {
             entityId: doc.entityId,
             ...(fields.party === undefined ? {} : { party: fields.party.raw }),
             action: fields.action.raw,

@@ -313,7 +313,7 @@ describe(
           ],
           nextCursor: "c-obligation",
         })
-        obligationId = insertObligation(data, {
+        obligationId = await insertObligation(data, {
           entityId,
           action: "Lorem ipsum action",
           status: "open",

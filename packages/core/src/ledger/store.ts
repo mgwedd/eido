@@ -166,17 +166,22 @@ export function confirmExtraction(
   db: DatabaseSync,
   id: number,
   at: string
-): void {
-  const row = db
-    .prepare("SELECT confirmed_at FROM extractions WHERE id = ?")
-    .get(id)
-  if (row === undefined) {
-    throw new LedgerError("extraction_not_found", "no such extraction")
-  }
-  if (row["confirmed_at"] !== null) {
-    throw new LedgerError("already_confirmed", "extraction already confirmed")
-  }
-  db.prepare("UPDATE extractions SET confirmed_at = ? WHERE id = ?").run(at, id)
+): Promise<void> {
+  return writeQueueFor(db).run(() => {
+    const row = db
+      .prepare("SELECT confirmed_at FROM extractions WHERE id = ?")
+      .get(id)
+    if (row === undefined) {
+      throw new LedgerError("extraction_not_found", "no such extraction")
+    }
+    if (row["confirmed_at"] !== null) {
+      throw new LedgerError("already_confirmed", "extraction already confirmed")
+    }
+    db.prepare("UPDATE extractions SET confirmed_at = ? WHERE id = ?").run(
+      at,
+      id
+    )
+  })
 }
 
 /**
@@ -186,60 +191,62 @@ export function confirmExtraction(
 export function insertObligation(
   db: DatabaseSync,
   input: ObligationInput
-): number {
-  if (
-    (input.injectionSuspected ?? false) !==
-    (input.injectionReasons?.length ?? 0) > 0
-  ) {
-    throw new LedgerError(
-      "invalid_injection_provenance",
-      "injection flag must match the presence of reasons"
-    )
-  }
-  requireDocument(db, input.docId)
-  if (!isSpan(input.span)) {
-    throw new LedgerError(
-      "invalid_span",
-      "source span needs integer start >= 0 and end > start"
-    )
-  }
-  if (
-    db.prepare("SELECT 1 FROM entities WHERE id = ?").get(input.entityId) ===
-    undefined
-  ) {
-    throw new LedgerError("entity_not_found", "no such entity")
-  }
-  // A document has one entity, and an obligation belongs to it (migration v2, #259).
-  if (
-    db
-      .prepare("SELECT entity_id FROM documents WHERE sha256 = ?")
-      .get(input.docId)?.["entity_id"] !== input.entityId
-  ) {
-    throw new LedgerError(
-      "entity_mismatch",
-      "obligation entity differs from its document entity"
-    )
-  }
-  const { lastInsertRowid } = db
-    .prepare(
-      `INSERT INTO obligations (entity_id, party, action, due_at, status, doc_id, source_span, injection_suspected, injection_reasons, direction, thread_id, anchor_message_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      input.entityId,
-      input.party ?? null,
-      input.action,
-      input.dueAt ?? null,
-      input.status,
-      input.docId,
-      JSON.stringify(input.span),
-      input.injectionSuspected ? 1 : 0,
-      JSON.stringify(input.injectionReasons ?? []),
-      input.direction ?? null,
-      input.threadId ?? null,
-      input.anchorMessageId ?? null
-    )
-  return Number(lastInsertRowid)
+): Promise<number> {
+  return writeQueueFor(db).run(() => {
+    if (
+      (input.injectionSuspected ?? false) !==
+      (input.injectionReasons?.length ?? 0) > 0
+    ) {
+      throw new LedgerError(
+        "invalid_injection_provenance",
+        "injection flag must match the presence of reasons"
+      )
+    }
+    requireDocument(db, input.docId)
+    if (!isSpan(input.span)) {
+      throw new LedgerError(
+        "invalid_span",
+        "source span needs integer start >= 0 and end > start"
+      )
+    }
+    if (
+      db.prepare("SELECT 1 FROM entities WHERE id = ?").get(input.entityId) ===
+      undefined
+    ) {
+      throw new LedgerError("entity_not_found", "no such entity")
+    }
+    // A document has one entity, and an obligation belongs to it (migration v2, #259).
+    if (
+      db
+        .prepare("SELECT entity_id FROM documents WHERE sha256 = ?")
+        .get(input.docId)?.["entity_id"] !== input.entityId
+    ) {
+      throw new LedgerError(
+        "entity_mismatch",
+        "obligation entity differs from its document entity"
+      )
+    }
+    const { lastInsertRowid } = db
+      .prepare(
+        `INSERT INTO obligations (entity_id, party, action, due_at, status, doc_id, source_span, injection_suspected, injection_reasons, direction, thread_id, anchor_message_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.entityId,
+        input.party ?? null,
+        input.action,
+        input.dueAt ?? null,
+        input.status,
+        input.docId,
+        JSON.stringify(input.span),
+        input.injectionSuspected ? 1 : 0,
+        JSON.stringify(input.injectionReasons ?? []),
+        input.direction ?? null,
+        input.threadId ?? null,
+        input.anchorMessageId ?? null
+      )
+    return Number(lastInsertRowid)
+  })
 }
 
 function toObligation(row: Row): Obligation {

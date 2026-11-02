@@ -638,41 +638,46 @@ describe("document types", () => {
     expect(getDocumentType(db, storedDoc())).toBeNull()
   })
 
-  test("stores a type with its source and replaces it with a later one", () => {
+  test("stores a type with its source and replaces it with a later one", async () => {
     const id = storedDoc()
-    expect(setDocumentType(db, id, { type: " Quote ", source: "model" })).toBe(
-      true
-    )
+    expect(
+      await setDocumentType(db, id, { type: " Quote ", source: "model" })
+    ).toBe(true)
     expect(getDocumentType(db, id)).toEqual({ type: "Quote", source: "model" })
-    setDocumentType(db, id, { type: "Invoice", source: "user" })
+    await setDocumentType(db, id, { type: "Invoice", source: "user" })
     expect(getDocumentType(db, id)).toEqual({ type: "Invoice", source: "user" })
   })
 
-  test("a model label never replaces a user label", () => {
+  test("a model label never replaces a user label", async () => {
     const id = storedDoc()
-    setDocumentType(db, id, { type: "Invoice", source: "user" })
-    setDocumentType(db, id, { type: "Quote", source: "model" })
+    await setDocumentType(db, id, { type: "Invoice", source: "user" })
+    await setDocumentType(db, id, { type: "Quote", source: "model" })
     expect(getDocumentType(db, id)).toEqual({ type: "Invoice", source: "user" })
     expect(() =>
       db.prepare("UPDATE document_types SET source = 'model'").run()
     ).toThrow(/user label/)
   })
 
-  test("refuses an unknown document, an empty type and an over-long type", () => {
+  test("refuses an unknown document, an empty type and an over-long type", async () => {
     const id = storedDoc()
     expect(
-      setDocumentType(db, "f".repeat(64), { type: "Quote", source: "model" })
+      await setDocumentType(db, "f".repeat(64), {
+        type: "Quote",
+        source: "model",
+      })
     ).toBe(false)
-    expect(setDocumentType(db, id, { type: "  ", source: "model" })).toBe(false)
+    expect(await setDocumentType(db, id, { type: "  ", source: "model" })).toBe(
+      false
+    )
     expect(
-      setDocumentType(db, id, { type: "x".repeat(101), source: "model" })
+      await setDocumentType(db, id, { type: "x".repeat(101), source: "model" })
     ).toBe(false)
     expect(getDocumentType(db, id)).toBeNull()
   })
 
-  test("a stored type is never deleted and a bad source is rejected", () => {
+  test("a stored type is never deleted and a bad source is rejected", async () => {
     const id = storedDoc()
-    setDocumentType(db, id, { type: "Quote", source: "model" })
+    await setDocumentType(db, id, { type: "Quote", source: "model" })
     expect(() => db.prepare("DELETE FROM document_types").run()).toThrow(
       /never deleted/
     )
