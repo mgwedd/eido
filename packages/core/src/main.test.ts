@@ -27,6 +27,10 @@ import { listObligations } from "./ledger/store"
 import { createProfileStore } from "./profile/store"
 import { createGmailClient } from "./connectors/gmail/client"
 import {
+  MemorySource,
+  plainMessage,
+} from "./connectors/proton/memory-source.test-support"
+import {
   createFakeGmail,
   rfc822,
 } from "./connectors/gmail/fake-gmail.test-support"
@@ -39,6 +43,7 @@ import {
   SCRUBBED_FLAG,
   coreApiConfig,
   createGmailSyncRuntime,
+  createProtonSyncRuntime,
   dataPlaneConfig,
   dataPlaneEnv,
   forwardTo,
@@ -77,6 +82,8 @@ describe("the data plane's environment", () => {
     EIDO_LLAMA_PORT: "",
     EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801",
     EIDO_REPLIES_CONFIG: '{"me":["owner@example.com"]}',
+    EIDO_PROTON_USERNAME: "assistant@example.com",
+    EIDO_BRIDGE_PASSWORD: "synthetic",
     GMAIL_REFRESH_TOKEN: "synthetic",
     __CF_USER_TEXT_ENCODING: "0x0:0:0",
     HOME: "/home/someone",
@@ -89,11 +96,16 @@ describe("the data plane's environment", () => {
       EIDO_LLAMA_HOST: "127.0.0.1",
       EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801",
       EIDO_REPLIES_CONFIG: '{"me":["owner@example.com"]}',
+      EIDO_PROTON_USERNAME: "assistant@example.com",
     })
   })
 
   it("names the variables outside the allowlist, ignoring what the OS adds", () => {
-    expect(outsideAllowlist(parent)).toEqual(["GMAIL_REFRESH_TOKEN", "HOME"])
+    expect(outsideAllowlist(parent)).toEqual([
+      "EIDO_BRIDGE_PASSWORD",
+      "GMAIL_REFRESH_TOKEN",
+      "HOME",
+    ])
   })
 })
 
@@ -204,6 +216,20 @@ describe("coreApiConfig", () => {
     expect(() =>
       coreApiConfig({ EIDO_GMAIL_PROXY_URL: "https://proxy.example.com" })
     ).toThrow("EIDO_GMAIL_PROXY_URL must be a loopback HTTP URL")
+  })
+
+  test("reads the Proton account address, and leaves Proton sync off without one", () => {
+    expect(
+      coreApiConfig({ EIDO_PROTON_USERNAME: "assistant@example.com" })
+        .protonUsername
+    ).toBe("assistant@example.com")
+    expect(coreApiConfig({}).protonUsername).toBeUndefined()
+    expect(coreApiConfig({ EIDO_PROTON_USERNAME: "" }).protonUsername).toBe(
+      undefined
+    )
+    expect(() => coreApiConfig({ EIDO_PROTON_USERNAME: "assistant" })).toThrow(
+      "EIDO_PROTON_USERNAME must be an address"
+    )
   })
 
   test("reads a positive conversation digest TTL, defaulting to 60 minutes", () => {
@@ -573,6 +599,136 @@ describe("Gmail sync runtime", () => {
         log: () => undefined,
       })
     ).toThrow("Gmail sync requires a configured sandboxed document parser")
+    db.close()
+  })
+})
+
+describe("Proton sync runtime", () => {
+  const ACCOUNT = "assistant@example.com"
+
+  async function setup() {
+    const db = openDataDb(":memory:")
+    const profile = createProfileStore(db, {
+      audit: () => Promise.resolve(),
+    })
+    const entity = await profile.createEntity({
+      kind: "personal",
+      name: "Test Personal",
+      tag: "ME",
+    })
+    await profile.setDefaultEntityId(entity.id)
+    const source = new MemorySource()
+    source.addFolder("INBOX", "7", [
+      { uid: 1, raw: plainMessage("p1", { subject: "First" }) },
+      { uid: 2, raw: plainMessage("p2", { subject: "Second" }) },
+    ])
+    return { db, profile, source }
+  }
+
+  const indexedMessageIds = (db: DatabaseSync): string[] =>
+    db
+      .prepare(
+        "SELECT message_id FROM document_text WHERE message_id IS NOT NULL ORDER BY message_id"
+      )
+      .all()
+      .map((row) => String(row["message_id"]))
+
+  it("indexes the configured account's inbox and schedules replies after the run", async () => {
+    const { db, profile, source } = await setup()
+    const scheduleReplies = vi.fn()
+    const sync = createProtonSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      profile,
+      source,
+      username: ACCOUNT,
+      onBatchCommitted: scheduleReplies,
+      log: () => undefined,
+    })
+
+    await sync()
+
+    expect(indexedMessageIds(db)).toEqual([
+      "<p1@example.com>",
+      "<p2@example.com>",
+    ])
+    expect(scheduleReplies).toHaveBeenCalledTimes(1)
+    db.close()
+  })
+
+  it("joins the run in flight instead of starting a second one", async () => {
+    const { db, profile, source } = await setup()
+    const sync = createProtonSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      profile,
+      source,
+      username: ACCOUNT,
+      log: () => undefined,
+    })
+
+    await Promise.all([sync(), sync()])
+
+    expect(
+      source.calls.filter((call) => call.startsWith("folderState"))
+    ).toEqual(["folderState INBOX"])
+    db.close()
+  })
+
+  it("logs a failed run and lets the next one try again", async () => {
+    const { db, profile, source } = await setup()
+    source.failAll = new Error("bridge down")
+    const log = vi.fn()
+    const scheduleReplies = vi.fn()
+    const sync = createProtonSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      profile,
+      source,
+      username: ACCOUNT,
+      onBatchCommitted: scheduleReplies,
+      log,
+    })
+
+    await sync()
+    expect(log).toHaveBeenCalledWith("proton_sync_failed", {
+      reason: "bridge down",
+    })
+    expect(scheduleReplies).not.toHaveBeenCalled()
+
+    source.failAll = undefined
+    await sync()
+    expect(indexedMessageIds(db)).toEqual([
+      "<p1@example.com>",
+      "<p2@example.com>",
+    ])
+    db.close()
+  })
+
+  it("does not reach the source while the gate reports the connector backing off", async () => {
+    const { db, profile, source } = await setup()
+    const sync = createProtonSyncRuntime({
+      db,
+      gate: {
+        getConnectorHealth: () =>
+          Promise.resolve([
+            {
+              name: "proton-mail",
+              health: "open",
+              consecutiveFailures: 3,
+              nextAttemptAt: new Date(Date.now() + 60_000).toISOString(),
+            },
+          ]),
+      },
+      profile,
+      source,
+      username: ACCOUNT,
+      log: () => undefined,
+    })
+
+    await sync()
+
+    expect(source.calls).toEqual([])
     db.close()
   })
 })
