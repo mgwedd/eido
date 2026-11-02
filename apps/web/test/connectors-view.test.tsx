@@ -3,11 +3,15 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import { ConnectorsView } from "../components/connectors-view"
+import { formatDateTime } from "../lib/connectors"
 import {
   AS_OF,
+  drive,
   driveDegraded,
   driveDisabled,
+  driveDrifted,
   gmail,
+  protonMailOpen,
   sharedBridgeOpen,
 } from "./fixtures/connectors"
 
@@ -171,11 +175,78 @@ test("an expired session goes to unlock", async () => {
   expect(replace).toHaveBeenCalledOnce()
 })
 
-test("as_of of a fresh read is the read time", async () => {
+test("the header shows the gate's asOf, not the browser's fetch time", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] })
+  vi.setSystemTime(new Date("2030-01-01T00:00:00.000Z"))
+  try {
+    respond({ connectors: [gmail], asOf: AS_OF })
+    await render()
+  } finally {
+    vi.useRealTimers()
+  }
+  const header = container.querySelector("h1")?.nextElementSibling?.textContent
+  expect(header).toBe(`Status as of ${formatDateTime(AS_OF)}`)
+  expect(header).not.toContain("2030")
+})
+
+test("no data time is shown when the gate sends no asOf", async () => {
   respond({ connectors: [gmail] })
   await render()
+  expect(container.querySelector("h1")?.nextElementSibling?.textContent).toBe(
+    ""
+  )
+})
+
+test("a healthy connector shows its last sync and manifest hash", async () => {
+  respond({ connectors: [gmail] })
+  await render()
+  const card = cardFor("Gmail")!
   expect(
-    container.querySelector("h1")?.nextElementSibling?.textContent
-  ).toMatch(/^Status as of /)
-  expect(AS_OF).toBeTruthy()
+    card.querySelector("time[datetime='2026-10-18T11:28:00.000Z']")?.textContent
+  ).toBe(formatDateTime("2026-10-18T11:28:00.000Z"))
+  expect(card.textContent).toContain("Last sync")
+  expect(card.textContent).toContain(gmail.manifestHash)
+  expect(card.textContent).not.toContain("Manifest drift")
+})
+
+test("a connector without lastSuccessAt shows no last sync", async () => {
+  respond({ connectors: [drive] })
+  await render()
+  const card = cardFor("Drive")!
+  expect(card.textContent).not.toContain("Last sync")
+  expect(card.textContent).toContain(drive.manifestHash)
+})
+
+test("an open connector shows its manifest hash beside the failure detail", async () => {
+  respond({ connectors: sharedBridgeOpen })
+  await render()
+  const card = cardFor("Proton Mail (Bridge)")!
+  expect(card.textContent).toContain(protonMailOpen.manifestHash)
+  expect(card.textContent).not.toContain("Last sync")
+  expect(card.textContent).not.toContain("Manifest drift")
+})
+
+test("a drift-disabled connector lists added and removed tools and reads unlike a manual disable", async () => {
+  respond({ connectors: [driveDrifted] })
+  await render()
+  const card = cardFor("Drive")!
+  expect(card.textContent).toContain(
+    "Disabled: the tool manifest changed since it was pinned."
+  )
+  const drift = card.querySelector("section")!
+  expect(drift.textContent).toContain("Manifest drift")
+  expect([...drift.querySelectorAll("li")].map((li) => li.textContent)).toEqual(
+    ["+ drive.move_bulk", "- drive.save"]
+  )
+})
+
+test("a manually disabled connector shows no drift section", async () => {
+  respond({ connectors: [driveDisabled] })
+  await render()
+  const card = cardFor("Drive")!
+  expect(card.querySelector("section")).toBeNull()
+  expect(card.textContent).toContain(
+    "Disabled: the gate refuses reads from this connector"
+  )
+  expect(card.textContent).not.toContain("tool manifest changed")
 })

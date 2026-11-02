@@ -50,6 +50,13 @@ export function formatDateTime(iso: string): string {
   }).format(new Date(iso))
 }
 
+/** True when the gate disabled the connector because its tool manifest drifted. */
+export function disabledByDrift(
+  connector: Connector
+): connector is Connector & { drift: NonNullable<Connector["drift"]> } {
+  return !connector.enabled && connector.drift !== undefined
+}
+
 export type BridgeNotice = {
   /** Heading sentence, for example "Proton Bridge is paused." */
   title: string
@@ -86,19 +93,19 @@ export function invitationsWait(connector: Connector): boolean {
 }
 
 export type ConnectorsLoad =
-  | { status: "ready"; connectors: Connector[]; asOf: string }
+  | { status: "ready"; connectors: Connector[]; asOf?: string }
   | { status: "offline" }
   | { status: "unauthenticated" }
   | { status: "error" }
 
 /**
- * Reads connector status through the gate. The response is never stored on the device
+ * Reads connector status through the gate; `asOf` is the gate's own data time, absent when
+ * the gate sent none. The response is never stored on the device
  * (`connector-settings` is sensitive): a network failure is "offline" and carries no data;
  * any other failure is an error.
  */
 export async function loadConnectors(
-  signal: AbortSignal,
-  now: () => Date = () => new Date()
+  signal: AbortSignal
 ): Promise<ConnectorsLoad> {
   try {
     const response = await fetch(CONNECTORS_URL, { cache: "no-store", signal })
@@ -109,7 +116,7 @@ export async function loadConnectors(
     return {
       status: "ready",
       connectors: parsed.value.connectors,
-      asOf: now().toISOString(),
+      ...(parsed.value.asOf === undefined ? {} : { asOf: parsed.value.asOf }),
     }
   } catch (error) {
     // An aborted read is ignored by the caller; a TypeError is fetch's network failure.
