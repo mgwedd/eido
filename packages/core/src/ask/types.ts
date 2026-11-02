@@ -24,6 +24,8 @@ export interface AskCitation {
   /** From `fence`: the cited text looked like an injection attempt. The answer still used it. */
   injectionSuspected: boolean
   injectionReasons: InjectionReason[]
+  /** UTF-16 source-body ranges included when this citation refers to excerpts. */
+  passageOffsets?: { start: number; end: number }[]
 }
 
 export interface AskCoverage {
@@ -33,6 +35,12 @@ export interface AskCoverage {
   matched: number
   /** Pack members the model read. */
   readInFull: number
+  /** Documents represented by one or more selected passages. */
+  readPartially?: number
+  /** Matching documents or source portions omitted from the answer context. */
+  omittedMaterial?: boolean
+  /** Number of matching documents whose full text was omitted or represented by excerpts. */
+  omittedMatches?: number
   /** `read X of Y matching messages in full`, built by code. */
   label: string
 }
@@ -58,8 +66,10 @@ export interface AskDeps {
   db: DatabaseSync
   /** The shared inference queue; the whole ask runs as one foreground job. */
   queue: InferenceQueue
-  /** Context budget for the pack, from `ContextBudgets.ask`. */
+  /** Total input-token cap for an Ask answer request, including prompt overhead and reserve. */
   budgetTokens: number
+  /** Space inside the same context cap kept clear for a follow-up retrieval. Defaults to 128. */
+  followUpReserveTokens?: number
   /** Characters per estimated token, as configured for the model client. */
   charsPerToken?: number
   /** How many search hits may extend the pack. Default 20. */

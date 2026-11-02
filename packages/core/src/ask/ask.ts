@@ -4,7 +4,12 @@ import type { SearchQuery } from "../index/search"
 import { packParts } from "../context/pack-store"
 import type { PackMember } from "../context/pack-store"
 import { PromptTooLargeError } from "../inference/errors"
-import { MATERIAL_RULES } from "../inference/fence"
+import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
+import {
+  ESTIMATE_BOUNDARY,
+  MATERIAL_RULES,
+  plainContent,
+} from "../inference/fence"
 import type { ModelClient } from "../inference/types"
 import {
   absenceReplacement,
@@ -102,6 +107,9 @@ function citationFor(
       : {}),
     injectionSuspected: member.injectionSuspected,
     injectionReasons: member.injectionReasons,
+    ...(member.passageOffsets === undefined
+      ? {}
+      : { passageOffsets: member.passageOffsets }),
   }
 }
 
@@ -114,6 +122,20 @@ async function run(
 ): Promise<AskResult> {
   const { db } = deps
   const today = isoDate((deps.now ?? (() => new Date()))())
+
+  const charsPerToken = deps.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
+  const planInputTokens =
+    estimateTokens(PLAN_SYSTEM, charsPerToken) +
+    estimateTokens(`Today is ${today}.\nQuestion: ${question}`, charsPerToken) +
+    estimateTokens(JSON.stringify(PLAN_SCHEMA), charsPerToken)
+  if (planInputTokens > deps.budgetTokens)
+    return refused(
+      "the question does not fit the model's context",
+      0,
+      0,
+      null,
+      false
+    )
 
   // Step 1: the model writes a search plan; code runs it.
   let planned
@@ -177,16 +199,35 @@ async function run(
     ...query,
     limit: deps.searchLimit ?? DEFAULT_SEARCH_LIMIT,
   })
+  const reserve = deps.followUpReserveTokens ?? 128
+  const maxHits = hits.map((h) => h.sha256)
+  const factsPrefix = [
+    "Facts (computed by code):",
+    `matched: ${String(matchCount)}`,
+    `searched: ${String(searched)}`,
+    "readInFull: 999999",
+    "readPartially: 999999",
+    `wants: ${plan.wants}`,
+    "\n\nMessages:\n",
+  ].join("\n")
+  const overheadTokens =
+    estimateTokens(ANSWER_SYSTEM, charsPerToken) +
+    estimateTokens(factsPrefix, charsPerToken) +
+    estimateTokens(`\n\nQuestion: ${question}`, charsPerToken)
+  const packBudget = deps.budgetTokens - reserve - overheadTokens
   const pack = await buildAskPack(db, {
-    hits: hits.map((h) => h.sha256),
-    budgetTokens: deps.budgetTokens,
+    hits: maxHits,
+    budgetTokens: Math.max(packBudget, 0),
+    focused: plan.wants !== "summarize",
+    terms: plan.terms,
+    searchScores: hits.map((hit) => ({ sha256: hit.sha256, score: hit.score })),
     ...(deps.charsPerToken === undefined
       ? {}
       : { charsPerToken: deps.charsPerToken }),
   })
   if ("refused" in pack) {
     return refused(
-      `the top matching message needs ${String(pack.seedTokens)} tokens and the ask budget is ${String(pack.budgetTokens)}`,
+      `the top matching message needs ${String(pack.seedTokens + overheadTokens + reserve)} tokens and the ask budget is ${String(deps.budgetTokens)}`,
       matchCount,
       searched,
       matchCount,
@@ -194,14 +235,51 @@ async function run(
     )
   }
 
-  const readInFull = pack.members.length
+  const fullDocs = new Set(
+    pack.members
+      .filter((member) => member.passageOffsets === undefined)
+      .map((member) => member.sha256)
+  )
+  const partialDocs = new Set(
+    pack.members
+      .filter((member) => member.passageOffsets !== undefined)
+      .map((member) => member.sha256)
+  )
+  const readInFull = fullDocs.size
+  const readPartially = [...partialDocs].filter(
+    (sha) => !fullDocs.has(sha)
+  ).length
+  const readAny = fullDocs.size + readPartially
+  const omittedMaterial = readPartially > 0 || readAny < matchCount
+  const omittedMatches = Math.max(0, matchCount - readAny) + readPartially
   const facts = [
     "Facts (computed by code):",
     `matched: ${String(matchCount)}`,
     `searched: ${String(searched)}`,
     `readInFull: ${String(readInFull)}`,
+    `readPartially: ${String(readPartially)}`,
     `wants: ${plan.wants}`,
   ].join("\n")
+
+  const answerContent = [
+    `${facts}\n\nMessages:\n`,
+    ...packParts(pack),
+    `\n\nQuestion: ${question}`,
+  ]
+  const answerInputTokens =
+    estimateTokens(ANSWER_SYSTEM, charsPerToken) +
+    estimateTokens(
+      plainContent(answerContent, ESTIMATE_BOUNDARY),
+      charsPerToken
+    )
+  if (answerInputTokens + reserve > deps.budgetTokens)
+    return refused(
+      "the messages and the question do not fit the model's context",
+      matchCount,
+      searched,
+      matchCount,
+      truncatedPlan
+    )
 
   // Step 2: the model answers from the pack.
   let answered
@@ -212,11 +290,7 @@ async function run(
         {
           role: "user",
           // The material first; the owner's question last, unfenced.
-          content: [
-            `${facts}\n\nMessages:\n`,
-            ...packParts(pack),
-            `\n\nQuestion: ${question}`,
-          ],
+          content: answerContent,
         },
       ],
       temperature: 0,
@@ -237,12 +311,18 @@ async function run(
     searched,
     matched: matchCount,
     readInFull,
-    label: coverageLabel(readInFull, matchCount),
+    ...(readPartially > 0 ? { readPartially } : {}),
+    ...(omittedMaterial ? { omittedMaterial: true } : {}),
+    ...(omittedMaterial ? { omittedMatches } : {}),
+    label:
+      readPartially > 0
+        ? `read ${String(readInFull)} in full and excerpts from ${String(readPartially)} of ${String(matchCount)} matching messages${omittedMaterial ? "; other material was omitted" : ""}`
+        : coverageLabel(readInFull, matchCount),
   }
 
   const withCounts = substitutePlaceholders(answered.text, {
     matches: matchCount,
-    read: readInFull,
+    read: readAny,
     searched,
   })
   const byTag = new Map(pack.members.map((m) => [m.tag.slice(1, -1), m]))
@@ -250,7 +330,10 @@ async function run(
   if (claimsAbsence(checked.text)) {
     return {
       status: "answered",
-      answer: absenceReplacement(readInFull),
+      answer:
+        readPartially > 0
+          ? `No match found in the selected passages from ${String(readPartially)} matching messages.`
+          : absenceReplacement(readInFull),
       citations: [],
       coverage,
       facts: { matchCount },

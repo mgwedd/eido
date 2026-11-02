@@ -31,6 +31,83 @@ function expectPack(result: ContextPack | ContextRefusal): ContextPack {
 const THREAD = ["t-1-m2", "t-1-m1", "t-1-m0"].map(sha)
 
 describe("buildAskPack", () => {
+  test("focused packs rank long-document passages and preserve stable source offsets", async () => {
+    const body = [
+      "Background material. ".repeat(90),
+      "Invoice paid Friday. Invoice confirmed by finance.",
+      "Archive material. ".repeat(90),
+    ].join("\n\n")
+    ingest(db, [
+      mail({ id: "long-invoice", date: "2031-02-01T00:00:00Z", body }),
+    ])
+    const sha256 = sha("long-invoice")
+    const first = expectPack(
+      await buildAskPack(db, {
+        hits: [sha256],
+        budgetTokens: 500,
+        focused: true,
+        terms: ["invoice"],
+      })
+    )
+    const second = expectPack(
+      await buildAskPack(db, {
+        hits: [sha256],
+        budgetTokens: 500,
+        focused: true,
+        terms: ["invoice"],
+      })
+    )
+    expect(packText(first)).toContain("Invoice paid Friday.")
+    expect(packText(first)).not.toContain("Background material.")
+    expect(first.members[0]?.passageOffsets).toEqual([
+      {
+        start: body.indexOf("Invoice paid Friday."),
+        end:
+          body.indexOf("Invoice paid Friday.") +
+          "Invoice paid Friday. Invoice confirmed by finance.".length,
+      },
+    ])
+    expect(second.members).toEqual(first.members)
+    expect(second.packHash).toBe(first.packHash)
+    expect(readContextPack(db, first.id)?.members[0]?.passageOffsets).toEqual(
+      first.members[0]?.passageOffsets
+    )
+  })
+
+  test("a higher-ranked passage wins regardless of candidate input order", async () => {
+    ingest(db, [
+      mail({
+        id: "low-passage",
+        date: "2031-02-01T00:00:00Z",
+        body: `${"Archive. ".repeat(120)}\n\nInvoice paid.\n\n${"Old text. ".repeat(120)}`,
+      }),
+      mail({
+        id: "high-passage",
+        date: "2031-02-02T00:00:00Z",
+        body: `${"Archive. ".repeat(120)}\n\nInvoice invoice invoice paid.\n\n${"Old text. ".repeat(120)}`,
+      }),
+    ])
+    const budgetTokens = 500
+    const first = expectPack(
+      await buildAskPack(db, {
+        hits: [sha("low-passage"), sha("high-passage")],
+        budgetTokens,
+        focused: true,
+        terms: ["invoice"],
+      })
+    )
+    const reversed = expectPack(
+      await buildAskPack(db, {
+        hits: [sha("high-passage"), sha("low-passage")],
+        budgetTokens,
+        focused: true,
+        terms: ["invoice"],
+      })
+    )
+    expect(first.members[0]?.sha256).toBe(sha("high-passage"))
+    expect(reversed.members).toEqual(first.members)
+  })
+
   test("seeds on the top hit with its thread, then appends hits not yet included", async () => {
     const pack = expectPack(
       await buildAskPack(db, {

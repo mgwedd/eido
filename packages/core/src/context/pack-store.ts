@@ -17,6 +17,8 @@ export interface PackMember {
   /** From `fence`: the member's text looked like an injection attempt. It is still sent. */
   injectionSuspected: boolean
   injectionReasons: InjectionReason[]
+  /** Character ranges in the indexed source body when this entry is a focused excerpt. */
+  passageOffsets?: { start: number; end: number }[]
 }
 
 /** One member's place in the prompt: its tag line (trusted, from the index) and its block. */
@@ -106,6 +108,7 @@ function parseMember(value: unknown): PackMember {
   const tokens: unknown = Reflect.get(value, "tokens")
   const suspected: unknown = Reflect.get(value, "injectionSuspected")
   const reasons: unknown = Reflect.get(value, "injectionReasons")
+  const offsets: unknown = Reflect.get(value, "passageOffsets")
   if (
     typeof tag !== "string" ||
     typeof sha256 !== "string" ||
@@ -113,7 +116,18 @@ function parseMember(value: unknown): PackMember {
     !isEdge(edge) ||
     typeof suspected !== "boolean" ||
     !Array.isArray(reasons) ||
-    !reasons.every(isReason)
+    !reasons.every(isReason) ||
+    (offsets !== undefined &&
+      (!Array.isArray(offsets) ||
+        !offsets.every(
+          (offset) =>
+            typeof offset === "object" &&
+            offset !== null &&
+            typeof Reflect.get(offset, "start") === "number" &&
+            typeof Reflect.get(offset, "end") === "number" &&
+            Reflect.get(offset, "start") >= 0 &&
+            Reflect.get(offset, "end") > Reflect.get(offset, "start")
+        )))
   )
     throw new Error("context pack member has a malformed field")
   return {
@@ -123,6 +137,14 @@ function parseMember(value: unknown): PackMember {
     tokens,
     injectionSuspected: suspected,
     injectionReasons: reasons,
+    ...(offsets === undefined
+      ? {}
+      : {
+          passageOffsets: offsets.map((offset) => ({
+            start: Number(Reflect.get(offset, "start")),
+            end: Number(Reflect.get(offset, "end")),
+          })),
+        }),
   }
 }
 

@@ -71,6 +71,65 @@ describe("citations", () => {
       occurredAt: "2030-01-03T00:00:00.000Z",
     })
   })
+
+  test("focused Ask cites the selected source offset and reports omitted document material", async () => {
+    const body = [
+      "Background material. ".repeat(90),
+      "The invoice was paid on Friday.",
+      "Archive material. ".repeat(90),
+    ].join("\n\n")
+    ingest(db, [
+      mail({ id: "long-document", date: "2030-01-01T00:00:00Z", body }),
+    ])
+    model = await scripted([
+      planReply(INVOICE_PLAN),
+      answerReply("It was paid Friday [M1]."),
+    ])
+    const result = await ask("When was the invoice paid?", deps(model.queue))
+    expect(result.status).toBe("answered")
+    expect(result.citations[0]?.passageOffsets).toEqual([
+      {
+        start: body.indexOf("The invoice was paid on Friday."),
+        end:
+          body.indexOf("The invoice was paid on Friday.") +
+          "The invoice was paid on Friday.".length,
+      },
+    ])
+    expect(result.coverage).toMatchObject({
+      readInFull: 0,
+      readPartially: 1,
+      omittedMaterial: true,
+      omittedMatches: 1,
+    })
+    const answerRequest = model.server.completions()[1]
+    const answerText =
+      answerRequest?.turns.map((turn) => turn.content).join("\n") ?? ""
+    expect(answerText).toContain("The invoice was paid on Friday.")
+    expect(answerText).not.toContain("Background material.")
+  })
+
+  test("broad Ask keeps the full long member when it fits", async () => {
+    const body = ["Invoice paid Friday.", "Archive material. ".repeat(90)].join(
+      "\n\n"
+    )
+    ingest(db, [
+      mail({ id: "broad-document", date: "2030-01-01T00:00:00Z", body }),
+    ])
+    model = await scripted([
+      planReply({ terms: ["invoice"], wants: "summarize" }),
+      answerReply("Invoice paid Friday [M1]."),
+    ])
+    const result = await ask(
+      "Summarize the invoice discussion",
+      deps(model.queue)
+    )
+    expect(result.status).toBe("answered")
+    expect(result.citations[0]?.passageOffsets).toBeUndefined()
+    const answerRequest = model.server.completions()[1]
+    const answerText =
+      answerRequest?.turns.map((turn) => turn.content).join("\n") ?? ""
+    expect(answerText).toContain("Archive material.")
+  })
 })
 
 describe("injection flags", () => {
@@ -136,8 +195,26 @@ describe("code-computed facts", () => {
       deps(model.queue, { budgetTokens: 3000, searchLimit: 5 })
     )
     expect(result.coverage.readInFull).toBe(5)
+    expect(result.coverage).toMatchObject({
+      omittedMaterial: true,
+      omittedMatches: 32,
+    })
     expect(result.answer).toBe("ok 5")
     expect(result.coverage.label).toBe("read 5 of 37 matching messages in full")
+  })
+
+  test("system, question and follow-up reserve are inside the configured input cap", async () => {
+    ingestMatching(db, 1, "invoice")
+    model = await scripted([planReply(INVOICE_PLAN), answerReply("unused")])
+    const result = await ask(
+      "invoice?",
+      deps(model.queue, { budgetTokens: 400, followUpReserveTokens: 250 })
+    )
+    expect(result.status).toBe("refused")
+    expect(result.reason).toMatch(
+      /top matching message needs \d+ tokens and the ask budget is 400/
+    )
+    expect(model.completions()).toBe(1)
   })
 
   test("the step 2 prompt carries the facts block and the pack, and the plan's date filters apply", async () => {
@@ -214,24 +291,33 @@ describe("zero matches and absence", () => {
 
 describe("refusals", () => {
   test("an oversize seed is refused with a reason and no step 2", async () => {
-    ingestMatching(db, 3, "invoice")
-    model = await scripted([planReply(INVOICE_PLAN), answerReply("unused")])
+    ingest(db, [
+      mail({
+        id: "oversize-seed",
+        date: "2030-01-03T00:00:00Z",
+        body: `The invoice is attached. ${"Long archive text. ".repeat(300)}`,
+      }),
+    ])
+    model = await scripted([
+      planReply({ terms: ["invoice"], wants: "summarize" }),
+      answerReply("unused"),
+    ])
     const result = await ask(
       "invoice?",
-      deps(model.queue, { budgetTokens: 10 })
+      deps(model.queue, { budgetTokens: 700 })
     )
     expect(model.completions()).toBe(1)
     expect(result.status).toBe("refused")
     expect(result.reason).toMatch(
-      /^the top matching message needs \d+ tokens and the ask budget is 10$/
+      /^the top matching message needs \d+ tokens and the ask budget is 700$/
     )
     expect(result.answer).toBe("")
-    expect(result.facts.matchCount).toBe(3)
+    expect(result.facts.matchCount).toBe(1)
     expect(result.coverage).toEqual({
-      searched: 3,
-      matched: 3,
+      searched: 1,
+      matched: 1,
       readInFull: 0,
-      label: "read 0 of 3 matching messages in full",
+      label: "read 0 of 1 matching messages in full",
     })
   })
 
