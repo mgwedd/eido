@@ -1,4 +1,11 @@
-import { History, Inbox, Plug, Settings, Sun, type LucideIcon } from "lucide-react"
+import {
+  History,
+  Inbox,
+  Plug,
+  Settings,
+  Sun,
+  type LucideIcon,
+} from "lucide-react"
 
 export type NavItem = {
   href: string
