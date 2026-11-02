@@ -8,6 +8,9 @@ export {
   INTENT_PROMPT_TEXT,
   INTENT_RESULT_JSON_SCHEMA,
   extractionCandidatesJsonSchema,
+  DOCUMENT_TYPE_LABELS,
+  DOCUMENT_TYPE_CLASSIFICATION_PROMPT,
+  DOCUMENT_TYPE_CLASSIFICATION_JSON_SCHEMA,
 } from "./generated/prompt"
 export {
   INTENT_JSON_SCHEMA,
@@ -46,6 +49,7 @@ export {
   validateIntent,
   validateIntentResult,
   validateExtractionCandidates,
+  validateDocumentTypeClassification,
   validateProfileAccountAssignment,
   validateProfileEntityInput,
   validateProfileEntityPatch,

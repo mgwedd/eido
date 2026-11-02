@@ -24,6 +24,11 @@ import {
 } from "./prompt"
 import { normalizeParsed, passageReasons } from "./normalize"
 import { loadStoredText } from "./stored-text"
+import {
+  classifyDocumentType,
+  DOCUMENT_TYPE_REPLY_TOKENS,
+} from "./document-type"
+import { getDocumentType, setDocumentType } from "../index/document-type"
 import type { CandidateItem, ItemOutcome } from "./verify"
 import { defaultFieldConfidence, verifyItem } from "./verify"
 import { summarize } from "./summary"
@@ -55,6 +60,8 @@ export type ExtractionConfig = {
   /** Reply reservation per call. Default 1,024. */
   maxReplyTokens?: number
   charsPerToken?: number
+  /** Classify the stored document text with a bounded local inference request. Default true. */
+  classifyDocumentType?: boolean
 }
 
 export type ExtractorDeps = {
@@ -330,6 +337,35 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
     }
     // Quotes are checked against the text exactly as the model read it.
     const normalized = normalizeParsed(parsed)
+    const createdAt = now().toISOString()
+    let remaining = tokenBudget
+    if (
+      config.classifyDocumentType !== false &&
+      getDocumentType(db, docId)?.source !== "user"
+    ) {
+      const classification = await classifyDocumentType(
+        model,
+        normalized.text,
+        {
+          tokenBudget: remaining,
+          charsPerToken,
+          maxReplyTokens: DOCUMENT_TYPE_REPLY_TOKENS,
+          signal: opts.signal,
+        }
+      )
+      remaining -= classification.tokensUsed
+      const classifiedType = classification.type
+      if (classifiedType !== null) {
+        await writeQueueFor(db).run(() =>
+          setDocumentType(
+            db,
+            docId,
+            { type: classifiedType, source: "model" },
+            now()
+          )
+        )
+      }
+    }
     const { passages, total } = selectCandidatePassages(
       normalized.text,
       normalized.offsets,
@@ -337,13 +373,12 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         phrases: config.phrases ?? DEFAULT_PHRASES,
         windowChars: config.windowChars,
         maxPassages: config.maxPassages ?? DEFAULT_MAX_PASSAGES,
-        tokenBudget,
+        tokenBudget: remaining,
         overheadTokens,
         charsPerToken,
       }
     )
 
-    const createdAt = now().toISOString()
     // What fence found in the passages sent to the model, for the run's provenance.
     const sentReasons = new Set<InjectionReason>()
     const finish = (
@@ -380,7 +415,6 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
       return finish("no_candidates", { passagesRead: 0 })
     }
 
-    let remaining = tokenBudget
     async function ask(passage: Passage, index: number): Promise<AskOutcome> {
       const messages: ChatMessage[] = [
         { role: "user", content: passageMessage(passage.text) },

@@ -1,5 +1,6 @@
 import { GateUnavailableError } from "@eido/gate"
 import type {
+  CoreApiAccountList,
   CoreApiAssignmentList,
   CoreApiAskRequest,
   CoreApiAskResponse,
@@ -9,6 +10,7 @@ import type {
   CoreApiError,
   CoreApiProfile,
   CoreApiProfileResponse,
+  CoreApiSendFrom,
   GateConnectorHealth,
   ProfileAccountAssignment,
 } from "@eido/schemas"
@@ -17,6 +19,8 @@ import {
   validateCoreApiDefaultEntityRequest,
 } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
+import { assignableAccounts } from "../connectors/accounts"
+import type { KnownAccount } from "../connectors/accounts"
 import type { ObligationStateStore } from "../ledger/obligation-state"
 import {
   DOCUMENT_TYPE_PATH,
@@ -33,6 +37,10 @@ export interface ApiDeps {
   profile: ProfileStore
   /** Read-only projection from the gate; no connector credentials or mail payloads. */
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
+  /** Accounts the configured connectors have reported. Absent: none are configured. */
+  connectorAccounts?: () => readonly KnownAccount[]
+  /** The Proton account the assistant sends from. Absent: Proton is not configured. */
+  sendFrom?: string
   /**
    * Host header values core answers to, such as `127.0.0.1:8789`. A request with any other
    * Host gets 421. Core has no auth, so this stops a page that rebinds its own domain to the
@@ -250,6 +258,28 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       const body: GateConnectorHealth = {
         connectors: await deps.connectorHealth(),
       }
+      return json(body)
+    }
+
+    if (path === "/connectors/accounts") {
+      if (method !== "GET") return notAllowed("GET")
+      const known = deps.connectorAccounts?.() ?? []
+      if (known.length > 0 && deps.connectorHealth === undefined) {
+        return failure("gate_unavailable", "connector health unavailable")
+      }
+      const health =
+        deps.connectorHealth === undefined || known.length === 0
+          ? []
+          : await deps.connectorHealth()
+      const body: CoreApiAccountList = {
+        accounts: assignableAccounts(known, health),
+      }
+      return json(body)
+    }
+
+    if (path === "/connectors/send-from") {
+      if (method !== "GET") return notAllowed("GET")
+      const body: CoreApiSendFrom = { address: deps.sendFrom ?? null }
       return json(body)
     }
 

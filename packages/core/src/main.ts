@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
-import { createAuditClient, createIntentClient } from "@eido/gate"
+import {
+  createAuditClient,
+  createIntentClient,
+  createProtonMailClient,
+} from "@eido/gate"
 import type { IntentClient } from "@eido/gate"
 import { ask } from "./ask/ask"
 import type { AskDeps } from "./ask/types"
@@ -52,6 +56,16 @@ import {
 import type { GmailClient } from "./connectors/gmail/client"
 import type { GmailConfig } from "./connectors/gmail/config"
 import type { ConnectorHealthReader } from "./connectors/health-aware-sync"
+import { createAccountRegistry } from "./connectors/accounts"
+import type { KnownAccount } from "./connectors/accounts"
+import { GMAIL_CONNECTOR } from "./connectors/gmail/routes"
+import { CONNECTOR_NAME as PROTON_HEALTH_NAME } from "./connectors/proton/manifest"
+import {
+  CONNECTOR as PROTON_CONNECTOR,
+  resolveConfig as resolveProtonConfig,
+  syncProtonWithHealth,
+} from "./connectors/proton/index"
+import type { ProtonMailSource } from "./connectors/proton/index"
 import { syncReplyObligations } from "./obligations/replies"
 import { writeQueueFor } from "./db/write-queue"
 import type { RepliesConfig } from "./obligations/replies"
@@ -65,6 +79,7 @@ import type { RepliesConfig } from "./obligations/replies"
 /**
  * The only variables the data plane may see: data dir, gate socket, llama-server address, and
  * where core's API listens (loopback host, port, base path, extra Host headers to answer).
+ * `EIDO_PROTON_USERNAME` is the Bridge account address, not a secret: the gate holds the password.
  */
 export const DATA_PLANE_ENV = [
   "EIDO_DATA_DIR",
@@ -80,6 +95,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
   "EIDO_DIGEST_SECTION_TOKENS",
   "EIDO_REPLIES_CONFIG",
+  "EIDO_PROTON_USERNAME",
 ] as const
 
 /**
@@ -101,6 +117,7 @@ export const DEFAULT_CORE_PORT = 8789
 export const ASK_CONTEXT_BUDGET_TOKENS = 3000
 export const ASK_REPLY_TOKENS = 512
 export const GMAIL_SYNC_INTERVAL_MS = 5 * 60_000
+export const PROTON_SYNC_INTERVAL_MS = 5 * 60_000
 export const CONVERSATION_DIGEST_SWEEP_INTERVAL_MS = 60_000
 
 type Env = Readonly<Record<string, string | undefined>>
@@ -152,6 +169,11 @@ export type CoreApiConfig = {
   chatTemplateKwargs?: Record<string, unknown>
   /** Gate egress proxy URL. Gmail sync is disabled when this is not configured. */
   gmailProxyUrl?: string
+  /**
+   * The Proton Bridge account (`EIDO_PROTON_USERNAME`), which is also the assistant's sending
+   * address. Proton sync is disabled when this is not configured.
+   */
+  protonUsername?: string
   conversationDigestIdleTtlMinutes: number
   digest: { sectionTokens: number }
   replies?: Omit<RepliesConfig, "db">
@@ -211,6 +233,17 @@ export function coreApiConfig(env: Env): CoreApiConfig {
             throw new Error("EIDO_GMAIL_PROXY_URL must be a loopback HTTP URL")
           }
         })()
+  const protonUsername = env["EIDO_PROTON_USERNAME"]
+  const configuredProtonUsername =
+    protonUsername === undefined || protonUsername === ""
+      ? undefined
+      : (() => {
+          try {
+            return resolveProtonConfig({ username: protonUsername }).username
+          } catch {
+            throw new Error("EIDO_PROTON_USERNAME must be an address")
+          }
+        })()
   return {
     host: loopbackHost(env["EIDO_CORE_HOST"] || DEFAULT_CORE_HOST),
     port: portOf(env["EIDO_CORE_PORT"] || String(DEFAULT_CORE_PORT)),
@@ -239,6 +272,9 @@ export function coreApiConfig(env: Env): CoreApiConfig {
     ...(configuredGmailProxyUrl === undefined
       ? {}
       : { gmailProxyUrl: configuredGmailProxyUrl }),
+    ...(configuredProtonUsername === undefined
+      ? {}
+      : { protonUsername: configuredProtonUsername }),
   }
 }
 
@@ -350,6 +386,9 @@ export type DataPlane = {
   /** Waits for the profile store's queued calls to settle, then closes eido-data.db. */
   close: () => Promise<void>
   stopGmailSync: () => void
+  stopProtonSync: () => void
+  /** Accounts the configured connectors have reported: Proton's at startup, Gmail's per run. */
+  connectorAccounts: () => readonly KnownAccount[]
   getInferenceQueue: () => Promise<InferenceQueue>
   getModelContextTokens: () => number
   /** Schedule digests for documents committed by a connector batch. */
@@ -367,6 +406,8 @@ type GmailSyncRuntime = {
   config?: GmailConfig
   onIngested?: (documents: readonly IndexedDocument[]) => void
   onBatchCommitted?: () => void
+  /** Called with the account address each run reads from Gmail's profile. */
+  onAccount?: (accountRef: string) => void
   log: DataPlane["log"]
 }
 
@@ -389,6 +430,7 @@ export function createGmailSyncRuntime(
         if (account.emailAddress === undefined || account.emailAddress === "") {
           throw new Error("Gmail profile did not provide an account address")
         }
+        input.onAccount?.(account.emailAddress)
         await syncGmailWithHealth(
           input.gate,
           input.db,
@@ -411,6 +453,70 @@ export function createGmailSyncRuntime(
     })()
     return running
   }
+}
+
+type ProtonSyncRuntime = {
+  db: DatabaseSync
+  gate: ConnectorHealthReader
+  profile: ProfileStore
+  source: ProtonMailSource
+  /** The Bridge account; every folder it mirrors is ingested under it. */
+  username: string
+  onBatchCommitted?: () => void
+  log: DataPlane["log"]
+}
+
+/**
+ * One Proton sync run at a time over the configured folders. The gate's connector health decides
+ * whether a run may try the source; a failure is logged and the next tick tries again.
+ */
+export function createProtonSyncRuntime(
+  input: ProtonSyncRuntime
+): () => Promise<void> {
+  const config = resolveProtonConfig({ username: input.username })
+  let running: Promise<void> | undefined
+  return async () => {
+    if (running !== undefined) return running
+    running = (async () => {
+      try {
+        const run = await syncProtonWithHealth(
+          input.gate,
+          input.db,
+          input.source,
+          config,
+          input.profile
+        )
+        if (run.status === "synced") input.onBatchCommitted?.()
+      } catch (error) {
+        input.log("proton_sync_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        })
+      } finally {
+        running = undefined
+      }
+    })()
+    return running
+  }
+}
+
+/** Runs `sync` now and every `intervalMs`, unref'd, and tracks the run in flight. */
+function startSyncTimer(
+  sync: () => Promise<void>,
+  intervalMs: number
+): { stop: () => void; inFlight: () => Promise<void> | undefined } {
+  let current: Promise<void> | undefined
+  const run = (): void => {
+    const started = sync()
+    current = started
+    const clear = (): void => {
+      if (current === started) current = undefined
+    }
+    void started.then(clear, clear)
+  }
+  const timer = setInterval(run, intervalMs)
+  timer.unref()
+  run()
+  return { stop: () => clearInterval(timer), inFlight: () => current }
 }
 
 function gmailParser(dataDir: string | undefined): Parser {
@@ -597,8 +703,8 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       }
     })
   }
-  let stopGmailSync: () => void = () => {}
-  let gmailSyncInFlight: Promise<void> | undefined
+  const accounts = createAccountRegistry()
+  let gmailTimer: ReturnType<typeof startSyncTimer> | undefined
   if (config.api.gmailProxyUrl !== undefined) {
     if (parser === undefined) {
       throw new Error(
@@ -615,21 +721,38 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       parser,
       onIngested,
       onBatchCommitted: scheduleReplies,
+      onAccount: (accountRef) =>
+        accounts.add({
+          connector: GMAIL_CONNECTOR,
+          healthName: GMAIL_CONNECTOR,
+          accountRef,
+          label: "Gmail",
+        }),
       log,
     })
-    const runSync = (): void => {
-      const current = sync()
-      gmailSyncInFlight = current
-      const clear = (): void => {
-        if (gmailSyncInFlight === current) gmailSyncInFlight = undefined
-      }
-      void current.then(clear, clear)
-    }
-    const timer = setInterval(runSync, GMAIL_SYNC_INTERVAL_MS)
-    timer.unref()
-    stopGmailSync = () => clearInterval(timer)
-    runSync()
+    gmailTimer = startSyncTimer(sync, GMAIL_SYNC_INTERVAL_MS)
   }
+  let protonTimer: ReturnType<typeof startSyncTimer> | undefined
+  if (config.api.protonUsername !== undefined) {
+    accounts.add({
+      connector: PROTON_CONNECTOR,
+      healthName: PROTON_HEALTH_NAME,
+      accountRef: config.api.protonUsername,
+      label: "Proton Mail",
+    })
+    const sync = createProtonSyncRuntime({
+      db,
+      gate,
+      profile,
+      source: createProtonMailClient({ socketPath: config.gateSocket }),
+      username: config.api.protonUsername,
+      onBatchCommitted: scheduleReplies,
+      log,
+    })
+    protonTimer = startSyncTimer(sync, PROTON_SYNC_INTERVAL_MS)
+  }
+  const stopGmailSync = (): void => gmailTimer?.stop()
+  const stopProtonSync = (): void => protonTimer?.stop()
   scheduleReplies()
   log("started", {
     dataDir: config.dataDir,
@@ -646,13 +769,17 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     obligations,
     log,
     stopGmailSync,
+    stopProtonSync,
+    connectorAccounts: accounts.list,
     getInferenceQueue: model.getQueue,
     getModelContextTokens: model.getContextTokens,
     scheduleIngestedDocuments: onIngested,
     scheduleReplyObligations: scheduleReplies,
     close: async () => {
       stopGmailSync()
-      await gmailSyncInFlight
+      stopProtonSync()
+      await gmailTimer?.inFlight()
+      await protonTimer?.inFlight()
       await digestScheduling
       await replyScheduling
       await digestService?.whenIdle()
@@ -765,6 +892,8 @@ export async function serveDataPlane(
     profile: plane.profile,
     obligations: plane.obligations,
     connectorHealth: plane.gate.getConnectorHealth,
+    connectorAccounts: plane.connectorAccounts,
+    sendFrom: config.protonUsername,
     ...(ask === undefined ? {} : { ask }),
     documents: { db: plane.db },
     ...config,
