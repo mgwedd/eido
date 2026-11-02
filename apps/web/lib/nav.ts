@@ -1,6 +1,7 @@
 import {
   History,
   Inbox,
+  MessageSquare,
   Plug,
   Settings,
   Sun,
@@ -23,6 +24,7 @@ export type NavItem = {
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/", label: "Today", icon: Sun, phone: true },
   { href: "/queue", label: "Queue", icon: Inbox, phone: true },
+  { href: "/ask", label: "Ask", icon: MessageSquare, phone: true },
   { href: "/activity", label: "Activity", icon: History, phone: true },
   { href: "/connectors", label: "Connectors", icon: Plug, phone: false },
   { href: "/settings", label: "Settings", icon: Settings, phone: false },
