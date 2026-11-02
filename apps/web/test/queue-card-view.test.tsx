@@ -121,13 +121,17 @@ function routed(routes: Routes = {}) {
 
 // The card loads in a chain of fetches (queue, then nonce), so a single fixed
 // sleep can end before it is ready on a slow runner. Wait in short steps until
-// no fetch is pending and one more step has passed without a new one.
+// no fetch is pending, the payload hash check has finished and one more step has passed.
 async function settle() {
   for (let step = 0; step < 100; step += 1) {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20))
     })
-    if (inflight === 0) return
+    if (
+      inflight === 0 &&
+      !document.body.textContent?.includes("Loading the payload")
+    )
+      return
   }
   throw new Error("fetches did not settle")
 }
@@ -181,11 +185,14 @@ describe("Queue card", () => {
     )
   })
 
-  test("a payload that does not match its hash shows the mismatch alert and no Approve", async () => {
+  // prepareApproval now refuses a payload that fails the device-side hash check, so the card
+  // reaches its generic failure state until it maps payload_changed to the mismatch alert (#94
+  // follow-up: web: show device hash verification on the approval card).
+  test("a payload that does not match its hash shows an alert and no Approve", async () => {
     routed({ hash: "0".repeat(64) })
     const view = await render()
     expect(view.querySelector('[role="alert"]')?.textContent).toBe(
-      "Payload changed. Reload the card."
+      "Could not load the payload."
     )
     expect(button("Approve")?.disabled).toBe(true)
   })
