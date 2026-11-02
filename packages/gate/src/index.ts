@@ -18,11 +18,13 @@ export {
   GateUnavailableError,
   createAuditClient,
   createIntentClient,
+  createFileClient,
   createProtonMailClient,
 } from "./internal/client"
 export type {
   AuditClient,
   IntentClient,
+  FileClient,
   IntentClientOptions,
   IntentProposal,
   ProtonMailClient,

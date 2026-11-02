@@ -32,6 +32,10 @@ import { controlHandler, dataPlaneHandler } from "./internal/routes"
 import type { Clock } from "./internal/sessions"
 import { runningGate, startGate, stopGate } from "./internal/runtime"
 import { OWNER_CONFIG_FILE } from "./internal/policy"
+import { fileHelper } from "./internal/files/file-helper"
+import type { FileHelperConfig } from "./internal/files/file-helper"
+import { createFileReads } from "./internal/files/file-reads"
+import { assertFileHelperInstall } from "./internal/files/file-install"
 import { devFlagFromEnv, FileVault } from "./internal/vault/file-vault"
 import type { Vault } from "./internal/vault/vault"
 import { KeychainVault } from "./internal/vault/keychain-vault"
@@ -82,6 +86,8 @@ export type GateConfig = {
     nudgeThreshold: number
     nudgeWindowMs: number
   }
+  /** Native helper binary and its pinned SHA-256, both required for file execution. */
+  fileHelper?: FileHelperConfig
 }
 
 export type BridgeListenerConfig = {
@@ -166,6 +172,16 @@ export function gateConfig(
   if (env["EIDO_PROFILE_AUDIT_EPOCH"] !== undefined && vault === undefined)
     throw new Error("EIDO_PROFILE_AUDIT_EPOCH needs a configured gate vault")
   const pushSubject = env["EIDO_PUSH_VAPID_SUBJECT"] ?? ""
+  const fileHelperPath = env["EIDO_FILE_HELPER_PATH"] ?? ""
+  const fileHelperSha256 = env["EIDO_FILE_HELPER_SHA256"] ?? ""
+  if ((fileHelperPath === "") !== (fileHelperSha256 === ""))
+    throw new Error(
+      "EIDO_FILE_HELPER_PATH and EIDO_FILE_HELPER_SHA256 must be set together"
+    )
+  if (fileHelperSha256 !== "" && !/^[a-f0-9]{64}$/.test(fileHelperSha256))
+    throw new Error("EIDO_FILE_HELPER_SHA256 must be a lowercase SHA-256 pin")
+  if (fileHelperPath !== "" && !isAbsolute(fileHelperPath))
+    throw new Error("EIDO_FILE_HELPER_PATH must be an absolute path")
   const requireVault = (service: string): VaultConfig => {
     if (vault === undefined)
       throw new Error(
@@ -183,6 +199,9 @@ export function gateConfig(
   }
   return {
     ...config,
+    ...(fileHelperPath === ""
+      ? {}
+      : { fileHelper: { path: fileHelperPath, sha256: fileHelperSha256 } }),
     ...(vault === undefined ? {} : { profileAudit: { vault, epoch } }),
     ...(port === "" ? {} : { phone: phoneConfig(env, port) }),
     ...(bridge === undefined ? {} : { bridge: bridgeVault(env, bridge) }),
@@ -324,7 +343,17 @@ export async function runGate(
         log("profile_audit_unavailable", {})
       }
     }
+    if (config.fileHelper !== undefined)
+      await assertFileHelperInstall(config.fileHelper.path)
+    const nativeFiles =
+      config.fileHelper === undefined
+        ? undefined
+        : fileHelper(config.fileHelper)
+    const fileReads =
+      nativeFiles === undefined ? undefined : createFileReads(db, nativeFiles)
     const state = () => ({
+      fileHelper: nativeFiles,
+      files: fileReads,
       ...runningGate(),
       profileAudit,
       notifyPending: notifier?.notifyPending,
@@ -373,7 +402,8 @@ export async function runGate(
             : gmail(request)
           : request.connector === PROTON_CONNECTOR
             ? protonTransport(request)
-            : Promise.reject(new Error("no write transport for connector"))
+            : Promise.reject(new Error("no write transport for connector")),
+      nativeFiles
     )
     const execute = (id: string) => executor.execute(id)
     const dataPlane = createGateServer(

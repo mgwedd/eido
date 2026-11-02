@@ -36,6 +36,11 @@ import {
 import type { Policy } from "./policy"
 import type { Clock } from "./sessions"
 import type { ProfileAudit } from "./profile-audit"
+import type { FileHelper } from "./files/file-helper"
+import type { FileReads } from "./files/file-reads"
+import { fileReadRoute } from "./files/file-reads"
+import { fileRootControlRoute } from "./file-root-routes"
+import type { WebAuthnConfig } from "./webauthn"
 
 // The gate's routes. The data-plane listener serves the intent API (propose, and three
 // read-only views without payload bodies), connector health, and POST /audit, which appends one
@@ -50,6 +55,9 @@ export type GateState = {
   policy: Policy
   notifyPending?: () => void
   profileAudit?: ProfileAudit
+  fileHelper?: FileHelper
+  files?: FileReads
+  webAuthn?: WebAuthnConfig
 }
 
 const MAX_ERRORS = 50
@@ -387,8 +395,10 @@ export function dataPlaneHandler(
   mail?: MailReads,
   execute?: (id: string) => Promise<ExecutionResult>
 ): Handler {
-  return (request) => {
+  return async (request) => {
     const state = gate()
+    const fileReply = await fileReadRoute(request, state.files)
+    if (fileReply !== undefined) return fileReply
     const restore = restoreTrashRoute(request, state)
     if (restore !== undefined) return restore
     if (request.method === "POST" && request.path === "/intents") {
@@ -457,8 +467,10 @@ async function revokePasskeyRoute(
  * revocation. Never given to the data plane or the phone.
  */
 export function controlHandler(gate: () => GateState, now: Clock): Handler {
-  return (request) => {
+  return async (request) => {
     const state = gate()
+    const fileReply = await fileRootControlRoute(request, state)
+    if (fileReply !== undefined) return fileReply
     if (request.method === "GET" && request.path === "/passkeys") {
       const body: GatePasskeyList = { passkeys: listPasskeys(state.db) }
       return { status: 200, body }

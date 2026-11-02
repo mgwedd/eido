@@ -113,4 +113,5 @@ jobs:
           bin="$dir/target/release/eido-file-helper"
           [ -f "$bin.exe" ] && bin="$bin.exe"
           cd ../../
-          EIDO_FILE_HELPER="$bin" pnpm exec vitest run src/internal/files/file-helper.native.test.ts
+          EIDO_FILE_HELPER="$bin" pnpm exec vitest run src/internal/files/file-helper.native.test.ts src/internal/files/file-executor.native.test.ts
+          pnpm --filter @eido/core exec vitest run src/connectors/files/facade.test.ts src/connectors/files/reads.test.ts src/connectors/files/manifest.test.ts

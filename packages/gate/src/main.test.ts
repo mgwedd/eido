@@ -144,6 +144,35 @@ function send(
 }
 
 describe("gateConfig", () => {
+  it("requires a pinned absolute file helper path and accepts both values together", () => {
+    const base = {
+      EIDO_GATE_DATA_DIR: "/d",
+      EIDO_GATE_SOCKET: "/d/gate.sock",
+      EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+      EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+      EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+    }
+    expect(() =>
+      gateConfig({ ...base, EIDO_FILE_HELPER_PATH: "/opt/eido-file" })
+    ).toThrow("must be set together")
+    expect(() =>
+      gateConfig({
+        ...base,
+        EIDO_FILE_HELPER_PATH: "relative",
+        EIDO_FILE_HELPER_SHA256: "a".repeat(64),
+      })
+    ).toThrow("must be an absolute path")
+    expect(
+      gateConfig({
+        ...base,
+        EIDO_FILE_HELPER_PATH: "/opt/eido-file",
+        EIDO_FILE_HELPER_SHA256: "a".repeat(64),
+      }).fileHelper
+    ).toEqual({
+      path: "/opt/eido-file",
+      sha256: "a".repeat(64),
+    })
+  })
   it("selects the gate vault for profile audit and validates rotation epochs", () => {
     const base = {
       EIDO_GATE_DATA_DIR: "/d",

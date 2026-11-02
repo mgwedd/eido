@@ -375,7 +375,7 @@ function auditPage(state: PhoneState, request: GateRequest): Reply {
       ) AS approved,
       CASE WHEN e.audit_seq = a.seq THEN
         CASE WHEN u.intent_id IS NOT NULL THEN 'done'
-             WHEN e.inverse_op IS NOT NULL AND i.tier = 'auto' THEN 'available'
+             WHEN e.inverse_op IS NOT NULL AND (i.tier = 'auto' OR (i.kind = 'file.delete' AND i.tier = 'approval')) THEN 'available'
              ELSE 'none' END
       ELSE 'none' END AS undo
     FROM audit_log a
