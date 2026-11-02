@@ -939,6 +939,83 @@ describe("phoneHandler: session", () => {
     expect(JSON.stringify(failed.body)).not.toContain("secretmarker")
   })
 
+  it.each([
+    ["not_found", 404, "not_found"],
+    ["undo_not_allowed", 409, "already_decided"],
+    ["no_inverse", 409, "already_decided"],
+    ["unsafe_inverse", 409, "already_decided"],
+    ["invalid_inverse", 409, "already_decided"],
+    ["record_mismatch", 409, "already_decided"],
+    ["outcome_unresolved", 409, "already_decided"],
+    ["upstream_error", 503, "unavailable"],
+    ["connector_unavailable", 503, "unavailable"],
+    ["connector_misconfigured", 503, "unavailable"],
+    ["unknown_writer", 503, "unavailable"],
+    ["changed_during_execution", 503, "unavailable"],
+  ] as const)(
+    "maps executor refusal %s to a bounded response",
+    async (executorCode, status, errorCode) => {
+      enrol(auth)
+      const cookie = await signIn()
+      const reply = await call(
+        "POST",
+        `/executions/undo-${executorCode}/undo`,
+        {
+          cookie,
+          body: {},
+          undo: () => Promise.resolve({ ok: false, code: executorCode }),
+        }
+      )
+      expect([reply.status, code(reply)]).toEqual([status, errorCode])
+      const message =
+        status === 404
+          ? "no such execution"
+          : status === 409
+            ? "this execution cannot be undone"
+            : "undo could not be completed"
+      expect(reply.body).toEqual({ code: errorCode, message })
+    }
+  )
+
+  it("does not call undo for a wrong host, bad content type, missing or expired session", async () => {
+    enrol(auth)
+    let calls = 0
+    const undo = (): Promise<ExecutionResult> => {
+      calls += 1
+      return Promise.resolve({ ok: true, upstreamRef: null, result: {} })
+    }
+    const cookie = await signIn()
+    const wrongHost = await call("POST", "/executions/x/undo", {
+      host: "evil.example.invalid",
+      cookie,
+      body: {},
+      undo,
+    })
+    const badContentType = await call("POST", "/executions/x/undo", {
+      cookie,
+      body: {},
+      contentType: "text/plain",
+      undo,
+    })
+    const missingSession = await call("POST", "/executions/x/undo", {
+      body: {},
+      undo,
+    })
+    at = new Date(at.getTime() + 365 * 24 * HOUR)
+    const expiredSession = await call("POST", "/executions/x/undo", {
+      cookie,
+      body: {},
+      undo,
+    })
+    expect([
+      wrongHost.status,
+      badContentType.status,
+      missingSession.status,
+      expiredSession.status,
+      calls,
+    ]).toEqual([421, 415, 401, 401, 0])
+  })
+
   it.each(gated)(
     "401s %s %s with a cookie the gate did not issue",
     async (method, path) => {

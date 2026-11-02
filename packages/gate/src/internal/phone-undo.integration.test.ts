@@ -334,4 +334,80 @@ describe("phone Undo through real executor and Gmail writers", () => {
     })
     expect(auditRows(f.db).filter((row) => row.action === "undo")).toEqual([])
   })
+
+  it("refuses an unchanged message with no reversible effect", async () => {
+    const f = pinnedMailbox()
+    for (const labels of f.mailbox.values()) labels.delete("UNREAD")
+    const handler = f.handler()
+    const cookie = await signIn(f, handler)
+    const id = await f.execute({
+      kind: "email.markRead",
+      args: { messageIds: ids, read: true },
+    })
+    expect((await projection(handler, cookie, id))?.undo).toBe("none")
+    expect((await call(handler, `/executions/${id}/undo`, cookie)).status).toBe(
+      409
+    )
+    expect(f.transport).toHaveBeenCalledTimes(1)
+    expect(auditRows(f.db).filter((row) => row.action === "undo")).toEqual([])
+  })
+
+  it("preserves the executor's unsafe-inverse refusal even with an audit-bound inverse", async () => {
+    const f = pinnedMailbox()
+    const executor = createExecutor(
+      f.db,
+      [
+        {
+          ...gmailMarkReadWriter,
+          inverse: () => ({
+            kind: "email.trash",
+            connector: "gmail",
+            args: { messageIds: ids },
+          }),
+        },
+      ],
+      f.transport
+    )
+    const handler = f.handler((id) => executor.undo(id))
+    const cookie = await signIn(f, handler)
+    const proposed = propose(f.db, f.policy, {
+      intent: { kind: "email.markRead", args: { messageIds: ids, read: true } },
+      origin: "reactive",
+    })
+    if (!proposed.ok) throw new Error(proposed.code)
+    expect((await executor.execute(proposed.intentId)).ok).toBe(true)
+    expect(
+      (await call(handler, `/executions/${proposed.intentId}/undo`, cookie))
+        .status
+    ).toBe(409)
+    expect(f.transport).toHaveBeenCalledTimes(1)
+    expect(auditRows(f.db).map((row) => row.action)).toContain(
+      "undo.refused.unsafe_inverse"
+    )
+    expect(auditRows(f.db).filter((row) => row.action === "undo")).toEqual([])
+  })
+
+  it("never repeats an undo whose upstream outcome is unresolved", async () => {
+    const f = pinnedMailbox()
+    const handler = f.handler()
+    const cookie = await signIn(f, handler)
+    const id = await f.execute({
+      kind: "email.archive",
+      args: { messageIds: ids },
+    })
+    f.transport.mockRejectedValueOnce(new Error("synthetic-upstream-secret"))
+    const failed = await call(handler, `/executions/${id}/undo`, cookie)
+    expect(failed.status).toBe(503)
+    expect(JSON.stringify(failed.body)).not.toContain(
+      "synthetic-upstream-secret"
+    )
+    expect((await call(handler, `/executions/${id}/undo`, cookie)).status).toBe(
+      409
+    )
+    expect(f.transport).toHaveBeenCalledTimes(2)
+    expect(auditRows(f.db).filter((row) => row.action === "undo")).toEqual([])
+    expect(
+      f.db.prepare("SELECT state FROM intents WHERE id=?").get(id)?.["state"]
+    ).toBe("executed")
+  })
 })
