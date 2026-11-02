@@ -436,6 +436,27 @@ describe("phoneHandler: authenticated settings reads", () => {
     }
   })
 
+  it("marks only the passkey that opened the session as current", async () => {
+    const other = testAuthenticator()
+    enrol(other)
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("GET", "/passkeys", { cookie })
+    const checked = validateGatePasskeyList(reply.body)
+    if (!checked.ok) throw new Error("passkey list is invalid")
+    const fingerprint = (id: string) =>
+      createHash("sha256").update(id).digest("hex")
+    expect(
+      checked.value.passkeys.map((p) => [p.fingerprint, p.current])
+    ).toEqual(
+      expect.arrayContaining([
+        [fingerprint(auth.credentialId), true],
+        [fingerprint(other.credentialId), false],
+      ])
+    )
+    expect(checked.value.passkeys.filter((p) => p.current)).toHaveLength(1)
+  })
+
   it("returns live connector, passkey, policy and chain state after login", async () => {
     enrol(auth)
     const cookie = await signIn()
@@ -457,6 +478,7 @@ describe("phoneHandler: authenticated settings reads", () => {
       fingerprint: createHash("sha256").update(auth.credentialId).digest("hex"),
       createdAt: START.toISOString(),
       revokedAt: null,
+      current: true,
     })
 
     const permissions = await call("GET", "/permissions", { cookie })

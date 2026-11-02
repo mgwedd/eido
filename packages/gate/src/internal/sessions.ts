@@ -257,6 +257,31 @@ export function sessionToken(
   return undefined
 }
 
+type LiveSession = { credentialId: string; expiresAt: Date }
+
+/**
+ * The session behind `token`, or undefined when there is none: unknown, expired at `now`, or
+ * its credential revoked.
+ */
+function liveSession(
+  db: DatabaseSync,
+  token: string | undefined,
+  now: Clock
+): LiveSession | undefined {
+  if (token === undefined) return undefined
+  const row = db
+    .prepare(
+      `SELECT s.expires_at, s.credential_id FROM sessions s
+       JOIN credentials c ON c.credential_id = s.credential_id
+       WHERE s.token_hash = ? AND c.revoked_at IS NULL`
+    )
+    .get(hex(token))
+  if (row === undefined) return undefined
+  const expiresAt = new Date(String(row["expires_at"]))
+  if (expiresAt.getTime() <= now().getTime()) return undefined
+  return { credentialId: String(row["credential_id"]), expiresAt }
+}
+
 /**
  * When the session behind `token` ends, or undefined when there is none: unknown, expired at
  * `now`, or its credential revoked.
@@ -266,16 +291,16 @@ export function sessionExpiry(
   token: string | undefined,
   now: Clock
 ): Date | undefined {
-  if (token === undefined) return undefined
-  const row = db
-    .prepare(
-      `SELECT s.expires_at FROM sessions s JOIN credentials c ON c.credential_id = s.credential_id
-       WHERE s.token_hash = ? AND c.revoked_at IS NULL`
-    )
-    .get(hex(token))
-  if (row === undefined) return undefined
-  const expiresAt = new Date(String(row["expires_at"]))
-  return expiresAt.getTime() > now().getTime() ? expiresAt : undefined
+  return liveSession(db, token, now)?.expiresAt
+}
+
+/** The credential id of the passkey that opened the live session behind `token`. */
+export function sessionCredential(
+  db: DatabaseSync,
+  token: string | undefined,
+  now: Clock
+): string | undefined {
+  return liveSession(db, token, now)?.credentialId
 }
 
 /** The Set-Cookie value for a new session. */

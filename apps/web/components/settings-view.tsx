@@ -235,8 +235,20 @@ function PasskeysSection({ load }: { load: SettingsData["passkeys"] }) {
                     ) : null}
                   </span>
                 </div>
-                <Badge variant={isRevoked(passkey) ? "destructive" : "outline"}>
-                  {isRevoked(passkey) ? "Revoked" : "Active"}
+                <Badge
+                  variant={
+                    isRevoked(passkey)
+                      ? "destructive"
+                      : passkey.current
+                        ? "secondary"
+                        : "outline"
+                  }
+                >
+                  {isRevoked(passkey)
+                    ? "Revoked"
+                    : passkey.current
+                      ? "This device"
+                      : "Active"}
                 </Badge>
               </li>
             ))}

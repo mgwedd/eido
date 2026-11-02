@@ -339,12 +339,24 @@ describe("listPasskeys and revokeByFingerprint", () => {
         fingerprint: fingerprint("Y3JlZC1vbGQ"),
         createdAt: "2026-10-01T00:00:00.000Z",
         revokedAt: null,
+        current: false,
       },
       {
         fingerprint: fingerprint("Y3JlZC1uZXc"),
         createdAt: "2026-10-02T00:00:00.000Z",
         revokedAt: null,
+        current: false,
       },
+    ])
+  })
+
+  it("marks the passkey whose credential id is given as current", () => {
+    const control = db()
+    insert(control, "Y3JlZC1vbGQ", "2026-10-01T00:00:00.000Z")
+    insert(control, "Y3JlZC1uZXc", "2026-10-02T00:00:00.000Z")
+    expect(listPasskeys(control, "Y3JlZC1uZXc").map((p) => p.current)).toEqual([
+      false,
+      true,
     ])
   })
 

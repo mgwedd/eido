@@ -8,6 +8,7 @@ import {
   hasCredential,
   login,
   sessionCookie,
+  sessionCredential,
   sessionExpiry,
   sessionToken,
 } from "./sessions"
@@ -235,6 +236,39 @@ describe("sessionExpiry", () => {
   it("knows no session for an unknown or missing token", () => {
     expect(sessionExpiry(db, "A".repeat(43), now)).toBeUndefined()
     expect(sessionExpiry(db, undefined, now)).toBeUndefined()
+  })
+})
+
+describe("sessionCredential", () => {
+  function signIn(auth: TestAuthenticator): string {
+    const { challenge } = beginLogin(db, now)
+    const result = login(db, WEBAUTHN, assertion(auth, challenge), now)
+    if (!result.ok) throw new Error(`login refused: ${result.reason}`)
+    return result.token
+  }
+
+  it("names the credential that opened the session, not another enrolled one", () => {
+    const first = testAuthenticator()
+    const second = testAuthenticator()
+    enrol(first)
+    enrol(second)
+    const token = signIn(second)
+    expect(sessionCredential(db, token, now)).toBe(second.credentialId)
+  })
+
+  it("names none once the session has expired or its credential is revoked", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const token = signIn(auth)
+    at = new Date(START.getTime() + 12 * HOUR)
+    expect(sessionCredential(db, token, now)).toBeUndefined()
+    at = START
+    revoke(auth)
+    expect(sessionCredential(db, token, now)).toBeUndefined()
+  })
+
+  it("names none for a missing token", () => {
+    expect(sessionCredential(db, undefined, now)).toBeUndefined()
   })
 })
 

@@ -6,6 +6,7 @@ import { ThemeProvider } from "../components/theme-provider"
 import { SettingsView } from "../components/settings-view"
 import {
   activePasskey,
+  currentPasskey,
   chainBroken,
   chainOk,
   permissions,
@@ -61,7 +62,9 @@ function gate(routes: Routes) {
 }
 
 const healthy: Routes = {
-  "/api/gate/passkeys": ok({ passkeys: [activePasskey, revokedPasskey] }),
+  "/api/gate/passkeys": ok({
+    passkeys: [activePasskey, currentPasskey, revokedPasskey],
+  }),
   "/api/gate/permissions": ok(permissions),
   "/api/gate/audit/chain": ok(chainOk),
 }
@@ -104,20 +107,23 @@ test("omits sections whose data source does not exist: no Profile, Notifications
   expect(container.querySelector('a[href="/profile"]')).toBeNull()
 })
 
-test("lists passkeys with created time and revoked status", async () => {
+test("lists passkeys with created time, this device and revoked status", async () => {
   gate(healthy)
   await render()
   const items = [...container.querySelectorAll("section, [role=group]")]
     .find((g) => g.textContent?.includes("Devices and passkeys"))!
     .querySelectorAll("li")
-  expect(items).toHaveLength(2)
+  expect(items).toHaveLength(3)
   expect(items[0]?.textContent).toContain("aaaaaaaa")
   expect(items[0]?.textContent).toContain("Active")
+  expect(items[0]?.textContent).not.toContain("This device")
   expect(items[0]?.querySelector("time")?.getAttribute("datetime")).toBe(
     activePasskey.createdAt
   )
-  expect(items[1]?.textContent).toContain("Revoked")
-  expect(items[1]?.querySelectorAll("time")).toHaveLength(2)
+  expect(items[1]?.textContent).toContain("This device")
+  expect(items[1]?.textContent).not.toContain("Active")
+  expect(items[2]?.textContent).toContain("Revoked")
+  expect(items[2]?.querySelectorAll("time")).toHaveLength(2)
 })
 
 test("an empty passkey list says none is enrolled", async () => {

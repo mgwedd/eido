@@ -5910,12 +5910,17 @@ export const GATE_PASSKEY_LIST_JSON_SCHEMA: JsonSchema = {
                 "type": "null"
               }
             ]
+          },
+          "current": {
+            "type": "boolean",
+            "description": "True for the passkey that opened the session making this request."
           }
         },
         "required": [
           "fingerprint",
           "createdAt",
-          "revokedAt"
+          "revokedAt",
+          "current"
         ],
         "additionalProperties": false
       }

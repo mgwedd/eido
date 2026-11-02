@@ -295,20 +295,28 @@ export function enrolWithCode(
 
 /**
  * Every enrolled passkey, revoked ones included. Credential ids are given as SHA-256
- * fingerprints; public keys and sign counters stay inside the gate.
+ * fingerprints; public keys and sign counters stay inside the gate. `current` marks the
+ * passkey with id `currentCredentialId`: the one that opened the caller's session (#420).
  */
-export function listPasskeys(db: DatabaseSync): GatePasskeyList["passkeys"] {
+export function listPasskeys(
+  db: DatabaseSync,
+  currentCredentialId?: string
+): GatePasskeyList["passkeys"] {
   return db
     .prepare(
       "SELECT credential_id, created_at, revoked_at FROM credentials ORDER BY created_at, credential_id"
     )
     .all()
-    .map((row) => ({
-      fingerprint: hex(String(row["credential_id"])),
-      createdAt: String(row["created_at"]),
-      revokedAt:
-        typeof row["revoked_at"] === "string" ? row["revoked_at"] : null,
-    }))
+    .map((row) => {
+      const credentialId = String(row["credential_id"])
+      return {
+        fingerprint: hex(credentialId),
+        createdAt: String(row["created_at"]),
+        revokedAt:
+          typeof row["revoked_at"] === "string" ? row["revoked_at"] : null,
+        current: credentialId === currentCredentialId,
+      }
+    })
 }
 
 /**

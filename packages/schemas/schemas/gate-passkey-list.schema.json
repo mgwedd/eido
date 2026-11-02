@@ -33,9 +33,13 @@
               },
               { "type": "null" }
             ]
+          },
+          "current": {
+            "type": "boolean",
+            "description": "True for the passkey that opened the session making this request."
           }
         },
-        "required": ["fingerprint", "createdAt", "revokedAt"],
+        "required": ["fingerprint", "createdAt", "revokedAt", "current"],
         "additionalProperties": false
       }
     }
