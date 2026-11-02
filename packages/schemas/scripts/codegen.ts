@@ -259,10 +259,11 @@ function promptText(verbSchemas: Schema[]): string {
       return `  - ${name} (${fieldType(field)}, ${need})${note}`
     })
     const selector = verb.properties?.connector
+    const selectorNote = selector?.description
+      ? `: ${selector.description}`
+      : ""
     const selectorLine = selector
-      ? [
-          `  - connector (${fieldType(selector)}, optional): ${String(selector.description)}`,
-        ]
+      ? [`  - connector (${fieldType(selector)}, optional)${selectorNote}`]
       : []
     return [
       `${kind}: ${String(verb.description)}`,
@@ -318,6 +319,24 @@ function main(): void {
     extractionSchema,
     "extraction-candidates.schema.json"
   )
+  const documentTypeSchema = schemas.get(
+    "document-type-classification.schema.json"
+  )
+  const documentTypeLabelSchema = schemas.get("document-type-label.schema.json")
+  if (
+    !documentTypeSchema ||
+    !documentTypeLabelSchema ||
+    !documentTypeLabelSchema.enum
+  ) {
+    throw new Error(
+      "document type classification and label schemas are required"
+    )
+  }
+  const resolvedDocumentType = resolveSchema(
+    schemas,
+    documentTypeSchema,
+    "document-type-classification.schema.json"
+  )
 
   const typesOutput = [
     ...header,
@@ -338,6 +357,14 @@ function main(): void {
     tsConst("INTENT_RESULT_JSON_SCHEMA", resolvedResult, "JsonSchema"),
     "// The same schema is used for the extraction prompt and llama-server grammar.",
     tsConst("extractionCandidatesJsonSchema", resolvedExtraction, "JsonSchema"),
+    "// The document type prompt and grammar are generated from the closed label schema.",
+    `export const DOCUMENT_TYPE_LABELS = ${JSON.stringify(documentTypeLabelSchema.enum)} as const`,
+    `export const DOCUMENT_TYPE_CLASSIFICATION_PROMPT = ${JSON.stringify(`${documentTypeSchema.description ?? "Classify the document."}\nAllowed labels: ${documentTypeLabelSchema.enum.join(", ")}. Return null when the evidence does not clearly support a label. Reply with JSON only.`)}`,
+    tsConst(
+      "DOCUMENT_TYPE_CLASSIFICATION_JSON_SCHEMA",
+      resolvedDocumentType,
+      "JsonSchema"
+    ),
   ].join("\n")
 
   // Non-intent schemas that get a validator: every profile-*.schema.json (core validates its
@@ -354,6 +381,7 @@ function main(): void {
       file === "ask-coverage.schema.json" ||
       file === "ask-citation.schema.json" ||
       file === "extraction-candidates.schema.json" ||
+      file === "document-type-classification.schema.json" ||
       file === "extracted-fields.schema.json" ||
       file === "connector-manifest.schema.json"
   )

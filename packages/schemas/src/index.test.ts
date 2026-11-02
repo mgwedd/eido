@@ -13,10 +13,14 @@ import {
   INTENT_KINDS,
   INTENT_PROMPT_TEXT,
   INTENT_RESULT_JSON_SCHEMA,
+  DOCUMENT_TYPE_LABELS,
+  DOCUMENT_TYPE_CLASSIFICATION_PROMPT,
+  DOCUMENT_TYPE_CLASSIFICATION_JSON_SCHEMA,
   SCHEMA_VERSION,
   validateIntent,
   validateIntentResult,
   validateCoreApiAskResponse,
+  validateDocumentTypeClassification,
 } from "./index"
 import type { JsonSchema } from "./index"
 import { validate } from "./validate"
@@ -74,6 +78,31 @@ describe("Core API Ask response metadata", () => {
         ],
       }).ok
     ).toBe(false)
+  })
+})
+
+describe("document type classification schema", () => {
+  test("the generated classifier prompt and grammar share the closed label set", () => {
+    expect(DOCUMENT_TYPE_CLASSIFICATION_PROMPT).toContain(
+      DOCUMENT_TYPE_LABELS.join(", ")
+    )
+    expect(DOCUMENT_TYPE_CLASSIFICATION_JSON_SCHEMA).toMatchObject({
+      properties: {
+        type: {
+          oneOf: [
+            { type: "string", enum: [...DOCUMENT_TYPE_LABELS] },
+            { type: "null" },
+          ],
+        },
+      },
+    })
+    expect(validateDocumentTypeClassification({ type: "Invoice" }).ok).toBe(
+      true
+    )
+    expect(validateDocumentTypeClassification({ type: "Warranty" }).ok).toBe(
+      false
+    )
+    expect(validateDocumentTypeClassification({ type: null }).ok).toBe(true)
   })
 })
 
@@ -444,6 +473,12 @@ describe("schema walk", () => {
 })
 
 describe("codegen", () => {
+  test("generated intent prompt lines never contain undefined", () => {
+    for (const line of INTENT_PROMPT_TEXT.split("\n")) {
+      expect(line).not.toContain("undefined")
+    }
+  })
+
   function run(dir: string, out: string): void {
     execFileSync(process.execPath, [codegen, "--schemas", dir, "--out", out], {
       stdio: "pipe",
