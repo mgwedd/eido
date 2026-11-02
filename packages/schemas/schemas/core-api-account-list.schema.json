@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiAccountList",
+  "description": "Response of GET /connectors/accounts: the accounts a connected connector reports, which the Profile page can assign to an entity. A connector whose health is open (disconnected) or that is not configured lists none.",
+  "type": "object",
+  "properties": {
+    "accounts": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "title": "CoreApiAccount",
+        "description": "One assignable account. connector and accountRef are the values a ProfileAccountAssignment takes.",
+        "type": "object",
+        "properties": {
+          "connector": { "type": "string", "minLength": 1, "maxLength": 50 },
+          "accountRef": { "type": "string", "minLength": 1, "maxLength": 320 },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "The connector's display name, such as Gmail."
+          }
+        },
+        "required": ["connector", "accountRef", "label"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["accounts"],
+  "additionalProperties": false
+}

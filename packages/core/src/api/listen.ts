@@ -1,4 +1,5 @@
 import type { AddressInfo } from "node:net"
+import type { KnownAccount } from "../connectors/accounts"
 import type { GateConnectorHealth } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
 import type { ObligationStateStore } from "../ledger/obligation-state"
@@ -60,6 +61,10 @@ export type CoreApiOptions = {
   profile: ProfileStore
   /** Gate-owned read-only connector health projection for the Today page. */
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
+  /** Accounts the configured connectors have reported, behind `/connectors/accounts`. */
+  connectorAccounts?: () => readonly KnownAccount[]
+  /** The Proton account behind `/connectors/send-from`. */
+  sendFrom?: string
   ask?: (question: string) => Promise<AskResult>
   obligations?: ObligationStateStore
   /** The data DB behind `/documents`. */
@@ -88,6 +93,8 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
     createApiHandler({
       profile: options.profile,
       connectorHealth: options.connectorHealth,
+      connectorAccounts: options.connectorAccounts,
+      sendFrom: options.sendFrom,
       ask: options.ask,
       obligations: options.obligations,
       documents: options.documents,
