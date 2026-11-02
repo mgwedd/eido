@@ -12,12 +12,16 @@ import type {
   CoreApiProfileResponse,
   CoreApiSendFrom,
   GateConnectorHealth,
+  GateProposeResult,
   ProfileAccountAssignment,
 } from "@eido/schemas"
 import {
   validateCoreApiAskRequest,
   validateCoreApiDefaultEntityRequest,
+  validateGateIntentProposal,
+  validateIntent,
 } from "@eido/schemas"
+import type { IntentClient, IntentProposal } from "@eido/gate"
 import type { AskResult } from "../ask/types"
 import { assignableAccounts } from "../connectors/accounts"
 import type { KnownAccount } from "../connectors/accounts"
@@ -58,6 +62,8 @@ export interface ApiDeps {
    * served.
    */
   ask?: (question: string) => Promise<AskResult>
+  /** Proposes a validated intent through the gate; absent when the gate client is unavailable. */
+  propose?: IntentClient["propose"]
   /** Local obligation state changes (#104). When absent, `/obligations/...` is not served. */
   obligations?: ObligationStateStore
   /** The data DB the Documents list and viewer read. When absent, `/documents` is not served. */
@@ -339,6 +345,34 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       }
       const body: CoreApiAskResponse = result
       return json(body)
+    }
+
+    if (path === "/intents" && deps.propose !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const validation = validateGateIntentProposal(await readJson(request))
+      if (!validation.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(validation.errors),
+        })
+      }
+      if (validation.value.origin !== "reactive") {
+        return failure("invalid", "origin must be reactive", {
+          fields: [{ field: "origin", message: "must be reactive" }],
+        })
+      }
+      const intent = validateIntent(validation.value.intent)
+      if (!intent.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(intent.errors),
+        })
+      }
+      const proposal: IntentProposal = {
+        ...validation.value,
+        intent: intent.value,
+        origin: "reactive",
+      }
+      const result: GateProposeResult = await deps.propose(proposal)
+      return json({ id: result.id, tier: result.tier, state: result.state })
     }
 
     const obligationMatch = OBLIGATION_CHANGE_PATH.exec(path)

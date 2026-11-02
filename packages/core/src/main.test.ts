@@ -313,6 +313,67 @@ describe("coreApiConfig", () => {
 })
 
 describe("runDataPlane", () => {
+  it("wires POST /intents through the real gate client", async () => {
+    let received: unknown
+    const gate = createHttpServer((request, response) => {
+      let body = ""
+      request.setEncoding("utf8")
+      request.on("data", (chunk: string) => (body += chunk))
+      request.on("end", () => {
+        received = JSON.parse(body) as unknown
+        response.writeHead(201, { "content-type": "application/json" })
+        response.end(
+          JSON.stringify({
+            id: "intent-runtime",
+            tier: "approval",
+            state: "pending",
+          })
+        )
+      })
+    })
+    const socketPath = join(dir, "proposal-gate.sock")
+    await new Promise<void>((resolve) => gate.listen(socketPath, resolve))
+    const env = servedEnv({ EIDO_GATE_SOCKET: socketPath })
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${String(api.port)}/intents`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            intent: {
+              kind: "email.archive",
+              connector: "gmail",
+              args: { messageIds: ["gm-runtime"] },
+            },
+            origin: "reactive",
+          }),
+        }
+      )
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({
+        id: "intent-runtime",
+        tier: "approval",
+        state: "pending",
+      })
+      expect(received).toEqual({
+        intent: {
+          kind: "email.archive",
+          connector: "gmail",
+          args: { messageIds: ["gm-runtime"] },
+        },
+        origin: "reactive",
+      })
+    } finally {
+      await api.close()
+      await plane.close()
+      await new Promise<void>((resolve) => gate.close(() => resolve()))
+    }
+  })
+
   it("reports the configured Proton account before any sync has run", async () => {
     const env = {
       EIDO_DATA_DIR: join(dir, "data"),

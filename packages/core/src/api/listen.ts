@@ -1,5 +1,6 @@
 import type { AddressInfo } from "node:net"
 import type { KnownAccount } from "../connectors/accounts"
+import type { IntentClient } from "@eido/gate"
 import type { GateConnectorHealth } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
 import type { ObligationStateStore } from "../ledger/obligation-state"
@@ -66,6 +67,7 @@ export type CoreApiOptions = {
   /** The Proton account behind `/connectors/send-from`. */
   sendFrom?: string
   ask?: (question: string) => Promise<AskResult>
+  propose?: IntentClient["propose"]
   obligations?: ObligationStateStore
   /** The data DB behind `/documents`. */
   documents?: DocumentsDeps
@@ -96,6 +98,7 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
       connectorAccounts: options.connectorAccounts,
       sendFrom: options.sendFrom,
       ask: options.ask,
+      propose: options.propose,
       obligations: options.obligations,
       documents: options.documents,
       allowedHosts,
