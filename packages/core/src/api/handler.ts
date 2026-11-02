@@ -18,7 +18,11 @@ import {
 } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
 import type { ObligationStateStore } from "../ledger/obligation-state"
-import { documentsRoute } from "./documents-route"
+import {
+  DOCUMENT_TYPE_PATH,
+  documentsRoute,
+  setOwnerDocumentType,
+} from "./documents-route"
 import type { DocumentsDeps } from "./documents-route"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
@@ -357,6 +361,19 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return new Response(null, { status: 204 })
       }
       return notAllowed("GET", "PUT", "DELETE")
+    }
+
+    const typeMatch = DOCUMENT_TYPE_PATH.exec(path)
+    if (typeMatch !== null && deps.documents !== undefined) {
+      if (method !== "PUT") return notAllowed("PUT")
+      const result = await setOwnerDocumentType(
+        deps.documents,
+        typeMatch,
+        await readJson(request)
+      )
+      if (result.ok) return json(result.body)
+      const { code, message, fields } = result
+      return failure(code, message, fields ? { fields } : {})
     }
 
     if (deps.documents !== undefined) {

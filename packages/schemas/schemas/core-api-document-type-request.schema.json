@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiDocumentTypeRequest",
+  "description": "Request body of PUT /documents/:sha256/type: the type the owner sets on a stored document. It is stored with source user and is not replaced by a later model classification.",
+  "type": "object",
+  "properties": {
+    "type": { "$ref": "document-type-label.schema.json" }
+  },
+  "required": ["type"],
+  "additionalProperties": false
+}
