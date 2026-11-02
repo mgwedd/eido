@@ -20,6 +20,7 @@ import {
   validateGateMailFolderState,
   validateGateMailMessagePage,
   validateGatePendingIntentList,
+  validateGatePermissionList,
   validateGatePrepareApproval,
   validateGateProposeRefusal,
   validateGateProposeResult,
@@ -53,6 +54,46 @@ const PENDING_ITEM = {
   origin: "reactive",
   createdAt: AT,
 }
+
+describe("permission list", () => {
+  const row = { kind: "email.archive", tier: "approval", default: "auto" }
+  const list = { tiers: [row], forbiddenKinds: [] }
+
+  test("accepts defaults, optional overrides and an explicitly absent shipped default", () => {
+    expect(validateGatePermissionList(list).ok).toBe(true)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, override: "approval" }],
+      }).ok
+    ).toBe(true)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, default: null }],
+      }).ok
+    ).toBe(true)
+  })
+
+  test("requires the default and refuses non-configurable tiers in configuration fields", () => {
+    expect(
+      validateGatePermissionList({ ...list, tiers: [without(row, "default")] })
+        .ok
+    ).toBe(false)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, default: "forbidden" }],
+      }).ok
+    ).toBe(false)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, override: "forbidden" }],
+      }).ok
+    ).toBe(false)
+  })
+})
 
 describe("pending intent list", () => {
   const list = {

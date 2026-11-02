@@ -1,4 +1,5 @@
 import { createECDH, createHash, randomBytes } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   validateGateAuditChainStatus,
@@ -23,6 +24,7 @@ import {
 } from "./connector-health"
 import { checkDrift, manifestHash } from "./connectors"
 import { payloadHash } from "./canonical"
+import { loadPolicy, SHIPPED_DEFAULT_PATH } from "./policy"
 import { propose } from "./intents"
 import { matchRoute, phoneHandler, routePath } from "./phone-routes"
 import { preparePushRegistration } from "./push-subscriptions"
@@ -35,6 +37,7 @@ import {
   deviceChallenge,
   sample,
   setup,
+  signedPolicy,
   testAuthenticator,
   WEBAUTHN,
 } from "./test-fixtures"
@@ -325,6 +328,92 @@ describe("phoneHandler: connector settings detail", () => {
 })
 
 describe("phoneHandler: authenticated settings reads", () => {
+  it("reports every shipped default independently of the effective tier", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("GET", "/permissions", { cookie })
+    const checked = validateGatePermissionList(reply.body)
+    if (!checked.ok) throw new Error("permission list is invalid")
+    const shipped: unknown = JSON.parse(
+      readFileSync(SHIPPED_DEFAULT_PATH, "utf8")
+    )
+    expect({
+      version: 1,
+      tiers: Object.fromEntries(
+        checked.value.tiers
+          .filter((row) => row.default !== null)
+          .map((row) => [row.kind, row.default])
+      ),
+    }).toEqual(shipped)
+    expect(checked.value.tiers.every((row) => !("override" in row))).toBe(true)
+  })
+
+  it("reports only active signed overrides, including one equal to the default", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    signedPolicy(s.db, {
+      version: 1,
+      tiers: { "email.archive": "approval", "email.label": "auto" },
+    })
+    state.policy = loadPolicy(s.db, s.options).policy
+    const reply = await call("GET", "/permissions", { cookie })
+    const checked = validateGatePermissionList(reply.body)
+    if (!checked.ok) throw new Error("permission list is invalid")
+    expect(
+      checked.value.tiers.filter((row) => row.override !== undefined)
+    ).toEqual([
+      { kind: "email.label", default: "auto", override: "auto", tier: "auto" },
+      {
+        kind: "email.archive",
+        default: "auto",
+        override: "approval",
+        tier: "approval",
+      },
+    ])
+    // A file proposal is not an approved policy and must never appear as an override.
+    s.writeOverlay({ version: 1, tiers: { "email.send": "auto" } })
+    state.policy = loadPolicy(s.db, s.options).policy
+    const unapproved = await call("GET", "/permissions", { cookie })
+    const parsed = validateGatePermissionList(unapproved.body)
+    if (!parsed.ok) throw new Error("permission list is invalid")
+    expect(parsed.value.tiers.find((row) => row.kind === "email.send")).toEqual(
+      {
+        kind: "email.send",
+        default: "approval",
+        tier: "approval",
+      }
+    )
+  })
+
+  it("keeps configured tiers visible when a connector is disabled or a default is absent", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    signedPolicy(s.db, { version: 1, tiers: { "email.archive": "approval" } })
+    state.policy = loadPolicy(s.db, s.options).policy
+    delete state.policy.shipped.tiers["email.send"]
+    checkDrift(s.db, "mail", ["unexpected_tool"])
+    const reply = await call("GET", "/permissions", { cookie })
+    const checked = validateGatePermissionList(reply.body)
+    if (!checked.ok) throw new Error("permission list is invalid")
+    expect(
+      checked.value.tiers.find((row) => row.kind === "email.archive")
+    ).toEqual({
+      kind: "email.archive",
+      default: "auto",
+      override: "approval",
+      tier: "forbidden",
+      reason: "connector_disabled",
+    })
+    expect(
+      checked.value.tiers.find((row) => row.kind === "email.send")
+    ).toEqual({
+      kind: "email.send",
+      default: null,
+      tier: "forbidden",
+      reason: "connector_disabled",
+    })
+  })
+
   it("rejects every settings read without a valid session cookie", async () => {
     for (const path of [
       "/audit",
@@ -367,10 +456,12 @@ describe("phoneHandler: authenticated settings reads", () => {
     expect(checkedPermissions.value.tiers).toContainEqual({
       kind: "email.archive",
       tier: "auto",
+      default: "auto",
     })
     expect(checkedPermissions.value.tiers).toContainEqual({
       kind: "email.send",
       tier: "approval",
+      default: "approval",
     })
 
     const chain = await call("GET", "/audit/chain", { cookie })
