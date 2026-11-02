@@ -8,6 +8,7 @@ import { Badge } from "@eido/ui/components/badge"
 import { Button } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import { Switch } from "@eido/ui/components/switch"
 import {
   Tooltip,
   TooltipContent,
@@ -16,6 +17,14 @@ import {
 } from "@eido/ui/components/tooltip"
 import { expiredUnlockUrl } from "@/lib/auth/unlock"
 import { formatDateTime } from "@/lib/connectors"
+import {
+  browserPushDevice,
+  loadPushStatus,
+  subscribePush,
+  unsubscribePush,
+  type PushDevice,
+  type PushStatus,
+} from "@/lib/push"
 import {
   aboutInfo,
   chainReason,
@@ -174,6 +183,84 @@ function AppearanceSection() {
           )
         })}
       </div>
+    </Section>
+  )
+}
+
+const PUSH_STATUS_LABELS = {
+  subscribed: "Subscribed",
+  unsubscribed: "Not subscribed",
+  denied: "Blocked in browser settings",
+  install: "Add to Home Screen first",
+  unsupported: "Not supported in this browser",
+  offline: "Offline. Push status is not stored on this device.",
+} as const satisfies Record<Exclude<PushStatus["status"], "error">, string>
+
+function NotificationsSection({ device }: { device?: PushDevice }) {
+  const [push] = React.useState(() => device ?? browserPushDevice())
+  const [status, setStatus] = React.useState<PushStatus | null>(null)
+  const [busy, setBusy] = React.useState(false)
+  const [problem, setProblem] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    let live = true
+    void loadPushStatus(push).then((next) => {
+      if (live) setStatus(next)
+    })
+    return () => {
+      live = false
+    }
+  }, [push])
+
+  const toggle = (on: boolean) => {
+    if (status === null || busy) return
+    setBusy(true)
+    setProblem(null)
+    const run =
+      on || status.status !== "subscribed"
+        ? subscribePush(push)
+        : unsubscribePush(push, status.id)
+    void run.then((result) => {
+      if (result.ok) setStatus(result.value)
+      else setProblem(result.message)
+      setBusy(false)
+    })
+  }
+
+  const ready =
+    status?.status === "subscribed" || status?.status === "unsubscribed"
+  return (
+    <Section id="notifications" title="Notifications">
+      <div className="flex min-h-11 items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col">
+          <span className="flex items-center gap-1 text-sm">
+            Push on this device
+            <InfoTip label="About push on this device">
+              Pushes carry only a count of waiting cards.
+            </InfoTip>
+          </span>
+          <span role="status" className="text-xs text-muted-foreground">
+            {status === null || status.status === "error"
+              ? ""
+              : PUSH_STATUS_LABELS[status.status]}
+          </span>
+        </div>
+        <Switch
+          aria-label="Push on this device"
+          checked={status?.status === "subscribed"}
+          disabled={!ready || busy}
+          onCheckedChange={toggle}
+        />
+      </div>
+      {status?.status === "error" ? (
+        <p role="alert" className="text-sm">
+          Could not read push status from the gate.
+        </p>
+      ) : problem ? (
+        <p role="alert" className="text-sm">
+          {problem}
+        </p>
+      ) : null}
     </Section>
   )
 }
@@ -374,10 +461,12 @@ function SettingsBody({
   state,
   onRetry,
   about = aboutInfo(),
+  pushDevice,
 }: {
   state: SettingsState
   onRetry: () => void
   about?: AboutInfo | null
+  pushDevice?: PushDevice
 }) {
   if (state.status === "loading")
     return (
@@ -385,7 +474,8 @@ function SettingsBody({
         <p role="status" className="sr-only">
           Loading settings…
         </p>
-        <AppearanceSection />
+        <AppearanceSection key="appearance" />
+        <NotificationsSection key="notifications" device={pushDevice} />
         <Skeleton className="h-32 w-full" />
         <Skeleton className="h-32 w-full" />
         <Skeleton className="h-24 w-full" />
@@ -397,7 +487,8 @@ function SettingsBody({
   )
   return (
     <>
-      <AppearanceSection />
+      <AppearanceSection key="appearance" />
+      <NotificationsSection key="notifications" device={pushDevice} />
       <PasskeysSection load={state.passkeys} />
       <PermissionsSection load={state.permissions} />
       <SecuritySection load={state.chain} />
@@ -429,5 +520,5 @@ function SettingsView() {
   )
 }
 
-export { SettingsBody, SettingsView }
+export { NotificationsSection, SettingsBody, SettingsView }
 export type { SettingsState }

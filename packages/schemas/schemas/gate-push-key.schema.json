@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePushKey",
+  "description": "Response of GET /push/key on the phone listener (#16): the VAPID public key the browser passes to pushManager.subscribe as applicationServerKey, an uncompressed P-256 point as unpadded base64url.",
+  "type": "object",
+  "properties": {
+    "publicKey": {
+      "type": "string",
+      "minLength": 87,
+      "maxLength": 87,
+      "pattern": "^[A-Za-z0-9_-]{87}$"
+    }
+  },
+  "required": ["publicKey"],
+  "additionalProperties": false
+}
