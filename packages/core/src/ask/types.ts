@@ -38,6 +38,4 @@ export interface AskDeps {
   conversation?: readonly Turn[]
   /** Maps a document source to its stable tag in this conversation. */
   allocateSourceTag?: (sourceRef: string) => Promise<string>
-  /** Intent candidates from a trusted integration; every item is still checked against schemas. */
-  followUpCandidates?: readonly unknown[]
 }

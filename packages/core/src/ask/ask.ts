@@ -15,8 +15,8 @@ import {
 } from "../inference/fence"
 import type { PromptPart } from "../inference/fence"
 import type { ModelClient } from "../inference/types"
-import { validateIntent } from "@eido/schemas"
-import type { AskFigure, AskFollowUp, Intent } from "@eido/schemas"
+import type { AskFigure } from "@eido/schemas"
+import { indexedFollowUps } from "./follow-ups"
 import {
   absenceReplacement,
   checkTags,
@@ -76,49 +76,6 @@ function figures(
     { key: "searched", value: searched, location: "/coverage/searched" },
     { key: "readInFull", value: readInFull, location: "/coverage/readInFull" },
   ]
-}
-
-const ACTION_LABELS: Record<Intent["kind"], string> = {
-  "email.draft": "Draft an email",
-  "email.label": "Update email labels",
-  "email.archive": "Archive email",
-  "email.markRead": "Mark email as read",
-  "email.send": "Send an email",
-  "email.reply": "Reply to an email",
-  "email.forward": "Forward an email",
-  "email.trash": "Move email to trash",
-  "email.untrash": "Restore email from trash",
-  "calendar.create": "Create a calendar event",
-  "calendar.edit": "Edit a calendar event",
-  "calendar.delete": "Delete a calendar event",
-  "reminder.create": "Create a reminder",
-  "file.create": "Create a file",
-  "file.rename": "Rename a file",
-  "file.move": "Move a file",
-  "file.delete": "Move file to trash",
-}
-
-function validatedFollowUps(
-  candidates: readonly unknown[] | undefined
-): AskFollowUp[] {
-  if (candidates === undefined) return []
-  const results: AskFollowUp[] = []
-  for (const candidate of candidates.slice(0, 10)) {
-    const checked = validateIntent(candidate)
-    if (checked.ok) {
-      const label =
-        checked.value.kind === "email.markRead"
-          ? checked.value.args.read
-            ? "Mark email as read"
-            : "Mark email as unread"
-          : ACTION_LABELS[checked.value.kind]
-      results.push({
-        label,
-        intent: checked.value,
-      })
-    }
-  }
-  return results
 }
 
 /** Indexed documents inside the plan's date filters, whatever their text. */
@@ -424,7 +381,11 @@ async function run(
     coverage,
     facts: { matchCount },
     figures: figures(searched, matchCount, readInFull),
-    followUps: validatedFollowUps(deps.followUpCandidates),
+    followUps: indexedFollowUps(
+      db,
+      hits.map((hit) => hit.sha256),
+      new Set(pack.members.map((member) => member.sha256))
+    ),
     droppedTags: checked.dropped,
     possiblyTruncated,
   }
@@ -433,8 +394,9 @@ async function run(
 /**
  * Answer a question from the index. Two model steps: a search plan under a JSON schema, then an
  * answer from a context pack. Code computes every count, checks every citation tag against the
- * pack and builds the coverage label. It only reads: it creates no intents. The whole ask is one
- * foreground job, so background work waits behind it and it waits at most for one running job.
+ * pack and builds the coverage label. It returns validated proposal candidates; it never submits
+ * or executes them. The whole ask is one foreground job, so background work waits behind it and
+ * it waits at most for one running job.
  */
 export function ask(question: string, deps: AskDeps): Promise<AskResult> {
   return deps.queue.run("foreground", (client) => run(question, deps, client))
