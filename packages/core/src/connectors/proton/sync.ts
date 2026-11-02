@@ -148,10 +148,12 @@ export async function syncFolder(
     stored.uidvalidity !== state.uidValidity
   if (resynced) {
     // The server renumbered the folder: the old UID cursor means nothing. Start again from UID 1.
-    db.prepare("DELETE FROM cursors WHERE connector = ? AND stream = ?").run(
-      CONNECTOR,
-      folder
-    )
+    await writeQueueFor(db).run(() => {
+      db.prepare("DELETE FROM cursors WHERE connector = ? AND stream = ?").run(
+        CONNECTOR,
+        folder
+      )
+    })
   }
   let covered = resynced || stored === null ? 0 : Number(stored.cursor)
   const known = db.prepare(

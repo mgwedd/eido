@@ -169,7 +169,7 @@ describe("insertLinks and linksFor", () => {
   })
 
   test("matched edges are stored with confidence below 1; the database refuses 1 for them and below 1 for header edges", async () => {
-    const obligation = insertObligation(db, {
+    const obligation = await insertObligation(db, {
       entityId: property.id,
       action: "Pay the invoice",
       status: "open",
@@ -222,7 +222,7 @@ describe("insertLinks and linksFor", () => {
   })
 
   test("doc: and obl: endpoints must exist; a failed batch stores nothing", async () => {
-    const stored = insertObligation(db, {
+    const stored = await insertObligation(db, {
       entityId: property.id,
       action: "Pay the invoice",
       status: "open",

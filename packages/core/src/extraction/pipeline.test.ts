@@ -653,7 +653,7 @@ describe("document type classification", () => {
       { config: { classifyDocumentType: true } }
     )
     expect(
-      setDocumentType(h.db, h.docId, { type: "Quote", source: "user" })
+      await setDocumentType(h.db, h.docId, { type: "Quote", source: "user" })
     ).toBe(true)
 
     await h.extractor.extractDocument(h.docId)
@@ -690,7 +690,7 @@ describe("document type classification", () => {
     const extraction = h.extractor.extractDocument(h.docId)
     await started
     expect(
-      setDocumentType(h.db, h.docId, { type: "Quote", source: "user" })
+      await setDocumentType(h.db, h.docId, { type: "Quote", source: "user" })
     ).toBe(true)
     finishReply({
       text: '{"type":"Invoice"}',

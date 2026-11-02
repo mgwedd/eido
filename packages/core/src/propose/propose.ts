@@ -200,7 +200,7 @@ export async function proposeIntents(
     for (const failure of failures) codes.add(failure.code)
   }
 
-  recordProposalFailure(deps.db, {
+  await recordProposalFailure(deps.db, {
     failedAt: (deps.now?.() ?? new Date()).toISOString(),
     requestId: request.id,
     contextPackId: pack.id,

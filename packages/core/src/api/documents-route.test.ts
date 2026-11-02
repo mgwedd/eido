@@ -74,8 +74,8 @@ beforeEach(async () => {
     testDoc("stale", { entityId: property.id, source: "drive" }),
   ])
   // The pdf stays untyped on purpose.
-  setDocumentType(db, invoice, { type: "Invoice", source: "model" })
-  setDocumentType(db, quote, { type: "Quote", source: "user" })
+  await setDocumentType(db, invoice, { type: "Invoice", source: "model" })
+  await setDocumentType(db, quote, { type: "Quote", source: "user" })
   handle = createApiHandler({
     profile,
     allowedHosts: ["core.test"],
@@ -466,7 +466,7 @@ describe("GET /documents/:sha256", () => {
       expect((await view(invoice)).extractions[0]?.fields[0]?.verified).toBe(
         false
       )
-      confirmExtraction(db, id, "2030-01-06T00:00:00.000Z")
+      await confirmExtraction(db, id, "2030-01-06T00:00:00.000Z")
       const confirmed = (await view(invoice)).extractions[0]
       expect(confirmed?.confirmedAt).toBe("2030-01-06T00:00:00.000Z")
       expect(confirmed?.fields[0]?.verified).toBe(true)
@@ -608,9 +608,9 @@ describe("PUT /documents/:sha256/type", () => {
 
   test("a later model classification does not replace it", async () => {
     await put(pdf, { type: "Contract" })
-    expect(setDocumentType(db, pdf, { type: "Quote", source: "model" })).toBe(
-      true
-    )
+    expect(
+      await setDocumentType(db, pdf, { type: "Quote", source: "model" })
+    ).toBe(true)
     const [doc] = (await list("?source=upload")).documents
     expect(doc).toMatchObject({ type: "Contract", typeSource: "user" })
   })

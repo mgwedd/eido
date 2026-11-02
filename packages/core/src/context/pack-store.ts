@@ -147,7 +147,12 @@ export function readContextPack(
   tokenCount: number
   packHash: string
 } | null {
-  db.exec(CREATE_TABLE)
+  const table = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'context_packs'"
+    )
+    .get()
+  if (table === undefined) return null
   const row = db
     .prepare(
       "SELECT id, members_json, token_count, pack_hash FROM context_packs WHERE id = ?"

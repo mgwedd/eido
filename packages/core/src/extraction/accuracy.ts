@@ -5,6 +5,7 @@ import { ingestBatch } from "../index/ingest"
 import type { ExtractionFieldName } from "../ledger/types"
 import type { Parser } from "../parsers/parse-document"
 import { createExtractor } from "./pipeline"
+import { writeQueueFor } from "../db/write-queue"
 import type { ExtractorDeps } from "./pipeline"
 import type { ExtractionStatus } from "./types"
 
@@ -322,21 +323,23 @@ export async function runAccuracy(
       })
       continue
     }
-    ingestBatch(deps.db, {
-      connector: "accuracy",
-      stream: "local",
-      documents: [
-        {
-          sha256,
-          source: "local",
-          sourceRef: label.file,
-          mime,
-          entityId: deps.entityId,
-          body: parsed.text,
-        },
-      ],
-      nextCursor: String(index),
-    })
+    await writeQueueFor(deps.db).run(() =>
+      ingestBatch(deps.db, {
+        connector: "accuracy",
+        stream: "local",
+        documents: [
+          {
+            sha256,
+            source: "local",
+            sourceRef: label.file,
+            mime,
+            entityId: deps.entityId,
+            body: parsed.text,
+          },
+        ],
+        nextCursor: String(index),
+      })
+    )
     try {
       const result = await extractor.extractDocument(sha256)
       outcomes.push({

@@ -6,6 +6,16 @@ import { createConversationStore } from "../conversation/store"
 import { openConversationIndex } from "../conversation/search-index"
 import { packIdFor, storeContextPack } from "../context/pack-store"
 import type { ContextPack } from "../context/pack-store"
+import {
+  recordProposalFailure,
+  ensureProposalFailures,
+} from "../propose/failure-log"
+import { getDocumentType, setDocumentType } from "../index/document-type"
+import { confirmExtraction } from "../ledger/store"
+import { syncFolder } from "../connectors/proton/sync"
+import type { ProtonMailSource } from "../connectors/proton/source"
+import { createProfileStore } from "../profile/store"
+import { ingestBatch, getCursor } from "../index/ingest"
 import { pruneSections, writeDigest, writeSection } from "../digest/cache"
 import { createObligationStateStore } from "../ledger/obligation-state"
 import {
@@ -39,7 +49,7 @@ async function writeDuringPendingAudit(
   write: () => Promise<unknown>,
   written: () => boolean
 ): Promise<void> {
-  const obligationId = insertObligation(db, {
+  const obligationId = await insertObligation(db, {
     entityId,
     action: "Pay the invoice",
     status: "open",
@@ -87,6 +97,138 @@ async function fixture() {
 }
 
 describe("writers on the connection write queue", () => {
+  it("proposal failures: ensureProposalFailures table creation", async () => {
+    const { db, docId, property } = await fixture()
+    await writeDuringPendingAudit(
+      db,
+      docId,
+      property.id,
+      () => ensureProposalFailures(db),
+      () =>
+        db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_failures'"
+          )
+          .get() !== undefined
+    )
+  })
+
+  it("proposal failures: recordProposalFailure creates and commits its row", async () => {
+    const { db, docId, property } = await fixture()
+    await writeDuringPendingAudit(
+      db,
+      docId,
+      property.id,
+      () =>
+        recordProposalFailure(db, {
+          failedAt: "2030-01-01T00:00:00.000Z",
+          requestId: "request-1",
+          contextPackId: "pack-1",
+          failureCodes: ["schema_mismatch"],
+        }),
+      () =>
+        db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_failures'"
+          )
+          .get() !== undefined &&
+        count(db, "SELECT count(*) AS n FROM proposal_failures") === 1
+    )
+  })
+
+  it("Proton UIDVALIDITY cursor deletion waits for the open audit transaction", async () => {
+    const { db, docId, property } = await fixture()
+    const profile = createProfileStore(db, { audit: () => Promise.resolve() })
+    const accountEntity = await profile.createEntity({
+      kind: "personal",
+      name: "Synthetic account",
+      tag: "SYN",
+    })
+    await profile.assignAccount({
+      connector: "proton",
+      accountRef: "owner@example.invalid",
+      entityId: accountEntity.id,
+    })
+    ingestBatch(db, {
+      connector: "proton",
+      stream: "INBOX",
+      documents: [],
+      nextCursor: "4",
+      uidvalidity: "old",
+    })
+    let fetchStarted = false
+    const source: ProtonMailSource = {
+      listFolders: () => Promise.resolve(["INBOX"]),
+      folderState: () => Promise.resolve({ uidValidity: "new", uidNext: 2 }),
+      fetchRaw: () => {
+        fetchStarted = true
+        return Promise.resolve({ messages: [], skipped: [] })
+      },
+    }
+    await writeDuringPendingAudit(
+      db,
+      docId,
+      property.id,
+      () =>
+        syncFolder(db, source, "INBOX", 10, {
+          accountRef: "owner@example.invalid",
+          entities: profile,
+        }),
+      () => fetchStarted
+    )
+    expect(getCursor(db, "proton", "INBOX")?.uidvalidity).toBe("new")
+  })
+
+  it("document type: model label waits for the open audit transaction", async () => {
+    const { db, docId, property } = await fixture()
+    await writeDuringPendingAudit(
+      db,
+      docId,
+      property.id,
+      () => setDocumentType(db, docId, { type: "Invoice", source: "model" }),
+      () => getDocumentType(db, docId)?.type === "Invoice"
+    )
+  })
+
+  it("ledger store: insertObligation waits for the open audit transaction", async () => {
+    const { db, docId, property } = await fixture()
+    await writeDuringPendingAudit(
+      db,
+      docId,
+      property.id,
+      () =>
+        insertObligation(db, {
+          entityId: property.id,
+          action: "Renew the plan",
+          status: "open",
+          docId,
+          span: { start: 0, end: 4 },
+        }),
+      () => count(db, "SELECT count(*) AS n FROM obligations") === 2
+    )
+  })
+
+  it("ledger store: confirmExtraction waits for the open audit transaction", async () => {
+    const { db, docId, property } = await fixture()
+    const extractionId = await insertExtraction(db, {
+      docId,
+      schema: "extracted-fields",
+      status: "processed_empty",
+      model: "none",
+      createdAt: "2030-01-01T00:00:00.000Z",
+    })
+    await writeDuringPendingAudit(
+      db,
+      docId,
+      property.id,
+      () => confirmExtraction(db, extractionId, "2030-01-02T00:00:00.000Z"),
+      () =>
+        db
+          .prepare("SELECT confirmed_at FROM extractions WHERE id = ?")
+          .get(extractionId)?.["confirmed_at"] === "2030-01-02T00:00:00.000Z"
+    )
+  })
+
   it("conversation store: appendTurn", async () => {
     const { db, docId, property } = await fixture()
     const index = openConversationIndex(":memory:")
