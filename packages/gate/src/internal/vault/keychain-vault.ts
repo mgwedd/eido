@@ -53,11 +53,15 @@ export class KeychainVault implements Vault {
 
   async set(key: VaultKey, secret: string): Promise<void> {
     await this.checkPath()
+    const data = Buffer.from(secret, "utf16le")
+    // A successful write must fit the helper's bounded reply when read back.
+    if (data.length > 256 * 1024)
+      throw new Error("Keychain credential is too large")
     const result = await runKeychainCommand({
       operation: "set",
       path: this.path,
       account: vaultKeyId(key),
-      data: Buffer.from(secret, "utf16le").toString("base64"),
+      data: data.toString("base64"),
     })
     if (result.status !== 0)
       throw new Error("Keychain credential could not be stored")

@@ -83,6 +83,16 @@ test("reads valid data and treats missing credentials as absent", async () => {
   expect(await vault.get(KEY)).toBe("secret")
   expect(await vault.get(KEY)).toBeUndefined()
 })
+
+test("refuses a secret that cannot safely fit the bounded read-back response", async () => {
+  await expect(
+    new KeychainVault({ path: "/test.keychain-db" }).set(
+      KEY,
+      "x".repeat(128 * 1024 + 1)
+    )
+  ).rejects.toThrow("Keychain credential is too large")
+  expect(run).not.toHaveBeenCalled()
+})
 test.each([
   { status: -1 },
   { status: 0 },

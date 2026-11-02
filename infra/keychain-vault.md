@@ -40,7 +40,9 @@ be unlocked before credentials are available.
 
 Each credential is a generic-password item with service `com.eido.gate.vault` and
 account `JSON.stringify([connector, kind, client])`. The data is the secret's
-UTF-16LE bytes, preserving all JavaScript strings. Every native add, lookup,
+UTF-16LE bytes, preserving all JavaScript strings.
+Writes are limited to 256 KiB of encoded secret bytes so a stored value always fits
+the helper's bounded read-back response. Every native add, lookup,
 update, and delete explicitly uses `kSecAttrSynchronizable = false` and the one
 configured keychain. No iCloud synchronization is enabled.
 
