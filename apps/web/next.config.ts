@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 import type { NextConfig } from "next"
 
 // `next dev` serves HMR and dev assets only to localhost and the host it binds (127.0.0.1) unless
@@ -5,7 +7,23 @@ import type { NextConfig } from "next"
 // reloads when opened at https://<host>.ts.net:8443. Only the hostname is matched, not the port.
 const tailnetHost = process.env["EIDO_TAILNET_HOST"]
 
+// About on the Settings page: the package version and the build id (the git commit). Without git no id is baked in and the page omits the row.
+function buildId(): string {
+  try {
+    return execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim()
+  } catch {
+    return ""
+  }
+}
+const { version } = JSON.parse(readFileSync("./package.json", "utf8")) as {
+  version: string
+}
+
 const nextConfig: NextConfig = {
+  env: { NEXT_PUBLIC_APP_VERSION: version, NEXT_PUBLIC_BUILD_ID: buildId() },
   // `next dev` rewrites apps/web/AGENTS.md on every run unless this is off (#377).
   agentRules: false,
   // `forbidden()` answers refused pages with a real 403 (app/forbidden.tsx, #370).

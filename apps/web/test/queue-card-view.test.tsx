@@ -60,61 +60,85 @@ type Routes = {
   decision?: number
 }
 
+// Fetches the stub has not answered yet; settle() waits for them.
+let inflight = 0
+
+function track(response: Promise<Response>): Promise<Response> {
+  inflight += 1
+  return response.finally(() => {
+    inflight -= 1
+  })
+}
+
 function routed(routes: Routes = {}) {
   const calls: { url: string; body?: string }[] = []
+  const respond = (url: string, init?: RequestInit): Promise<Response> => {
+    calls.push({
+      url,
+      body: typeof init?.body === "string" ? init.body : undefined,
+    })
+    if (url.endsWith("/approvals"))
+      return Promise.resolve(Response.json({ intents: queued }))
+    if (url.endsWith("/nonce"))
+      return Promise.resolve(Response.json(prepared(routes.hash ?? HASH)))
+    if (url.endsWith("/history"))
+      return Promise.resolve(
+        routes.history === "fail"
+          ? new Response(null, { status: 500 })
+          : Response.json({
+              intentId: "intent-a",
+              entries:
+                routes.history === "empty"
+                  ? []
+                  : [
+                      {
+                        at: "2026-10-17T10:00:00.000Z",
+                        from: null,
+                        to: "proposed",
+                        actor: "data-plane",
+                      },
+                      {
+                        at: "2026-10-17T10:01:00.000Z",
+                        from: "proposed",
+                        to: "pending",
+                        actor: "policy",
+                      },
+                    ],
+            })
+      )
+    return Promise.resolve(
+      routes.decision === 409
+        ? new Response(null, { status: 409 })
+        : Response.json({ intentId: "intent-a", state: "rejected" })
+    )
+  }
   vi.stubGlobal(
     "fetch",
-    vi.fn((url: string, init?: RequestInit) => {
-      calls.push({
-        url,
-        body: typeof init?.body === "string" ? init.body : undefined,
-      })
-      if (url.endsWith("/approvals"))
-        return Promise.resolve(Response.json({ intents: queued }))
-      if (url.endsWith("/nonce"))
-        return Promise.resolve(Response.json(prepared(routes.hash ?? HASH)))
-      if (url.endsWith("/history"))
-        return Promise.resolve(
-          routes.history === "fail"
-            ? new Response(null, { status: 500 })
-            : Response.json({
-                intentId: "intent-a",
-                entries:
-                  routes.history === "empty"
-                    ? []
-                    : [
-                        {
-                          at: "2026-10-17T10:00:00.000Z",
-                          from: null,
-                          to: "proposed",
-                          actor: "data-plane",
-                        },
-                        {
-                          at: "2026-10-17T10:01:00.000Z",
-                          from: "proposed",
-                          to: "pending",
-                          actor: "policy",
-                        },
-                      ],
-              })
-        )
-      return Promise.resolve(
-        routes.decision === 409
-          ? new Response(null, { status: 409 })
-          : Response.json({ intentId: "intent-a", state: "rejected" })
-      )
-    })
+    vi.fn((url: string, init?: RequestInit) => track(respond(url, init)))
   )
   return calls
+}
+
+// The card loads in a chain of fetches (queue, then nonce), so a single fixed
+// sleep can end before it is ready on a slow runner. Wait in short steps until
+// no fetch is pending and one more step has passed without a new one.
+async function settle() {
+  for (let step = 0; step < 100; step += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    if (inflight === 0) return
+  }
+  throw new Error("fetches did not settle")
 }
 
 async function render(): Promise<HTMLElement> {
   const container = document.createElement("div")
   document.body.appendChild(container)
-  await act(async () => {
+  act(() => {
     createRoot(container).render(<QueueView />)
-    await new Promise((resolve) => setTimeout(resolve, 20))
   })
+  await settle()
   return container
 }
 
@@ -122,13 +146,14 @@ const button = (label: string) =>
   [...document.querySelectorAll("button")].find((b) => b.textContent === label)
 
 async function click(label: string) {
-  await act(async () => {
+  act(() => {
     button(label)?.click()
-    await new Promise((resolve) => setTimeout(resolve, 20))
   })
+  await settle()
 }
 
 afterEach(() => {
+  inflight = 0
   vi.unstubAllGlobals()
   signApproval.mockReset()
   document.body.innerHTML = ""
