@@ -505,7 +505,7 @@ function approvedOverlay(db: DatabaseSync): PermissionTable | undefined {
     if (
       db
         .prepare(
-          "SELECT id FROM control_approvals WHERE purpose = 'policy.set' AND used_at IS NOT NULL LIMIT 1"
+          "SELECT id FROM control_approvals WHERE purpose = 'policy.set' AND target = 'permissions' AND used_at IS NOT NULL LIMIT 1"
         )
         .get() !== undefined
     )
@@ -533,7 +533,7 @@ function approvedOverlay(db: DatabaseSync): PermissionTable | undefined {
   // The latest accepted policy is authoritative: an old signed row is not a rollback token.
   const latest = db
     .prepare(
-      "SELECT id FROM control_approvals WHERE purpose = 'policy.set' AND used_at IS NOT NULL ORDER BY audit_seq DESC LIMIT 1"
+      "SELECT id FROM control_approvals WHERE purpose = 'policy.set' AND target = 'permissions' AND used_at IS NOT NULL ORDER BY audit_seq DESC LIMIT 1"
     )
     .get()
   if (latest?.["id"] !== row["approval_id"])
