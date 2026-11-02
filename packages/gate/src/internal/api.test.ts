@@ -10,6 +10,7 @@ import {
   GateRequestError,
   GateUnavailableError,
   createAuditClient,
+  createEnrolmentClient,
   createIntentClient,
 } from "./client"
 import type { AuditClient, IntentClient } from "./client"
@@ -97,7 +98,10 @@ beforeEach(async () => {
   startGate(s.db, s.options, WEBAUTHN)
   baseline = auditRows(s.db).length
   await serve(dataPlaneHandler(runningGate), dataSocket)
-  await serve(controlHandler(runningGate), controlSocket)
+  await serve(
+    controlHandler(runningGate, () => new Date()),
+    controlSocket
+  )
   client = createIntentClient({ socketPath: dataSocket })
   audit = createAuditClient({ socketPath: dataSocket })
 })
@@ -576,6 +580,7 @@ describe("everything else on the data-plane listener", () => {
       ["POST", "/approvals"],
       ["GET", "/audit"],
       ["GET", "/audit/chain"],
+      ["POST", "/enrolment-codes"],
       ["POST", "/connector-health"],
       ["PUT", "/connector-health"],
       ["DELETE", "/connector-health"],
@@ -619,6 +624,21 @@ describe("the control listener", () => {
     expect((await raw(controlSocket, "POST", "/intents", "{}")).status).toBe(
       404
     )
+  })
+
+  it("issues an enrolment code, which only the control listener serves", async () => {
+    const issued = await createEnrolmentClient({
+      socketPath: controlSocket,
+    }).issueCode()
+    expect(issued.code).toMatch(
+      /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/
+    )
+    expect(Date.parse(issued.expiresAt) - Date.now()).toBeGreaterThan(
+      9 * 60 * 1000
+    )
+    expect(actions().slice(-1)).toEqual(["enrolment_code.issued"])
+    const rows = s.db.prepare("SELECT used_at FROM enrolment_codes").all()
+    expect(rows).toEqual([{ used_at: null }])
   })
 
   it("does not take audit entries: POST /audit is a data-plane route only", async () => {

@@ -332,7 +332,7 @@ export async function runGate(
       dataPlaneHandler(state, mail, execute),
       log
     )
-    const control = createGateServer("control", controlHandler(state), log)
+    const control = createGateServer("control", controlHandler(state, now), log)
     servers.push(dataPlane, control)
     await listen(dataPlane, config.socketPath, DATA_PLANE_SOCKET_MODE)
     await listen(control, config.controlSocketPath, CONTROL_SOCKET_MODE)

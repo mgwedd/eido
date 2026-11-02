@@ -8,6 +8,7 @@ import type {
   GateAuditRecordRequest,
   GateAuditRecordResult,
   GateConnectorHealth,
+  GateEnrolmentCode,
   GateIntentHistory,
   GatePendingIntentList,
   GateProposeRefusal,
@@ -15,6 +16,7 @@ import type {
 } from "@eido/schemas"
 import { append, verifyChain } from "./audit"
 import { getConnectorHealth } from "./connector-health"
+import { issueEnrolmentCode } from "./enrolment"
 import { mailRoute } from "./bridge/mail-routes"
 import type { MailReads } from "./bridge/mail-routes"
 import { payloadHash } from "./canonical"
@@ -29,14 +31,15 @@ import {
   propose,
 } from "./intents"
 import type { Policy } from "./policy"
+import type { Clock } from "./sessions"
 
 // The gate's routes. The data-plane listener serves the intent API (propose, and three
 // read-only views without payload bodies), connector health, and POST /audit, which appends one
 // hash-only audit.profile.* row for a profile change in core (#181) or audit.ledger.* row for an
 // obligation state change (#104). The control listener is a separate socket that the
-// data plane is never given; it serves the same reads plus the audit chain check. The phone
-// listener (#85) and the Mac-local admin listener (#78) are further handlers over the same
-// server wrapper, each on its own listener.
+// data plane is never given; it serves the same reads, the audit chain check and the owner's
+// enrolment codes (#78). The phone listener (#85) is a further handler over the same server
+// wrapper, on its own listener.
 
 export type GateState = {
   db: DatabaseSync
@@ -390,11 +393,27 @@ export function dataPlaneHandler(
 }
 
 /** The control listener: the intent reads plus the audit chain check. Never given to the data plane. */
-export function controlHandler(gate: () => GateState): Handler {
+// The owner issues a phone enrolment code from the Mac (#78). Only the control socket, readable
+// by the gate user alone, serves this; the phone listener 404s it.
+function enrolmentCodeRoute(db: DatabaseSync, now: Clock): Reply {
+  const issued = issueEnrolmentCode(db, "admin", now)
+  if (!issued.ok)
+    return apiError(403, "forbidden", "enrolment codes are issued on the Mac")
+  const body: GateEnrolmentCode = {
+    code: issued.code,
+    expiresAt: issued.expiresAt.toISOString(),
+  }
+  return { status: 201, body }
+}
+
+export function controlHandler(gate: () => GateState, now: Clock): Handler {
   return (request) => {
     const state = gate()
     if (request.method === "GET" && request.path === "/audit/chain") {
       return { status: 200, body: verifyChain(state.db) }
+    }
+    if (request.method === "POST" && request.path === "/enrolment-codes") {
+      return enrolmentCodeRoute(state.db, now)
     }
     return (
       connectorHealthRoute(request, state) ??

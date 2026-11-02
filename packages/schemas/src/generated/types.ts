@@ -456,6 +456,12 @@ export interface GateEditRequest {
   intent: Record<string, unknown>
 }
 
+/** Response of POST /enrolment-codes on the gate's control socket (#78): a single-use code for enrolling a phone, shown once on the Mac. Only its hash is stored; it expires ten minutes after issue and supersedes any earlier unused code. */
+export interface GateEnrolmentCode {
+  code: string
+  expiresAt: string
+}
+
 /** Response of an intent's state-transition history, oldest first, derived from audit_log (#11 getIntentHistory). from is null on the first entry. An undo is an entry whose from and to are both executed with reason undone. */
 export interface GateIntentHistory {
   intentId: string

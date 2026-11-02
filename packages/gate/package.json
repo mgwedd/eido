@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/main.ts",
+    "enrol-code": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/enrol-code.ts",
     "lint": "eslint",
     "typecheck": "tsc -b",
     "test": "vitest run --coverage",

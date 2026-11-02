@@ -196,6 +196,15 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
   // Time of the last successful connector read, for the phone's connector settings (#397).
   // Existing rows have no recorded success.
   `ALTER TABLE connectors ADD COLUMN last_success_at TEXT;`,
+  // Single-use enrolment codes issued on the Mac (#78). Only the SHA-256 of the normalised code
+  // is stored. Issuing a new code supersedes every earlier unused one.
+  `CREATE TABLE enrolment_codes (
+     code_hash TEXT PRIMARY KEY,
+     issued_at TEXT NOT NULL,
+     expires_at TEXT NOT NULL,
+     used_at TEXT,
+     superseded_at TEXT
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {
