@@ -94,3 +94,23 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked
+      # The gate's own wrapper, roots and audit against the real binary on each OS. Other gate tests
+      # mock the helper, so `pnpm verify` and turbo never need cargo.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Enable pnpm (version pinned by packageManager)
+        working-directory: .
+        run: corepack enable
+      - name: Install
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+      - name: Build release helper
+        run: cargo build --release --locked
+      - name: Gate tests against the native helper
+        run: |
+          dir=$(pwd -W 2>/dev/null || pwd)
+          bin="$dir/target/release/eido-file-helper"
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          cd ../../
+          EIDO_FILE_HELPER="$bin" pnpm exec vitest run src/internal/files/file-helper.native.test.ts
