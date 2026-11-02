@@ -4634,8 +4634,7 @@ export const GATE_CONNECTOR_SETTINGS_JSON_SCHEMA: JsonSchema = {
     }
   },
   "required": [
-    "connectors",
-    "asOf"
+    "connectors"
   ],
   "additionalProperties": false
 }

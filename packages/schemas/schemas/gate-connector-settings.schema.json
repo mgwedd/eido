@@ -86,6 +86,6 @@
       "maxLength": 40
     }
   },
-  "required": ["connectors", "asOf"],
+  "required": ["connectors"],
   "additionalProperties": false
 }

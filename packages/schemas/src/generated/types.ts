@@ -389,7 +389,7 @@ export interface GateConnectorSettings {
       removed: Array<string>
     }
   }>
-  asOf: string
+  asOf?: string
 }
 
 /** Response of GET /passkey/status on the phone listener, which needs no session. enrolled is true when the gate holds at least one unrevoked passkey; when it is false the PWA blocks Approve and links to /enroll. sessionExpiresAt is when the session cookie sent with the request ends, or null when there is no valid session. */
