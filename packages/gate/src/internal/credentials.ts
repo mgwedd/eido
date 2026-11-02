@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite"
-import type { GateWebAuthnRegistration } from "@eido/schemas"
+import type { GatePasskeyList, GateWebAuthnRegistration } from "@eido/schemas"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
 import { consumeEnrolmentCode } from "./enrolment"
@@ -291,6 +291,49 @@ export function enrolWithCode(
     const session = startSession(db, registration.credentialId, at)
     return { ok: true, credentialId: registration.credentialId, ...session }
   })
+}
+
+/**
+ * Every enrolled passkey, revoked ones included. Credential ids are given as SHA-256
+ * fingerprints; public keys and sign counters stay inside the gate.
+ */
+export function listPasskeys(db: DatabaseSync): GatePasskeyList["passkeys"] {
+  return db
+    .prepare(
+      "SELECT credential_id, created_at, revoked_at FROM credentials ORDER BY created_at, credential_id"
+    )
+    .all()
+    .map((row) => ({
+      fingerprint: hex(String(row["credential_id"])),
+      createdAt: String(row["created_at"]),
+      revokedAt:
+        typeof row["revoked_at"] === "string" ? row["revoked_at"] : null,
+    }))
+}
+
+/**
+ * Revokes the passkey whose credential id has this SHA-256 fingerprint (#419), the form the
+ * owner sees in Settings and in `pnpm --filter @eido/gate passkeys`. Admin surface only.
+ */
+export function revokeByFingerprint(
+  db: DatabaseSync,
+  surface: Surface,
+  fingerprint: string
+): RevokeResult {
+  // Without a credential id to hash, a refusal's audit row hashes the fingerprint given instead.
+  const refuse = (code: "admin_only" | "unknown_credential"): RevokeResult => {
+    audit(db, surface, "credential.revoke_refused", fingerprint, code)
+    return { ok: false, code }
+  }
+  // The surface is checked first, so a phone cannot probe which fingerprints exist.
+  if (surface !== "admin") return refuse("admin_only")
+  const match = db
+    .prepare("SELECT credential_id FROM credentials")
+    .all()
+    .map((row) => String(row["credential_id"]))
+    .find((id) => hex(id) === fingerprint)
+  if (match === undefined) return refuse("unknown_credential")
+  return revokeCredential(db, surface, match)
 }
 
 /** Revokes a passkey, so no later assertion from it verifies. Admin surface only. */

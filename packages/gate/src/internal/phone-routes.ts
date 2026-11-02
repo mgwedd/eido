@@ -1,5 +1,4 @@
 import type { DatabaseSync } from "node:sqlite"
-import { createHash } from "node:crypto"
 import {
   INTENT_KINDS,
   gateAuditDisplayActor,
@@ -42,7 +41,11 @@ import type { EditResult } from "./intents"
 import type { Policy } from "./policy"
 import { kindTier } from "./policy"
 import { verifyChain } from "./audit"
-import { beginPhoneRegistration, enrolWithCode } from "./credentials"
+import {
+  beginPhoneRegistration,
+  enrolWithCode,
+  listPasskeys,
+} from "./credentials"
 import { checkEnrolmentCode } from "./enrolment"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
@@ -463,21 +466,7 @@ function connectorSettings(state: PhoneState, now: Clock): Reply {
 }
 
 function passkeyList(state: PhoneState): Reply {
-  const body: GatePasskeyList = {
-    passkeys: state.db
-      .prepare(
-        "SELECT credential_id, created_at, revoked_at FROM credentials ORDER BY created_at, credential_id"
-      )
-      .all()
-      .map((row) => ({
-        fingerprint: createHash("sha256")
-          .update(String(row["credential_id"]), "utf8")
-          .digest("hex"),
-        createdAt: String(row["created_at"]),
-        revokedAt:
-          typeof row["revoked_at"] === "string" ? row["revoked_at"] : null,
-      })),
-  }
+  const body: GatePasskeyList = { passkeys: listPasskeys(state.db) }
   return { status: 200, body }
 }
 

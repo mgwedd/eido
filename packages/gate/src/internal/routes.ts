@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite"
 import {
   validateGateAuditRecordRequest,
   validateGateIntentProposal,
+  validateGatePasskeyRevokeRequest,
   validateIntent,
 } from "@eido/schemas"
 import type {
@@ -10,12 +11,14 @@ import type {
   GateConnectorHealth,
   GateEnrolmentCode,
   GateIntentHistory,
+  GatePasskeyList,
   GatePendingIntentList,
   GateProposeRefusal,
   GateProposeResult,
 } from "@eido/schemas"
 import { append, verifyChain } from "./audit"
 import { getConnectorHealth } from "./connector-health"
+import { listPasskeys, revokeByFingerprint } from "./credentials"
 import { issueEnrolmentCode } from "./enrolment"
 import { mailRoute } from "./bridge/mail-routes"
 import type { MailReads } from "./bridge/mail-routes"
@@ -392,7 +395,6 @@ export function dataPlaneHandler(
   }
 }
 
-/** The control listener: the intent reads plus the audit chain check. Never given to the data plane. */
 // The owner issues a phone enrolment code from the Mac (#78). Only the control socket, readable
 // by the gate user alone, serves this; the phone listener 404s it.
 function enrolmentCodeRoute(db: DatabaseSync, now: Clock): Reply {
@@ -406,9 +408,51 @@ function enrolmentCodeRoute(db: DatabaseSync, now: Clock): Reply {
   return { status: 201, body }
 }
 
+// The owner revokes a lost or replaced phone's passkey from the Mac (#419), by the fingerprint
+// GET /passkeys lists. Like enrolment codes, only the control socket serves this; the phone
+// listener has no revoke route, so a stolen phone session cannot revoke the owner's key.
+async function revokePasskeyRoute(
+  request: GateRequest,
+  db: DatabaseSync
+): Promise<Reply> {
+  const body = await request.body()
+  if (!body.ok) {
+    return apiError(413, "invalid_request", "the body is over 1 MiB")
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body.text)
+  } catch {
+    return apiError(400, "invalid_request", "the body is not valid JSON")
+  }
+  const checked = validateGatePasskeyRevokeRequest(parsed)
+  if (!checked.ok) {
+    return apiError(400, "invalid_request", "the body must name a fingerprint")
+  }
+  const revoked = revokeByFingerprint(db, "admin", checked.value.fingerprint)
+  if (!revoked.ok) {
+    return revoked.code === "already_revoked"
+      ? apiError(409, "already_decided", "the passkey is already revoked")
+      : apiError(404, "not_found", "no passkey has that fingerprint")
+  }
+  const list: GatePasskeyList = { passkeys: listPasskeys(db) }
+  return { status: 200, body: list }
+}
+
+/**
+ * The control listener: the intent reads, the audit chain check, enrolment codes and passkey
+ * revocation. Never given to the data plane or the phone.
+ */
 export function controlHandler(gate: () => GateState, now: Clock): Handler {
   return (request) => {
     const state = gate()
+    if (request.method === "GET" && request.path === "/passkeys") {
+      const body: GatePasskeyList = { passkeys: listPasskeys(state.db) }
+      return { status: 200, body }
+    }
+    if (request.method === "POST" && request.path === "/passkeys/revoke") {
+      return revokePasskeyRoute(request, state.db)
+    }
     if (request.method === "GET" && request.path === "/audit/chain") {
       return { status: 200, body: verifyChain(state.db) }
     }

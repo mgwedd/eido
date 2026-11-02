@@ -567,6 +567,11 @@ export interface GatePasskeyList {
   }>
 }
 
+/** Body of POST /passkeys/revoke on the gate's control socket (#419): the SHA-256 fingerprint of the credential id, as GET /passkeys lists it. Only the Mac-side control socket serves this route; the phone listener has none. */
+export interface GatePasskeyRevokeRequest {
+  fingerprint: string
+}
+
 /** Response of the pending-approvals list: intents in state pending, without payload bodies (#11 listPendingIntents, plus origin, which #33 needs). */
 export interface GatePendingIntentList {
   intents: Array<{
