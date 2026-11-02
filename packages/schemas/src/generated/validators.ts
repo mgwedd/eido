@@ -5674,7 +5674,7 @@ export function validateGatePendingIntentList(value: unknown): ValidationResult<
 export const GATE_PERMISSION_LIST_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GatePermissionList",
-  "description": "Effective kind-level permission tiers from the gate's shipped defaults, signed overrides and active pinned connectors. Payload-specific guards can still raise a tier or forbid an individual intent.",
+  "description": "Kind-level permission tiers with shipped defaults, signed overrides and the effective tier from active pinned connectors. Payload-specific guards can still raise a tier or forbid an individual intent.",
   "type": "object",
   "properties": {
     "tiers": {
@@ -5697,6 +5697,29 @@ export const GATE_PERMISSION_LIST_JSON_SCHEMA: JsonSchema = {
               "forbidden"
             ]
           },
+          "default": {
+            "description": "The shipped default for this kind, or null when the shipped table has no entry.",
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "approval"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "override": {
+            "description": "The active signed override, omitted when none exists for this kind.",
+            "type": "string",
+            "enum": [
+              "auto",
+              "approval"
+            ]
+          },
           "reason": {
             "type": "string",
             "enum": [
@@ -5711,7 +5734,8 @@ export const GATE_PERMISSION_LIST_JSON_SCHEMA: JsonSchema = {
         },
         "required": [
           "kind",
-          "tier"
+          "tier",
+          "default"
         ],
         "additionalProperties": false
       }

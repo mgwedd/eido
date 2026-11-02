@@ -429,9 +429,15 @@ function passkeyList(state: PhoneState): Reply {
 function permissionList(state: PhoneState): Reply {
   const tiers: GatePermissionList["tiers"] = INTENT_KINDS.map((kind) => {
     const decision = kindTier(state.db, state.policy, kind)
+    const override = state.policy.overlay?.tiers[kind]
+    const configured = {
+      kind,
+      default: state.policy.shipped.tiers[kind] ?? null,
+      ...(override === undefined ? {} : { override }),
+    }
     return decision.tier === "forbidden"
-      ? { kind, tier: decision.tier, reason: decision.reason }
-      : { kind, tier: decision.tier }
+      ? { ...configured, tier: decision.tier, reason: decision.reason }
+      : { ...configured, tier: decision.tier }
   })
   const body: GatePermissionList = {
     tiers,

@@ -543,11 +543,13 @@ export interface GatePendingIntentList {
   }>
 }
 
-/** Effective kind-level permission tiers from the gate's shipped defaults, signed overrides and active pinned connectors. Payload-specific guards can still raise a tier or forbid an individual intent. */
+/** Kind-level permission tiers with shipped defaults, signed overrides and the effective tier from active pinned connectors. Payload-specific guards can still raise a tier or forbid an individual intent. */
 export interface GatePermissionList {
   tiers: Array<{
     kind: string
     tier: "auto" | "approval" | "forbidden"
+    default: "auto" | "approval" | null
+    override?: "auto" | "approval"
     reason?: "unknown_kind" | "no_operation" | "ambiguous_operation" | "manifest_forbidden" | "root_not_allowed" | "connector_disabled"
   }>
   forbiddenKinds: Array<string>
