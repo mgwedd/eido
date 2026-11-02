@@ -112,6 +112,11 @@ export function approvedFileRoot(
   db: DatabaseSync,
   id: string
 ): GateFileRoot | undefined {
+  return approvedFileRoots(db)?.roots.find((r) => r.id === id)?.root
+}
+
+/** The complete root set only when its owner approval and audit binding still verify. */
+export function approvedFileRoots(db: DatabaseSync): GateFileRoots | undefined {
   try {
     const row = db
       .prepare(
@@ -142,7 +147,7 @@ export function approvedFileRoot(
       )
     )
       return undefined
-    return roots.roots.find((r) => r.id === id)?.root
+    return roots
   } catch {
     return undefined
   }
