@@ -25,6 +25,7 @@ export {
   validateGateCredentialStatus,
   validateGateDecisionRequest,
   validateGateDecisionResult,
+  validateGateUndoResult,
   validateGateEditRequest,
   validateGateEnrolOptions,
   validateGateEnrolOptionsRequest,

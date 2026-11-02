@@ -654,6 +654,12 @@ export interface GateSession {
 /** Effective policy tier of an intent (#11). */
 export type GateTier = "auto" | "approval" | "forbidden"
 
+/** Response 200 of POST /executions/{id}/undo: the gate ran the stored inverse for the executed intent. */
+export interface GateUndoResult {
+  id: string
+  undone: true
+}
+
 /** navigator.credentials.get response, each binary field as unpadded base64url. */
 export interface GateWebAuthnAssertion {
   credentialId: string

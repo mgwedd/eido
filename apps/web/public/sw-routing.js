@@ -17,6 +17,7 @@ var SENSITIVE_SEGMENTS = [
   "approval",
   "approvals",
   "audit",
+  "executions",
   "connector-settings",
   "permissions",
   "push",

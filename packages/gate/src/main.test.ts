@@ -561,6 +561,12 @@ describe("runGate with Gmail", () => {
   it("routes an auto mark read through the pinned Gmail connector and stores its inverse", async () => {
     const c = {
       ...config(),
+      phone: {
+        host: "127.0.0.1" as const,
+        port: 0,
+        basePath: "/api/gate",
+        allowedHosts: [],
+      },
       gmail: {
         vaultPath: join(dir, "vault", "dev.json"),
         devVault: true,
@@ -636,6 +642,65 @@ describe("runGate with Gmail", () => {
       ).toBe(
         '{"args":{"messageIds":["msg-1"],"read":false},"connector":"gmail","kind":"email.markRead"}'
       )
+      const phone = gate.phone
+      if (phone === undefined) throw new Error("phone listener did not start")
+      const host = `127.0.0.1:${String(phone.port)}`
+      const headers = { host, "content-type": "application/json" }
+      const authenticator = testAuthenticator()
+      runningGate()
+        .db.prepare(
+          "INSERT INTO credentials (credential_id, public_key, sign_count, created_at) VALUES (?, ?, 0, ?)"
+        )
+        .run(
+          authenticator.credentialId,
+          authenticator.publicKey,
+          new Date().toISOString()
+        )
+      const loginOptions = await send(
+        phone.port,
+        "POST",
+        "/api/gate/auth/login/options",
+        headers
+      )
+      const challenge =
+        typeof loginOptions.body === "object" &&
+        loginOptions.body !== null &&
+        "challenge" in loginOptions.body
+          ? String(loginOptions.body.challenge)
+          : ""
+      const login = await send(
+        phone.port,
+        "POST",
+        "/api/gate/auth/login",
+        headers,
+        { assertion: assertion(authenticator, challenge) }
+      )
+      const setCookie = login.headers["set-cookie"]
+      const cookie = Array.isArray(setCookie) ? setCookie[0] : setCookie
+      if (typeof cookie !== "string")
+        throw new Error("phone listener did not issue a session")
+      const undone = await send(
+        phone.port,
+        "POST",
+        `/api/gate/executions/${proposal.id}/undo`,
+        { ...headers, cookie: cookie.split(";")[0] ?? "" },
+        {}
+      )
+      expect(undone).toMatchObject({
+        status: 200,
+        body: { id: proposal.id, undone: true },
+      })
+      expect(calls).toEqual([
+        "GET https://gmail.googleapis.com/gmail/v1/users/me/messages/msg-1?format=minimal",
+        "POST https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",
+        "GET https://gmail.googleapis.com/gmail/v1/users/me/messages/msg-1?format=minimal",
+        "POST https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",
+      ])
+      expect(
+        runningGate()
+          .db.prepare("SELECT intent_id FROM execution_undos WHERE intent_id=?")
+          .get(proposal.id)?.["intent_id"]
+      ).toBe(proposal.id)
     } finally {
       await gate.close()
     }
