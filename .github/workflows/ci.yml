@@ -67,3 +67,30 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Gate tests
         run: pnpm turbo run test --filter=@eido/gate
+
+  # The gate's confined file helper (packages/gate/native/file-helper, ADR 0006). Rust, no crates; the
+  # toolchain comes from the runner's preinstalled rustup, pinned by rust-toolchain.toml.
+  file-helper:
+    name: file helper (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/gate/native/file-helper
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked
