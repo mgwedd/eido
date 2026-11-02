@@ -12,7 +12,7 @@ export default defineConfig({
         "tailscale/bin.ts", // entry point: hands process.argv and the real tailscale CLI to main()
         "stack/bin.ts", // entry point: hands process.argv and real processes, signals and files to main()
       ],
-      reporter: ["text", "json-summary"],
+      reporter: ["text", "json-summary", "cobertura"],
       thresholds: {
         lines: 90,
         statements: 90,

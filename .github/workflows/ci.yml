@@ -21,6 +21,9 @@ jobs:
     # Pinned: the Tesseract package versions below are Ubuntu 24.04's; ubuntu-latest moved to 26.04.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      code-quality: write # upload-code-coverage
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,6 +47,51 @@ jobs:
       # every push to main runs everything.
       - name: Verify
         run: pnpm verify --full
+      # Feeds the "Restrict code coverage" ruleset rule (#125). It runs here because the rule does not wait for
+      # uploads, so they must come from a required check. Docs-only pull requests skip the test task, write no
+      # report, and so skip these steps.
+      - name: Upload coverage (web)
+        if: ${{ hashFiles('apps/web/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: apps/web/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-web
+      - name: Upload coverage (ui)
+        if: ${{ hashFiles('packages/ui/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: packages/ui/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-ui
+      - name: Upload coverage (gate)
+        if: ${{ hashFiles('packages/gate/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: packages/gate/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-gate
+      - name: Upload coverage (core)
+        if: ${{ hashFiles('packages/core/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: packages/core/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-core
+      - name: Upload coverage (schemas)
+        if: ${{ hashFiles('packages/schemas/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: packages/schemas/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-schemas
+      - name: Upload coverage (infra)
+        if: ${{ hashFiles('infra/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: infra/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-infra
 
   # The gate's Bridge tests (local fake IMAP and SMTP) and its Windows named-pipe support (ADR 0003)
   # must hold off Linux too. The full check run stays on Linux in `check`.
