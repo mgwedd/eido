@@ -50,6 +50,36 @@ const autoRow = entry(117, {
 })
 const olderDayRow = entry(116, { ts: "2026-10-16T08:00:00.000Z" })
 
+/** An auto-tier execution (a mark-read intent) the gate can still undo. */
+const EXECUTED_ID = "5d2e8f71-3b4c-4a9e-8f06-1e7c9b2d4a63"
+const executedRow = entry(130, {
+  actor: "executor",
+  displayActor: "auto",
+  action: "execute",
+  target: EXECUTED_ID,
+  detailHash: hash("e7f20b13"),
+  undo: "available",
+})
+/** The same execution once the gate has recorded its undo. */
+const executedUndoneRow: Entry = { ...executedRow, undo: "done" }
+/** The audited entry the gate appends for that undo. */
+const undoRow = entry(131, {
+  actor: "executor",
+  displayActor: "you",
+  action: "undo",
+  target: EXECUTED_ID,
+  detailHash: hash("9a0c4d5e"),
+})
+/** An execution undone earlier. */
+const UNDONE_ID = "8c1a2b3d-4e5f-4a6b-9c7d-0e1f2a3b4c5d"
+const undoneRow = entry(129, {
+  actor: "executor",
+  displayActor: "auto",
+  action: "execute",
+  target: UNDONE_ID,
+  undo: "done",
+})
+
 const chainOk: GateAuditChainStatus = { ok: true, rows: 1286 }
 const chainBroken: GateAuditChainStatus = {
   ok: false,
@@ -77,7 +107,13 @@ const history: GateIntentHistory = {
 }
 
 export {
+  EXECUTED_ID,
   INTENT_ID,
+  UNDONE_ID,
+  executedRow,
+  executedUndoneRow,
+  undoRow,
+  undoneRow,
   alertRow,
   autoRow,
   chainBroken,

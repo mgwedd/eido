@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GatePushSubscriptionList",
+  "description": "Response of GET /push/subscriptions on the phone listener (#16): the ids of the live subscriptions. Endpoints and keys are never returned.",
+  "type": "object",
+  "properties": {
+    "subscriptions": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "gate-push-subscription-ref.schema.json"
+      }
+    }
+  },
+  "required": ["subscriptions"],
+  "additionalProperties": false
+}

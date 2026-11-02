@@ -41,3 +41,10 @@ export function isActive(pathname: string, href: string): boolean {
 export function phoneItems(items: readonly NavItem[] = NAV_ITEMS): NavItem[] {
   return items.filter((item) => item.phone)
 }
+
+/** The entries left out of the phone tab bar; Today links to them on phones. */
+export function phoneOverflowItems(
+  items: readonly NavItem[] = NAV_ITEMS
+): NavItem[] {
+  return items.filter((item) => !item.phone)
+}

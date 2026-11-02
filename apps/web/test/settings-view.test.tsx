@@ -90,6 +90,7 @@ test("shows the sections in the issue's order", async () => {
   )
   expect(headings).toEqual([
     "Appearance",
+    "Notifications",
     "Devices and passkeys",
     "Assistant behaviour",
     "Security",
@@ -97,10 +98,10 @@ test("shows the sections in the issue's order", async () => {
   ])
 })
 
-test("omits sections whose data source does not exist: no Profile, Notifications or Data", async () => {
+test("omits sections whose data source does not exist: no Profile or Data", async () => {
   gate(healthy)
   await render()
-  for (const absent of ["Profile", "Notifications", "Data"])
+  for (const absent of ["Profile", "Data"])
     expect(
       [...container.querySelectorAll("h2")].map((h) => h.textContent)
     ).not.toContain(absent)
@@ -176,7 +177,26 @@ test("no control revokes a passkey or edits permissions", async () => {
     (b) => b.getAttribute("aria-label") ?? b.textContent ?? ""
   )
   expect(labels.join("|")).not.toMatch(/^(remove|revoke|edit|delete)/i)
-  expect(container.querySelector("input, select, textarea")).toBeNull()
+  // The only controls that change anything are the theme radios and the push switch.
+  // The switch mirrors its state into an aria-hidden checkbox input, which is not a
+  // control of its own.
+  const controls = [
+    ...container.querySelectorAll(
+      "input, select, textarea, [role=switch], [role=radio], [role=checkbox], [role=combobox], [role=textbox], [role=slider], [role=spinbutton]"
+    ),
+  ]
+    .filter((control) => control.getAttribute("aria-hidden") !== "true")
+    .map((control) => [
+      control.closest("[aria-labelledby]")?.getAttribute("aria-labelledby"),
+      control.getAttribute("role") ?? control.tagName.toLowerCase(),
+      control.getAttribute("aria-label") ?? control.textContent,
+    ])
+  expect(controls).toEqual([
+    ["settings-appearance", "radio", "Dark"],
+    ["settings-appearance", "radio", "Light"],
+    ["settings-appearance", "radio", "System"],
+    ["settings-notifications", "switch", "Push on this device"],
+  ])
   // No write requests were made either.
   const fn = vi.mocked(fetch)
   for (const call of fn.mock.calls) expect(call[1]?.method ?? "GET").toBe("GET")

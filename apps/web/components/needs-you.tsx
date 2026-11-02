@@ -7,6 +7,7 @@ import { Badge } from "@eido/ui/components/badge"
 import { Button } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import { PhoneMoreLinks } from "@/components/phone-more-links"
 import { expiredUnlockUrl } from "@/lib/auth/unlock"
 import { formatWaiting } from "@/lib/relative-time"
 import {
@@ -169,9 +170,12 @@ function TodayView() {
 
   return (
     <>
-      <header className="flex flex-col gap-0.5">
-        <h1 className="text-xl font-semibold tracking-tight">Today</h1>
-        <p className="min-h-5 text-sm text-muted-foreground">{subtitle}</p>
+      <header className="flex items-start justify-between gap-2">
+        <div className="flex flex-col gap-0.5">
+          <h1 className="text-xl font-semibold tracking-tight">Today</h1>
+          <p className="min-h-5 text-sm text-muted-foreground">{subtitle}</p>
+        </div>
+        <PhoneMoreLinks />
       </header>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,380px),1fr))] items-start gap-4">
         <NeedsYouCard state={state} now={loadedAt} onRetry={retry} />

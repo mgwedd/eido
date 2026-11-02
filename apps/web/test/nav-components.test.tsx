@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { beforeEach, expect, test, vi } from "vitest"
 import { SidebarProvider } from "@eido/ui/components/sidebar"
 import { AppSidebar } from "../components/app-sidebar"
+import { PhoneMoreLinks } from "../components/phone-more-links"
 import { PhoneTabBar } from "../components/phone-tab-bar"
 
 const navigation = vi.hoisted(() => ({ pathname: "/" }))
@@ -54,4 +55,18 @@ test("phone tab bar marks nothing current on an unlisted page", () => {
   navigation.pathname = "/elsewhere"
   const html = renderToStaticMarkup(<PhoneTabBar />)
   expect(html).not.toContain("aria-current")
+})
+
+test("phone header links open Connectors and Settings with 44px targets", () => {
+  const html = renderToStaticMarkup(<PhoneMoreLinks />)
+  expect(html).toMatch(/^<nav aria-label="More" class="[^"]*\bmd:hidden\b/)
+  const links = [...html.matchAll(/<a ([^>]*)>/g)].map(([, attrs = ""]) => ({
+    href: /href="([^"]*)"/.exec(attrs)?.[1],
+    label: /aria-label="([^"]*)"/.exec(attrs)?.[1],
+    big: /class="[^"]*\bsize-11\b/.test(attrs),
+  }))
+  expect(links).toEqual([
+    { href: "/connectors", label: "Connectors", big: true },
+    { href: "/settings", label: "Settings", big: true },
+  ])
 })
