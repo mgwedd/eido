@@ -18,6 +18,20 @@ import {
 import { propose } from "./intents"
 import { dataPlaneHandler } from "./routes"
 import { MAIL_OPS, manifest, setup, signedPin } from "./test-fixtures"
+import {
+  assertion,
+  deviceChallenge,
+  testAuthenticator,
+  WEBAUTHN,
+} from "./test-fixtures"
+import { issueNonce } from "./approvals"
+import { beginLogin, login, SESSION_COOKIE } from "./sessions"
+import { phoneHandler } from "./phone-routes"
+import {
+  validateGatePrepareApproval,
+  validateGateProposeResult,
+} from "@eido/schemas"
+import { payloadHash } from "./canonical"
 import type { Setup } from "./test-fixtures"
 import { InMemoryVault } from "./vault/vault"
 
@@ -1579,4 +1593,249 @@ describe("Gmail and Proton pinned together", () => {
         })
     }
   )
+})
+
+async function draftDiscardFixture(draftResult?: Record<string, unknown>) {
+  const setUp = pinnedGmail(true)
+  const gmail = fakeGmailApi({ "message-1": ["DRAFT"], unrelated: ["INBOX"] })
+  const transport = gmailWriteTransport({
+    db: setUp.db,
+    vault: await vaultWithToken(),
+    fetch: gmail.send,
+  })
+  const executor = createExecutor(setUp.db, GMAIL_WRITERS, async (request) => {
+    const result = await transport(request)
+    return request.intentKind === "email.draft" && draftResult !== undefined
+      ? { ...result, result: draftResult }
+      : result
+  })
+  const draft = proposeIntent(setUp, {
+    kind: "email.draft",
+    connector: "gmail",
+    args: {
+      to: ["recipient@example.invalid"],
+      subject: "Synthetic draft",
+      body: "Private draft body",
+    },
+  })
+  expect((await executor.execute(draft.intentId)).ok).toBe(true)
+  const auth = testAuthenticator()
+  setUp.db
+    .prepare(
+      "INSERT INTO credentials(credential_id,public_key,sign_count,created_at) VALUES (?,?,0,?)"
+    )
+    .run(auth.credentialId, auth.publicKey, new Date().toISOString())
+  const now = () => new Date()
+  const begun = beginLogin(setUp.db, now)
+  const session = login(
+    setUp.db,
+    WEBAUTHN,
+    assertion(auth, begun.challenge),
+    now
+  )
+  if (!session.ok) throw new Error("login refused")
+  const notifyPending = vi.fn()
+  const handler = phoneHandler({
+    gate: () => ({
+      ...setUp,
+      webAuthn: WEBAUTHN,
+      push: { publicKey: () => Promise.resolve("synthetic"), notifyPending },
+    }),
+    allowedHosts: ["eido.example.invalid"],
+    basePath: "/api/gate",
+    now,
+    execute: (id) => executor.execute(id),
+    undo: (id) => executor.undo(id),
+  })
+  const call = (
+    path = `/executions/${draft.intentId}/discard-draft`,
+    body: unknown = {},
+    signedIn = true
+  ) =>
+    handler({
+      method: "POST",
+      path: `/api/gate${path}`,
+      query: new URLSearchParams(),
+      headers: {
+        host: "eido.example.invalid",
+        contentType: "application/json",
+        ...(signedIn ? { cookie: `${SESSION_COOKIE}=${session.token}` } : {}),
+      },
+      body: () => Promise.resolve({ ok: true, text: JSON.stringify(body) }),
+    })
+  return { ...setUp, gmail, executor, draft, auth, call, notifyPending }
+}
+
+describe("Gmail draft discard through the phone approval flow", () => {
+  it("proposes only the receipt's message, and moves it to Trash only after a signed approval", async () => {
+    const f = await draftDiscardFixture()
+    const initialCalls = f.gmail.calls.length
+    const response = await f.call()
+    expect(response.status).toBe(201)
+    const proposed = validateGateProposeResult(response.body)
+    if (!proposed.ok) throw new Error("invalid proposal response")
+    expect(proposed.value).toMatchObject({ tier: "approval", state: "pending" })
+    const id = proposed.value.id
+    const row = f.db
+      .prepare("SELECT payload_json FROM intents WHERE id=?")
+      .get(id)
+    expect(JSON.parse(String(row?.["payload_json"]))).toEqual({
+      kind: "email.trash",
+      connector: "gmail",
+      args: { messageIds: ["message-1"] },
+    })
+    expect(f.notifyPending).toHaveBeenCalledTimes(1)
+    expect(await f.executor.execute(id)).toEqual({
+      ok: false,
+      code: "invalid_state",
+    })
+    expect(f.gmail.calls).toHaveLength(initialCalls)
+    expect(f.gmail.labels("message-1")).toEqual(["DRAFT"])
+    expect(await f.executor.undo(f.draft.intentId)).toEqual({
+      ok: false,
+      code: "no_inverse",
+    })
+    const prepared = validateGatePrepareApproval(
+      (await f.call(`/approvals/${id}/nonce`)).body
+    )
+    if (!prepared.ok) throw new Error("invalid approval preparation")
+    const approved = await f.call(`/approvals/${id}/decision`, {
+      intentId: id,
+      decision: "approved",
+      nonce: prepared.value.nonce,
+      assertion: assertion(
+        f.auth,
+        deviceChallenge(prepared.value.payloadHash, id, prepared.value.nonce)
+      ),
+    })
+    expect(approved.status).toBe(200)
+    expect(f.gmail.labels("message-1")).toEqual(["DRAFT", "TRASH"])
+    expect(f.gmail.labels("unrelated")).toEqual(["INBOX"])
+    expect(
+      f.gmail.calls
+        .filter((call) => call.method === "POST")
+        .map((call) => call.url)
+    ).toEqual([
+      "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",
+    ])
+    const posted = f.gmail.send.mock.lastCall?.[1]?.body
+    if (typeof posted !== "string")
+      throw new Error("missing Trash request body")
+    expect(JSON.parse(posted)).toEqual({
+      ids: ["message-1"],
+      addLabelIds: ["TRASH"],
+    })
+  })
+
+  it("refuses unsigned approval without a Gmail call", async () => {
+    const f = await draftDiscardFixture()
+    const proposed = validateGateProposeResult((await f.call()).body)
+    if (!proposed.ok) throw new Error("invalid proposal")
+    const prepared = issueNonce(f.db, proposed.value.id)
+    if (!prepared.ok) throw new Error("prepare refused")
+    const before = f.gmail.calls.length
+    const response = await f.call(`/approvals/${proposed.value.id}/decision`, {
+      intentId: proposed.value.id,
+      decision: "approved",
+      nonce: prepared.nonce,
+      assertion: assertion(
+        testAuthenticator(),
+        deviceChallenge(prepared.payloadHash, proposed.value.id, prepared.nonce)
+      ),
+    })
+    expect(response.status).toBe(403)
+    expect(f.gmail.calls).toHaveLength(before)
+    expect(f.gmail.labels("message-1")).toEqual(["DRAFT"])
+  })
+
+  it.each([
+    null,
+    [],
+    { messageId: "unrelated" },
+    { intent: { kind: "email.trash" } },
+  ])("rejects a nonempty or invalid body %j", async (body) => {
+    const f = await draftDiscardFixture()
+    const before = f.gmail.calls.length
+    expect((await f.call(undefined, body)).status).toBe(400)
+    expect(f.gmail.calls).toHaveLength(before)
+    expect(
+      f.db.prepare("SELECT id FROM intents WHERE kind='email.trash'").all()
+    ).toEqual([])
+  })
+
+  it("requires a session and bounds the execution id", async () => {
+    const f = await draftDiscardFixture()
+    expect((await f.call(undefined, {}, false)).status).toBe(401)
+    expect(
+      (await f.call(`/executions/${"a".repeat(65)}/discard-draft`)).status
+    ).toBe(400)
+  })
+
+  it.each([
+    "unknown",
+    "not_executed",
+    "wrong_kind",
+    "bad_payload",
+    "changed_payload",
+    "wrong_connector",
+    "changed_receipt",
+    "missing_receipt",
+    "missing_message",
+    "wrong_draft_id",
+    "invalid_message",
+    "auto_trash",
+  ])("refuses %s sources without proposing Trash", async (scenario) => {
+    const draftResult =
+      scenario === "missing_message"
+        ? { id: "draft-1" }
+        : scenario === "wrong_draft_id"
+          ? { id: "other-draft", messageId: "message-1" }
+          : scenario === "invalid_message"
+            ? { id: "draft-1", messageId: "" }
+            : undefined
+    const f = await draftDiscardFixture(draftResult)
+    const id = f.draft.intentId
+    if (scenario === "not_executed")
+      f.db.prepare("UPDATE intents SET state='failed' WHERE id=?").run(id)
+    if (scenario === "wrong_kind")
+      f.db.prepare("UPDATE intents SET kind='email.send' WHERE id=?").run(id)
+    if (scenario === "bad_payload")
+      f.db.prepare("UPDATE intents SET payload_json='{' WHERE id=?").run(id)
+    if (scenario === "changed_payload")
+      f.db
+        .prepare("UPDATE intents SET payload_hash=? WHERE id=?")
+        .run("0".repeat(64), id)
+    if (scenario === "wrong_connector") {
+      const payload = {
+        kind: "email.draft",
+        connector: "proton",
+        args: {
+          to: ["r@example.invalid"],
+          subject: "Synthetic",
+          body: "Synthetic",
+        },
+      }
+      f.db
+        .prepare("UPDATE intents SET payload_json=?,payload_hash=? WHERE id=?")
+        .run(JSON.stringify(payload), payloadHash(payload), id)
+    }
+    if (scenario === "changed_receipt")
+      f.db
+        .prepare("UPDATE executions SET result=? WHERE intent_id=?")
+        .run(JSON.stringify({ id: "draft-1", messageId: "unrelated" }), id)
+    if (scenario === "missing_receipt")
+      f.db.prepare("DELETE FROM executions WHERE intent_id=?").run(id)
+    if (scenario === "auto_trash")
+      f.policy.shipped.tiers["email.trash"] = "auto"
+    const before = f.gmail.calls.length
+    const response = await f.call(
+      scenario === "unknown" ? "/executions/missing/discard-draft" : undefined
+    )
+    expect(response.status).toBe(409)
+    expect(f.gmail.calls).toHaveLength(before)
+    expect(
+      f.db.prepare("SELECT id FROM intents WHERE kind='email.trash'").all()
+    ).toEqual([])
+  })
 })

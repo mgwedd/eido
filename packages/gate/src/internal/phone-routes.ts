@@ -41,6 +41,7 @@ import {
 import type { EditResult } from "./intents"
 import type { Policy } from "./policy"
 import { kindTier } from "./policy"
+import { proposeDraftDiscard } from "./draft-discard"
 import { verifyChain } from "./audit"
 import {
   beginPhoneRegistration,
@@ -112,6 +113,7 @@ export const PHONE_ROUTES = [
   { method: "POST", path: "/approvals/:id/decision", session: true },
   { method: "POST", path: "/approvals/:id/edit", session: true },
   { method: "POST", path: "/executions/:id/undo", session: true },
+  { method: "POST", path: "/executions/:id/discard-draft", session: true },
   { method: "GET", path: "/push/key", session: true },
   { method: "GET", path: "/push/subscriptions", session: true },
   { method: "POST", path: "/push/prepare", session: true },
@@ -597,6 +599,36 @@ async function edit(
 
 const undoInFlight = new WeakMap<DatabaseSync, Set<string>>()
 
+async function discardDraft(
+  state: PhoneState,
+  request: GateRequest,
+  id: string
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  if (
+    typeof body.value !== "object" ||
+    body.value === null ||
+    Array.isArray(body.value) ||
+    Object.keys(body.value).length !== 0 ||
+    id.length > 64
+  )
+    return apiError(
+      400,
+      "invalid_request",
+      "expected an execution id and an empty object"
+    )
+  const proposed = proposeDraftDiscard(state.db, state.policy, id)
+  if (proposed === undefined)
+    return apiError(
+      409,
+      "unavailable",
+      "this draft cannot be proposed for discard"
+    )
+  state.push?.notifyPending()
+  return { status: 201, body: proposed }
+}
+
 async function undo(
   state: PhoneState,
   request: GateRequest,
@@ -749,6 +781,8 @@ function route(
       return edit(state, request, matched.id)
     case "/executions/:id/undo":
       return undo(state, request, matched.id, executeUndo)
+    case "/executions/:id/discard-draft":
+      return discardDraft(state, request, matched.id)
     case "/push/key":
       return state.push === undefined
         ? apiError(503, "unavailable", "push is not configured")
