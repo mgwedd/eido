@@ -1,13 +1,19 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
 import type {
   CoreApiDocumentField,
+  CoreApiDocumentType,
   CoreApiDocumentList,
   CoreApiDocumentSummary,
   CoreApiDocumentView,
   ExtractedFields,
 } from "@eido/schemas"
-import { validateExtractedFields } from "@eido/schemas"
+import {
+  validateCoreApiDocumentTypeRequest,
+  validateExtractedFields,
+} from "@eido/schemas"
+import { writeQueueFor } from "../db/write-queue"
 import { DEFAULT_CONFIDENCE_THRESHOLD } from "../extraction/pipeline"
+import { setDocumentType } from "../index/document-type"
 import { LIVE_DOCUMENT_PREDICATE } from "../index/heads"
 import { tokenize } from "../index/text"
 
@@ -34,6 +40,8 @@ export const MAX_LIMIT = 200
 
 const LIST_PATH = "/documents"
 const VIEW_PATH = /^\/documents\/([^/]+)$/
+/** `PUT /documents/:sha256/type`: the owner sets a document's type. */
+export const DOCUMENT_TYPE_PATH = /^\/documents\/([^/]+)\/type$/
 const SHA256 = /^[0-9a-f]{64}$/
 const DIGITS = /^\d+$/
 
@@ -380,4 +388,48 @@ function extractionsFor(
         fields: out,
       }
     })
+}
+
+export type DocumentTypeResult =
+  | { ok: true; body: CoreApiDocumentType }
+  | {
+      ok: false
+      code: "bad_request" | "not_found"
+      message: string
+      fields?: FieldError[]
+    }
+
+/**
+ * Stores the owner's type for the document a path that matched DOCUMENT_TYPE_PATH names, with
+ * source `user` (a later model label never replaces it). The write runs on the connection's
+ * write queue. The type is validated before the document is looked up.
+ */
+export async function setOwnerDocumentType(
+  deps: DocumentsDeps,
+  match: RegExpExecArray,
+  body: unknown
+): Promise<DocumentTypeResult> {
+  const checked = validateCoreApiDocumentTypeRequest(body)
+  if (!checked.ok) {
+    return {
+      ok: false,
+      code: "bad_request",
+      message: "invalid input",
+      fields: checked.errors.map((issue) => ({
+        field: issue.replace(/^\$\.?/, "").split(": ")[0] ?? "",
+        message: issue.includes(": ")
+          ? issue.slice(issue.indexOf(": ") + 2)
+          : issue,
+      })),
+    }
+  }
+  const sha256 = match[1] ?? ""
+  const { type } = checked.value
+  const stored = await writeQueueFor(deps.db).run(() =>
+    setDocumentType(deps.db, sha256, { type, source: "user" })
+  )
+  if (!stored) {
+    return { ok: false, code: "not_found", message: "no such document" }
+  }
+  return { ok: true, body: { sha256, type, typeSource: "user" } }
 }

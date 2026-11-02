@@ -173,6 +173,18 @@ export interface CoreApiDocumentSummary {
   typeSource: "model" | "user" | null
 }
 
+/** Request body of PUT /documents/:sha256/type: the type the owner sets on a stored document. It is stored with source user and is not replaced by a later model classification. */
+export interface CoreApiDocumentTypeRequest {
+  type: DocumentTypeLabel
+}
+
+/** Response of PUT /documents/:sha256/type: the stored type of the document and who set it (always user for this route). */
+export interface CoreApiDocumentType {
+  sha256: string
+  type: DocumentTypeLabel
+  typeSource: "model" | "user"
+}
+
 /** Response of GET /documents/:sha256?start=&end=. `lines` is the stored text split on newlines; `start` is each line's UTF-16 offset in that text. `highlight` is the requested [start, end) range, or null when none was asked. `extractions` lists the document's extracted rows, oldest first. Text is data only: the client renders it as plain text. */
 export interface CoreApiDocumentView {
   document: CoreApiDocumentSummary
@@ -245,6 +257,9 @@ export interface CoreApiProfile {
   }>
   updatedAt: string
 }
+
+/** The semantic types the owner can set on a stored document, and the set the document classifier (#398) picks from. Closed on purpose: a label outside it is refused. */
+export type DocumentTypeLabel = "Invoice" | "Quote" | "Receipt" | "Tax bill" | "Contract" | "Insurance policy" | "Statement" | "Letter" | "Other"
 
 export interface ExtractedFields {
   action: {
