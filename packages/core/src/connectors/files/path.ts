@@ -1,9 +1,17 @@
+type FileErrorCode =
+  | "path_not_allowed"
+  | "invalid_payload"
+  | "proposal_refused"
+  | "invalid_pdf"
+  | "invalid_text"
+  | "read_failed"
+  | "not_found"
 export class FileError extends Error {
-  constructor(
-    readonly code: "path_not_allowed" | "invalid_payload" | "proposal_refused"
-  ) {
+  readonly code: FileErrorCode
+  constructor(code: FileErrorCode) {
     super(code)
     this.name = "FileError"
+    this.code = code
   }
 }
 

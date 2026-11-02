@@ -1,6 +1,6 @@
 # 0006: A native helper for confined local file operations
 
-Status: accepted with #313. The executor wiring (file intents through the helper) follows in its own issue.
+Status: accepted with #313. File execution, undo and confined reads are integrated by #23 / #461; signed root control routes are #462. See [local files](../local-files.md) for configuration and operation.
 
 ## Problem
 
@@ -25,6 +25,9 @@ There is one request per process. The request is one JSON object on stdin; the r
 | `move`     | `root`, `from`, `to`            | `{ok:true, op}`                                          |
 | `trash`    | `root`, `path`, `trashName`     | `{ok:true, op}`                                          |
 | `restore`  | `root`, `trashName`, `path`     | `{ok:true, op}`                                          |
+
+| `read` | `root`, `path`, `maxBytes` (1–8 MiB) | `{ok:true, op, contentBase64}` |
+| `list` | `root`, `path` (empty for root) | `{ok:true, op, entries:[{name,kind}], truncated}` |
 
 A `root` is `{path, dev, ino, trashDir}`, exactly as approved. Paths in requests are relative to the root and use `/` separators. A refusal is `{ok:false, code, message}`, where `code` is one of the following: `bad_request`, `invalid_path`, `root_changed`, `not_found`, `exists`, `not_a_directory`, `symlink`, `io` or `unsupported`. The gate audits codes only, never the message.
 
@@ -81,3 +84,9 @@ A missing, tampered, replayed, stale or cross-target approval returns no root, a
 - **Rust:** `cargo test --locked` runs 30 tests on ubuntu, macOS and Windows in CI, in the `file helper` job. They cover every verb plus race tests that use hooks to swap ancestors, plant symlinks or reparse points, create destinations between validation and mutation, and replace the root. One test runs concurrent swapper threads.
 - **Gate unit tests:** these mock `node:child_process`, so `pnpm verify` and the gate package tests never need cargo or the binary. They cover the wrapper (spawn options, pin, stream limits, reply parsing), the signed roots (unsigned, tampered, replayed, stale and cross-target refusal) and the audited operations (hashes only).
 - **Native end-to-end:** `file-helper.native.test.ts` runs the real helper through signed roots, including a replaced root. It runs only when `EIDO_FILE_HELPER` names a binary. The CI `file helper` job sets it after the release build on all three platforms; elsewhere the test is skipped. Cargo is deliberately not a turbo task, so contributors without a Rust toolchain can still run every other check.
+
+## Confined reads (#23)
+
+Read opens the final regular file through its verified parent handle, refuses links and reparse points, and reads at most the requested byte limit. Listing uses an independent directory handle (`fdopendir`/`readdir` on Unix, `GetFileInformationByHandleEx` on Windows), inspects children relative to that handle, skips links and special files and excludes Eido Trash. A listing examines at most 1,000 entries and reports truncation. No reconstructed path is reopened after validation. The read stdout limit is 12 MiB; list replies are bounded to 512 KiB. The schema permits only the declared operations and bounded output.
+
+The gate checks helper install permissions before starting file services. POSIX checks include regular executable type, ownership and non-writable ancestors; root-owned sticky temporary ancestors are allowed. Windows requires deployment ACL enforcement because POSIX mode bits do not prove it. Native TypeScript integration now also tests the executor and real gate sockets. Core connector cases run in the same three-platform CI matrix. Host installation automation remains #463.

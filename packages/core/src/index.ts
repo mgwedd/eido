@@ -19,3 +19,5 @@ export * from "./ask/index"
 export * from "./parsers/index"
 export * from "./extraction/index"
 export * from "./propose/index"
+
+export * from "./connectors/files/index"
