@@ -1,5 +1,5 @@
 // Synthetic fixtures for the Today page. Imported by tests only; never by app code
-// (enforced by the `web-test-fixtures-are-test-only` rule in .dependency-cruiser.cjs).
+// (enforced by the `web-test-fixtures-are-test-only` rule in .dependency-cruiser.mts).
 import type { PendingIntent } from "../../lib/today"
 
 const NOW = new Date("2026-10-18T12:00:00.000Z")
