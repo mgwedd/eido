@@ -386,7 +386,7 @@ export interface GateConnectorHealth {
   }>
 }
 
-/** Authenticated phone view of each pinned connector's live health, declared auth scopes and pin timestamp. It contains no credentials. */
+/** Authenticated phone view of each pinned connector's live health, declared auth scopes, pin timestamp, pinned manifest hash, last successful read and manifest drift detail, with the gate's own time. Fields other than the original ones are optional per connector. It contains no credentials. */
 export interface GateConnectorSettings {
   connectors: Array<{
     name: string
@@ -397,7 +397,14 @@ export interface GateConnectorSettings {
     consecutiveFailures: number
     lastError?: string
     nextAttemptAt?: string
+    lastSuccessAt?: string
+    manifestHash?: string
+    drift?: {
+      added: Array<string>
+      removed: Array<string>
+    }
   }>
+  asOf?: string
 }
 
 /** Response of GET /passkey/status on the phone listener, which needs no session. enrolled is true when the gate holds at least one unrevoked passkey; when it is false the PWA blocks Approve and links to /enroll. sessionExpiresAt is when the session cookie sent with the request ends, or null when there is no valid session. */

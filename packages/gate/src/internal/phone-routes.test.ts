@@ -16,6 +16,12 @@ import {
 } from "@eido/schemas"
 import type { Body, GateRequest, Reply } from "./http"
 import { append } from "./audit"
+import {
+  beginConnectorRead,
+  recordConnectorReadFailure,
+  recordConnectorReadSuccess,
+} from "./connector-health"
+import { checkDrift, manifestHash } from "./connectors"
 import { payloadHash } from "./canonical"
 import { propose } from "./intents"
 import { matchRoute, phoneHandler, routePath } from "./phone-routes"
@@ -24,6 +30,8 @@ import type { PhoneState } from "./phone-routes"
 import {
   assertion,
   controlAuthorization,
+  FILE_OPS,
+  manifest,
   deviceChallenge,
   sample,
   setup,
@@ -261,6 +269,58 @@ describe("phoneHandler: push subscriptions", () => {
     expect((await call("GET", "/push/subscriptions", { cookie })).body).toEqual(
       { subscriptions: [] }
     )
+  })
+})
+
+describe("phoneHandler: connector settings detail", () => {
+  it("serves last success, manifest hash and asOf for healthy, open and drift-disabled connectors", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const READ = Date.parse("2026-10-19T08:30:00.000Z")
+    recordConnectorReadSuccess(
+      s.db,
+      "mail",
+      beginConnectorRead(s.db, "mail", READ),
+      READ
+    )
+    for (let i = 0; i < 5; i += 1) {
+      recordConnectorReadFailure(
+        s.db,
+        "calendar",
+        "timeout",
+        beginConnectorRead(s.db, "calendar", READ + i),
+        READ + i
+      )
+    }
+    checkDrift(s.db, "files", ["files.unpinned_tool"])
+    at = new Date("2026-10-19T09:00:00.000Z")
+
+    const reply = await call("GET", "/connector-settings", { cookie })
+    const checked = validateGateConnectorSettings(reply.body)
+    if (!checked.ok) throw new Error("connector settings are invalid")
+    expect(checked.value.asOf).toBe(at.toISOString())
+    const byName = new Map(checked.value.connectors.map((c) => [c.name, c]))
+
+    const mail = byName.get("mail")
+    expect(mail).toMatchObject({
+      enabled: true,
+      health: "healthy",
+      lastSuccessAt: new Date(READ).toISOString(),
+    })
+    expect(mail?.manifestHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(mail).not.toHaveProperty("drift")
+
+    const calendar = byName.get("calendar")
+    expect(calendar).toMatchObject({ enabled: true, health: "open" })
+    expect(calendar).not.toHaveProperty("lastSuccessAt")
+    expect(calendar).not.toHaveProperty("drift")
+
+    const files = byName.get("files")
+    expect(files?.enabled).toBe(false)
+    expect(files?.drift?.added).toEqual(["files.unpinned_tool"])
+    expect(files?.drift?.removed.length).toBeGreaterThan(0)
+    expect(files?.manifestHash).toBe(manifestHash(manifest("files", FILE_OPS)))
+    expect(JSON.stringify(reply.body)).not.toMatch(/token|secret/i)
   })
 })
 

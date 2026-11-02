@@ -4603,7 +4603,7 @@ export function validateGateConnectorHealth(value: unknown): ValidationResult<Ga
 export const GATE_CONNECTOR_SETTINGS_JSON_SCHEMA: JsonSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateConnectorSettings",
-  "description": "Authenticated phone view of each pinned connector's live health, declared auth scopes and pin timestamp. It contains no credentials.",
+  "description": "Authenticated phone view of each pinned connector's live health, declared auth scopes, pin timestamp, pinned manifest hash, last successful read and manifest drift detail, with the gate's own time. Fields other than the original ones are optional per connector. It contains no credentials.",
   "type": "object",
   "properties": {
     "connectors": {
@@ -4659,6 +4659,44 @@ export const GATE_CONNECTOR_SETTINGS_JSON_SCHEMA: JsonSchema = {
             "format": "date-time",
             "minLength": 20,
             "maxLength": 40
+          },
+          "lastSuccessAt": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 20,
+            "maxLength": 40
+          },
+          "manifestHash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "drift": {
+            "type": "object",
+            "properties": {
+              "added": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "removed": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              }
+            },
+            "required": [
+              "added",
+              "removed"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -4671,6 +4709,12 @@ export const GATE_CONNECTOR_SETTINGS_JSON_SCHEMA: JsonSchema = {
         ],
         "additionalProperties": false
       }
+    },
+    "asOf": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
     }
   },
   "required": [
