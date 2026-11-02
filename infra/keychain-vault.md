@@ -71,3 +71,15 @@ Before deploying with #70, verify from a second real macOS user that a synthetic
 item in the gate user's dedicated keychain cannot be read. Record the attempted
 command and denial, without the password or item value. That cross-user check and
 the final unlock procedure have not been verified by this implementation's tests.
+
+## Profile audit pseudonyms
+
+The configured gate vault also holds the 256-bit profile audit key (#204), even when no connector is enabled. With no vault configured, profile audit requests return 503; profile changes in core roll back. Other gate routes remain available. Key initialization failures log only `profile_audit_unavailable`; restore vault access and restart the gate to retry initialization. A key that disappears during a running process also blocks subsequent profile audit writes.
+
+`EIDO_PROFILE_AUDIT_EPOCH` defaults to `1`. The vault account uses connector `eido-profile-audit:<epoch>`, kind `api_key`, client `none`. The secret is 32 random bytes encoded as lowercase hex. First use creates and reads back the secret before recording its SHA-256 fingerprint in `profile_audit_keys` in the control database. That table holds only epoch names and fingerprints, never the key. A key left in the vault by an interrupted first initialization is reused. Run one gate process per control database; vault and SQLite updates are separate operations, so an initialization conflict fails closed rather than replacing a registered key.
+
+For each new profile audit row, HMAC-SHA-256 covers the JSON tuple `["eido.profile-audit.v1", epoch, role, incomingDigest]`, where role is `subject`, `before`, or `after`. Null before/after values stay null. Tags are `hmac:v1:<epoch>:<full-key-fingerprint>:<hex-HMAC>`. The target is the subject tag; the detail hash covers only the action and tagged values. The endpoint still accepts hashes only and returns only the audit sequence number. Ledger audit rows keep their existing format.
+
+To rotate deliberately, stop the gate, set a new unique `EIDO_PROFILE_AUDIT_EPOCH` (1–64 letters, digits, underscores or hyphens), then restart with the same vault. The new epoch gets a fresh key; previous epoch keys, metadata and append-only audit rows remain intact. Do not reuse an epoch name to replace a lost key. Identical subjects correlate within an epoch; rotation intentionally changes their tags.
+
+If the vault loses or changes an initialized epoch's key, the gate refuses profile audit writes. Restore that exact key from an owner-held secure recovery copy, or deliberately rotate to a new epoch. Never remove the fingerprint marker to bypass the refusal. Keychain credentials are excluded from the database backup: a database restore does not restore these keys. Without an old epoch key its tags cannot be recomputed, although the audit hash chain remains verifiable. Historical unkeyed rows remain readable and guessable; this change does not protect them retroactively. Protection applies to a log-only reader without vault or socket access, as stated in ADR 0003.

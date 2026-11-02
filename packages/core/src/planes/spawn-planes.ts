@@ -167,6 +167,9 @@ export async function spawnPlanes(
       EIDO_GATE_DATA_DIR: gateDir,
       EIDO_GATE_SOCKET: paths.gateSocket,
       EIDO_GATE_CONTROL_SOCKET: paths.controlSocket,
+      // Synthetic test-only secrets, private to the gate; never given to core.
+      EIDO_DEV_VAULT: "1",
+      EIDO_GATE_VAULT_FILE: join(gateDir, "test-vault.json"),
       EIDO_WEBAUTHN_RP_ID: WEBAUTHN_RP_ID,
       EIDO_WEBAUTHN_ORIGIN: WEBAUTHN_ORIGIN,
     },

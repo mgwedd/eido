@@ -35,6 +35,7 @@ import {
 } from "./intents"
 import type { Policy } from "./policy"
 import type { Clock } from "./sessions"
+import type { ProfileAudit } from "./profile-audit"
 
 // The gate's routes. The data-plane listener serves the intent API (propose, and three
 // read-only views without payload bodies), connector health, and POST /audit, which appends one
@@ -48,6 +49,7 @@ export type GateState = {
   db: DatabaseSync
   policy: Policy
   notifyPending?: () => void
+  profileAudit?: ProfileAudit
 }
 
 const MAX_ERRORS = 50
@@ -236,15 +238,26 @@ async function auditRoute(
     )
   }
   const entry = checked.value
+  let digests = {
+    subjectHash: entry.subjectHash,
+    beforeHash: entry.beforeHash,
+    afterHash: entry.afterHash,
+  }
+  if (auditGroup(entry.action) === "audit.profile") {
+    try {
+      if (gate.profileAudit === undefined) throw new Error("unavailable")
+      digests = await gate.profileAudit.tag(entry)
+    } catch {
+      return apiError(503, "unavailable", "profile audit key is unavailable")
+    }
+  }
   const { seq } = append(gate.db, {
     actor: "data-plane",
     action: `${auditGroup(entry.action)}.${entry.action}`,
-    target: entry.subjectHash,
+    target: digests.subjectHash,
     detailHash: payloadHash({
       action: entry.action,
-      subjectHash: entry.subjectHash,
-      beforeHash: entry.beforeHash,
-      afterHash: entry.afterHash,
+      ...digests,
     }),
   })
   const result: GateAuditRecordResult = { seq }

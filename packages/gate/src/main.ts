@@ -36,6 +36,8 @@ import { devFlagFromEnv, FileVault } from "./internal/vault/file-vault"
 import type { Vault } from "./internal/vault/vault"
 import { KeychainVault } from "./internal/vault/keychain-vault"
 import type { WebAuthnConfig } from "./internal/webauthn"
+import { initializeProfileAudit } from "./internal/profile-audit"
+import type { ProfileAudit } from "./internal/profile-audit"
 
 // The gate process (ADR 0003). It owns eido-control.db and opens no other database. It
 // listens on two local sockets: the data-plane socket, the only path the data plane is given,
@@ -72,6 +74,7 @@ export type GateConfig = {
   bridge?: BridgeListenerConfig
   /** Gmail compose client: refresh/access tokens and the OAuth client secret live in this vault. */
   gmail?: { vault: VaultConfig; clientId: string }
+  profileAudit?: { vault: VaultConfig; epoch: string }
   push?: {
     vault: VaultConfig
     subject: string
@@ -155,6 +158,13 @@ export function gateConfig(
   const bridge = bridgeConfig(env)
   const gmailClientId = env["EIDO_GMAIL_CLIENT_ID"] ?? ""
   const vault = vaultConfig(env)
+  const epoch = env["EIDO_PROFILE_AUDIT_EPOCH"] ?? "1"
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(epoch))
+    throw new Error(
+      "EIDO_PROFILE_AUDIT_EPOCH must be 1 to 64 letters, digits, underscores or hyphens"
+    )
+  if (env["EIDO_PROFILE_AUDIT_EPOCH"] !== undefined && vault === undefined)
+    throw new Error("EIDO_PROFILE_AUDIT_EPOCH needs a configured gate vault")
   const pushSubject = env["EIDO_PUSH_VAPID_SUBJECT"] ?? ""
   const requireVault = (service: string): VaultConfig => {
     if (vault === undefined)
@@ -173,6 +183,7 @@ export function gateConfig(
   }
   return {
     ...config,
+    ...(vault === undefined ? {} : { profileAudit: { vault, epoch } }),
     ...(port === "" ? {} : { phone: phoneConfig(env, port) }),
     ...(bridge === undefined ? {} : { bridge: bridgeVault(env, bridge) }),
     ...(gmailClientId === ""
@@ -301,8 +312,21 @@ export async function runGate(
         windowMs: config.push.windowMs,
       })
     }
+    let profileAudit: ProfileAudit | undefined
+    if (config.profileAudit !== undefined) {
+      try {
+        profileAudit = await initializeProfileAudit(
+          db,
+          vaultFactory(config.profileAudit.vault),
+          config.profileAudit.epoch
+        )
+      } catch {
+        log("profile_audit_unavailable", {})
+      }
+    }
     const state = () => ({
       ...runningGate(),
+      profileAudit,
       notifyPending: notifier?.notifyPending,
       ...(config.push === undefined
         ? {}

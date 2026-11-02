@@ -47,7 +47,7 @@ Because every step after the root is relative to an already-open handle, swappin
 
 ## Roots come from signed control state
 
-Roots are stored in `approved_file_roots` (control-db migration 12) through one `policy.set` control ceremony on target `file-roots` (ADR 0005, `control-approvals.ts`). `prepareFileRoots` asks the helper to identify each requested directory. The owner then signs the canonical path, `dev`, `ino` and trash directory together. `approvedFileRoot` re-verifies the following on every call:
+Roots are stored in `approved_file_roots` (control-db migration 13) through one `policy.set` control ceremony on target `file-roots` (ADR 0005, `control-approvals.ts`). `prepareFileRoots` asks the helper to identify each requested directory. The owner then signs the canonical path, `dev`, `ino` and trash directory together. `approvedFileRoot` re-verifies the following on every call:
 
 - the stored row's canonical JSON and hash;
 - that it is the latest used approval for that target;

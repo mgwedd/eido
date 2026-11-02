@@ -4721,7 +4721,8 @@ export const GATE_AUDIT_PAGE_JSON_SCHEMA: JsonSchema = {
           "target": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 128
+            "maxLength": 256,
+            "description": "Target identifier; new profile audit targets carry a versioned HMAC scheme, key epoch and fingerprint. Legacy profile targets remain unkeyed hashes."
           },
           "detailHash": {
             "type": "string",
