@@ -85,7 +85,7 @@ describe("write queue", () => {
     const [docId = ""] = addDocs(db, [
       testDoc("owed", { entityId: property.id }),
     ])
-    const obligationId = insertObligation(db, {
+    const obligationId = await insertObligation(db, {
       entityId: property.id,
       action: "Pay the invoice",
       status: "open",
@@ -144,7 +144,7 @@ describe("write queue", () => {
     const [docId = ""] = addDocs(db, [
       testDoc("owed", { entityId: property.id }),
     ])
-    const obligationId = insertObligation(db, {
+    const obligationId = await insertObligation(db, {
       entityId: property.id,
       action: "Pay the invoice",
       status: "open",

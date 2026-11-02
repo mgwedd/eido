@@ -25,7 +25,9 @@ let openId: number
 let entityId: string
 let docs = 0
 
-function addObligation(status: ObligationStatus = "open"): number {
+async function addObligation(
+  status: ObligationStatus = "open"
+): Promise<number> {
   const [docId = ""] = addDocs(db, [
     testDoc(`doc-${String(++docs)}`, { entityId }),
   ])
@@ -66,7 +68,7 @@ beforeEach(async () => {
     audits.push(entry)
     return Promise.resolve()
   })
-  openId = addObligation()
+  openId = await addObligation()
 })
 
 describe("obligation state changes", () => {
@@ -124,7 +126,7 @@ describe("obligation state changes", () => {
   ] as const)(
     "refuses %s on a %s obligation without auditing or changing it",
     async (change, status) => {
-      const id = addObligation(status)
+      const id = await addObligation(status)
       expect(await codeOf(store.change(id, change))).toBe("invalid_transition")
       expect(statusOf(id)).toBe(status)
       expect(audits).toEqual([])

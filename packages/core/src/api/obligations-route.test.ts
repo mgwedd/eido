@@ -36,7 +36,7 @@ beforeEach(async () => {
   const [docId = ""] = addDocs(db, [
     testDoc("a", { entityId: fixture.property.id }),
   ])
-  id = insertObligation(db, {
+  id = await insertObligation(db, {
     entityId: fixture.property.id,
     action: "Pay the invoice",
     status: "open",

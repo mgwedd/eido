@@ -299,10 +299,10 @@ export function detectReplies(now: Date, cfg: RepliesConfig): ReplyCandidate[] {
   return candidates(now, cfg, getMessages(cfg))
 }
 
-export function syncReplyObligations(
+export async function syncReplyObligations(
   now: Date,
   cfg: RepliesConfig
-): { created: number; resolved: number } {
+): Promise<{ created: number; resolved: number }> {
   if (cfg.db.isTransaction) {
     throw new Error(
       "reply obligation sync deferred while a ledger transaction is active"
@@ -391,7 +391,7 @@ export function syncReplyObligations(
       candidate.direction === "waiting"
         ? `Waiting on ${partyName}: ${source.title}`
         : `Reply to ${partyName}`
-    insertObligation(cfg.db, {
+    await insertObligation(cfg.db, {
       entityId: candidate.entityId,
       party: partyName,
       action,
