@@ -3,6 +3,7 @@ import {
   validateGateApiError,
   validateGateAuditRecordResult,
   validateGateConnectorHealth,
+  validateGateEnrolmentCode,
   validateGateIntentHistory,
   validateGateIntentStatus,
   validateGateMailFolderList,
@@ -16,6 +17,7 @@ import type {
   GateAuditRecordRequest,
   GateAuditRecordResult,
   GateConnectorHealth,
+  GateEnrolmentCode,
   GateIntentHistory,
   GateIntentProposal,
   GateIntentStatus,
@@ -331,5 +333,27 @@ export function createProtonMailClient(
         skipped: page.skipped,
       }
     },
+  }
+}
+
+/**
+ * The owner's client for the gate's control socket (#78), used by the Mac-side `enrol-code`
+ * command. The control socket is readable by the gate user only; core never gets this client.
+ */
+export function createEnrolmentClient(options: IntentClientOptions): {
+  issueCode: () => Promise<GateEnrolmentCode>
+} {
+  const resolved = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  return {
+    issueCode: async () =>
+      expect(
+        await call(resolved, "POST", "/enrolment-codes"),
+        [201],
+        validateGateEnrolmentCode,
+        "GateEnrolmentCode"
+      ),
   }
 }
