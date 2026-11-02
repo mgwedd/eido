@@ -29,6 +29,7 @@ import type { FakeBridge } from "./internal/bridge/fake-bridge"
 import {
   GateRequestError,
   createIntentClient,
+  createAuditClient,
   createProtonMailClient,
 } from "./internal/client"
 import { runningGate } from "./internal/runtime"
@@ -143,6 +144,37 @@ function send(
 }
 
 describe("gateConfig", () => {
+  it("selects the gate vault for profile audit and validates rotation epochs", () => {
+    const base = {
+      EIDO_GATE_DATA_DIR: "/d",
+      EIDO_GATE_SOCKET: "/d/gate.sock",
+      EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+      EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+      EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+    }
+    expect(
+      gateConfig({
+        ...base,
+        EIDO_GATE_KEYCHAIN_PATH: "/private/gate.keychain-db",
+      }).profileAudit
+    ).toEqual({
+      vault: { kind: "keychain", path: "/private/gate.keychain-db" },
+      epoch: "1",
+    })
+    expect(
+      gateConfig({
+        ...base,
+        EIDO_GATE_KEYCHAIN_PATH: "/private/gate.keychain-db",
+        EIDO_PROFILE_AUDIT_EPOCH: "rotated_2",
+      }).profileAudit?.epoch
+    ).toBe("rotated_2")
+    expect(() =>
+      gateConfig({ ...base, EIDO_PROFILE_AUDIT_EPOCH: "bad:epoch" })
+    ).toThrow("EIDO_PROFILE_AUDIT_EPOCH must be")
+    expect(() =>
+      gateConfig({ ...base, EIDO_PROFILE_AUDIT_EPOCH: "2" })
+    ).toThrow("needs a configured gate vault")
+  })
   it("reads the sockets, data dir and relying party from the environment", () => {
     expect(
       gateConfig({
@@ -1264,5 +1296,78 @@ describe("runGate with Bridge", () => {
       "FileVault is for development only"
     )
     expect(() => runningGate()).toThrow("the gate is not started")
+  })
+})
+
+describe("production profile audit wiring", () => {
+  const entry = {
+    action: "entity.create",
+    subjectHash: "ab".repeat(32),
+    beforeHash: null,
+    afterHash: "cd".repeat(32),
+  } as const
+
+  it("uses the configured vault and refuses writes after key loss", async () => {
+    const c = config()
+    c.profileAudit = {
+      vault: { kind: "keychain", path: "/synthetic/gate.keychain-db" },
+      epoch: "runtime",
+    }
+    const vault = new InMemoryVault()
+    const factory = vi.fn(() => vault)
+    const gate = await startGate(c, undefined, factory)
+    try {
+      const audit = createAuditClient({ socketPath: c.socketPath })
+      await audit.record(entry)
+      expect(factory).toHaveBeenCalledWith(c.profileAudit.vault)
+      const row = runningGate()
+        .db.prepare(
+          "SELECT target FROM audit_log WHERE action='audit.profile.entity.create'"
+        )
+        .get()
+      expect(row?.["target"]).toMatch(
+        /^hmac:v1:runtime:[a-f0-9]{64}:[a-f0-9]{64}$/
+      )
+      const ref = {
+        connector: "eido-profile-audit:runtime",
+        kind: "api_key",
+        client: "none",
+      } as const
+      const secret = await vault.get(ref)
+      if (secret === undefined) throw new Error("missing key")
+      await vault.delete(ref)
+      await expect(audit.record(entry)).rejects.toMatchObject({ status: 503 })
+      const logs = readFileSync(join(c.dataDir, GATE_LOG_FILE), "utf8")
+      for (const value of [secret, entry.subjectHash, entry.afterHash])
+        expect(logs).not.toContain(value)
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("keeps other gate routes available when key initialization fails", async () => {
+    const c = config()
+    c.profileAudit = {
+      vault: { kind: "keychain", path: "/synthetic/gate.keychain-db" },
+      epoch: "runtime",
+    }
+    const vault = new InMemoryVault()
+    vi.spyOn(vault, "get").mockRejectedValue(
+      new Error("synthetic-secret-error")
+    )
+    const gate = await startGate(c, undefined, () => vault)
+    try {
+      await expect(
+        createAuditClient({ socketPath: c.socketPath }).record(entry)
+      ).rejects.toMatchObject({ status: 503 })
+      await expect(
+        createIntentClient({ socketPath: c.socketPath }).listPending()
+      ).resolves.toEqual([])
+      const logs = readFileSync(join(c.dataDir, GATE_LOG_FILE), "utf8")
+      expect(logs).toContain("profile_audit_unavailable")
+      expect(logs).not.toContain("synthetic-secret-error")
+    } finally {
+      await gate.close()
+    }
   })
 })

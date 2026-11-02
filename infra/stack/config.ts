@@ -35,6 +35,7 @@ export const OVERRIDES = [
   "EIDO_GATE_SOCKET",
   "EIDO_GATE_CONTROL_SOCKET",
   "EIDO_GATE_KEYCHAIN_PATH",
+  "EIDO_PROFILE_AUDIT_EPOCH",
   "EIDO_WEBAUTHN_RP_ID",
   "EIDO_WEBAUTHN_ORIGIN",
   "EIDO_GATE_PHONE_BASE_PATH",
@@ -193,6 +194,9 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       EIDO_GATE_DATA_DIR: gateDataDir,
       EIDO_GATE_SOCKET: gateSocket,
       EIDO_GATE_CONTROL_SOCKET: controlSocket,
+      ...(env["EIDO_PROFILE_AUDIT_EPOCH"] === undefined
+        ? {}
+        : { EIDO_PROFILE_AUDIT_EPOCH: env["EIDO_PROFILE_AUDIT_EPOCH"] }),
       ...(env["EIDO_GATE_KEYCHAIN_PATH"] === undefined ||
       env["EIDO_GATE_KEYCHAIN_PATH"] === ""
         ? {}
