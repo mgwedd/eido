@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, test, vi } from "vitest"
 import {
+  formatDocumentDate,
+  formatDocumentSource,
   formatIngestedDate,
   formatSourceLabel,
   loadDocumentsList,
@@ -15,6 +17,28 @@ describe("documents lib", () => {
     expect(formatSourceLabel("gmail")).toBe("Gmail")
     expect(formatSourceLabel("proton-mail")).toBe("Proton Mail")
     expect(formatSourceLabel("custom-source")).toBe("custom-source")
+  })
+
+  test("formatDocumentDate formats dates as short month and day", () => {
+    expect(formatDocumentDate("2026-10-18T10:00:00Z")).toBe("Oct 18")
+    expect(formatDocumentDate("2026-01-04")).toBe("Jan 4")
+    expect(formatDocumentDate("not-a-date")).toBe("not-a-date")
+  })
+
+  test("formatDocumentSource formats provenance distinguishing Files, Drive and Gmail attachment", () => {
+    expect(formatDocumentSource("local-folder", "Rental")).toBe("Files/Rental")
+    expect(formatDocumentSource("local-folder")).toBe("Files")
+    expect(formatDocumentSource("gmail", "Rental", "application/pdf")).toBe(
+      "Gmail attachment"
+    )
+    expect(formatDocumentSource("gmail", "Rental", "message/rfc822")).toBe(
+      "Gmail"
+    )
+    expect(
+      formatDocumentSource("proton-mail", "Rental", "application/pdf")
+    ).toBe("Proton attachment")
+    expect(formatDocumentSource("google-drive")).toBe("Drive")
+    expect(formatDocumentSource("unknown")).toBe("unknown")
   })
 
   test("formatIngestedDate formats valid dates and falls back for invalid", () => {
