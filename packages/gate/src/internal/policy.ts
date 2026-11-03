@@ -1,11 +1,23 @@
 import { createHash } from "node:crypto"
-import { closeSync, fstatSync, openSync, readFileSync } from "node:fs"
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+} from "node:fs"
 import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
-import { INTENT_KINDS } from "@eido/schemas"
-import type { ConnectorOperation, ConnectorTier, Intent } from "@eido/schemas"
+import { INTENT_KINDS, validateGateOwnerConfiguration } from "@eido/schemas"
+import type {
+  ConnectorOperation,
+  ConnectorTier,
+  GateOwnerConfiguration,
+  Intent,
+} from "@eido/schemas"
 import { append } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
+import { approvedFileRoot } from "./files/file-roots"
 import {
   approvedControlValue,
   prepareControlApproval,
@@ -29,7 +41,9 @@ import {
 // guests other than the owner force approval, and a file root outside the allowed list is
 // forbidden. For an edit or a delete, the guests are the event's stored attendees together with
 // the proposed ones; attendees that cannot be read force approval. Operations are read only
-// through pinnedOperation, so a disabled connector exposes nothing.
+// through pinnedOperation, so a disabled connector exposes nothing. Origin is applied last,
+// by escalateProactive: a proactive intent (one nobody asked for) is raised from auto to
+// approval, so it reaches the owner as a card. Forbidden stays forbidden; a tier is never lowered.
 
 export type IntentKind = Intent["kind"]
 export type Tier = ConnectorTier
@@ -41,7 +55,7 @@ export type PermissionTable = {
 
 /** An event's current attendees, or `ok: false` when they cannot be read. */
 export type AttendeeRead =
-  { ok: true; attendees: readonly string[] } | { ok: false }
+  { ok: true; attendees: readonly string[] } | { ok: false; notFound?: boolean }
 
 /** Reads the stored attendees of an event from the calendar connector's record (#21). */
 export type StoredAttendees = (eventUid: string) => AttendeeRead
@@ -53,6 +67,8 @@ export type PolicyOptions = {
   ownerAddresses: readonly string[]
   /** Allowed-folder ids a file intent's `root` may name. */
   allowedRoots: readonly string[]
+  /** When set, owner addresses and allowed roots are loaded from this gate-owned JSON file. */
+  ownerConfigPath?: string
   /** The calendar's stored attendees; without it every calendar edit and delete needs approval. */
   storedAttendees?: StoredAttendees
   /** The shipped default table; tests point this at a fixture. */
@@ -64,6 +80,7 @@ export type Policy = {
   overlay: PermissionTable | undefined
   ownerAddresses: readonly string[]
   allowedRoots: readonly string[]
+  ownerConfigHash?: string
   storedAttendees: StoredAttendees | undefined
 }
 
@@ -74,6 +91,7 @@ export type ForbiddenReason =
   | "manifest_forbidden"
   | "root_not_allowed"
   | "connector_disabled"
+  | "event_not_found"
 
 export type TierDecision =
   { tier: ConfigTier } | { tier: "forbidden"; reason: ForbiddenReason }
@@ -83,6 +101,7 @@ export const SHIPPED_DEFAULT_PATH = new URL(
   import.meta.url
 )
 export const OVERLAY_FILE = "permissions.json"
+export const OWNER_CONFIG_FILE = "owner-config.json"
 
 const KINDS: ReadonlySet<string> = new Set(INTENT_KINDS)
 
@@ -92,6 +111,13 @@ function isIntentKind(kind: string): kind is IntentKind {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === "string" && item.trim() !== "")
+  )
 }
 
 function forbidden(reason: ForbiddenReason): TierDecision {
@@ -141,6 +167,10 @@ export function kindTier(
   connector?: string
 ): TierDecision {
   if (!isIntentKind(kind)) return forbidden("unknown_kind")
+  if (kind === "confirm.field") {
+    // Internal effect only: never auto, needs no connector.
+    return { tier: "approval" }
+  }
   const lookup = lookupOperation(db, kind, connector)
   switch (lookup.status) {
     case "none":
@@ -157,10 +187,14 @@ export function kindTier(
   if (operation.defaultTier === "forbidden") {
     return forbidden("manifest_forbidden")
   }
+  // Trash restoration is a separate externally visible write, so it always needs fresh approval.
+  if (kind === "email.untrash") return { tier: "approval" }
   const configured: ConfigTier =
     policy.overlay?.tiers[kind] ??
     policy.shipped.tiers[kind] ??
     operation.defaultTier
+  // Moving a file to Trash always needs approval; a forbidden manifest was refused above.
+  if (kind === "file.delete") return { tier: "approval" }
   if (configured === "auto" && operation.reversibility !== "reversible") {
     return { tier: "approval" }
   }
@@ -179,30 +213,28 @@ function hasOtherGuest(
   return (guests ?? []).some((guest) => !own.has(normalizeAddress(guest)))
 }
 
-/** The event's stored attendees, or undefined when there is no reader or the read fails. */
-function readAttendees(
-  policy: Policy,
-  eventUid: string
-): readonly string[] | undefined {
-  if (policy.storedAttendees === undefined) return undefined
-  try {
-    const read = policy.storedAttendees(eventUid)
-    return read.ok ? read.attendees : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/** Approval when the event's stored or proposed guests include anyone but the owner. */
+/** Approval when the event's stored or proposed guests include anyone but the owner; forbidden if unknown. */
 function changesEventWithGuests(
   policy: Policy,
   eventUid: string,
   proposed: readonly string[] | undefined,
   decision: TierDecision
 ): TierDecision {
-  const stored = readAttendees(policy, eventUid)
-  if (stored === undefined) return { tier: "approval" }
-  return hasOtherGuest([...stored, ...(proposed ?? [])], policy.ownerAddresses)
+  if (policy.storedAttendees === undefined) return { tier: "approval" }
+  let read: AttendeeRead
+  try {
+    read = policy.storedAttendees(eventUid)
+  } catch {
+    return { tier: "approval" }
+  }
+  if (!read.ok) {
+    if (read.notFound) return forbidden("event_not_found")
+    return { tier: "approval" }
+  }
+  return hasOtherGuest(
+    [...read.attendees, ...(proposed ?? [])],
+    policy.ownerAddresses
+  )
     ? { tier: "approval" }
     : decision
 }
@@ -225,7 +257,7 @@ export function intentTier(
     case "file.rename":
     case "file.move":
     case "file.delete":
-      return policy.allowedRoots.includes(intent.args.root)
+      return approvedFileRoot(db, intent.args.root) !== undefined
         ? decision
         : forbidden("root_not_allowed")
     case "calendar.create":
@@ -249,6 +281,20 @@ export function intentTier(
     default:
       return decision
   }
+}
+
+/**
+ * Raises `auto` to `approval` for a proactive intent. The owner asked for a reactive intent, so
+ * auto is acceptable there; nobody asked for a proactive one, so it must be approved first.
+ * `forbidden` and `approval` pass through unchanged.
+ */
+export function escalateProactive(
+  decision: TierDecision,
+  origin: string
+): TierDecision {
+  return origin === "proactive" && decision.tier === "auto"
+    ? { tier: "approval" }
+    : decision
 }
 
 type TableResult =
@@ -338,17 +384,92 @@ function isMissingFile(error: unknown): boolean {
 }
 
 /** Why the overlay file may not be trusted, or undefined when it may. */
-function ownershipError(mode: number, uid: number): string | undefined {
+export function ownershipError(
+  mode: number,
+  uid: number,
+  platform = process.platform,
+  gateUid: number | null = process.getuid?.() ?? null
+): string | undefined {
   // Windows has no POSIX owner or mode bits; there the data dir's ACL is the control.
-  if (process.platform === "win32") return undefined
+  if (platform === "win32") return undefined
   if ((mode & 0o022) !== 0) {
     return `${OVERLAY_FILE}: writable by group or others; only the gate user may write it`
   }
-  const gateUid = process.getuid?.()
-  if (gateUid !== undefined && uid !== gateUid) {
+  if (gateUid !== null && uid !== gateUid) {
     return `${OVERLAY_FILE}: not owned by the gate user`
   }
   return undefined
+}
+
+export function ownerConfigOwnershipError(
+  mode: number,
+  uid: number,
+  platform = process.platform,
+  gateUid: number | null = process.getuid?.() ?? null
+): string | undefined {
+  if (platform === "win32") return undefined
+  if ((mode & 0o077) !== 0) {
+    return "owner-config.json: accessible by group or others; only the gate user may access it"
+  }
+  return gateUid !== null && uid !== gateUid
+    ? "owner-config.json: not owned by the gate user"
+    : undefined
+}
+
+type OwnerConfigRead =
+  | { ok: true; config: GateOwnerConfiguration; hash: string }
+  | { ok: false; error: string; hash: string }
+
+function readOwnerConfig(path: string): OwnerConfigRead {
+  let fd: number
+  try {
+    fd = openSync(
+      path,
+      process.platform === "win32"
+        ? "r"
+        : constants.O_RDONLY | constants.O_NOFOLLOW
+    )
+  } catch {
+    return {
+      ok: false,
+      error: "owner-config.json: unavailable",
+      hash: payloadHash(null),
+    }
+  }
+  let raw: Buffer
+  let ownership: string | undefined
+  try {
+    const stat = fstatSync(fd)
+    ownership = stat.isFile()
+      ? ownerConfigOwnershipError(stat.mode, stat.uid)
+      : "owner-config.json: not a regular file"
+    raw = readFileSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  const hash = createHash("sha256").update(raw).digest("hex")
+  if (ownership !== undefined) return { ok: false, error: ownership, hash }
+  let value: unknown
+  try {
+    value = JSON.parse(raw.toString("utf8"))
+  } catch {
+    return { ok: false, error: "owner-config.json: not valid JSON", hash }
+  }
+  const validation = validateGateOwnerConfiguration(value)
+  if (
+    !validation.ok ||
+    !isRecord(value) ||
+    !isStringArray(value.ownerAddresses) ||
+    !isStringArray(value.allowedRoots)
+  ) {
+    return {
+      ok: false,
+      error:
+        "owner-config.json: expected version 1 and non-empty string arrays",
+      hash,
+    }
+  }
+  return { ok: true, config: validation.value, hash }
 }
 
 function readOverlay(db: DatabaseSync, path: string): OverlayRead {
@@ -406,7 +527,7 @@ function approvedOverlay(db: DatabaseSync): PermissionTable | undefined {
     if (
       db
         .prepare(
-          "SELECT id FROM control_approvals WHERE purpose = 'policy.set' AND used_at IS NOT NULL LIMIT 1"
+          "SELECT id FROM control_approvals WHERE purpose = 'policy.set' AND target = 'permissions' AND used_at IS NOT NULL LIMIT 1"
         )
         .get() !== undefined
     )
@@ -434,7 +555,7 @@ function approvedOverlay(db: DatabaseSync): PermissionTable | undefined {
   // The latest accepted policy is authoritative: an old signed row is not a rollback token.
   const latest = db
     .prepare(
-      "SELECT id FROM control_approvals WHERE purpose = 'policy.set' AND used_at IS NOT NULL ORDER BY audit_seq DESC LIMIT 1"
+      "SELECT id FROM control_approvals WHERE purpose = 'policy.set' AND target = 'permissions' AND used_at IS NOT NULL ORDER BY audit_seq DESC LIMIT 1"
     )
     .get()
   if (latest?.["id"] !== row["approval_id"])
@@ -500,13 +621,11 @@ export function loadPolicy(
 ): { policy: Policy; errors: string[] } {
   const shipped = readShipped(options.shippedPath ?? SHIPPED_DEFAULT_PATH)
   const overlay = approvedOverlay(db)
-  const policy: Policy = {
-    shipped,
-    overlay,
-    ownerAddresses: [...options.ownerAddresses],
-    allowedRoots: [...options.allowedRoots],
-    storedAttendees: options.storedAttendees,
-  }
+  let ownerAddresses =
+    options.ownerConfigPath === undefined ? options.ownerAddresses : []
+  let allowedRoots =
+    options.ownerConfigPath === undefined ? options.allowedRoots : []
+  let ownerConfigHash: string | undefined
   const path = join(options.dataDir, OVERLAY_FILE)
   const read = readOverlay(db, path)
   const errors =
@@ -527,6 +646,51 @@ export function loadPolicy(
       target: path,
       detailHash: payloadHash({ file_hash: fileHash, errors }),
     })
+  }
+  if (options.ownerConfigPath !== undefined) {
+    const result = readOwnerConfig(options.ownerConfigPath)
+    const beforeHash = previous?.ownerConfigHash ?? payloadHash(null)
+    const afterHash = result.ok ? result.hash : beforeHash
+    if (!result.ok) {
+      errors.push(result.error)
+      append(db, {
+        actor: "system",
+        action: "owner_config.rejected",
+        target: options.ownerConfigPath,
+        detailHash: payloadHash({
+          file_hash: result.hash,
+          error: result.error,
+        }),
+      })
+    } else if (previous === undefined || beforeHash !== afterHash) {
+      ownerAddresses = result.config.ownerAddresses
+      allowedRoots = result.config.allowedRoots
+      ownerConfigHash = result.hash
+      append(db, {
+        actor: "system",
+        action:
+          previous === undefined
+            ? "owner_config.loaded"
+            : "owner_config.reloaded",
+        target: options.ownerConfigPath,
+        detailHash: payloadHash({
+          before_hash: beforeHash,
+          after_hash: afterHash,
+        }),
+      })
+    } else if (previous !== undefined) {
+      ownerAddresses = previous.ownerAddresses
+      allowedRoots = previous.allowedRoots
+      ownerConfigHash = previous.ownerConfigHash
+    }
+  }
+  const policy: Policy = {
+    shipped,
+    overlay,
+    ownerAddresses: [...ownerAddresses],
+    allowedRoots: [...allowedRoots],
+    ...(ownerConfigHash === undefined ? {} : { ownerConfigHash }),
+    storedAttendees: options.storedAttendees,
   }
   if (previous === undefined)
     append(db, {

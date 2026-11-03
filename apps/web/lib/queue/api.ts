@@ -1,14 +1,17 @@
 import {
+  validateGateApiError,
   validateGateDecisionResult,
   validateGateIntentHistory,
   validateGatePendingIntentList,
+  validateGatePrepareApproval,
   type GateDecisionRequest,
   type GateDecisionResult,
+  type GateEditRequest,
   type GateIntentHistory,
+  type GatePrepareApproval,
   type GateRejectReason,
 } from "@eido/schemas"
 import type { ApprovalResult } from "@/lib/approval/sign"
-import { sha256Hex } from "@/lib/queue/hash"
 import type { PendingIntent } from "@/lib/today"
 
 const APPROVALS_URL = "/api/gate/approvals"
@@ -113,10 +116,131 @@ export async function rejectIntent(
   }
 }
 
-/** True when the payload text hashes to the hash the gate sent with it. */
-export async function payloadMatchesHash(
-  payload: string,
-  payloadHash: string
-): Promise<boolean> {
-  return (await sha256Hex(payload)) === payloadHash
+/** Why the gate refused an edit; `other` covers a failure that is not a refusal. */
+export type EditFailure = {
+  code:
+    | "tier_changed"
+    | "forbidden"
+    | "invalid_request"
+    | "already_decided"
+    | "not_found"
+    | "network"
+    | "other"
+  message: string
+}
+
+/**
+ * Sends an edited intent to the gate, unsigned. The gate rejects the original, creates the new
+ * pending intent and answers with it prepared for approval; the caller signs that with the
+ * passkey. The edit approves nothing by itself.
+ */
+export async function editIntent(
+  intentId: string,
+  intent: GateEditRequest["intent"]
+): Promise<
+  { ok: true; value: GatePrepareApproval } | { ok: false; error: EditFailure }
+> {
+  const body: GateEditRequest = { intent }
+  let response: Response
+  try {
+    response = await fetch(
+      `${APPROVALS_URL}/${encodeURIComponent(intentId)}/edit`,
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    )
+  } catch {
+    return {
+      ok: false,
+      error: { code: "network", message: "The gate could not be reached." },
+    }
+  }
+  const other = (message: string) => ({
+    ok: false as const,
+    error: { code: "other" as const, message },
+  })
+  try {
+    const json: unknown = await response.json()
+    if (!response.ok) {
+      const refusal = validateGateApiError(json)
+      if (
+        refusal.ok &&
+        (refusal.value.code === "tier_changed" ||
+          refusal.value.code === "forbidden" ||
+          refusal.value.code === "invalid_request" ||
+          refusal.value.code === "already_decided" ||
+          refusal.value.code === "not_found")
+      )
+        return {
+          ok: false,
+          error: { code: refusal.value.code, message: refusal.value.message },
+        }
+      return other(`The gate answered ${response.status}.`)
+    }
+    const parsed = validateGatePrepareApproval(json)
+    return parsed.ok
+      ? { ok: true, value: parsed.value }
+      : other("The gate sent an unreadable result.")
+  } catch {
+    return other(`The gate answered ${response.status}.`)
+  }
+}
+
+export async function confirmFieldIntent(
+  intentId: string,
+  extractionId: string | number,
+  field: string,
+  value?: unknown
+): Promise<{ ok: true; state: string } | { ok: false; message: string }> {
+  try {
+    const coreRes = await fetch(
+      `/api/core/extractions/${encodeURIComponent(String(extractionId))}/confirm`,
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          field,
+          ...(value !== undefined ? { value } : {}),
+        }),
+      }
+    )
+    if (!coreRes.ok) {
+      let msg = `Extraction confirmation failed (${coreRes.status})`
+      try {
+        const errJson = (await coreRes.json()) as {
+          error?: { message?: string }
+        }
+        if (errJson.error?.message) msg = errJson.error.message
+      } catch {}
+      return { ok: false, message: msg }
+    }
+  } catch {
+    return { ok: false, message: "Could not reach Core API" }
+  }
+
+  const body: GateDecisionRequest = {
+    intentId,
+    decision: "approved",
+  }
+  try {
+    const gateRes = await fetch(
+      `/api/gate/approvals/${encodeURIComponent(intentId)}/decision`,
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    )
+    if (!gateRes.ok) {
+      return { ok: false, message: `Gate decision failed (${gateRes.status})` }
+    }
+    return { ok: true, state: "approved" }
+  } catch {
+    return { ok: false, message: "Could not reach Gate API" }
+  }
 }

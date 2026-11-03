@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateLocalFileRequest",
+  "description": "Read-only local file operation over an owner-approved root ID. The gate resolves the signed native identity, never a caller-supplied absolute root.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "op": { "const": "read" },
+        "root": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "maxBytes": { "type": "integer", "minimum": 1, "maximum": 8388608 }
+      },
+      "required": ["op", "root", "path", "maxBytes"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": { "const": "list" },
+        "root": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "path": { "type": "string", "maxLength": 1024 }
+      },
+      "required": ["op", "root", "path"],
+      "additionalProperties": false
+    }
+  ]
+}

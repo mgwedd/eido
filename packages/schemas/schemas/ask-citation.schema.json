@@ -10,6 +10,29 @@
     "sourceRef": { "type": "string", "minLength": 1, "maxLength": 500 },
     "title": { "type": "string", "maxLength": 500 },
     "occurredAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+    "excerpt": {
+      "description": "Present when the model read only passages of this document: their UTF-16 offsets in the indexed body, and how many body characters it did not read.",
+      "type": "object",
+      "properties": {
+        "passages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "start": { "type": "integer", "minimum": 0 },
+              "end": { "type": "integer", "minimum": 1 }
+            },
+            "required": ["start", "end"],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 200
+        },
+        "omittedChars": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["passages", "omittedChars"],
+      "additionalProperties": false
+    },
     "injectionSuspected": { "type": "boolean" },
     "injectionReasons": {
       "type": "array",

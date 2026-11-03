@@ -151,9 +151,9 @@ describe("insertLinks and linksFor", () => {
     )
   })
 
-  test("re-inserting the same links is a no-op", () => {
-    expect(insertLinks(db, derive())).toBe(16)
-    expect(insertLinks(db, derive())).toBe(0)
+  test("re-inserting the same links is a no-op", async () => {
+    expect(await insertLinks(db, derive())).toBe(16)
+    expect(await insertLinks(db, derive())).toBe(0)
     expect(db.prepare("SELECT count(*) AS n FROM links").get()?.["n"]).toBe(16)
     expect(linksFor(db, `doc:${DOC("m3")}`)).toEqual(
       [
@@ -168,8 +168,8 @@ describe("insertLinks and linksFor", () => {
     )
   })
 
-  test("matched edges are stored with confidence below 1; the database refuses 1 for them and below 1 for header edges", () => {
-    const obligation = insertObligation(db, {
+  test("matched edges are stored with confidence below 1; the database refuses 1 for them and below 1 for header edges", async () => {
+    const obligation = await insertObligation(db, {
       entityId: property.id,
       action: "Pay the invoice",
       status: "open",
@@ -183,22 +183,22 @@ describe("insertLinks and linksFor", () => {
       confidence: 0.8,
       origin: "match",
     }
-    expect(insertLinks(db, [matched])).toBe(1)
+    expect(await insertLinks(db, [matched])).toBe(1)
     expect(linksFor(db, `obl:${obligation}`)).toEqual([matched])
-    expect(() =>
+    await expect(
       insertLinks(db, [{ ...matched, dst: "party:Other", confidence: 1 }])
-    ).toThrow(/CHECK/)
-    expect(() =>
+    ).rejects.toThrow(/CHECK/)
+    await expect(
       insertLinks(db, [
         { ...edge("m2", "reply_to", "m1", "in-reply-to"), confidence: 0.9 },
       ])
-    ).toThrow(/CHECK/)
-    expect(() =>
+    ).rejects.toThrow(/CHECK/)
+    await expect(
       insertLinks(db, [{ ...matched, dst: "nowhere" as `ent:${string}` }])
-    ).toThrow(/CHECK/)
+    ).rejects.toThrow(/CHECK/)
   })
 
-  test("an ent: endpoint must name a known entity", () => {
+  test("an ent: endpoint must name a known entity", async () => {
     const link = (entityId: string): Link => ({
       src: `doc:${DOC("m1")}`,
       dst: `ent:${entityId}`,
@@ -206,10 +206,10 @@ describe("insertLinks and linksFor", () => {
       confidence: 0.5,
       origin: "match",
     })
-    expect(() => insertLinks(db, [link("no-such-entity")])).toThrow(
+    await expect(insertLinks(db, [link("no-such-entity")])).rejects.toThrow(
       /endpoint does not exist/
     )
-    expect(() =>
+    await expect(
       insertLinks(db, [
         {
           ...link("no-such-entity"),
@@ -217,12 +217,12 @@ describe("insertLinks and linksFor", () => {
           dst: `doc:${DOC("m1")}`,
         },
       ])
-    ).toThrow(/endpoint does not exist/)
-    expect(insertLinks(db, [link(property.id)])).toBe(1)
+    ).rejects.toThrow(/endpoint does not exist/)
+    expect(await insertLinks(db, [link(property.id)])).toBe(1)
   })
 
-  test("doc: and obl: endpoints must exist; a failed batch stores nothing", () => {
-    const stored = insertObligation(db, {
+  test("doc: and obl: endpoints must exist; a failed batch stores nothing", async () => {
+    const stored = await insertObligation(db, {
       entityId: property.id,
       action: "Pay the invoice",
       status: "open",
@@ -231,14 +231,14 @@ describe("insertLinks and linksFor", () => {
     })
     expect(stored).toBe(1)
     const good = edge("m2", "reply_to", "m1", "in-reply-to")
-    expect(() =>
+    await expect(
       insertLinks(db, [good, { ...good, dst: `doc:${DOC("missing")}` }])
-    ).toThrow(/endpoint does not exist/)
-    expect(() =>
+    ).rejects.toThrow(/endpoint does not exist/)
+    await expect(
       insertLinks(db, [{ ...good, src: `doc:${DOC("missing")}` }])
-    ).toThrow(/endpoint does not exist/)
+    ).rejects.toThrow(/endpoint does not exist/)
     for (const id of ["obl:999", "obl:1x"] as const) {
-      expect(() =>
+      await expect(
         insertLinks(db, [
           {
             src: `doc:${DOC("m1")}`,
@@ -248,8 +248,8 @@ describe("insertLinks and linksFor", () => {
             origin: "match",
           },
         ])
-      ).toThrow(/endpoint does not exist/)
-      expect(() =>
+      ).rejects.toThrow(/endpoint does not exist/)
+      await expect(
         insertLinks(db, [
           {
             src: id as `obl:${number}`,
@@ -259,13 +259,13 @@ describe("insertLinks and linksFor", () => {
             origin: "match",
           },
         ])
-      ).toThrow(/endpoint does not exist/)
+      ).rejects.toThrow(/endpoint does not exist/)
     }
     expect(db.prepare("SELECT count(*) AS n FROM links").get()?.["n"]).toBe(0)
   })
 
-  test("stored links cannot be changed", () => {
-    insertLinks(db, [edge("m2", "reply_to", "m1", "in-reply-to")])
+  test("stored links cannot be changed", async () => {
+    await insertLinks(db, [edge("m2", "reply_to", "m1", "in-reply-to")])
     expect(() => db.exec("UPDATE links SET confidence = 0.5")).toThrow(
       /immutable/
     )

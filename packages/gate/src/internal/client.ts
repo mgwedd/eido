@@ -1,13 +1,22 @@
+import type {
+  GateFileRoots,
+  GateLocalFileRequest,
+  GateFileHelperResponse,
+} from "@eido/schemas"
 import { request as httpRequest } from "node:http"
 import {
   validateGateApiError,
+  validateGateFileRoots,
+  validateGateFileHelperResponse,
   validateGateAuditRecordResult,
   validateGateConnectorHealth,
+  validateGateEnrolmentCode,
   validateGateIntentHistory,
   validateGateIntentStatus,
   validateGateMailFolderList,
   validateGateMailFolderState,
   validateGateMailMessagePage,
+  validateGatePasskeyList,
   validateGatePendingIntentList,
   validateGateProposeRefusal,
   validateGateProposeResult,
@@ -16,10 +25,12 @@ import type {
   GateAuditRecordRequest,
   GateAuditRecordResult,
   GateConnectorHealth,
+  GateEnrolmentCode,
   GateIntentHistory,
   GateIntentProposal,
   GateIntentStatus,
   GateMailFolderState,
+  GatePasskeyList,
   GatePendingIntentList,
   GateProposeResult,
   ValidationResult,
@@ -72,6 +83,8 @@ export type IntentProposal = Omit<GateIntentProposal, "intent"> & {
 export type IntentClient = {
   /** Resolves for a stored intent, including one policy refused (state rejected). */
   propose: (proposal: IntentProposal) => Promise<GateProposeResult>
+  /** Creates a fresh approval-tier restore proposal from an executed Gmail trash receipt. */
+  restoreTrash: (trashIntentId: string) => Promise<GateProposeResult>
   status: (id: string) => Promise<GateIntentStatus>
   history: (id: string) => Promise<GateIntentHistory["entries"]>
   listPending: () => Promise<GatePendingIntentList["intents"]>
@@ -81,8 +94,8 @@ export type IntentClient = {
 
 export type AuditClient = {
   /**
-   * Appends one hash-only audit.profile.* row to the gate's audit log (#181). Resolves once the
-   * row is written; rejects with GateRequestError when the gate refuses the entry and with
+   * Appends one hash-only audit.profile.* (#181), audit.ledger.* (#104) or audit.access.* (#322) row to the gate's
+   * audit log. Resolves once the row is written; rejects with GateRequestError when the gate refuses the entry and with
    * GateUnavailableError when the gate cannot be reached, so the caller can roll back.
    */
   record: (entry: GateAuditRecordRequest) => Promise<GateAuditRecordResult>
@@ -192,6 +205,18 @@ export function createIntentClient(options: IntentClientOptions): IntentClient {
         "GateProposeResult"
       )
     },
+    restoreTrash: async (trashIntentId) =>
+      expect(
+        await call(
+          resolved,
+          "POST",
+          `${intentPath(trashIntentId)}/restore`,
+          {}
+        ),
+        [201],
+        validateGateProposeResult,
+        "GateProposeResult"
+      ),
     status: async (id) =>
       expect(
         await call(resolved, "GET", intentPath(id)),
@@ -317,5 +342,126 @@ export function createProtonMailClient(
         skipped: page.skipped,
       }
     },
+  }
+}
+
+/**
+ * The owner's client for the gate's control socket (#78), used by the Mac-side `enrol-code`
+ * command. The control socket is readable by the gate user only; core never gets this client.
+ */
+export function createEnrolmentClient(options: IntentClientOptions): {
+  issueCode: () => Promise<GateEnrolmentCode>
+} {
+  const resolved = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  return {
+    issueCode: async () =>
+      expect(
+        await call(resolved, "POST", "/enrolment-codes"),
+        [201],
+        validateGateEnrolmentCode,
+        "GateEnrolmentCode"
+      ),
+  }
+}
+
+/**
+ * The owner's passkey client for the control socket (#419), used by the Mac-side `passkeys`
+ * command. Revoking a passkey signs its phone out; the phone listener has no revoke route.
+ */
+export function createPasskeyAdminClient(options: IntentClientOptions): {
+  list: () => Promise<GatePasskeyList>
+  revoke: (fingerprint: string) => Promise<GatePasskeyList>
+} {
+  const resolved = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  return {
+    list: async () =>
+      expect(
+        await call(resolved, "GET", "/passkeys"),
+        [200],
+        validateGatePasskeyList,
+        "GatePasskeyList"
+      ),
+    revoke: async (fingerprint) =>
+      expect(
+        await call(resolved, "POST", "/passkeys/revoke", { fingerprint }),
+        [200],
+        validateGatePasskeyList,
+        "GatePasskeyList"
+      ),
+  }
+}
+
+/** How long the gate may take to check a connector after a connect: a refresh and one read. */
+const CONNECT_CHECK_TIMEOUT_MS = 60_000
+
+/**
+ * The `connect` command's client for the control socket (#98): connector health, and the check
+ * the gate runs once a new credential is in the vault.
+ */
+export function createConnectClient(options: IntentClientOptions): {
+  health: () => Promise<GateConnectorHealth>
+  connected: (connector: string) => Promise<GateConnectorHealth>
+} {
+  const quick = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  const slow = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? CONNECT_CHECK_TIMEOUT_MS,
+  }
+  return {
+    health: async () =>
+      expect(
+        await call(quick, "GET", "/connector-health"),
+        [200],
+        validateGateConnectorHealth,
+        "GateConnectorHealth"
+      ),
+    connected: async (connector) =>
+      expect(
+        await call(
+          slow,
+          "POST",
+          `/connectors/${encodeURIComponent(connector)}/connected`
+        ),
+        [200],
+        validateGateConnectorHealth,
+        "GateConnectorHealth"
+      ),
+  }
+}
+
+export type FileClient = {
+  roots(): Promise<GateFileRoots>
+  perform(request: GateLocalFileRequest): Promise<GateFileHelperResponse>
+}
+
+export function createFileClient(options: IntentClientOptions): FileClient {
+  const resolved = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? 30_000,
+  }
+  return {
+    roots: async () =>
+      expect(
+        await call(resolved, "GET", "/file-roots"),
+        [200],
+        validateGateFileRoots,
+        "GateFileRoots"
+      ),
+    perform: async (request) =>
+      expect(
+        await call(resolved, "POST", "/files", request),
+        [200],
+        validateGateFileHelperResponse,
+        "GateFileHelperResponse"
+      ),
   }
 }

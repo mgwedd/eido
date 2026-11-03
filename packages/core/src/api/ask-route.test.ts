@@ -28,6 +28,12 @@ const RESULT: AskResult = {
     label: "read 0 of 0 matching messages in full",
   },
   facts: { matchCount: 0 },
+  figures: [
+    { key: "matched", value: 0, location: "/coverage/matched" },
+    { key: "searched", value: 0, location: "/coverage/searched" },
+    { key: "readInFull", value: 0, location: "/coverage/readInFull" },
+  ],
+  followUps: [],
   droppedTags: [],
   possiblyTruncated: false,
 }

@@ -40,9 +40,9 @@ describe("context pack store", () => {
     expect(packIdFor(HASH)).toBe(`cp_${"ab".repeat(16)}`)
   })
 
-  test("storing the same pack twice adds one row", () => {
-    expect(storeContextPack(db, PACK)).toBe(true)
-    expect(storeContextPack(db, PACK)).toBe(false)
+  test("storing the same pack twice adds one row", async () => {
+    expect(await storeContextPack(db, PACK)).toBe(true)
+    expect(await storeContextPack(db, PACK)).toBe(false)
     expect(readContextPack(db, PACK.id)?.members).toEqual(PACK.members)
   })
 
@@ -50,8 +50,19 @@ describe("context pack store", () => {
     expect(readContextPack(db, "cp_missing")).toBeNull()
   })
 
-  test("malformed stored members are rejected, not cast", () => {
-    storeContextPack(db, PACK)
+  test("reading without the table does not create schema", () => {
+    expect(readContextPack(db, PACK.id)).toBeNull()
+    expect(
+      db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'context_packs'"
+        )
+        .get()
+    ).toBeUndefined()
+  })
+
+  test("malformed stored members are rejected, not cast", async () => {
+    await storeContextPack(db, PACK)
     insertRaw("a", "{}")
     insertRaw("b", "[1]")
     insertRaw(
@@ -71,5 +82,37 @@ describe("context pack store", () => {
     expect(() => readContextPack(db, "c")).toThrow("malformed field")
     expect(() => readContextPack(db, "d")).toThrow("malformed field")
     expect(() => readContextPack(db, "e")).toThrow("malformed field")
+    // An excerpt that is not an object, has no passages, a negative omitted count, an empty or
+    // fractional range, or a passage that is not an object.
+    insertRaw(
+      "f",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":"some"}]'
+    )
+    insertRaw(
+      "g",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":{"passages":[],"omittedChars":0}}]'
+    )
+    insertRaw(
+      "h",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":{"passages":[{"start":0,"end":5}],"omittedChars":-1}}]'
+    )
+    insertRaw(
+      "i",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":{"passages":[{"start":5,"end":5}],"omittedChars":0}}]'
+    )
+    insertRaw(
+      "j",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":{"passages":[{"start":0.5,"end":5}],"omittedChars":0}}]'
+    )
+    insertRaw(
+      "k",
+      '[{"tag":"[M1]","sha256":"x","edge":"seed","tokens":1,"injectionSuspected":false,"injectionReasons":[],"excerpt":{"passages":[7],"omittedChars":0}}]'
+    )
+    expect(() => readContextPack(db, "f")).toThrow("malformed field")
+    expect(() => readContextPack(db, "g")).toThrow("malformed field")
+    expect(() => readContextPack(db, "h")).toThrow("malformed field")
+    expect(() => readContextPack(db, "i")).toThrow("malformed field")
+    expect(() => readContextPack(db, "j")).toThrow("malformed field")
+    expect(() => readContextPack(db, "k")).toThrow("malformed field")
   })
 })

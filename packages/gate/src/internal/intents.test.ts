@@ -24,6 +24,7 @@ import {
   manifest,
   sample,
   setup,
+  signedFileRoots,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
@@ -204,6 +205,101 @@ describe("proposing", () => {
         )
         .get(intentId)
     ).toEqual({ origin: "task", task_id: "task-1", context_pack_id: "pack-1" })
+  })
+})
+
+describe("proactive origin", () => {
+  const proposeWith = (
+    s: Setup,
+    intent: unknown,
+    origin: "reactive" | "proactive" | "task"
+  ) => propose(s.db, s.policy, { intent, origin })
+
+  it("raises an auto-tier proactive intent to pending approval, and leaves reactive and task at auto", () => {
+    const s = fresh()
+    expect(proposeWith(s, sample("calendar.create"), "reactive")).toMatchObject(
+      { ok: true, tier: "auto", state: "approved" }
+    )
+    expect(proposeWith(s, sample("calendar.create"), "task")).toMatchObject({
+      ok: true,
+      tier: "auto",
+      state: "approved",
+    })
+    const proactive = ok(proposeWith(s, sample("calendar.create"), "proactive"))
+    expect(proactive).toMatchObject({ tier: "approval", state: "pending" })
+    expect(intentStatus(s.db, proactive.intentId)).toEqual({
+      state: "pending",
+      tier: "approval",
+    })
+  })
+
+  it("still refuses a proactive intent whose operation is forbidden", () => {
+    const s = fresh()
+    const result = proposeWith(
+      s,
+      sample("file.delete", { root: "secrets" }),
+      "proactive"
+    )
+    expect(result).toMatchObject({
+      ok: false,
+      code: "forbidden",
+      errors: ["root_not_allowed"],
+    })
+    expect(
+      auditRows(s.db).some((r) => r.action === "intent.tier_escalated")
+    ).toBe(false)
+  })
+
+  it("does not escalate an intent already at approval", () => {
+    const s = fresh()
+    const result = ok(proposeWith(s, sample("email.send"), "proactive"))
+    expect(result.tier).toBe("approval")
+    expect(
+      auditRows(s.db).some((r) => r.action === "intent.tier_escalated")
+    ).toBe(false)
+  })
+
+  it("audits the escalation between proposed and pending with a hash and no payload body", () => {
+    const s = fresh()
+    const { intentId, payloadHash: hash } = ok(
+      proposeWith(
+        s,
+        sample("calendar.create", { title: BODY_MARKER }),
+        "proactive"
+      )
+    )
+    const rows = auditRows(s.db).filter((r) => r.target === intentId)
+    expect(rows.map((r) => r.action)).toEqual([
+      "intent.proposed",
+      "intent.tier_escalated",
+      "intent.transition",
+    ])
+    const escalated = rows[1]
+    expect(escalated).toMatchObject({ actor: "policy" })
+    expect(escalated?.detail_hash).toBe(
+      payloadHash({
+        from: "auto",
+        to: "approval",
+        reason: "proactive",
+        payload_hash: hash,
+        origin: "proactive",
+      })
+    )
+    expect(loggedText(s.db)).not.toContain(BODY_MARKER)
+    expect(verifyChain(s.db).ok).toBe(true)
+  })
+
+  it("keeps an edit of a proactive intent at approval", () => {
+    const s = fresh()
+    const original = ok(proposeWith(s, sample("calendar.create"), "proactive"))
+    const result = editIntent(
+      s.db,
+      s.policy,
+      original.intentId,
+      sample("calendar.create", { title: "Moved" }),
+      "approver"
+    )
+    expect(result).toMatchObject({ ok: true })
   })
 })
 
@@ -388,8 +484,21 @@ describe("editing", () => {
     expect(intentCount(s)).toBe(1)
   })
 
-  it("invariant: a forbidden edit is refused and leaves the original pending", () => {
+  it("invariant: a forbidden edit is refused and leaves the original pending", async () => {
     const s = fresh()
+    await signedFileRoots(s.db, {
+      roots: [
+        {
+          id: "notes",
+          root: {
+            path: "/synthetic/notes",
+            dev: "1",
+            ino: "2",
+            trashDir: "trash",
+          },
+        },
+      ],
+    })
     const { intentId } = ok(proposeKind(s, sample("file.delete")))
     const result = editIntent(
       s.db,
@@ -563,8 +672,21 @@ describe("history", () => {
 })
 
 describe("the pending list", () => {
-  it("returns exactly the pending intents, oldest first, with no payload", () => {
+  it("returns exactly the pending intents, oldest first, with no payload", async () => {
     const s = fresh()
+    await signedFileRoots(s.db, {
+      roots: [
+        {
+          id: "notes",
+          root: {
+            path: "/synthetic/notes",
+            dev: "1",
+            ino: "2",
+            trashDir: "trash",
+          },
+        },
+      ],
+    })
     const first = ok(proposeKind(s, sample("email.send"))).intentId
     ok(proposeKind(s, sample("email.archive")))
     const second = ok(
@@ -593,6 +715,8 @@ describe("the pending list", () => {
         state: "pending",
         origin: "proactive",
         createdAt: anyString,
+        title: "Move to Eido Trash: a.txt",
+        subtitle: "notes/a.txt",
       },
     ])
     expect(JSON.stringify(list)).not.toContain(BODY_MARKER)

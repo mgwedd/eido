@@ -391,6 +391,33 @@ describe("default entity", () => {
     expect(await store.getDefaultEntityId()).toBe(e.id)
   })
 
+  test("a rejected default audit rolls back the stored change", async () => {
+    const entity = await store.createEntity({
+      kind: "personal",
+      name: "Audited",
+      tag: "audited",
+    })
+    const rejecting = createProfileStore(db, {
+      audit: (entry) => {
+        if (entry.action === "defaultEntity") {
+          return Promise.reject(new Error("audit unavailable"))
+        }
+        return Promise.resolve()
+      },
+    })
+    await expect(rejecting.setDefaultEntityId(entity.id)).rejects.toThrow(
+      "audit unavailable"
+    )
+    expect(await rejecting.getDefaultEntityId()).toBeNull()
+    expect(
+      db
+        .prepare(
+          "SELECT old_json, new_json FROM profile_history WHERE field = 'profile.defaultEntityId'"
+        )
+        .all()
+    ).toEqual([])
+  })
+
   test("deleting the default entity is refused until the default moves", async () => {
     const e = await store.createEntity({ kind: "company", name: "A", tag: "a" })
     await store.setDefaultEntityId(e.id)

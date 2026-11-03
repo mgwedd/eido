@@ -75,6 +75,24 @@ describe("gate-owned connector health", () => {
     })
   })
 
+  it("records the time of a successful read and leaves it unset before one", () => {
+    const db = setup()
+    const lastSuccess = () =>
+      db
+        .prepare("SELECT last_success_at FROM connectors WHERE name = 'mail'")
+        .get()?.["last_success_at"]
+    expect(lastSuccess()).toBeNull()
+    failRead(db, 1_000)
+    expect(lastSuccess()).toBeNull()
+    recordConnectorReadSuccess(
+      db,
+      "mail",
+      beginConnectorRead(db, "mail", 1_010),
+      1_020
+    )
+    expect(lastSuccess()).toBe(new Date(1_020).toISOString())
+  })
+
   it("reopens after a failed probe with a longer capped delay", () => {
     const db = setup()
     failRead(db, 1_000)

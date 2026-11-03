@@ -1,5 +1,5 @@
 export { DIGEST_PROMPT_VERSION } from "./build"
-export { DIGEST_MIGRATION_SQL, applyDigestMigration } from "./cache"
+export { pruneSections } from "./cache"
 export {
   deriveDigestFingerprint,
   digestKey,
@@ -26,3 +26,5 @@ export type {
   DocumentPage,
   ThreadMessage,
 } from "./types"
+export { loadThread, threadKeyOf, threadSubjectId } from "./thread"
+export type { LoadedThread, ThreadKey } from "./thread"

@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
-import { validateIntent } from "@eido/schemas"
-import type { GateIntentStatus, Intent } from "@eido/schemas"
+import { validateGateIntentInjection, validateIntent } from "@eido/schemas"
+import type {
+  ConfirmFieldIntent,
+  FileDeleteIntent,
+  GateIntentInjection,
+  GateIntentStatus,
+  Intent,
+} from "@eido/schemas"
 import { append } from "./audit"
 import { canonicalize, hashCanonicalString, payloadHash } from "./canonical"
 import { issueCurrentNonce } from "./nonces"
-import { intentTier } from "./policy"
+import { escalateProactive, intentTier } from "./policy"
 import { intentBindings } from "./connectors"
 import type { Policy, Tier, TierDecision } from "./policy"
 import { atomically } from "./transaction"
@@ -29,6 +35,8 @@ export type ProposeInput = {
   documentIds?: readonly string[]
   /** The agent's display-only note; stored next to the intent, never hashed with it. */
   rationale?: string
+  /** Why core flagged the source material; stored next to the intent, never hashed with it. */
+  injection?: GateIntentInjection
 }
 
 export type ProposeResult =
@@ -86,6 +94,7 @@ export type PendingIntentSummary = {
   createdAt: string
   editedFrom?: string
   rationale?: string
+  injection?: GateIntentInjection
 }
 
 /** What the approval card shows besides the payload: no payload, nonce or hash. */
@@ -96,6 +105,7 @@ export type ApprovalCard = {
   documentIds: string[]
   editedFrom: string | null
   rationale: string | null
+  injection: GateIntentInjection | null
 }
 
 // Allowed edges and who may take each. rejected, executed and failed are terminal.
@@ -166,12 +176,13 @@ type StoredIntent = {
   contextPackId: string | null
   documentIdsJson: string | null
   rationale: string | null
+  injectionJson: string | null
 }
 
 function stored(db: DatabaseSync, id: string): StoredIntent | undefined {
   const row = db
     .prepare(
-      "SELECT id, kind, payload_hash, tier, state, origin, task_id, context_pack_id, document_ids_json, rationale FROM intents WHERE id = ?"
+      "SELECT id, kind, payload_hash, tier, state, origin, task_id, context_pack_id, document_ids_json, rationale, injection_reasons_json FROM intents WHERE id = ?"
     )
     .get(id)
   if (row === undefined) return undefined
@@ -186,6 +197,7 @@ function stored(db: DatabaseSync, id: string): StoredIntent | undefined {
     contextPackId: optionalText(row["context_pack_id"]),
     documentIdsJson: optionalText(row["document_ids_json"]),
     rationale: optionalText(row["rationale"]),
+    injectionJson: optionalText(row["injection_reasons_json"]),
   }
 }
 
@@ -357,14 +369,15 @@ type NewIntent = {
   contextPackId: string | null
   documentIdsJson: string | null
   rationale: string | null
+  injectionJson: string | null
   editedFrom: string | null
 }
 
 function insert(db: DatabaseSync, intent: NewIntent): string {
   const id = randomUUID()
   db.prepare(
-    `INSERT INTO intents (id, kind, payload_json, payload_hash, tier, state, origin, edited_from, task_id, context_pack_id, document_ids_json, rationale, reason, created_at)
-     VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, NULL, ?)`
+    `INSERT INTO intents (id, kind, payload_json, payload_hash, tier, state, origin, edited_from, task_id, context_pack_id, document_ids_json, rationale, injection_reasons_json, reason, created_at)
+     VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, NULL, ?)`
   ).run(
     id,
     intent.checked.intent.kind,
@@ -377,6 +390,7 @@ function insert(db: DatabaseSync, intent: NewIntent): string {
     intent.contextPackId,
     intent.documentIdsJson,
     intent.rationale,
+    intent.injectionJson,
     new Date().toISOString()
   )
   return id
@@ -421,7 +435,8 @@ export function propose(
     return { ok: false, code: "invalid_payload", errors: checked.errors }
   }
   const { id, decision } = atomically(db, () => {
-    const decision = intentTier(db, policy, checked.intent)
+    const base = intentTier(db, policy, checked.intent)
+    const decision = escalateProactive(base, input.origin)
     const id = insert(db, {
       checked,
       tier: decision.tier,
@@ -433,6 +448,8 @@ export function propose(
           ? null
           : JSON.stringify(input.documentIds),
       rationale: input.rationale ?? null,
+      injectionJson:
+        input.injection === undefined ? null : JSON.stringify(input.injection),
       editedFrom: null,
     })
     record(db, {
@@ -452,6 +469,20 @@ export function propose(
         document_ids: documentIds,
       }),
     })
+    if (base.tier !== decision.tier) {
+      append(db, {
+        actor: "policy",
+        action: "intent.tier_escalated",
+        target: id,
+        detailHash: payloadHash({
+          from: base.tier,
+          to: decision.tier,
+          reason: "proactive",
+          payload_hash: checked.hash,
+          origin: input.origin,
+        }),
+      })
+    }
     applyTier(db, id, decision)
     return { id, decision }
   })
@@ -516,7 +547,10 @@ export function editIntent(
   if (original.state !== "pending") return refuse("not_pending")
   if (!checked.ok) return refuse("invalid_payload", checked.errors)
   if (checked.intent.kind !== original.kind) return refuse("kind_changed")
-  const decision = intentTier(db, policy, checked.intent)
+  const decision = escalateProactive(
+    intentTier(db, policy, checked.intent),
+    original.origin
+  )
   if (decision.tier === "forbidden") {
     return refuse("forbidden", [decision.reason])
   }
@@ -531,6 +565,7 @@ export function editIntent(
       contextPackId: original.contextPackId,
       documentIdsJson: original.documentIdsJson,
       rationale: original.rationale,
+      injectionJson: original.injectionJson,
       editedFrom: originalId,
     })
     record(db, {
@@ -601,11 +636,14 @@ export function intentStatus(
     : { state: intent.state, tier: intent.tier }
 }
 
-/** One intent as the intent API shows it: kind, tier, state and edited_from; no payload. */
+/**
+ * One intent as the intent API shows it: kind, tier, state and edited_from; no payload. The API
+ * adds `discarded` (draftDiscarded in draft-discard.ts).
+ */
 export function intentSummary(
   db: DatabaseSync,
   intentId: string
-): GateIntentStatus | undefined {
+): Omit<GateIntentStatus, "discarded"> | undefined {
   const row = db
     .prepare(
       "SELECT id, kind, tier, state, edited_from FROM intents WHERE id = ?"
@@ -650,12 +688,61 @@ export function intentHistory(
 export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
   return db
     .prepare(
-      "SELECT id, kind, tier, origin, created_at, edited_from, rationale FROM intents WHERE state = 'pending' ORDER BY created_at ASC, rowid ASC"
+      "SELECT id, kind, tier, origin, created_at, edited_from, rationale, injection_reasons_json, payload_json FROM intents WHERE state = 'pending' ORDER BY created_at ASC, rowid ASC"
     )
     .all()
     .map((row) => {
       const editedFrom = optionalText(row["edited_from"])
       const rationale = optionalText(row["rationale"])
+      const injection = injectionOf(optionalText(row["injection_reasons_json"]))
+      let title: string | undefined
+      let subtitle: string | undefined
+      if (
+        row["kind"] === "confirm.field" &&
+        typeof row["payload_json"] === "string"
+      ) {
+        try {
+          const payload = JSON.parse(String(row["payload_json"])) as unknown as
+            ConfirmFieldIntent | undefined
+          const args = payload?.args
+          if (args && typeof args === "object") {
+            const docTitle = args.documentTitle
+              ? `${String(args.documentTitle)} `
+              : ""
+            const fieldLabel = String(args.field ?? "").replace(/_/g, " ")
+            const rawVal =
+              args.value && typeof args.value === "object"
+                ? String(args.value.raw ?? "")
+                : ""
+            title = `Confirm ${docTitle}${fieldLabel}: ${rawVal}`
+            const docSource = args.documentSource
+              ? String(args.documentSource)
+              : "a scan"
+            subtitle = `Extracted from ${docSource} · confidence ${String(args.confidence)}`
+          }
+        } catch {
+          // Ignore unparseable payload for display title
+        }
+      } else if (
+        row["kind"] === "file.delete" &&
+        typeof row["payload_json"] === "string"
+      ) {
+        try {
+          const payload = JSON.parse(String(row["payload_json"])) as unknown as
+            FileDeleteIntent | undefined
+          const args = payload?.args
+          if (args && typeof args === "object") {
+            title = args.path
+              ? `Move to Eido Trash: ${args.path}`
+              : "Move to Eido Trash"
+            if (args.root && args.path) {
+              subtitle = `${args.root}/${args.path}`
+            }
+          }
+        } catch {
+          // Ignore unparseable payload for display title
+        }
+      }
       const summary: PendingIntentSummary = {
         id: String(row["id"]),
         kind: String(row["kind"]),
@@ -668,8 +755,19 @@ export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
         ...summary,
         ...(editedFrom === null ? {} : { editedFrom }),
         ...(rationale === null ? {} : { rationale }),
+        ...(injection === null ? {} : { injection }),
+        ...(title === undefined ? {} : { title }),
+        ...(subtitle === undefined ? {} : { subtitle }),
       }
     })
+}
+
+/** The stored injection flag; null for an intent from clean material. */
+function injectionOf(json: string | null): GateIntentInjection | null {
+  if (json === null) return null
+  const checked = validateGateIntentInjection(JSON.parse(json))
+  if (!checked.ok) throw new Error("stored injection flag is not valid")
+  return checked.value
 }
 
 function documentIds(json: string | null): string[] {
@@ -691,7 +789,7 @@ export function approvalCard(
 ): ApprovalCard | undefined {
   const row = db
     .prepare(
-      "SELECT kind, origin, context_pack_id, document_ids_json, edited_from, rationale FROM intents WHERE id = ?"
+      "SELECT kind, origin, context_pack_id, document_ids_json, edited_from, rationale, injection_reasons_json FROM intents WHERE id = ?"
     )
     .get(intentId)
   if (row === undefined) return undefined
@@ -702,5 +800,6 @@ export function approvalCard(
     documentIds: documentIds(optionalText(row["document_ids_json"])),
     editedFrom: optionalText(row["edited_from"]),
     rationale: optionalText(row["rationale"]),
+    injection: injectionOf(optionalText(row["injection_reasons_json"])),
   }
 }

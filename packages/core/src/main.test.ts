@@ -17,18 +17,33 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { GateUnavailableError } from "@eido/gate"
 import { DatabaseSync } from "node:sqlite"
-import { afterEach, beforeEach, describe, expect, it, test } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest"
 import type { CoreApi } from "./api/index"
 import { ingestBatch } from "./index/ingest"
 import { startStubModelServer } from "./inference/stub-server"
 import { openIndex } from "./index/schema"
 import { openDataDb } from "./ledger/db"
+import { listObligations } from "./ledger/store"
 import { createProfileStore } from "./profile/store"
+import { createGmailClient } from "./connectors/gmail/client"
+import {
+  MemorySource,
+  plainMessage,
+} from "./connectors/proton/memory-source.test-support"
+import {
+  createFakeGmail,
+  rfc822,
+} from "./connectors/gmail/fake-gmail.test-support"
+import { createParser } from "./parsers/index"
+import { scheduleIngestedDigests } from "./digest/ingest"
+import { textPdf } from "./parsers/fixtures.test-support"
 import {
   DATA_DB_FILE,
   DATA_PLANE_LOG_FILE,
   SCRUBBED_FLAG,
   coreApiConfig,
+  createGmailSyncRuntime,
+  createProtonSyncRuntime,
   dataPlaneConfig,
   dataPlaneEnv,
   forwardTo,
@@ -37,7 +52,11 @@ import {
   outsideAllowlist,
   runDataPlane,
   serveDataPlane,
+  startConversationDigestTimer,
+  CONVERSATION_DIGEST_SWEEP_INTERVAL_MS,
+  DEFAULT_CORE_PORT,
 } from "./main"
+import type { DataPlaneConfig } from "./main"
 
 function field(value: unknown, name: string): unknown {
   return typeof value === "object" && value !== null && name in value
@@ -61,6 +80,10 @@ describe("the data plane's environment", () => {
     EIDO_GATE_SOCKET: "/d/gate.sock",
     EIDO_LLAMA_HOST: "127.0.0.1",
     EIDO_LLAMA_PORT: "",
+    EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801",
+    EIDO_REPLIES_CONFIG: '{"me":["owner@example.com"]}',
+    EIDO_PROTON_USERNAME: "assistant@example.com",
+    EIDO_BRIDGE_PASSWORD: "synthetic",
     GMAIL_REFRESH_TOKEN: "synthetic",
     __CF_USER_TEXT_ENCODING: "0x0:0:0",
     HOME: "/home/someone",
@@ -71,15 +94,61 @@ describe("the data plane's environment", () => {
       EIDO_DATA_DIR: "/d",
       EIDO_GATE_SOCKET: "/d/gate.sock",
       EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801",
+      EIDO_REPLIES_CONFIG: '{"me":["owner@example.com"]}',
+      EIDO_PROTON_USERNAME: "assistant@example.com",
     })
   })
 
   it("names the variables outside the allowlist, ignoring what the OS adds", () => {
-    expect(outsideAllowlist(parent)).toEqual(["GMAIL_REFRESH_TOKEN", "HOME"])
+    expect(outsideAllowlist(parent)).toEqual([
+      "EIDO_BRIDGE_PASSWORD",
+      "GMAIL_REFRESH_TOKEN",
+      "HOME",
+    ])
+  })
+})
+
+describe("DEFAULT_CORE_PORT", () => {
+  it("is 8789, not 8787 which another app on the host uses", () => {
+    expect(DEFAULT_CORE_PORT).toBe(8789)
   })
 })
 
 describe("dataPlaneConfig", () => {
+  it("turns SimpleFIN sync on with a loopback proxy URL, passing its settings through", () => {
+    const base = { EIDO_DATA_DIR: "/d", EIDO_GATE_SOCKET: "/s/gate.sock" }
+    expect(dataPlaneConfig(base).simplefin).toBeUndefined()
+    const env = {
+      ...base,
+      EIDO_SIMPLEFIN_PROXY_URL: "http://127.0.0.1:7801",
+      EIDO_SIMPLEFIN_ACCOUNTS_FILE: "/d/accounts.json",
+      EIDO_SIMPLEFIN_MAX_RANGE_DAYS: "30",
+    }
+    expect(dataPlaneConfig(env).simplefin).toEqual({
+      proxyUrl: "http://127.0.0.1:7801",
+      accountsFile: "/d/accounts.json",
+      config: { maxDateRangeDays: 30 },
+    })
+    expect(outsideAllowlist(env)).toEqual([])
+  })
+
+  it("opts in to local file indexing with a scrubbed nonsecret flag", () => {
+    const base = { EIDO_DATA_DIR: "/d", EIDO_GATE_SOCKET: "/s/gate.sock" }
+    expect(dataPlaneConfig({ ...base, EIDO_FILES_SYNC: "1" }).filesSync).toBe(
+      true
+    )
+    expect(
+      dataPlaneConfig({ ...base, EIDO_FILES_SYNC: "0" }).filesSync
+    ).toBeUndefined()
+    expect(
+      dataPlaneEnv({ ...base, EIDO_FILES_SYNC: "1" })["EIDO_FILES_SYNC"]
+    ).toBe("1")
+    expect(() => dataPlaneConfig({ ...base, EIDO_FILES_SYNC: "yes" })).toThrow(
+      "EIDO_FILES_SYNC must be 0 or 1"
+    )
+  })
+
   it("puts eido-data.db and the log in the data dir", () => {
     expect(
       dataPlaneConfig({ EIDO_DATA_DIR: "/d", EIDO_GATE_SOCKET: "/s/gate.sock" })
@@ -90,9 +159,12 @@ describe("dataPlaneConfig", () => {
       gateSocket: "/s/gate.sock",
       api: {
         host: "127.0.0.1",
-        port: 8787,
+        port: 8789,
         basePath: "",
         allowedHosts: [],
+        conversationDigestIdleTtlMinutes: 60,
+        digest: { sectionTokens: 2000 },
+        triage: {},
       },
     })
   })
@@ -101,6 +173,23 @@ describe("dataPlaneConfig", () => {
     expect(() => dataPlaneConfig({ EIDO_GATE_SOCKET: "" })).toThrow(
       "the data plane needs EIDO_DATA_DIR, EIDO_GATE_SOCKET"
     )
+  })
+})
+
+describe("conversation digest timer", () => {
+  it("runs the sweep on its interval and stops when closed", async () => {
+    vi.useFakeTimers()
+    const sweep = vi.fn(() => Promise.resolve())
+    try {
+      const stop = startConversationDigestTimer(sweep)
+      await vi.advanceTimersByTimeAsync(CONVERSATION_DIGEST_SWEEP_INTERVAL_MS)
+      expect(sweep).toHaveBeenCalledTimes(1)
+      stop()
+      await vi.advanceTimersByTimeAsync(CONVERSATION_DIGEST_SWEEP_INTERVAL_MS)
+      expect(sweep).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -118,6 +207,9 @@ describe("coreApiConfig", () => {
       port: 0,
       basePath: "/api/core",
       allowedHosts: ["eido.example.invalid", "127.0.0.1:9000"],
+      conversationDigestIdleTtlMinutes: 60,
+      digest: { sectionTokens: 2000 },
+      triage: {},
     })
   })
 
@@ -125,6 +217,109 @@ describe("coreApiConfig", () => {
     expect(
       coreApiConfig({ EIDO_LLAMA_HOST: "::1", EIDO_LLAMA_PORT: "8080" })
     ).toMatchObject({ modelBaseUrl: "http://[::1]:8080" })
+  })
+
+  test("reads the pinned model's chat template kwargs as a JSON object", () => {
+    expect(
+      coreApiConfig({
+        EIDO_LLAMA_CHAT_TEMPLATE_KWARGS: '{"enable_thinking": false}',
+      }).chatTemplateKwargs
+    ).toEqual({ enable_thinking: false })
+  })
+
+  test("leaves chat template kwargs out when unset or empty", () => {
+    expect(coreApiConfig({})).not.toHaveProperty("chatTemplateKwargs")
+    expect(
+      coreApiConfig({ EIDO_LLAMA_CHAT_TEMPLATE_KWARGS: "" })
+    ).not.toHaveProperty("chatTemplateKwargs")
+  })
+
+  test.each(["not json", "[1]", '"x"', "null", "3"])(
+    "stops startup when the chat template kwargs are %s, not a JSON object",
+    (value) => {
+      expect(() =>
+        coreApiConfig({ EIDO_LLAMA_CHAT_TEMPLATE_KWARGS: value })
+      ).toThrow("EIDO_LLAMA_CHAT_TEMPLATE_KWARGS must be a JSON object")
+    }
+  )
+
+  test("accepts only a loopback Gmail egress proxy URL", () => {
+    expect(
+      coreApiConfig({ EIDO_GMAIL_PROXY_URL: "http://127.0.0.1:7801/" })
+        .gmailProxyUrl
+    ).toBe("http://127.0.0.1:7801")
+    expect(() =>
+      coreApiConfig({ EIDO_GMAIL_PROXY_URL: "https://proxy.example.com" })
+    ).toThrow("EIDO_GMAIL_PROXY_URL must be a loopback HTTP URL")
+  })
+
+  test("reads the Proton account address, and leaves Proton sync off without one", () => {
+    expect(
+      coreApiConfig({ EIDO_PROTON_USERNAME: "assistant@example.com" })
+        .protonUsername
+    ).toBe("assistant@example.com")
+    expect(coreApiConfig({}).protonUsername).toBeUndefined()
+    expect(coreApiConfig({ EIDO_PROTON_USERNAME: "" }).protonUsername).toBe(
+      undefined
+    )
+    expect(() => coreApiConfig({ EIDO_PROTON_USERNAME: "assistant" })).toThrow(
+      "EIDO_PROTON_USERNAME must be an address"
+    )
+  })
+
+  test("reads a positive conversation digest TTL, defaulting to 60 minutes", () => {
+    expect(
+      coreApiConfig({
+        EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES: "25",
+      }).conversationDigestIdleTtlMinutes
+    ).toBe(25)
+    expect(() =>
+      coreApiConfig({ EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES: "0" })
+    ).toThrow(
+      "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES must be a positive integer"
+    )
+  })
+
+  test("reads the positive digest section token budget", () => {
+    expect(
+      coreApiConfig({ EIDO_DIGEST_SECTION_TOKENS: "1800" }).digest.sectionTokens
+    ).toBe(1800)
+    expect(() => coreApiConfig({ EIDO_DIGEST_SECTION_TOKENS: "0" })).toThrow(
+      "EIDO_DIGEST_SECTION_TOKENS must be a positive integer"
+    )
+  })
+
+  test("enables reply tracking only with configured owner addresses and supplies starting delays", () => {
+    expect(
+      coreApiConfig({
+        EIDO_REPLIES_CONFIG: JSON.stringify({ me: ["owner@example.com"] }),
+      }).replies
+    ).toEqual({
+      me: ["owner@example.com"],
+      repliesOwed: { afterDays: 2 },
+      waitingOn: { afterDays: 5 },
+      excludeSenders: [],
+    })
+    expect(() =>
+      coreApiConfig({
+        EIDO_REPLIES_CONFIG: JSON.stringify({
+          me: ["owner@example.com"],
+          excludeSenders: ["["],
+        }),
+      })
+    ).toThrow("invalid regular expression")
+  })
+
+  test("reads the triage budget overrides and refuses malformed ones", () => {
+    expect(coreApiConfig({}).triage).toEqual({})
+    expect(
+      coreApiConfig({
+        EIDO_TRIAGE_CONFIG: '{"perDay":3,"ledgerOnlyBelow":0.4}',
+      }).triage
+    ).toEqual({ perDay: 3, ledgerOnlyBelow: 0.4 })
+    expect(() =>
+      coreApiConfig({ EIDO_TRIAGE_CONFIG: '{"perDay":-1}' })
+    ).toThrow("EIDO_TRIAGE_CONFIG")
   })
 
   test("requires a paired loopback model host and valid port", () => {
@@ -165,6 +360,142 @@ describe("coreApiConfig", () => {
 })
 
 describe("runDataPlane", () => {
+  it.each([200, 503])(
+    "runs the optional file sync against the gate and handles status %i",
+    async (status) => {
+      const requests: string[] = []
+      let arrived: (() => void) | undefined
+      const requested = new Promise<void>((resolve) => {
+        arrived = resolve
+      })
+      const gate = createHttpServer((request, response) => {
+        requests.push(request.url ?? "")
+        response.writeHead(status, { "content-type": "application/json" })
+        response.end(
+          JSON.stringify(
+            status === 200
+              ? { roots: [] }
+              : { code: "unavailable", message: "synthetic-private-error" }
+          )
+        )
+        arrived?.()
+      })
+      const socketPath = join(dir, "files-gate.sock")
+      await new Promise<void>((resolve) => gate.listen(socketPath, resolve))
+      const env = {
+        EIDO_DATA_DIR: join(dir, "data"),
+        EIDO_GATE_SOCKET: socketPath,
+        EIDO_FILES_SYNC: "1",
+      }
+      const plane = runDataPlane(dataPlaneConfig(env), env)
+      try {
+        await requested
+        await plane.close()
+        expect(requests).toEqual(["/file-roots"])
+        const log = readFileSync(
+          join(env.EIDO_DATA_DIR, DATA_PLANE_LOG_FILE),
+          "utf8"
+        )
+        if (status === 503) expect(log).toContain("files_sync_failed")
+        else expect(log).not.toContain("files_sync_failed")
+        expect(log).not.toContain("synthetic-private-error")
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          gate.close((error) => (error ? reject(error) : resolve()))
+        )
+      }
+    }
+  )
+
+  it("wires POST /intents through the real gate client", async () => {
+    let received: unknown
+    const gate = createHttpServer((request, response) => {
+      let body = ""
+      request.setEncoding("utf8")
+      request.on("data", (chunk: string) => (body += chunk))
+      request.on("end", () => {
+        received = JSON.parse(body) as unknown
+        response.writeHead(201, { "content-type": "application/json" })
+        response.end(
+          JSON.stringify({
+            id: "intent-runtime",
+            tier: "approval",
+            state: "pending",
+          })
+        )
+      })
+    })
+    const socketPath = join(dir, "proposal-gate.sock")
+    await new Promise<void>((resolve) => gate.listen(socketPath, resolve))
+    const env = servedEnv({ EIDO_GATE_SOCKET: socketPath })
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${String(api.port)}/intents`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            intent: {
+              kind: "email.archive",
+              connector: "gmail",
+              args: { messageIds: ["gm-runtime"] },
+            },
+            origin: "reactive",
+          }),
+        }
+      )
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({
+        id: "intent-runtime",
+        tier: "approval",
+        state: "pending",
+      })
+      expect(received).toEqual({
+        intent: {
+          kind: "email.archive",
+          connector: "gmail",
+          args: { messageIds: ["gm-runtime"] },
+        },
+        origin: "reactive",
+      })
+    } finally {
+      await api.close()
+      await plane.close()
+      await new Promise<void>((resolve) => gate.close(() => resolve()))
+    }
+  })
+
+  it("reports the configured Proton account before any sync has run", async () => {
+    const env = {
+      EIDO_DATA_DIR: join(dir, "data"),
+      EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+      EIDO_PROTON_USERNAME: "assistant@example.com",
+    }
+    const plane = runDataPlane(dataPlaneConfig(env), env)
+    expect(plane.connectorAccounts()).toEqual([
+      {
+        connector: "proton",
+        healthName: "proton-mail",
+        accountRef: "assistant@example.com",
+        label: "Proton Mail",
+      },
+    ])
+    await plane.close()
+  })
+
+  it("reports no accounts when no connector is configured", async () => {
+    const env = {
+      EIDO_DATA_DIR: join(dir, "data"),
+      EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+    }
+    const plane = runDataPlane(dataPlaneConfig(env), env)
+    expect(plane.connectorAccounts()).toEqual([])
+    await plane.close()
+  })
+
   it("opens eido-data.db, logs variable names only, and reaches the gate through the client", async () => {
     const env = {
       EIDO_DATA_DIR: join(dir, "data"),
@@ -199,6 +530,392 @@ describe("runDataPlane", () => {
       },
       { event: "stopped" },
     ])
+  })
+
+  it("uses one model-backed digest service and drains its build before closing the database", async () => {
+    const model = await startStubModelServer({
+      contextTokens: 8192,
+      modelMetadataFailures: 1,
+      replies: [
+        {
+          deltas: [
+            JSON.stringify({
+              lines: [
+                {
+                  text: "Stored summary",
+                  cites: ["msg-runtime@example.invalid"],
+                },
+              ],
+            }),
+          ],
+        },
+      ],
+    })
+    const env = {
+      EIDO_DATA_DIR: join(dir, "digest-data"),
+      EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+      EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_LLAMA_PORT: new URL(model.url).port,
+    }
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const entityId = "entity-digest-test"
+    plane.db
+      .prepare(
+        "INSERT INTO entities (id, kind, name, tag, created_at) VALUES (?, 'personal', ?, 'ME', ?)"
+      )
+      .run(entityId, "Digest Test", "2030-01-01T00:00:00.000Z")
+    const document = {
+      sha256: "b".repeat(64),
+      source: "gmail",
+      sourceRef: "gm-runtime",
+      mime: "message/rfc822",
+      entityId,
+      body: "The stored message has a checkable source id.",
+      headers: {
+        threadId: "thread-runtime",
+        messageId: "msg-runtime@example.invalid",
+      },
+    }
+    ingestBatch(plane.db, {
+      connector: "gmail",
+      stream: "INBOX",
+      documents: [document],
+      nextCursor: "c1",
+    })
+    plane.scheduleIngestedDocuments([document])
+    plane.scheduleIngestedDocuments([document])
+
+    await plane.close()
+
+    expect(
+      model.requests.filter((request) => request.path === "/v1/models")
+    ).toHaveLength(2)
+    expect(model.completions()).toHaveLength(1)
+    expect(plane.db.isOpen).toBe(false)
+    expect(
+      readFileSync(config.logPath, "utf8").includes("digest_schedule_failed")
+    ).toBe(true)
+    const db = openDataDb(config.dbPath)
+    expect(
+      db.prepare("SELECT model_id, lines_json FROM digests").get()
+    ).toEqual({
+      model_id: "local",
+      lines_json: JSON.stringify([
+        {
+          text: "Stored summary",
+          cites: [
+            {
+              messageId: "msg-runtime@example.invalid",
+              injectionSuspected: false,
+              reasons: [],
+            },
+          ],
+        },
+      ]),
+    })
+    db.close()
+    await model.close()
+  })
+
+  it("logs failed digest scheduling and still closes when no local model is configured", async () => {
+    const env = {
+      EIDO_DATA_DIR: join(dir, "digest-without-model"),
+      EIDO_GATE_SOCKET: join(dir, "missing.sock"),
+    }
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const entityId = "entity-no-model"
+    plane.db
+      .prepare(
+        "INSERT INTO entities (id, kind, name, tag, created_at) VALUES (?, 'personal', ?, 'ME', ?)"
+      )
+      .run(entityId, "No Model", "2030-01-01T00:00:00.000Z")
+    const document = {
+      sha256: "c".repeat(64),
+      source: "gmail",
+      sourceRef: "gm-no-model",
+      mime: "message/rfc822",
+      entityId,
+      body: "A stored message without model configuration.",
+      headers: {
+        threadId: "thread-no-model",
+        messageId: "no-model@example.invalid",
+      },
+    }
+    ingestBatch(plane.db, {
+      connector: "gmail",
+      stream: "INBOX",
+      documents: [document],
+      nextCursor: "c1",
+    })
+    plane.scheduleIngestedDocuments([document])
+
+    await plane.close()
+
+    expect(plane.db.isOpen).toBe(false)
+    expect(readFileSync(config.logPath, "utf8")).toContain(
+      '"event":"digest_schedule_failed"'
+    )
+  })
+})
+
+describe("Gmail sync runtime", () => {
+  it("fails data-plane startup clearly when Gmail has no parser data directory", () => {
+    const dbPath = join(dir, "must-not-open.db")
+    const config: DataPlaneConfig = {
+      dataDir: "",
+      dbPath,
+      logPath: join(dir, "data-plane.log"),
+      gateSocket: join(dir, "gate.sock"),
+      api: {
+        host: "127.0.0.1",
+        port: 8789,
+        basePath: "",
+        allowedHosts: [],
+        gmailProxyUrl: "http://127.0.0.1:7801",
+        conversationDigestIdleTtlMinutes: 60,
+        digest: { sectionTokens: 2000 },
+      },
+    }
+    expect(() => runDataPlane(config, {})).toThrow(
+      "Gmail sync requires EIDO_DATA_DIR to configure its parser"
+    )
+    expect(existsSync(dbPath)).toBe(false)
+  })
+
+  it("passes its data-dir parser into Gmail sync and indexes PDF text", async () => {
+    const db = openDataDb(":memory:")
+    const profile = createProfileStore(db, {
+      audit: () => Promise.resolve(),
+    })
+    const entity = await profile.createEntity({
+      kind: "personal",
+      name: "Test Personal",
+      tag: "ME",
+    })
+    await profile.setDefaultEntityId(entity.id)
+    const gmail = createFakeGmail()
+    gmail.add({
+      id: "gm-runtime",
+      threadId: "th-runtime",
+      labelIds: ["INBOX"],
+      raw: rfc822({
+        messageId: "runtime@mail.example.invalid",
+        subject: "Attached report",
+        body: "See attached.",
+        attachment: {
+          filename: "report.pdf",
+          mime: "application/pdf",
+          content: textPdf([["Report page one"], ["Report page two"]]),
+        },
+      }),
+    })
+    const parser = createParser({ dataDir: join(dir, "parser-data") })
+    const scheduleDigest = vi.fn()
+    const scheduleReplies = vi.fn()
+    const onAccount = vi.fn()
+    const sync = createGmailSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      profile,
+      client: createGmailClient(gmail.transport),
+      parser,
+      onIngested: (documents) =>
+        scheduleIngestedDigests(db, { scheduleDigest }, documents),
+      onBatchCommitted: scheduleReplies,
+      onAccount,
+      log: () => undefined,
+    })
+
+    await sync()
+    expect(onAccount).toHaveBeenCalledWith("owner@example.com")
+    const attachment = db
+      .prepare(
+        "SELECT t.body FROM document_text t JOIN documents d ON d.sha256 = t.sha256 WHERE t.attachment_of = ? AND d.source_ref = ?"
+      )
+      .get("gm-runtime", "gm-runtime#0")
+    expect(attachment?.["body"]).toBe("Report page one\nReport page two")
+    const storedPages = db
+      .prepare(
+        "SELECT page, text FROM document_pages WHERE sha256 = (SELECT sha256 FROM documents WHERE source_ref = ?) ORDER BY page"
+      )
+      .all("gm-runtime#0")
+    expect(storedPages).toEqual([
+      { page: 1, text: "Report page one" },
+      { page: 2, text: "Report page two" },
+    ])
+    expect(
+      db
+        .prepare(
+          "SELECT mailbox_id FROM mail_message_mailboxes WHERE sha256 = (SELECT sha256 FROM documents WHERE source_ref = ?)"
+        )
+        .get("gm-runtime")?.["mailbox_id"]
+    ).toBe("owner@example.com")
+    expect(scheduleDigest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "document",
+        pages: [
+          { page: 1, text: "Report page one" },
+          { page: 2, text: "Report page two" },
+        ],
+      })
+    )
+    expect(scheduleReplies).toHaveBeenCalledTimes(1)
+    expect(scheduleDigest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "thread",
+        threadId: JSON.stringify(["gmail", entity.id, "th-runtime"]),
+      })
+    )
+    db.close()
+  }, 60_000)
+
+  it("fails clearly when configured without a parser", () => {
+    const db = openDataDb(":memory:")
+    const profile = createProfileStore(db, {
+      audit: () => Promise.resolve(),
+    })
+    expect(() =>
+      createGmailSyncRuntime({
+        db,
+        gate: { getConnectorHealth: () => Promise.resolve([]) },
+        profile,
+        client: createGmailClient(createFakeGmail().transport),
+        log: () => undefined,
+      })
+    ).toThrow("Gmail sync requires a configured sandboxed document parser")
+    db.close()
+  })
+})
+
+describe("Proton sync runtime", () => {
+  const ACCOUNT = "assistant@example.com"
+
+  async function setup() {
+    const db = openDataDb(":memory:")
+    const profile = createProfileStore(db, {
+      audit: () => Promise.resolve(),
+    })
+    const entity = await profile.createEntity({
+      kind: "personal",
+      name: "Test Personal",
+      tag: "ME",
+    })
+    await profile.setDefaultEntityId(entity.id)
+    const source = new MemorySource()
+    source.addFolder("INBOX", "7", [
+      { uid: 1, raw: plainMessage("p1", { subject: "First" }) },
+      { uid: 2, raw: plainMessage("p2", { subject: "Second" }) },
+    ])
+    return { db, profile, source }
+  }
+
+  const indexedMessageIds = (db: DatabaseSync): string[] =>
+    db
+      .prepare(
+        "SELECT message_id FROM document_text WHERE message_id IS NOT NULL ORDER BY message_id"
+      )
+      .all()
+      .map((row) => String(row["message_id"]))
+
+  it("indexes the configured account's inbox and schedules replies after the run", async () => {
+    const { db, profile, source } = await setup()
+    const scheduleReplies = vi.fn()
+    const sync = createProtonSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      profile,
+      source,
+      username: ACCOUNT,
+      onBatchCommitted: scheduleReplies,
+      log: () => undefined,
+    })
+
+    await sync()
+
+    expect(indexedMessageIds(db)).toEqual([
+      "<p1@example.com>",
+      "<p2@example.com>",
+    ])
+    expect(scheduleReplies).toHaveBeenCalledTimes(1)
+    db.close()
+  })
+
+  it("joins the run in flight instead of starting a second one", async () => {
+    const { db, profile, source } = await setup()
+    const sync = createProtonSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      profile,
+      source,
+      username: ACCOUNT,
+      log: () => undefined,
+    })
+
+    await Promise.all([sync(), sync()])
+
+    expect(
+      source.calls.filter((call) => call.startsWith("folderState"))
+    ).toEqual(["folderState INBOX"])
+    db.close()
+  })
+
+  it("logs a failed run and lets the next one try again", async () => {
+    const { db, profile, source } = await setup()
+    source.failAll = new Error("bridge down")
+    const log = vi.fn()
+    const scheduleReplies = vi.fn()
+    const sync = createProtonSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      profile,
+      source,
+      username: ACCOUNT,
+      onBatchCommitted: scheduleReplies,
+      log,
+    })
+
+    await sync()
+    expect(log).toHaveBeenCalledWith("proton_sync_failed", {
+      reason: "bridge down",
+    })
+    expect(scheduleReplies).not.toHaveBeenCalled()
+
+    source.failAll = undefined
+    await sync()
+    expect(indexedMessageIds(db)).toEqual([
+      "<p1@example.com>",
+      "<p2@example.com>",
+    ])
+    db.close()
+  })
+
+  it("does not reach the source while the gate reports the connector backing off", async () => {
+    const { db, profile, source } = await setup()
+    const sync = createProtonSyncRuntime({
+      db,
+      gate: {
+        getConnectorHealth: () =>
+          Promise.resolve([
+            {
+              name: "proton-mail",
+              health: "open",
+              consecutiveFailures: 3,
+              nextAttemptAt: new Date(Date.now() + 60_000).toISOString(),
+            },
+          ]),
+      },
+      profile,
+      source,
+      username: ACCOUNT,
+      log: () => undefined,
+    })
+
+    await sync()
+
+    expect(source.calls).toEqual([])
+    db.close()
   })
 })
 
@@ -348,6 +1065,93 @@ function servedEnv(extra: Record<string, string> = {}) {
 }
 
 describe("serveDataPlane", () => {
+  it("retries idle conversation sweeps after queue and summary failures without overlapping builds", async () => {
+    const model = await startStubModelServer({
+      contextTokens: 8192,
+      replies: [
+        { deltas: ["invalid summary"] },
+        { deltas: [JSON.stringify({ summary: "Please track repairs." })] },
+      ],
+    })
+    const env = servedEnv({
+      EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_LLAMA_PORT: new URL(model.url).port,
+    })
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const queue = vi
+      .spyOn(plane, "getInferenceQueue")
+      .mockRejectedValueOnce(new Error("model temporarily unavailable"))
+    const log = vi.spyOn(plane, "log")
+    const timers = vi.spyOn(globalThis, "setInterval")
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      const tick = timers.mock.calls.at(-1)?.[0]
+      if (typeof tick !== "function") throw new Error("missing digest timer")
+      const store = plane.conversation
+      if (store === undefined) throw new Error("missing conversation store")
+      await store.appendTurn("idle", {
+        id: "old-turn",
+        role: "user",
+        text: "Please track repairs.",
+        at: "2020-01-01T00:00:00.000Z",
+        sources: [],
+      })
+      plane.db
+        .prepare("UPDATE conversations SET last_activity_at = ? WHERE id = ?")
+        .run("2020-01-01T00:00:00.000Z", "idle")
+      tick()
+      await vi.waitFor(() =>
+        expect(log).toHaveBeenCalledWith("conversation_digest_sweep_failed", {
+          count: "unknown",
+        })
+      )
+      tick()
+      tick()
+      await vi.waitFor(() =>
+        expect(log).toHaveBeenCalledWith("conversation_digest_sweep_failed", {
+          count: "1",
+        })
+      )
+      expect(model.completions()).toHaveLength(1)
+      expect(store.getConversationDigest("idle")).toBeUndefined()
+      tick()
+      await vi.waitFor(() =>
+        expect(store.getConversationDigest("idle")?.text).toContain(
+          "Please track repairs."
+        )
+      )
+      expect(model.completions()).toHaveLength(2)
+      delete plane.conversation
+      tick()
+      expect(queue).toHaveBeenCalledTimes(3)
+    } finally {
+      timers.mockRestore()
+      await api.close()
+      await plane.close()
+      await model.close()
+    }
+  })
+
+  it("does not schedule a conversation sweep without a configured local model", async () => {
+    const env = servedEnv()
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const queue = vi.spyOn(plane, "getInferenceQueue")
+    const timers = vi.spyOn(globalThis, "setInterval")
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      const tick = timers.mock.calls.at(-1)?.[0]
+      if (typeof tick !== "function") throw new Error("missing digest timer")
+      tick()
+      expect(queue).not.toHaveBeenCalled()
+    } finally {
+      timers.mockRestore()
+      await api.close()
+      await plane.close()
+    }
+  })
+
   it("keeps non-ask routes available when the local model is unavailable", async () => {
     const env = servedEnv({
       EIDO_LLAMA_HOST: "127.0.0.1",
@@ -373,12 +1177,88 @@ describe("serveDataPlane", () => {
     }
   })
 
+  it.each([
+    [
+      "serves POST /replies/draft when a local model is configured",
+      true,
+      "no such obligation",
+    ],
+    [
+      "does not serve /replies/draft without a local model",
+      false,
+      "no such route",
+    ],
+  ])("%s", async (_name, withModel, message) => {
+    const env = servedEnv(
+      withModel ? { EIDO_LLAMA_HOST: "127.0.0.1", EIDO_LLAMA_PORT: "1" } : {}
+    )
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${String(api.port)}/replies/draft`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ obligationId: 1 }),
+        }
+      )
+      expect(response.status).toBe(404)
+      expect(await response.json()).toEqual({
+        error: { code: "not_found", message },
+      })
+    } finally {
+      await api.close()
+      await plane.close()
+    }
+  })
+
+  it.each([
+    [
+      "sends the configured chat template kwargs on every /apply-template",
+      '{"enable_thinking": false}',
+    ],
+    ["sends no chat_template_kwargs when none are configured", undefined],
+  ])("%s", async (_name, kwargs) => {
+    const model = await startStubModelServer({
+      contextTokens: 8192,
+      replies: [],
+    })
+    const env = servedEnv({
+      EIDO_LLAMA_HOST: "127.0.0.1",
+      EIDO_LLAMA_PORT: new URL(model.url).port,
+      ...(kwargs === undefined
+        ? {}
+        : { EIDO_LLAMA_CHAT_TEMPLATE_KWARGS: kwargs }),
+    })
+    const plane = runDataPlane(dataPlaneConfig(env), env)
+    try {
+      await plane.getInferenceQueue()
+      const bodies = model.requests
+        .filter((request) => request.path === "/apply-template")
+        .map((request) => JSON.parse(request.body) as Record<string, unknown>)
+      expect(bodies.length).toBeGreaterThan(0)
+      for (const body of bodies) {
+        if (kwargs === undefined)
+          expect(body).not.toHaveProperty("chat_template_kwargs")
+        else
+          expect(body.chat_template_kwargs).toEqual({ enable_thinking: false })
+      }
+    } finally {
+      await plane.close()
+      await model.close()
+    }
+  })
+
   it("serves POST /ask through the configured data plane and local model client", async () => {
     const model = await startStubModelServer({
       contextTokens: 8192,
       replies: [
         { deltas: [JSON.stringify({ terms: ["invoice"], wants: "find" })] },
         { deltas: ["The invoice was paid [M1]."] },
+        { deltas: [JSON.stringify({ terms: ["invoice"], wants: "find" })] },
+        { deltas: ["It was paid on January 4 [M1]."] },
       ],
     })
     const port = new URL(model.url).port
@@ -387,7 +1267,7 @@ describe("serveDataPlane", () => {
       EIDO_LLAMA_PORT: port,
     })
     const config = dataPlaneConfig(env)
-    const plane = runDataPlane(config, env)
+    let plane = runDataPlane(config, env)
     plane.db
       .prepare(
         "INSERT INTO entities (id, kind, name, tag, created_at) VALUES (?, 'personal', ?, 'ME', ?)"
@@ -413,6 +1293,7 @@ describe("serveDataPlane", () => {
       ],
       nextCursor: "{}",
     })
+    const digest = vi.spyOn(plane, "getDigestService")
     let api: CoreApi | undefined
     try {
       api = await serveDataPlane(plane, config.api)
@@ -422,9 +1303,29 @@ describe("serveDataPlane", () => {
         body: JSON.stringify({ question: "When was the invoice paid?" }),
       })
       expect(response.status).toBe(200)
+      // Ask reads thread digests through the plane's digest service (#475).
+      expect(digest).toHaveBeenCalled()
       expect(await response.json()).toMatchObject({
         status: "answered",
         answer: "The invoice was paid [M1].",
+        followUps: [
+          {
+            label: "Archive matching emails",
+            intent: {
+              kind: "email.archive",
+              connector: "gmail",
+              args: { messageIds: ["gm-1"] },
+            },
+          },
+          {
+            label: "Mark matching emails as read",
+            intent: {
+              kind: "email.markRead",
+              connector: "gmail",
+              args: { messageIds: ["gm-1"], read: true },
+            },
+          },
+        ],
         citations: [{ tag: "M1", sourceRef: "gm-1" }],
         coverage: {
           searched: 1,
@@ -433,6 +1334,47 @@ describe("serveDataPlane", () => {
           label: "read 1 of 1 matching messages in full",
         },
       })
+      const followup = await fetch(`http://127.0.0.1:${String(api.port)}/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "What day was it?" }),
+      })
+      expect(await followup.json()).toMatchObject({
+        status: "answered",
+        answer: "It was paid on January 4 [M1].",
+      })
+      const followupPrompt =
+        model
+          .completions()[3]
+          ?.turns.map((turn) => turn.content)
+          .join("\n") ?? ""
+      expect(followupPrompt).toContain("When was the invoice paid?")
+      expect(followupPrompt.match(/Question: What day was it\?/g)).toHaveLength(
+        1
+      )
+      const compact = await fetch(`http://127.0.0.1:${String(api.port)}/ask`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "/compact" }),
+      })
+      expect(await compact.json()).toMatchObject({
+        status: "answered",
+        answer: "Nothing to compact yet",
+      })
+      expect(plane.conversation?.sourceTags("ask")).toEqual([
+        { tag: "M1", sourceRef: "gm-1" },
+      ])
+      await api.close()
+      api = undefined
+      await plane.close()
+      plane = runDataPlane(config, env)
+      expect(plane.conversation?.getTurns("ask")).toHaveLength(4)
+      expect(plane.conversation?.sourceTags("ask")).toEqual([
+        { tag: "M1", sourceRef: "gm-1" },
+      ])
+      expect(
+        plane.conversation?.searchConversations("invoice", { kind: "raw" })
+      ).toHaveLength(2)
     } finally {
       await api?.close()
       await plane.close()
@@ -577,6 +1519,148 @@ describe("starting the data plane", () => {
     },
     15_000
   )
+
+  it("schedules configured reply tracking at startup and after ingested sync batches", async () => {
+    const env = servedEnv({
+      EIDO_REPLIES_CONFIG: JSON.stringify({ me: ["owner@example.com"] }),
+    })
+    mkdirSync(env.EIDO_DATA_DIR, { recursive: true })
+    const path = join(env.EIDO_DATA_DIR, DATA_DB_FILE)
+    const seed = openDataDb(path)
+    const seedProfile = createProfileStore(seed, {
+      audit: () => Promise.resolve(),
+    })
+    const owner = await seedProfile.createEntity({
+      kind: "personal",
+      name: "Owner",
+      tag: "ME",
+    })
+    await seedProfile.setDefaultEntityId(owner.id)
+    ingestBatch(seed, {
+      connector: "gmail",
+      stream: "seed",
+      nextCursor: "1",
+      documents: [
+        {
+          sha256: "c".repeat(64),
+          source: "gmail",
+          sourceRef: "startup-message",
+          mime: "message/rfc822",
+          entityId: owner.id,
+          title: "Startup",
+          body: "Please reply to me.",
+          occurredAt: "2026-01-01T00:00:00.000Z",
+          headers: {
+            messageId: "<startup@example.invalid>",
+            threadId: "startup",
+          },
+          addresses: [
+            { role: "from", address: "partner@example.invalid" },
+            { role: "to", address: "owner@example.com" },
+          ],
+          mailFacts: { listUnsubscribe: false },
+        },
+      ],
+    })
+    await seedProfile.drain()
+    seed.close()
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+      expect(listObligations(plane.db, { entityId: owner.id })).toHaveLength(1)
+      ingestBatch(plane.db, {
+        connector: "gmail",
+        stream: "after-startup",
+        nextCursor: "2",
+        documents: [
+          {
+            sha256: "d".repeat(64),
+            source: "gmail",
+            sourceRef: "batch-message",
+            mime: "message/rfc822",
+            entityId: owner.id,
+            title: "Batch",
+            body: "Please reply to this.",
+            occurredAt: "2026-01-02T00:00:00.000Z",
+            headers: {
+              messageId: "<batch@example.invalid>",
+              threadId: "batch",
+            },
+            addresses: [
+              { role: "from", address: "vendor@example.invalid" },
+              { role: "to", address: "owner@example.com" },
+            ],
+            mailFacts: { listUnsubscribe: false },
+          },
+        ],
+      })
+      plane.scheduleReplyObligations()
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+      expect(listObligations(plane.db, { entityId: owner.id })).toHaveLength(2)
+    } finally {
+      await plane.close()
+    }
+  })
+
+  it("triages the reply obligations it creates at startup, with the card budget from configuration", async () => {
+    const env = servedEnv({
+      EIDO_REPLIES_CONFIG: JSON.stringify({ me: ["owner@example.com"] }),
+      EIDO_TRIAGE_CONFIG: JSON.stringify({ perDay: 0 }),
+    })
+    mkdirSync(env.EIDO_DATA_DIR, { recursive: true })
+    const seed = openDataDb(join(env.EIDO_DATA_DIR, DATA_DB_FILE))
+    const seedProfile = createProfileStore(seed, {
+      audit: () => Promise.resolve(),
+    })
+    const owner = await seedProfile.createEntity({
+      kind: "personal",
+      name: "Owner",
+      tag: "ME",
+    })
+    await seedProfile.setDefaultEntityId(owner.id)
+    ingestBatch(seed, {
+      connector: "gmail",
+      stream: "seed",
+      nextCursor: "1",
+      documents: [
+        {
+          sha256: "e".repeat(64),
+          source: "gmail",
+          sourceRef: "triage-message",
+          mime: "message/rfc822",
+          entityId: owner.id,
+          title: "Triage",
+          body: "Please reply to me.",
+          occurredAt: "2026-01-01T00:00:00.000Z",
+          headers: {
+            messageId: "<triage@example.invalid>",
+            threadId: "triage",
+          },
+          addresses: [
+            { role: "from", address: "partner@example.invalid" },
+            { role: "to", address: "owner@example.com" },
+          ],
+          mailFacts: { listUnsubscribe: false },
+        },
+      ],
+    })
+    await seedProfile.drain()
+    seed.close()
+    const plane = runDataPlane(dataPlaneConfig(env), env)
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+      const events = plane.db
+        .prepare("SELECT kind, disposition, reason FROM events")
+        .all()
+      // Budget 0 from the environment: the reply event is recorded and goes to the digest.
+      expect(events).toEqual([
+        { kind: "reply-owed", disposition: "digest", reason: "budget" },
+      ])
+    } finally {
+      await plane.close()
+    }
+  })
 })
 
 describe("holdUntilStopped", () => {

@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite"
 import { GateUnavailableError } from "@eido/gate"
 import { beforeEach, describe, expect, test } from "vitest"
-import { getCursor } from "../../index/index"
+import { getCursor, search } from "../../index/index"
 import { openDataDb } from "../../ledger/db"
 import { createProfileStore } from "../../profile/store"
 import type { ProfileStore } from "../../profile/store"
@@ -227,6 +227,47 @@ describe("syncFolder", () => {
         "SELECT count(*) FROM document_text WHERE attachment_of IS NOT NULL"
       )
     ).toBe(2)
+  })
+
+  test("searching attachment-only text returns the parent message and attachment", async () => {
+    source.addFolder("INBOX", "1", [
+      {
+        uid: 1,
+        raw: raw([
+          "From: Ada Example <ada@example.com>",
+          "Subject: quarterly report",
+          "Message-ID: <report@example.com>",
+          'Content-Type: multipart/mixed; boundary="b"',
+          "",
+          "--b",
+          "Content-Type: text/plain",
+          "",
+          "Please see attached.",
+          "--b",
+          "Content-Type: text/plain",
+          'Content-Disposition: attachment; filename="report.txt"',
+          "",
+          "zirconium ledger anomaly",
+          "--b--",
+        ]),
+      },
+    ])
+
+    await syncFolder(db, source, "INBOX", 10, account)
+
+    expect(
+      search(db, { text: "zirconium ledger anomaly", source: "proton" })
+    ).toMatchObject([
+      {
+        sourceRef: "<report@example.com>#0",
+        parentSourceRef: "<report@example.com>",
+      },
+    ])
+    expect(
+      db
+        .prepare("SELECT body FROM document_text WHERE message_id = ?")
+        .get("<report@example.com>")?.["body"]
+    ).toBe("Please see attached.")
   })
 })
 
@@ -528,5 +569,82 @@ describe("entity at ingestion", () => {
       cursor: "2",
       uidvalidity: "7",
     })
+  })
+})
+
+describe("phishing signals", () => {
+  const signalsOf = (messageId: string): string[] =>
+    db
+      .prepare(
+        `SELECT s.kind FROM mail_message_signals s
+         JOIN document_text t ON t.sha256 = s.sha256
+         WHERE t.message_id = ? ORDER BY s.kind`
+      )
+      .all(messageId)
+      .map((r) => String(r["kind"]))
+
+  const html = (id: string, from: string, extra: string[], body: string) =>
+    raw([
+      ...extra,
+      `From: Ada Example <${from}>`,
+      "To: Assistant <assistant@example.com>",
+      `Subject: subject ${id}`,
+      `Message-ID: <${id}@example.com>`,
+      "Date: Mon, 05 Oct 2026 10:00:00 +0000",
+      "Content-Type: text/html; charset=utf-8",
+      "",
+      body,
+    ])
+
+  test("stores the signals of a flagged message and none for a clean one", async () => {
+    source.addFolder("INBOX", "7", [
+      {
+        uid: 1,
+        raw: html(
+          "bad",
+          "ada@example.com",
+          [
+            "Authentication-Results: mail.protonmail.ch; dmarc=fail",
+            "Authentication-Results: relay.example.invalid; spf=fail",
+            "Reply-To: ada@example.invalid",
+          ],
+          '<a href="https://example.invalid/">example.com</a>'
+        ),
+      },
+      {
+        uid: 2,
+        raw: html(
+          "good",
+          "ada@example.com",
+          ["Authentication-Results: mail.protonmail.ch; dmarc=pass"],
+          '<a href="https://example.com/">example.com</a>'
+        ),
+      },
+    ])
+    await syncFolder(db, source, "INBOX", 10, account)
+    expect(signalsOf("<bad@example.com>")).toEqual([
+      "dmarc_fail",
+      "link_mismatch",
+      "reply_to_domain",
+    ])
+    expect(signalsOf("<good@example.com>")).toEqual([])
+  })
+
+  test("a sender is a lookalike of a domain already in the mailbox, and a flagged sender does not make its own domain familiar", async () => {
+    const note = (n: number, from: string) => ({
+      uid: n,
+      raw: html(`m${n}`, from, [], "<p>hello</p>"),
+    })
+    source.addFolder("INBOX", "7", [
+      note(1, "bo@example-bank.com"),
+      note(2, "bo@exarnple-bank.com"),
+      note(3, "bo@exarnple-bank.com"),
+      note(4, "bo@example-bank.com"),
+    ])
+    await syncFolder(db, source, "INBOX", 1, account)
+    expect(signalsOf("<m1@example.com>")).toEqual([])
+    expect(signalsOf("<m2@example.com>")).toEqual(["lookalike_domain"])
+    expect(signalsOf("<m3@example.com>")).toEqual(["lookalike_domain"])
+    expect(signalsOf("<m4@example.com>")).toEqual([])
   })
 })

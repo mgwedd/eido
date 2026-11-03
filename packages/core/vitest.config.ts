@@ -11,7 +11,7 @@ export default defineConfig({
         "**/*.test.{ts,tsx}", // test files are not product code
         "**/*.test-support.ts", // test-only fakes and builders, imported by tests only
       ],
-      reporter: ["text", "json-summary"],
+      reporter: ["text", "json-summary", "cobertura"],
       thresholds: {
         lines: 90,
         statements: 90,

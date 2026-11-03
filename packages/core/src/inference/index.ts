@@ -11,9 +11,11 @@ export {
   createModelClient,
   loopbackBaseUrl,
   readContextTokens,
+  readModelId,
 } from "./client"
 export {
   InferenceError,
+  MaterialMarkerError,
   PromptTooLargeError,
   UnsupportedModelServerError,
 } from "./errors"

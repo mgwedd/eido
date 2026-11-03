@@ -8,6 +8,8 @@ import { validateIntent } from "@eido/schemas"
 import type {
   ConnectorManifest,
   ConnectorOperation,
+  GateFileHelperResponse,
+  GateFileRoots,
   Intent,
 } from "@eido/schemas"
 import type { ApprovalAssertion } from "./approvals"
@@ -17,6 +19,8 @@ import type {
   ControlAuthorization,
 } from "./control-approvals"
 import { openControlDb } from "./control-db"
+import type { FileHelper } from "./files/file-helper"
+import { prepareFileRoots, setFileRoots } from "./files/file-roots"
 import {
   loadPolicy,
   OVERLAY_FILE,
@@ -100,6 +104,7 @@ export const MAIL_OPS: readonly Op[] = [
   op("reply", "email.reply", "irreversible", "approval"),
   op("forward", "email.forward", "irreversible", "approval"),
   op("trash", "email.trash", "reversible", "approval"),
+  op("restore_trash", "email.untrash", "reversible", "approval"),
 ]
 
 export const CALENDAR_OPS: readonly Op[] = [
@@ -142,6 +147,11 @@ const ARGS = {
     to: ["someone@example.com"],
   },
   "email.trash": { messageIds: ["msg-1"] },
+  "email.untrash": {
+    sourceIntentId: "trash-intent",
+    messageIds: ["msg-1"],
+    priorLabels: [{ messageId: "msg-1", labels: ["INBOX"] }],
+  },
   "calendar.create": {
     entity: "personal",
     title: BODY_MARKER,
@@ -156,6 +166,25 @@ const ARGS = {
   "file.rename": { root: ALLOWED_ROOT, path: "a.txt", newName: "b.txt" },
   "file.move": { root: ALLOWED_ROOT, path: "a.txt", toPath: "old/a.txt" },
   "file.delete": { root: ALLOWED_ROOT, path: "a.txt" },
+  "confirm.field": {
+    extractionId: "ext-1",
+    field: "amount",
+    value: {
+      raw: "$100.00",
+      typed: { amount_minor: 10000, currency: "USD" },
+    },
+    source: {
+      docSha256: SAMPLE_SHA256,
+      start: 10,
+      end: 17,
+      page: 1,
+      line: 2,
+    },
+    confidence: 0.75,
+    threshold: 0.85,
+    documentTitle: "Invoice #123",
+    documentSource: "a scan",
+  },
 } satisfies { [K in IntentKind]: Extract<Intent, { kind: K }>["args"] }
 
 /** A valid intent of `kind`, with `args` overriding the sample args; parsed, not cast. */
@@ -432,6 +461,48 @@ export function signedPolicy(
   const authorization = controlAuthorization(db, prepared)
   try {
     setPolicyOverrides(db, value, actor, authorization)
+  } finally {
+    db.prepare("DELETE FROM credentials WHERE credential_id = ?").run(
+      authorization.credentialId
+    )
+  }
+}
+
+/** A fake native helper that identifies exactly the given roots and refuses every other request. */
+export function identifyingHelper(roots: GateFileRoots): FileHelper {
+  return (request) => {
+    const root = roots.roots.find(
+      (r) => request.op === "identify" && r.root.path === request.path
+    )?.root
+    const reply: GateFileHelperResponse =
+      root === undefined
+        ? { ok: false, code: "not_found", message: "no such directory" }
+        : {
+            ok: true,
+            op: "identify",
+            canonicalPath: root.path,
+            dev: root.dev,
+            ino: root.ino,
+          }
+    return Promise.resolve(reply)
+  }
+}
+
+/** Runs the real prepare, sign and store flow for these roots. */
+export async function signedFileRoots(
+  db: DatabaseSync,
+  roots: GateFileRoots
+): Promise<void> {
+  const prepared = await prepareFileRoots(db, identifyingHelper(roots), {
+    roots: roots.roots.map((r) => ({
+      id: r.id,
+      path: r.root.path,
+      trashDir: r.root.trashDir,
+    })),
+  })
+  const authorization = controlAuthorization(db, prepared)
+  try {
+    setFileRoots(db, roots, authorization)
   } finally {
     db.prepare("DELETE FROM credentials WHERE credential_id = ?").run(
       authorization.credentialId

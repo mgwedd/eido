@@ -104,6 +104,17 @@ describe("selectTools", () => {
     ).toEqual([])
   })
 
+  test("a gate-derived restore intent is never offered to the model", () => {
+    expect(
+      names(
+        selectTools({ text: "restore the trashed email", task: "propose" }, [
+          tool("email.untrash"),
+          tool("email.trash"),
+        ])
+      )
+    ).toEqual(["email.trash"])
+  })
+
   test("output order does not depend on catalog order", () => {
     const request = {
       text: "reply to the email and book a meeting",

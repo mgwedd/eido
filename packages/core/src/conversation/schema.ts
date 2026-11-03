@@ -1,8 +1,5 @@
-import type { DatabaseSync } from "node:sqlite"
-
-// Tables of the data plane (`eido-data.db`) for conversations. Every statement is idempotent so
-// the store can apply the schema when it opens; folding it into the ledger migration chain
-// belongs to whoever owns the data-db open path.
+// Tables of the data plane (`eido-data.db`) for conversations. This schema is applied by the
+// ledger migration chain so data-db opens have one authoritative migration path.
 
 export const CONVERSATION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS conversations (
@@ -54,7 +51,3 @@ BEGIN SELECT RAISE(ABORT, 'source tags are never reassigned'); END;
 CREATE TRIGGER IF NOT EXISTS conversation_source_tags_no_delete BEFORE DELETE ON conversation_source_tags
 BEGIN SELECT RAISE(ABORT, 'source tags are never reused'); END;
 `
-
-export function ensureConversationSchema(db: DatabaseSync): void {
-  db.exec(CONVERSATION_SCHEMA_SQL)
-}

@@ -26,6 +26,7 @@ export type ExtractionInput =
     }
 
 export type ObligationStatus = "open" | "done" | "dismissed"
+export type ObligationDirection = "owed" | "waiting"
 
 export interface ObligationInput {
   entityId: string
@@ -38,6 +39,9 @@ export interface ObligationInput {
   span: SourceSpan
   injectionSuspected?: boolean
   injectionReasons?: InjectionReason[]
+  direction?: ObligationDirection
+  threadId?: string
+  anchorMessageId?: string
 }
 
 export interface Obligation {
@@ -51,6 +55,10 @@ export interface Obligation {
   span: SourceSpan
   injectionSuspected: boolean
   injectionReasons: InjectionReason[]
+  direction: ObligationDirection | null
+  threadId: string | null
+  anchorMessageId: string | null
+  resolutionReason: "replied" | null
 }
 
 export interface ObligationFilter {

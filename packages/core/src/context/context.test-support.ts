@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { ingestBatch } from "../index/ingest"
 import type { IndexedDocument } from "../index/ingest"
+import type { MailSignal } from "../index/mail-signals"
 
 export const sha = (s: string): string =>
   createHash("sha256").update(s).digest("hex")
@@ -25,6 +26,7 @@ export interface MailSpec {
   inReplyTo?: string
   references?: string[]
   threadId?: string
+  signals?: MailSignal[]
 }
 
 export function mail(spec: MailSpec): IndexedDocument {
@@ -48,6 +50,7 @@ export function mail(spec: MailSpec): IndexedDocument {
       { role: "from", address: address(from) },
       ...to.map((n) => ({ role: "to" as const, address: address(n) })),
     ],
+    ...(spec.signals === undefined ? {} : { mailSignals: spec.signals }),
   }
 }
 

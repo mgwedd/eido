@@ -7,6 +7,16 @@
     "searched": { "type": "integer", "minimum": 0 },
     "matched": { "type": "integer", "minimum": 0 },
     "readInFull": { "type": "integer", "minimum": 0 },
+    "readPartially": {
+      "description": "Matching documents the model read only ranked passages of.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "notRead": {
+      "description": "Matching documents left out of the model's context entirely.",
+      "type": "integer",
+      "minimum": 0
+    },
     "label": { "type": "string", "minLength": 1, "maxLength": 200 }
   },
   "required": ["searched", "matched", "readInFull", "label"],

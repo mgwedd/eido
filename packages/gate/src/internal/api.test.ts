@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { createServer, request } from "node:http"
 import type { Server } from "node:http"
@@ -6,10 +7,13 @@ import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { payloadHash } from "./canonical"
+import { append } from "./audit"
 import {
   GateRequestError,
   GateUnavailableError,
   createAuditClient,
+  createEnrolmentClient,
+  createPasskeyAdminClient,
   createIntentClient,
 } from "./client"
 import type { AuditClient, IntentClient } from "./client"
@@ -28,6 +32,9 @@ import {
   socketAddress,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
+import { initializeProfileAudit } from "./profile-audit"
+import type { ProfileAudit } from "./profile-audit"
+import { InMemoryVault } from "./vault/vault"
 
 // The gate's listeners over real local sockets, in this process: routes, refusals, audit rows
 // and field exclusions. The two-process tests are in packages/core/src/planes.
@@ -80,6 +87,8 @@ let controlSocket: string
 let servers: Server[]
 let client: IntentClient
 let audit: AuditClient
+let profileAudit: ProfileAudit | undefined
+let profileVault: InMemoryVault
 
 async function serve(handler: Handler, path: string): Promise<Server> {
   const server = createGateServer("test", handler, silent)
@@ -95,9 +104,17 @@ beforeEach(async () => {
   servers = []
   s = setup()
   startGate(s.db, s.options, WEBAUTHN)
+  profileVault = new InMemoryVault()
+  profileAudit = await initializeProfileAudit(s.db, profileVault, "1")
   baseline = auditRows(s.db).length
-  await serve(dataPlaneHandler(runningGate), dataSocket)
-  await serve(controlHandler(runningGate), controlSocket)
+  await serve(
+    dataPlaneHandler(() => ({ ...runningGate(), profileAudit })),
+    dataSocket
+  )
+  await serve(
+    controlHandler(runningGate, () => new Date()),
+    controlSocket
+  )
   client = createIntentClient({ socketPath: dataSocket })
   audit = createAuditClient({ socketPath: dataSocket })
 })
@@ -127,6 +144,16 @@ function actions(): string[] {
 }
 
 describe("POST /intents", () => {
+  it("exposes restore-trash as a typed proposal call and refuses unknown receipts", async () => {
+    await expect(client.restoreTrash("missing-trash-id")).rejects.toMatchObject(
+      {
+        name: "GateRequestError",
+        status: 409,
+        code: "unavailable",
+      }
+    )
+  })
+
   it("stores an approval-tier intent as pending and audits one proposal row with its sources", async () => {
     const result = await client.propose(proposal)
     expect(result).toEqual({
@@ -199,6 +226,27 @@ describe("POST /intents", () => {
     expect(actions().slice(before)).toEqual(["intent.invalid"])
   })
 
+  it("stores the injection flag next to the intent and lists it for the owner", async () => {
+    const result = await client.propose({
+      ...proposal,
+      injection: { reasons: ["boundary-confusion"] },
+    })
+    const listed = pendingIntents(s.db).find((i) => i.id === result.id)
+    expect(listed?.injection).toEqual({ reasons: ["boundary-confusion"] })
+  })
+
+  it("refuses an injection flag with an unknown or empty reason list with 400", async () => {
+    for (const injection of [{ reasons: ["lorem"] }, { reasons: [] }]) {
+      const reply = await raw(
+        dataSocket,
+        "POST",
+        "/intents",
+        JSON.stringify({ ...proposal, injection })
+      )
+      expect(reply.status).toBe(400)
+    }
+  })
+
   it("refuses a body that is not a proposal, such as one carrying its own hash, with 400", async () => {
     const reply = await raw(
       dataSocket,
@@ -248,23 +296,72 @@ const created = {
 }
 
 describe("POST /audit", () => {
-  it("appends one hash-only audit.profile row and the chain still verifies", async () => {
+  it("preserves legacy unkeyed rows and distinguishes new tagged targets", async () => {
+    append(s.db, {
+      actor: "data-plane",
+      action: "audit.profile.entity.create",
+      target: SUBJECT,
+      detailHash: payloadHash(created),
+    })
+    const legacy = auditRows(s.db).at(-1)
+    await audit.record(created)
+    const rows = auditRows(s.db)
+    expect(rows.at(-2)).toEqual(legacy)
+    expect(rows.at(-1)?.target).toMatch(/^hmac:v1:1:/)
+    expect(
+      JSON.parse((await raw(controlSocket, "GET", "/audit/chain")).text)
+    ).toMatchObject({ ok: true })
+  })
+  it("refuses profile writes when no key is configured, without an unkeyed fallback", async () => {
+    profileAudit = undefined
+    const before = auditRows(s.db)
+    await expect(audit.record(created)).rejects.toMatchObject({
+      status: 503,
+      code: "unavailable",
+    })
+    expect(auditRows(s.db)).toEqual(before)
+  })
+
+  it("refuses a lost key without echoing digests or appending a profile row", async () => {
+    await profileVault.delete({
+      connector: "eido-profile-audit:1",
+      kind: "api_key",
+      client: "none",
+    })
+    const before = auditRows(s.db)
+    const response = await raw(
+      dataSocket,
+      "POST",
+      "/audit",
+      JSON.stringify(created)
+    )
+    expect(response).toEqual({
+      status: 503,
+      text: JSON.stringify({
+        code: "unavailable",
+        message: "profile audit key is unavailable",
+      }),
+    })
+    expect(auditRows(s.db)).toEqual(before)
+  })
+  it("appends one keyed audit.profile row and the chain still verifies", async () => {
     const result = await audit.record(created)
     const rows = auditRows(s.db)
     const last = rows.at(-1)
     expect(result).toEqual({ seq: last?.seq })
-    expect(last).toEqual({
+    expect(last).toMatchObject({
       seq: result.seq,
       actor: "data-plane",
       action: "audit.profile.entity.create",
-      target: SUBJECT,
-      detail_hash: payloadHash({
-        action: "entity.create",
-        subjectHash: SUBJECT,
-        beforeHash: null,
-        afterHash: AFTER,
-      }),
     })
+    expect(last?.target).toMatch(/^hmac:v1:1:[a-f0-9]{64}:[a-f0-9]{64}$/)
+    if (profileAudit === undefined) throw new Error("missing profile audit")
+    const tags = await profileAudit.tag(created)
+    expect(last?.detail_hash).toBe(
+      payloadHash({ action: created.action, ...tags })
+    )
+    const stored = JSON.stringify(rows)
+    for (const digest of [SUBJECT, AFTER]) expect(stored).not.toContain(digest)
     const chain = await raw(controlSocket, "GET", "/audit/chain")
     expect(JSON.parse(chain.text)).toEqual({ ok: true, rows: rows.length })
   })
@@ -295,16 +392,96 @@ describe("POST /audit", () => {
       beforeHash: BEFORE,
       afterHash: null,
     })
+    await audit.record({
+      action: "defaultEntity",
+      subjectHash: SUBJECT,
+      beforeHash: null,
+      afterHash: AFTER,
+    })
     expect(actions()).toEqual([
       "audit.profile.entity.create",
       "audit.profile.entity.update",
       "audit.profile.entity.delete",
       "audit.profile.account.assign",
       "audit.profile.account.unassign",
+      "audit.profile.defaultEntity",
     ])
     expect(s.db.prepare("SELECT COUNT(*) AS n FROM intents").get()).toEqual({
       n: 0,
     })
+    const chain = await raw(controlSocket, "GET", "/audit/chain")
+    expect(JSON.parse(chain.text)).toMatchObject({ ok: true })
+  })
+
+  it("records obligation state changes as audit.ledger rows (#104)", async () => {
+    for (const action of [
+      "obligation.done",
+      "obligation.resolve",
+      "obligation.reopen",
+    ] as const) {
+      await audit.record({
+        action,
+        subjectHash: SUBJECT,
+        beforeHash: BEFORE,
+        afterHash: AFTER,
+      })
+    }
+    expect(actions()).toEqual([
+      "audit.ledger.obligation.done",
+      "audit.ledger.obligation.resolve",
+      "audit.ledger.obligation.reopen",
+    ])
+    expect(auditRows(s.db).at(-1)).toMatchObject({
+      actor: "data-plane",
+      target: SUBJECT,
+      detail_hash: payloadHash({
+        action: "obligation.reopen",
+        subjectHash: SUBJECT,
+        beforeHash: BEFORE,
+        afterHash: AFTER,
+      }),
+    })
+    const chain = await raw(controlSocket, "GET", "/audit/chain")
+    expect(JSON.parse(chain.text)).toMatchObject({ ok: true })
+  })
+
+  it("records sensitive reads and local AI uses as keyed audit.access rows (#322)", async () => {
+    for (const action of [
+      "access.document_open",
+      "access.inference_use",
+      "access.content_copy",
+      "access.instruction_change",
+    ] as const) {
+      await audit.record({
+        action,
+        subjectHash: SUBJECT,
+        beforeHash: null,
+        afterHash: null,
+      })
+    }
+    expect(actions()).toEqual([
+      "audit.access.document_open",
+      "audit.access.inference_use",
+      "audit.access.content_copy",
+      "audit.access.instruction_change",
+    ])
+    const rows = auditRows(s.db)
+    const last = rows.at(-1)
+    expect(last?.actor).toBe("data-plane")
+    expect(last?.action).toBe("audit.access.instruction_change")
+    expect(last?.target).toMatch(/^hmac:v1:1:[a-f0-9]{64}:[a-f0-9]{64}$/)
+    if (profileAudit === undefined) throw new Error("missing profile audit")
+    const tags = await profileAudit.tag({
+      action: "access.instruction_change",
+      subjectHash: SUBJECT,
+      beforeHash: null,
+      afterHash: null,
+    })
+    expect(last?.detail_hash).toBe(
+      payloadHash({ action: "access.instruction_change", ...tags })
+    )
+    const stored = JSON.stringify(rows)
+    expect(stored).not.toContain(SUBJECT)
     const chain = await raw(controlSocket, "GET", "/audit/chain")
     expect(JSON.parse(chain.text)).toMatchObject({ ok: true })
   })
@@ -357,9 +534,44 @@ describe("POST /audit", () => {
       "$.afterHash: must be a hash",
     ],
     [
+      "an obligation change with no before side",
+      { ...created, action: "obligation.done" },
+      "$.beforeHash: must be a hash",
+    ],
+    [
+      "an obligation change with no after side",
+      {
+        ...created,
+        action: "obligation.reopen",
+        beforeHash: BEFORE,
+        afterHash: null,
+      },
+      "$.afterHash: must be a hash",
+    ],
+    [
+      "an access event with a before side",
+      {
+        ...created,
+        action: "access.document_open",
+        beforeHash: BEFORE,
+        afterHash: null,
+      },
+      "$.beforeHash: must be null",
+    ],
+    [
+      "an access event with an after side",
+      {
+        ...created,
+        action: "access.inference_use",
+        beforeHash: null,
+        afterHash: AFTER,
+      },
+      "$.afterHash: must be null",
+    ],
+    [
       "an intent kind as the action",
       { ...created, action: "email.send" },
-      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign"',
+      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen", "defaultEntity", "access.document_open", "access.inference_use", "access.content_copy", "access.instruction_change"',
     ],
   ])(
     "refuses %s with 400 and writes no profile row",
@@ -465,6 +677,7 @@ describe("the read routes", () => {
       tier: "approval",
       state: "pending",
       edited_from: null,
+      discarded: false,
     })
   })
 
@@ -512,6 +725,9 @@ describe("everything else on the data-plane listener", () => {
       ["POST", "/approvals"],
       ["GET", "/audit"],
       ["GET", "/audit/chain"],
+      ["POST", "/enrolment-codes"],
+      ["GET", "/passkeys"],
+      ["POST", "/passkeys/revoke"],
       ["POST", "/connector-health"],
       ["PUT", "/connector-health"],
       ["DELETE", "/connector-health"],
@@ -555,6 +771,77 @@ describe("the control listener", () => {
     expect((await raw(controlSocket, "POST", "/intents", "{}")).status).toBe(
       404
     )
+  })
+
+  it("issues an enrolment code, which only the control listener serves", async () => {
+    const issued = await createEnrolmentClient({
+      socketPath: controlSocket,
+    }).issueCode()
+    expect(issued.code).toMatch(
+      /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){3}$/
+    )
+    expect(Date.parse(issued.expiresAt) - Date.now()).toBeGreaterThan(
+      9 * 60 * 1000
+    )
+    expect(actions().slice(-1)).toEqual(["enrolment_code.issued"])
+    const rows = s.db.prepare("SELECT used_at FROM enrolment_codes").all()
+    expect(rows).toEqual([{ used_at: null }])
+  })
+
+  it("lists and revokes passkeys by fingerprint, which only the control listener serves", async () => {
+    s.db
+      .prepare(
+        "INSERT INTO credentials (credential_id, public_key, sign_count, created_at) VALUES ('Y3JlZC1vbmU', 'AA', 0, '2026-10-01T00:00:00.000Z')"
+      )
+      .run()
+    // SHA-256 of the UTF-8 credential id "Y3JlZC1vbmU", lowercase hex.
+    const fingerprint = createHash("sha256").update("Y3JlZC1vbmU").digest("hex")
+    const admin = createPasskeyAdminClient({ socketPath: controlSocket })
+    expect(await admin.list()).toEqual({
+      passkeys: [
+        {
+          fingerprint,
+          createdAt: "2026-10-01T00:00:00.000Z",
+          revokedAt: null,
+          current: false,
+        },
+      ],
+    })
+    const revoked = await admin.revoke(fingerprint)
+    expect(revoked.passkeys[0]?.revokedAt).toEqual(expect.any(String))
+    expect(actions().slice(-1)).toEqual(["credential.revoked"])
+    await expect(admin.revoke(fingerprint)).rejects.toMatchObject({
+      status: 409,
+      code: "already_decided",
+    })
+    await expect(admin.revoke("0".repeat(64))).rejects.toMatchObject({
+      status: 404,
+      code: "not_found",
+    })
+  })
+
+  it.each([
+    ["not JSON", "{", "the body is not valid JSON"],
+    ["without a fingerprint", "{}", "the body must name a fingerprint"],
+    [
+      "a short fingerprint",
+      JSON.stringify({ fingerprint: "abcd1234" }),
+      "the body must name a fingerprint",
+    ],
+  ])("refuses a revoke body that is %s", async (_name, body, message) => {
+    const reply = await raw(controlSocket, "POST", "/passkeys/revoke", body)
+    expect(reply.status).toBe(400)
+    expect(JSON.parse(reply.text)).toEqual({ code: "invalid_request", message })
+  })
+
+  it("refuses a revoke body over 1 MiB", async () => {
+    const big = "a".repeat(MAX_BODY_BYTES + 1)
+    const reply = await raw(controlSocket, "POST", "/passkeys/revoke", big)
+    expect(reply.status).toBe(413)
+    expect(JSON.parse(reply.text)).toEqual({
+      code: "invalid_request",
+      message: "the body is over 1 MiB",
+    })
   })
 
   it("does not take audit entries: POST /audit is a data-plane route only", async () => {

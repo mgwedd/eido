@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite"
+import { writeQueueFor } from "../db/write-queue"
 
 // The rejection log of the propose pipeline, in eido-data.db. A row says when a request was
 // rejected, which pack it was built from and the failure codes. It never holds email text, the
@@ -22,21 +23,25 @@ export interface ProposalFailureRow {
 }
 
 /** Create the `proposal_failures` table if it does not exist. Idempotent. */
-export function ensureProposalFailures(db: DatabaseSync): void {
-  db.exec(CREATE_TABLE)
+export function ensureProposalFailures(db: DatabaseSync): Promise<void> {
+  return writeQueueFor(db).run(() => {
+    db.exec(CREATE_TABLE)
+  })
 }
 
 export function recordProposalFailure(
   db: DatabaseSync,
   row: ProposalFailureRow
-): void {
-  ensureProposalFailures(db)
-  db.prepare(
-    "INSERT INTO proposal_failures (failed_at, request_id, context_pack_id, failure_codes_json) VALUES (?, ?, ?, ?)"
-  ).run(
-    row.failedAt,
-    row.requestId,
-    row.contextPackId,
-    JSON.stringify(row.failureCodes)
-  )
+): Promise<void> {
+  return writeQueueFor(db).run(() => {
+    db.exec(CREATE_TABLE)
+    db.prepare(
+      "INSERT INTO proposal_failures (failed_at, request_id, context_pack_id, failure_codes_json) VALUES (?, ?, ?, ?)"
+    ).run(
+      row.failedAt,
+      row.requestId,
+      row.contextPackId,
+      JSON.stringify(row.failureCodes)
+    )
+  })
 }

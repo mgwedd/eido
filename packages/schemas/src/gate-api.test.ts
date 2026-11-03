@@ -6,6 +6,7 @@ import {
   validateGateAuditPageRequest,
   validateGateAuditRecordRequest,
   validateGateAuditRecordResult,
+  validateGateBackupStatus,
   validateGateConnectorHealth,
   validateGateCredentialStatus,
   validateGateDecisionRequest,
@@ -20,11 +21,16 @@ import {
   validateGateMailFolderState,
   validateGateMailMessagePage,
   validateGatePendingIntentList,
+  validateGatePermissionList,
   validateGatePrepareApproval,
   validateGateProposeRefusal,
   validateGateProposeResult,
   validateGateRejectReason,
+  validateGateRepinPrepared,
+  validateGateRepinRequest,
+  validateGateRepinResult,
   validateGateSession,
+  gateAuditDisplayActor,
 } from "./index"
 import type { ValidationResult } from "./index"
 
@@ -52,6 +58,46 @@ const PENDING_ITEM = {
   origin: "reactive",
   createdAt: AT,
 }
+
+describe("permission list", () => {
+  const row = { kind: "email.archive", tier: "approval", default: "auto" }
+  const list = { tiers: [row], forbiddenKinds: [] }
+
+  test("accepts defaults, optional overrides and an explicitly absent shipped default", () => {
+    expect(validateGatePermissionList(list).ok).toBe(true)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, override: "approval" }],
+      }).ok
+    ).toBe(true)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, default: null }],
+      }).ok
+    ).toBe(true)
+  })
+
+  test("requires the default and refuses non-configurable tiers in configuration fields", () => {
+    expect(
+      validateGatePermissionList({ ...list, tiers: [without(row, "default")] })
+        .ok
+    ).toBe(false)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, default: "forbidden" }],
+      }).ok
+    ).toBe(false)
+    expect(
+      validateGatePermissionList({
+        ...list,
+        tiers: [{ ...row, override: "forbidden" }],
+      }).ok
+    ).toBe(false)
+  })
+})
 
 describe("pending intent list", () => {
   const list = {
@@ -181,7 +227,7 @@ describe("intent history", () => {
         })
       )
     ).toEqual([
-      '$.entries[0].actor: must be one of "data-plane", "policy", "approver", "executor", "system"',
+      '$.entries[0].actor: must be one of "data-plane", "policy", "approver", "executor", "system", "owner", "gate"',
     ])
   })
 })
@@ -442,6 +488,8 @@ describe("audit page", () => {
     seq: 7,
     ts: AT,
     actor: "executor",
+    displayActor: "auto",
+    undo: "none",
     action: "intent.transition",
     target: "i-1",
     detailHash: HASH,
@@ -505,6 +553,17 @@ describe("audit page", () => {
     expect(errorsOf(validateGateAuditPageRequest({ limit: 51 }))).toEqual([
       "$.limit: must be at most 50",
     ])
+  })
+})
+
+describe("audit display actors", () => {
+  test("covers stored actor types and distinguishes signed executor actions", () => {
+    expect(gateAuditDisplayActor("approver")).toBe("you")
+    expect(gateAuditDisplayActor("policy")).toBe("auto")
+    expect(gateAuditDisplayActor("data-plane")).toBe("auto")
+    expect(gateAuditDisplayActor("executor")).toBe("auto")
+    expect(gateAuditDisplayActor("executor", true)).toBe("you")
+    expect(gateAuditDisplayActor("system")).toBe("gate")
   })
 })
 
@@ -650,6 +709,7 @@ describe("intent status", () => {
     tier: "approval",
     state: "pending",
     edited_from: null,
+    discarded: false,
   }
 
   test("accepts edited_from as null or an id", () => {
@@ -659,10 +719,16 @@ describe("intent status", () => {
     )
   })
 
-  test("requires edited_from and refuses a payload, signature or nonce", () => {
+  test("requires edited_from and discarded and refuses a payload, signature or nonce", () => {
     expect(
       errorsOf(validateGateIntentStatus(without(status, "edited_from")))
     ).toEqual(["$.edited_from: required"])
+    expect(
+      errorsOf(validateGateIntentStatus(without(status, "discarded")))
+    ).toEqual(["$.discarded: required"])
+    expect(
+      errorsOf(validateGateIntentStatus({ ...status, discarded: "yes" }))
+    ).toEqual(["$.discarded: expected boolean, got string"])
     expect(
       errorsOf(
         validateGateIntentStatus({
@@ -757,8 +823,26 @@ describe("audit record request and result", () => {
         validateGateAuditRecordRequest({ ...entry, action: "email.send" })
       )
     ).toEqual([
-      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign"',
+      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen", "defaultEntity", "access.document_open", "access.inference_use", "access.content_copy", "access.instruction_change"',
     ])
+  })
+
+  test("accepts sensitive read and local AI use access actions", () => {
+    for (const action of [
+      "access.document_open",
+      "access.inference_use",
+      "access.content_copy",
+      "access.instruction_change",
+    ] as const) {
+      expect(
+        validateGateAuditRecordRequest({
+          action,
+          subjectHash: HASH,
+          beforeHash: null,
+          afterHash: null,
+        }).ok
+      ).toBe(true)
+    }
   })
 
   test("rejects a hash that is not 64 characters and a missing side", () => {
@@ -958,5 +1042,104 @@ describe("Proton mail read routes", () => {
     for (const code of ["handshake_failed", "auth_failed"]) {
       expect(validateGateApiError({ code, message: "Bridge" }).ok).toBe(true)
     }
+  })
+
+  test("GateBackupStatus validates never_run, fresh, and stale statuses", () => {
+    expect(
+      validateGateBackupStatus({
+        status: "never_run",
+        lastSuccess: null,
+      }).ok
+    ).toBe(true)
+
+    expect(
+      validateGateBackupStatus({
+        status: "fresh",
+        lastSuccess: AT,
+      }).ok
+    ).toBe(true)
+
+    expect(
+      validateGateBackupStatus({
+        status: "stale",
+        lastSuccess: AT,
+      }).ok
+    ).toBe(true)
+
+    expect(
+      validateGateBackupStatus({
+        status: "never_run",
+        lastSuccess: AT,
+      }).ok
+    ).toBe(false)
+
+    expect(
+      validateGateBackupStatus({
+        status: "fresh",
+        lastSuccess: null,
+      }).ok
+    ).toBe(false)
+
+    expect(
+      validateGateBackupStatus({
+        status: "unknown",
+        lastSuccess: AT,
+      }).ok
+    ).toBe(false)
+  })
+})
+
+describe("connector re-pin", () => {
+  const prepared = {
+    id: "ctl-1",
+    purpose: "manifest.pin",
+    target: "drive",
+    payload: '{"name":"drive"}',
+    payloadHash: HASH,
+    nonce: NONCE,
+    challenge: NONCE,
+  }
+  const assertion = {
+    credentialId: "Y3JlZA",
+    authenticatorData: "YXV0aA",
+    clientDataJSON: "Y2xpZW50",
+    signature: "c2ln",
+  }
+
+  test("a prepared card is bound to the manifest.pin purpose", () => {
+    expect(validateGateRepinPrepared(prepared).ok).toBe(true)
+    expect(
+      validateGateRepinPrepared({ ...prepared, purpose: "intent.approve" }).ok
+    ).toBe(false)
+  })
+
+  test("a prepared card refuses a malformed hash, nonce or challenge", () => {
+    expect(
+      validateGateRepinPrepared({ ...prepared, payloadHash: "abc" }).ok
+    ).toBe(false)
+    expect(
+      validateGateRepinPrepared({ ...prepared, nonce: `${"A".repeat(42)}=` }).ok
+    ).toBe(false)
+    expect(
+      validateGateRepinPrepared({ ...prepared, challenge: "short" }).ok
+    ).toBe(false)
+  })
+
+  test("a request needs the id, nonce and assertion and no other key", () => {
+    const request = { id: "ctl-1", nonce: NONCE, assertion }
+    expect(validateGateRepinRequest(request).ok).toBe(true)
+    expect(
+      errorsOf(validateGateRepinRequest(without(request, "assertion")))
+    ).toEqual(["$.assertion: required"])
+    expect(
+      errorsOf(validateGateRepinRequest({ ...request, manifest: {} }))
+    ).toEqual(["$.manifest: unknown key"])
+  })
+
+  test("a result names the connector and the pinned manifest hash", () => {
+    expect(
+      validateGateRepinResult({ connector: "drive", manifestHash: HASH }).ok
+    ).toBe(true)
+    expect(validateGateRepinResult({ connector: "drive" }).ok).toBe(false)
   })
 })

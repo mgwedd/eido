@@ -69,3 +69,12 @@ export function parsePlan(text: string): SearchPlan | null {
     ...(before === undefined ? {} : { before }),
   }
 }
+
+/**
+ * Focused or broad, by a fixed rule on the parsed plan: an overview ("summarize") is broad and may
+ * read whole documents with their threads; a count or a lookup is focused and reads ranked
+ * passages.
+ */
+export function askScope(plan: SearchPlan): "focused" | "broad" {
+  return plan.wants === "summarize" ? "broad" : "focused"
+}

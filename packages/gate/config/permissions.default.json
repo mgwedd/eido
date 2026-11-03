@@ -9,12 +9,14 @@
     "email.reply": "approval",
     "email.forward": "approval",
     "email.trash": "approval",
+    "email.untrash": "approval",
     "calendar.create": "auto",
     "calendar.edit": "auto",
     "calendar.delete": "auto",
     "file.create": "auto",
     "file.rename": "auto",
     "file.move": "auto",
-    "file.delete": "approval"
+    "file.delete": "approval",
+    "confirm.field": "approval"
   }
 }

@@ -66,6 +66,30 @@ describe("parseMessage", () => {
     )
   })
 
+  test("retains Bcc and delivery automation headers as explicit parsed facts", async () => {
+    const parsed = await parseMessage(
+      raw([
+        "From: updates@example.com",
+        "To: owner@example.com",
+        "Bcc: hidden@example.com",
+        "List-Unsubscribe: <mailto:unsubscribe@example.com>",
+        "Auto-Submitted: auto-generated",
+        "Precedence: bulk",
+        "Message-ID: <automated@example.com>",
+        "Date: Mon, 05 Oct 2026 10:00:00 +0000",
+        "Content-Type: text/plain",
+        "",
+        "Notice",
+      ])
+    )
+    expect(parsed).toMatchObject({
+      bcc: [{ address: "hidden@example.com" }],
+      listUnsubscribe: true,
+      autoSubmitted: "auto-generated",
+      precedence: "bulk",
+    })
+  })
+
   test("a non-UTF-8 charset (windows-1251, base64) decodes to the right characters", async () => {
     const parsed = await parseMessage(
       raw([

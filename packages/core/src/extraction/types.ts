@@ -3,7 +3,11 @@ import type { InjectionReason } from "../inference/fence"
 import type { ExtractionFieldName } from "../ledger/types"
 
 export type ExtractionStatus =
-  "ok" | "no_candidates" | "model_output_rejected" | "refused_over_budget"
+  | "ok"
+  | "no_candidates"
+  | "already_processed"
+  | "model_output_rejected"
+  | "refused_over_budget"
 
 /** A field the ledger does not accept on its own: a human confirms it first (#47). */
 export type ConfirmCandidate = {
@@ -11,7 +15,7 @@ export type ConfirmCandidate = {
   /** The `extractions` row holding the field; it stays unconfirmed until #47 confirms it. */
   extractionId: number
   field: ExtractionFieldName
-  /** The verbatim quote from the source. */
+  /** The verbatim quote from normalized parsed text; `span` points into the original parsed text. */
   raw: string
   /** The typed value (amount, ISO date), the quote for a text field, or null when parsing failed. */
   parsed: unknown

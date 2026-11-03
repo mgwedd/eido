@@ -1,9 +1,15 @@
 import type { AddressInfo } from "node:net"
+import type { KnownAccount } from "../connectors/accounts"
+import type { IntentClient } from "@eido/gate"
 import type { GateConnectorHealth } from "@eido/schemas"
 import type { AskResult } from "../ask/types"
+import type { ObligationStateStore } from "../ledger/obligation-state"
 import type { ProfileStore } from "../profile/store"
+import type { DocumentsDeps } from "./documents-route"
+import type { ConversationStore } from "../conversation/store"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
+import type { ReplyDrafter } from "./reply-draft-route"
 import { createApiServer } from "./server"
 
 // Core's API has no auth of its own: the tailnet is the trust boundary, and `tailscale serve`
@@ -58,7 +64,20 @@ export type CoreApiOptions = {
   profile: ProfileStore
   /** Gate-owned read-only connector health projection for the Today page. */
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
+  /** Accounts the configured connectors have reported, behind `/connectors/accounts`. */
+  connectorAccounts?: () => readonly KnownAccount[]
+  /** The Proton account behind `/connectors/send-from`. */
+  sendFrom?: string
   ask?: (question: string) => Promise<AskResult>
+  /** The drafter behind `POST /replies/draft`; unset without a local model. */
+  draftReply?: ReplyDrafter
+  propose?: IntentClient["propose"]
+  intentStatus?: IntentClient["status"]
+  obligations?: ObligationStateStore
+  /** The data DB behind `/documents`. */
+  documents?: DocumentsDeps
+  /** The conversation store behind `/conversations/search`. */
+  conversations?: ConversationStore
   host: LoopbackHost
   /** 0 picks a free port. */
   port: number
@@ -83,7 +102,15 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
     createApiHandler({
       profile: options.profile,
       connectorHealth: options.connectorHealth,
+      connectorAccounts: options.connectorAccounts,
+      sendFrom: options.sendFrom,
       ask: options.ask,
+      draftReply: options.draftReply,
+      propose: options.propose,
+      intentStatus: options.intentStatus,
+      obligations: options.obligations,
+      documents: options.documents,
+      conversations: options.conversations,
       allowedHosts,
       basePath: options.basePath,
     })

@@ -105,9 +105,13 @@ describe("manifest", () => {
     )
   })
 
-  test("auth is a password scope, no HTTP egress is declared, triggers follow the folders", () => {
+  test("auth is a password scope, Bridge endpoints are pinned, triggers follow the folders", () => {
     expect(manifest.auth).toEqual({ type: "password", scopes: [BRIDGE_SCOPE] })
     expect(manifest.egress.hosts).toEqual([])
+    expect(manifest.egress.local).toEqual([
+      { protocol: "imap", host: "127.0.0.1", port: 1143 },
+      { protocol: "smtp", host: "127.0.0.1", port: 1025 },
+    ])
     expect(manifest.triggers.map((t) => t.stream)).toEqual([
       "INBOX",
       "Folders/Work",

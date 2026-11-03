@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ConfirmFieldIntent",
+  "description": "Confirm an extracted field before it enters the ledger.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "confirm.field"
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "extractionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "ID of the extractions row holding the field"
+        },
+        "field": {
+          "type": "string",
+          "enum": ["action", "party", "reference_number", "amount", "due_date"],
+          "maxLength": 30,
+          "description": "Field name to confirm"
+        },
+        "value": {
+          "type": "object",
+          "description": "Extracted and typed value beside verbatim source quote",
+          "properties": {
+            "raw": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300,
+              "description": "Verbatim quote from document text"
+            },
+            "typed": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300
+                },
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "amount_minor": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "currency": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 3,
+                      "pattern": "^[A-Z]{3}$"
+                    }
+                  },
+                  "required": ["amount_minor", "currency"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Parsed typed value"
+            }
+          },
+          "required": ["raw"],
+          "additionalProperties": false
+        },
+        "source": {
+          "type": "object",
+          "description": "Source citation in document text",
+          "properties": {
+            "docSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "minLength": 64,
+              "maxLength": 64,
+              "description": "Document SHA-256"
+            },
+            "messageId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300,
+              "description": "Source message ID"
+            },
+            "page": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "1-based page number"
+            },
+            "line": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "1-based line number"
+            },
+            "start": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "0-based UTF-16 start offset in document text"
+            },
+            "end": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "UTF-16 end offset in document text"
+            }
+          },
+          "required": ["docSha256", "start", "end"],
+          "additionalProperties": false
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence score between 0 and 1"
+        },
+        "threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Confidence threshold required to auto-verify"
+        },
+        "documentTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "Display title of the source document"
+        },
+        "documentSource": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Source type of the document (e.g. scan, email, pdf)"
+        },
+        "contextSources": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "description": "Sources used in the context pack"
+        },
+        "contextPackId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Context pack ID if one was used"
+        }
+      },
+      "required": [
+        "extractionId",
+        "field",
+        "value",
+        "source",
+        "confidence",
+        "threshold"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

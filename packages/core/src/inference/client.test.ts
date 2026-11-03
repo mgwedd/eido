@@ -3,18 +3,26 @@ import * as core from "../index"
 import {
   connectModelClient,
   createModelClient,
+  isMarkerPiece,
   loopbackBaseUrl,
   placeholder,
   readContextTokens,
+  readModelId,
   splitRendered,
 } from "./client"
 import {
   InferenceError,
+  MaterialMarkerError,
   PromptTooLargeError,
   UnsupportedModelServerError,
 } from "./errors"
 import { fence, toMaterial } from "./fence"
-import { BOS_ID, startStubModelServer, stubDecode } from "./stub-server"
+import {
+  BOS_ID,
+  startStubModelServer,
+  stubDecode,
+  userDefinedId,
+} from "./stub-server"
 import type { CompletionView, StubModelServer, StubScript } from "./stub-server"
 import type { ModelServerConfig, ToolDef } from "./types"
 
@@ -98,7 +106,7 @@ function fetchWithCompletion(completionResponse: () => Response): typeof fetch {
       return Promise.resolve(Response.json({ prompt: "P" }))
     }
     if (url.endsWith("/tokenize")) {
-      return Promise.resolve(Response.json({ tokens: [1] }))
+      return Promise.resolve(Response.json({ tokens: [{ id: 1, piece: "P" }] }))
     }
     return Promise.resolve(completionResponse())
   }
@@ -173,6 +181,143 @@ describe("refuse, don't truncate", () => {
 })
 
 describe("truncation tripwire", () => {
+  test("rejects malformed non-streaming completion fields", async () => {
+    const server = await start({ replies: [] })
+    for (const payload of [
+      { content: "x", stop_type: "eos" },
+      { content: "x", stop_type: "unknown", tokens_evaluated: 1 },
+    ]) {
+      const client = createModelClient(config(server), {
+        fetch: fetchWithCompletion(() => Response.json(payload)),
+      })
+      const error = await rejection(
+        client.complete({
+          system: "",
+          messages: [userOf(1)],
+          includeTokenProbabilities: true,
+        })
+      )
+      expect(error).toMatchObject({ kind: "malformed", status: 200 })
+    }
+  })
+
+  test("returns aligned token probabilities from llama-server logprob metadata", async () => {
+    const server = await start({
+      replies: [
+        {
+          deltas: ["hello"],
+          probabilities: [
+            { token: "hel", probability: 0.7 },
+            { token: "lo", probability: 0.9 },
+          ],
+        },
+      ],
+    })
+    const result = await createModelClient(config(server)).complete({
+      system: "",
+      messages: [userOf(1)],
+      includeTokenProbabilities: true,
+    })
+    expect(result.tokenProbabilities).toEqual([
+      { bytes: [104, 101, 108], probability: 0.7 },
+      { bytes: [108, 111], probability: 0.9 },
+    ])
+  })
+
+  test("ignores incomplete or misaligned probability metadata", async () => {
+    const server = await start({
+      replies: [
+        {
+          deltas: ["hello"],
+          probabilities: [{ token: "hell", probability: 0.7 }],
+        },
+      ],
+    })
+    const result = await createModelClient(config(server)).complete({
+      system: "",
+      messages: [userOf(1)],
+      includeTokenProbabilities: true,
+    })
+    expect(result).not.toHaveProperty("tokenProbabilities")
+  })
+
+  test("treats invalid UTF-8 probability metadata as unavailable", async () => {
+    const server = await start({
+      replies: [
+        {
+          deltas: ["x"],
+          probabilityBytes: [{ bytes: [0xc3], probability: 0.7 }],
+        },
+      ],
+    })
+    const result = await createModelClient(config(server)).complete({
+      system: "",
+      messages: [userOf(1)],
+      includeTokenProbabilities: true,
+    })
+    expect(result).not.toHaveProperty("tokenProbabilities")
+  })
+
+  test("treats out-of-range byte and probability metadata as unavailable", async () => {
+    const server = await start({
+      replies: [
+        {
+          deltas: ["x"],
+          probabilityBytes: [{ bytes: [256], probability: 0.7 }],
+        },
+        {
+          deltas: ["x"],
+          probabilities: [{ token: "x", probability: 1.2 }],
+        },
+      ],
+    })
+    for (let i = 0; i < 2; i += 1) {
+      const result = await createModelClient(config(server)).complete({
+        system: "",
+        messages: [userOf(1)],
+        includeTokenProbabilities: true,
+      })
+      expect(result).not.toHaveProperty("tokenProbabilities")
+    }
+  })
+
+  test("keeps UTF-8 bytes split across probability tokens aligned", async () => {
+    const server = await start({
+      replies: [
+        {
+          deltas: ["é"],
+          probabilityBytes: [
+            { bytes: [0xc3], probability: 0.4 },
+            { bytes: [0xa9], probability: 0.8 },
+          ],
+        },
+      ],
+    })
+    const result = await createModelClient(config(server)).complete({
+      system: "",
+      messages: [userOf(1)],
+      includeTokenProbabilities: true,
+    })
+    expect(result.tokenProbabilities).toEqual([
+      { bytes: [0xc3], probability: 0.4 },
+      { bytes: [0xa9], probability: 0.8 },
+    ])
+  })
+
+  test("ignores empty probability entries", async () => {
+    const server = await start({
+      replies: [
+        { deltas: [""], probabilityBytes: [{ bytes: [], probability: 0.8 }] },
+      ],
+    })
+    const result = await createModelClient(config(server)).complete({
+      system: "",
+      messages: [userOf(1)],
+      includeTokenProbabilities: true,
+    })
+    expect(result).not.toHaveProperty("tokenProbabilities")
+  })
+
   test("fires when the server reports under 60% of an estimate over 500", async () => {
     const server = await start({
       replies: [{ deltas: ["ok"], promptTokens: 599 }],
@@ -447,6 +592,147 @@ describe("splitRendered", () => {
   })
 })
 
+describe("template markers in material (#536)", () => {
+  test.each([
+    ["<|turn>", true],
+    ["<channel|>", true],
+    ["<|im_start|>", true],
+    ["[INST]", true],
+    ["<s>", true],
+    ['<|"|>', true],
+    ["user", false],
+    ["\n", false],
+    ["<", false],
+    ["|", false],
+    [" >", false],
+    [" <", false],
+    ["<|", false],
+    ["|>", false],
+    ["||", false],
+    ["<|>", false],
+    ["->", false],
+    ['">', false],
+    [" [", false],
+    ["[]", false],
+    ["[...]", false],
+    ["[*]", false],
+  ])("isMarkerPiece(%j) is %s", (piece, marker) => {
+    expect(isMarkerPiece(piece)).toBe(marker)
+  })
+
+  // `[THINK]` is a user-defined token the stub matches with parse_special off, and no material
+  // normalization knows it: only the guard stands between it and the prompt.
+  const thinking = (prompt: string): string =>
+    prompt.replace(
+      /<\|im_start\|>assistant\n$/u,
+      "<|im_start|>assistant\n[THINK]"
+    )
+
+  function ask(server: StubModelServer, text: string): Promise<unknown> {
+    return createModelClient(config(server)).complete({
+      system: "S",
+      messages: [
+        {
+          role: "user",
+          content: [fence(toMaterial(text, { source: "mail" })), "Q"],
+        },
+      ],
+    })
+  }
+
+  test("material holding a marker id of the template is refused and nothing is sent", async () => {
+    const server = await start({
+      replies: [{ deltas: ["ok"] }],
+      userDefinedTokens: true,
+      renderedPrompt: thinking,
+    })
+    const error = await rejection(ask(server, "a [THINK] b"))
+    expect(error).toBeInstanceOf(MaterialMarkerError)
+    expect(error).toMatchObject({
+      name: "MaterialMarkerError",
+      ids: [userDefinedId("[THINK]")],
+      message: `material tokenizes to the chat template's marker ids ${String(userDefinedId("[THINK]"))}: nothing was sent`,
+    })
+    expect(server.completions()).toEqual([])
+  })
+
+  test("the same material is sent when the template has no such marker", async () => {
+    const server = await start({
+      replies: [{ deltas: ["ok"] }],
+      userDefinedTokens: true,
+    })
+    await ask(server, "a [THINK] b")
+    expect(server.completions()).toHaveLength(1)
+  })
+
+  test("material sharing plain words, newlines and brackets with the template is sent", async () => {
+    const server = await start({
+      replies: [{ deltas: ["ok"] }],
+      userDefinedTokens: true,
+      renderedPrompt: thinking,
+    })
+    await ask(server, "user\nassistant <x> [y] | é")
+    expect(server.completions()).toHaveLength(1)
+  })
+
+  test("a trusted piece answered as raw bytes is read, not refused", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    await createModelClient(config(server)).complete({
+      system: "Café",
+      messages: [userOf(1)],
+    })
+    expect(stubDecode(completion(server, 0).tokens)).toContain("Café")
+  })
+
+  test("a material /tokenize answer with ids that are not integers rejects as malformed", async () => {
+    const calls: string[] = []
+    const doFetch: typeof fetch = (input, init) => {
+      const path = new URL(urlOf(input)).pathname
+      calls.push(path)
+      const body = typeof init?.body === "string" ? init.body : ""
+      // The template echoes the request, so the material placeholder comes back as sent.
+      if (path === "/apply-template") {
+        return Promise.resolve(Response.json({ prompt: body }))
+      }
+      return Promise.resolve(
+        Response.json({
+          tokens: body.includes("with_pieces")
+            ? [{ id: 1, piece: "P" }]
+            : [1.5],
+        })
+      )
+    }
+    const client = createModelClient(
+      {
+        baseUrl: "http://127.0.0.1:1",
+        contextTokens: 4096,
+        maxReplyTokens: 100,
+      },
+      { fetch: doFetch }
+    )
+    const error = await rejection(
+      client.complete({
+        system: "",
+        messages: [
+          {
+            role: "user",
+            content: [fence(toMaterial("m", { source: "mail" }))],
+          },
+        ],
+      })
+    )
+    expect(error).toMatchObject({
+      kind: "malformed",
+      message: "/tokenize answer has no list of token ids",
+    })
+    expect(calls).not.toContain("/completion")
+  })
+
+  test("the core entry point exports MaterialMarkerError", () => {
+    expect(core.MaterialMarkerError).toBe(MaterialMarkerError)
+  })
+})
+
 describe("server features", () => {
   test.each(["apply-template", "tokenize"] as const)(
     "a server without /%s fails with a named error and sends no prompt",
@@ -499,6 +785,36 @@ describe("server features", () => {
     expect(server.completions()).toEqual([])
   })
 
+  test("sends the configured chat template kwargs with every /apply-template request", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    const kwargs = { enable_thinking: false, b: { y: 1, x: 2 } }
+    const client = await connectModelClient(
+      config(server, { chatTemplateKwargs: kwargs })
+    )
+    await client.complete({ system: "", messages: [userOf(1)] })
+    const probe = bodyAt(server, "/apply-template", 0)
+    const request = bodyAt(server, "/apply-template", 1)
+    expect(probe.chat_template_kwargs).toEqual(kwargs)
+    expect(request.chat_template_kwargs).toEqual(kwargs)
+    expect(
+      server.requests.filter((r) => r.path === "/apply-template")[1]?.body
+    ).toContain(
+      '"chat_template_kwargs":{"b":{"x":2,"y":1},"enable_thinking":false}'
+    )
+  })
+
+  test("sends no chat template kwargs when none are configured", async () => {
+    const server = await start({ replies: [{ deltas: ["ok"] }] })
+    const client = await connectModelClient(config(server))
+    await client.complete({ system: "", messages: [userOf(1)] })
+    expect(bodyAt(server, "/apply-template", 0)).not.toHaveProperty(
+      "chat_template_kwargs"
+    )
+    expect(bodyAt(server, "/apply-template", 1)).not.toHaveProperty(
+      "chat_template_kwargs"
+    )
+  })
+
   test("connectModelClient returns a working client for a capable server", async () => {
     const server = await start({ replies: [{ deltas: ["ok"] }] })
     const client = await connectModelClient(config(server))
@@ -533,10 +849,30 @@ describe("server features", () => {
       { "/tokenize": Response.json({}) },
       "/tokenize answer has no list of token ids",
     ],
+    [
+      "a /tokenize answer of bare ids when pieces were asked for",
+      { "/tokenize": Response.json({ tokens: [1] }) },
+      "/tokenize answer has no list of token ids",
+    ],
+    [
+      "a /tokenize piece that is neither text nor bytes",
+      { "/tokenize": Response.json({ tokens: [{ id: 1, piece: 5 }] }) },
+      "/tokenize answer has no list of token ids",
+    ],
+    [
+      "a /tokenize piece list holding a value that is not a byte",
+      { "/tokenize": Response.json({ tokens: [{ id: 1, piece: [256] }] }) },
+      "/tokenize answer has no list of token ids",
+    ],
+    [
+      "a /tokenize piece with an id that is not an integer",
+      { "/tokenize": Response.json({ tokens: [{ id: -1, piece: "a" }] }) },
+      "/tokenize answer has no list of token ids",
+    ],
   ])("%s rejects as malformed", async (_name, answers, message) => {
     const routes: Record<string, Response> = {
       "/apply-template": Response.json({ prompt: "P" }),
-      "/tokenize": Response.json({ tokens: [1] }),
+      "/tokenize": Response.json({ tokens: [{ id: 1, piece: "P" }] }),
       ...answers,
     }
     const calls: string[] = []
@@ -684,15 +1020,26 @@ describe("errors", () => {
   })
 
   test("aborting mid-stream rejects as aborted and is not retried", async () => {
+    let streamStarted: (() => void) | undefined
+    const streaming = new Promise<void>((resolve) => {
+      streamStarted = resolve
+    })
     const server = await start({
-      replies: [{ deltas: ["partial"], hang: true }],
+      replies: [
+        {
+          deltas: ["partial"],
+          hang: true,
+          onFirstChunk: () => streamStarted?.(),
+        },
+      ],
     })
     const controller = new AbortController()
     const pending = createModelClient(config(server)).complete(
       { system: "", messages: [userOf(1)] },
       { signal: controller.signal }
     )
-    setTimeout(() => controller.abort(), 50)
+    await streaming
+    controller.abort()
     const error = await rejection(pending)
     expect(error).toBeInstanceOf(InferenceError)
     expect(error).toMatchObject({ kind: "aborted", status: null })
@@ -869,5 +1216,27 @@ describe("readContextTokens", () => {
     stub = undefined
     const error = await rejection(readContextTokens(url))
     expect(error).toMatchObject({ kind: "unreachable" })
+  })
+})
+
+describe("readModelId", () => {
+  test("reads the active id from the local model server", async () => {
+    const server = await start({ replies: [] })
+    expect(await readModelId(server.url)).toBe("local")
+    expect(server.requests[0]).toMatchObject({
+      method: "GET",
+      path: "/v1/models",
+    })
+  })
+
+  test("refuses a server response without a model id", async () => {
+    await expect(
+      readModelId("http://127.0.0.1:8080", {
+        fetch: () =>
+          Promise.resolve(
+            new Response(JSON.stringify({ data: [{ id: " " }] }))
+          ),
+      })
+    ).rejects.toThrow("local model server /v1/models has no model id")
   })
 })

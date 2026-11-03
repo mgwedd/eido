@@ -18,8 +18,12 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Pinned: the Tesseract package versions below are Ubuntu 24.04's; ubuntu-latest moved to 26.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      code-quality: write # upload-code-coverage
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -38,11 +42,63 @@ jobs:
           tesseract --version
       - name: Check named invariant tests
         run: pnpm check:invariants
-      # The checks are one turbo run, defined by scripts/verify.mjs and turbo.json: edit those to change CI and
+      # The checks are one turbo run, defined by scripts/verify.ts and turbo.json: edit those to change CI and
       # `pnpm verify` together. Pull requests that only touch docs or images run the light steps;
       # every push to main runs everything.
       - name: Verify
         run: pnpm verify --full
+      # Feeds the "Restrict code coverage" ruleset rule (#125). It runs here because the rule does not wait for
+      # uploads, so they must come from a required check. Docs-only pull requests skip the test task, write no
+      # report, and so skip these steps. fail-on-error is off until Code Quality is enabled on the repo: the API
+      # returns 404 before then (#125).
+      - name: Upload coverage (web)
+        if: ${{ hashFiles('apps/web/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: apps/web/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-web
+          fail-on-error: false
+      - name: Upload coverage (ui)
+        if: ${{ hashFiles('packages/ui/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: packages/ui/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-ui
+          fail-on-error: false
+      - name: Upload coverage (gate)
+        if: ${{ hashFiles('packages/gate/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: packages/gate/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-gate
+          fail-on-error: false
+      - name: Upload coverage (core)
+        if: ${{ hashFiles('packages/core/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: packages/core/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-core
+          fail-on-error: false
+      - name: Upload coverage (schemas)
+        if: ${{ hashFiles('packages/schemas/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: packages/schemas/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-schemas
+          fail-on-error: false
+      - name: Upload coverage (infra)
+        if: ${{ hashFiles('infra/coverage/cobertura-coverage.xml') != '' }}
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # v1.4.4
+        with:
+          file: infra/coverage/cobertura-coverage.xml
+          language: TypeScript
+          label: code-coverage/vitest-infra
+          fail-on-error: false
 
   # The gate's Bridge tests (local fake IMAP and SMTP) and its Windows named-pipe support (ADR 0003)
   # must hold off Linux too. The full check run stays on Linux in `check`.
@@ -66,3 +122,51 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Gate tests
         run: pnpm turbo run test --filter=@eido/gate
+
+  # The gate's confined file helper (packages/gate/native/file-helper, ADR 0006). Rust, no crates; the
+  # toolchain comes from the runner's preinstalled rustup, pinned by rust-toolchain.toml.
+  file-helper:
+    name: file helper (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/gate/native/file-helper
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      # The gate's own wrapper, roots and audit against the real binary on each OS. Other gate tests
+      # mock the helper, so `pnpm verify` and turbo never need cargo.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Enable pnpm (version pinned by packageManager)
+        working-directory: .
+        run: corepack enable
+      - name: Install
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+      - name: Build release helper
+        run: cargo build --release --locked
+      - name: Gate tests against the native helper
+        run: |
+          dir=$(pwd -W 2>/dev/null || pwd)
+          bin="$dir/target/release/eido-file-helper"
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          cd ../../
+          EIDO_FILE_HELPER="$bin" pnpm exec vitest run src/internal/files/file-helper.native.test.ts src/internal/files/file-executor.native.test.ts
+          pnpm --filter @eido/core exec vitest run src/connectors/files/facade.test.ts src/connectors/files/reads.test.ts src/connectors/files/manifest.test.ts

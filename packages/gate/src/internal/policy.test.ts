@@ -8,6 +8,8 @@ import { payloadHash } from "./canonical"
 import { checkDrift } from "./connectors"
 import {
   OVERLAY_FILE,
+  ownerConfigOwnershipError,
+  ownershipError,
   SHIPPED_DEFAULT_PATH,
   intentTier,
   kindTier,
@@ -24,11 +26,56 @@ import {
   manifest,
   sample,
   setup,
+  signedFileRoots,
   signedPolicy,
+  signedPin,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
 let current: Setup | undefined
+
+describe("owner-only config metadata", () => {
+  it("never lowers file Trash to auto or lifts a forbidden manifest", () => {
+    const s = fresh()
+    s.policy.shipped.tiers["file.delete"] = "auto"
+    expect(kindTier(s.db, s.policy, "file.delete")).toEqual({
+      tier: "approval",
+    })
+    const files = manifest("files", FILE_OPS)
+    files.version = 2
+    const trash = files.operations.find(
+      (operation) => operation.intentKind === "file.delete"
+    )
+    if (trash === undefined) throw new Error("missing trash operation")
+    trash.defaultTier = "forbidden"
+    signedPin(s.db, files)
+    expect(kindTier(s.db, s.policy, "file.delete").tier).toBe("forbidden")
+  })
+  it("checks POSIX access bits and ownership independently of the host platform", () => {
+    expect(ownerConfigOwnershipError(0o600, 42, "linux", 42)).toBeUndefined()
+    expect(ownerConfigOwnershipError(0o640, 42, "linux", 42)).toContain(
+      "accessible by group or others"
+    )
+    expect(ownerConfigOwnershipError(0o600, 43, "linux", 42)).toContain(
+      "not owned by the gate user"
+    )
+    expect(ownerConfigOwnershipError(0o600, 43, "linux", null)).toBeUndefined()
+    expect(ownerConfigOwnershipError(0o777, 43, "win32", 42)).toBeUndefined()
+  })
+
+  it("preserves the permissions overlay's write-only group restriction", () => {
+    expect(ownershipError(0o600, 42, "linux", 42)).toBeUndefined()
+    expect(ownershipError(0o620, 42, "linux", 42)).toContain(
+      "writable by group or others"
+    )
+    expect(ownershipError(0o640, 42, "linux", 42)).toBeUndefined()
+    expect(ownershipError(0o600, 43, "linux", 42)).toContain(
+      "not owned by the gate user"
+    )
+    expect(ownershipError(0o600, 43, "linux", null)).toBeUndefined()
+    expect(ownershipError(0o777, 43, "win32", 42)).toBeUndefined()
+  })
+})
 
 function shippedTiers(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || !("tiers" in value)) {
@@ -61,6 +108,7 @@ describe("the default tier table", () => {
     ["email.reply", "approval"],
     ["email.forward", "approval"],
     ["email.trash", "approval"],
+    ["email.untrash", "approval"],
     ["calendar.create", "auto"],
     ["calendar.edit", "auto"],
     ["calendar.delete", "auto"],
@@ -69,8 +117,21 @@ describe("the default tier table", () => {
     ["file.move", "auto"],
     ["file.delete", "approval"],
   ]
-  it.each(rows)("%s is %s", (kind, tier) => {
+  it.each(rows)("%s is %s", async (kind, tier) => {
     const { db, policy } = fresh()
+    await signedFileRoots(db, {
+      roots: [
+        {
+          id: "notes",
+          root: {
+            path: "/srv/example/notes",
+            dev: "2a",
+            ino: "1001",
+            trashDir: "trash",
+          },
+        },
+      ],
+    })
     expect(intentTier(db, policy, sample(kind))).toEqual({ tier })
   })
 
@@ -215,6 +276,17 @@ describe("the default tier table", () => {
 })
 
 describe("the overlay", () => {
+  it("keeps email.untrash approval tier even when a signed overlay requests auto", () => {
+    const s = fresh()
+    const overlay = { version: 1, tiers: { "email.untrash": "auto" } }
+    s.writeOverlay(overlay)
+    signedPolicy(s.db, overlay)
+    const { policy, errors } = loadPolicy(s.db, s.options, s.policy)
+    expect(errors).toEqual([])
+    expect(intentTier(s.db, policy, sample("email.untrash"))).toEqual({
+      tier: "approval",
+    })
+  })
   it("tightens email.archive to approval and loosens email.trash to auto", () => {
     const s = fresh()
     s.writeOverlay({
@@ -233,6 +305,29 @@ describe("the overlay", () => {
     expect(kindTier(s.db, policy, "email.trash")).toEqual({ tier: "auto" })
     // Untouched kinds keep the shipped tier.
     expect(kindTier(s.db, policy, "email.label")).toEqual({ tier: "auto" })
+  })
+
+  it("still loads after other signed policy.set targets are approved", async () => {
+    const s = fresh()
+    const overlay = { version: 1, tiers: { "email.draft": "approval" } }
+    s.writeOverlay(overlay)
+    signedPolicy(s.db, overlay)
+    await signedFileRoots(s.db, {
+      roots: [
+        {
+          id: "docs",
+          root: {
+            path: "/srv/example/docs",
+            dev: "2a",
+            ino: "1001",
+            trashDir: "trash",
+          },
+        },
+      ],
+    })
+    const { policy, errors } = loadPolicy(s.db, s.options, s.policy)
+    expect(errors).toEqual([])
+    expect(kindTier(s.db, policy, "email.draft")).toEqual({ tier: "approval" })
   })
 
   it("is applied on first load too", () => {
@@ -285,6 +380,32 @@ describe("guards no config can lift", () => {
     )
     const { db, policy } = fresh([manifest("mail", irreversibleDraft)])
     expect(kindTier(db, policy, "email.draft")).toEqual({ tier: "approval" })
+  })
+
+  it("confirm.field is approval by default, cannot be changed to auto, and needs no connector", () => {
+    const s = fresh([])
+    expect(kindTier(s.db, s.policy, "confirm.field")).toEqual({
+      tier: "approval",
+    })
+    expect(intentTier(s.db, s.policy, sample("confirm.field"))).toEqual({
+      tier: "approval",
+    })
+
+    // Even if shipped config were mutated to auto, kindTier returns approval
+    s.policy.shipped.tiers["confirm.field"] = "auto"
+    expect(kindTier(s.db, s.policy, "confirm.field")).toEqual({
+      tier: "approval",
+    })
+    expect(intentTier(s.db, s.policy, sample("confirm.field"))).toEqual({
+      tier: "approval",
+    })
+
+    // Overlay setting confirm.field to auto is rejected because it has no connector operation
+    s.writeOverlay({ version: 1, tiers: { "confirm.field": "auto" } })
+    const { errors } = loadPolicy(s.db, s.options, s.policy)
+    expect(errors).toContain(
+      'permissions.json: "confirm.field": auto needs an operation the pinned manifest marks reversible'
+    )
   })
 
   it("a kind absent from the verb list is forbidden", () => {

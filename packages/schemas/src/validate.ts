@@ -1,5 +1,5 @@
 // Minimal JSON Schema validator for the keyword subset the codegen allows (see
-// scripts/codegen.mjs). Dependency-free; the generated validators call it with the schemas
+// scripts/codegen.ts). Dependency-free; the generated validators call it with the schemas
 // generated from schemas/*.schema.json.
 
 export interface JsonSchema {

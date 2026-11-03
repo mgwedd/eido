@@ -1,0 +1,14 @@
+# The one pinned model and llama.cpp build (#29). No secrets. The launcher refuses to start
+# llama-server unless the model file matches size and sha256, and the binary reports this build.
+# To change the pin, follow "Updating the pin" in infra/llama-server.md.
+model: gemma-4-26B-A4B-it
+quantization: Q4_0 (QAT)
+file: gemma-4-26B_q4_0-it.gguf
+source: https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf/resolve/d1c082be9cf3c8a514acf63b8761f4b41935842e/gemma-4-26B_q4_0-it.gguf
+size: 14439363584
+sha256: 3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d
+llama_cpp_build: b11149
+llama_cpp_commit: d2e54583c
+llama_cpp_asset: llama-b11149-bin-macos-arm64.tar.gz
+llama_cpp_sha256: 791eb0200a7c846ca925b6274fc21f0f21f537fda2924cc5a47402655816f56e
+chat_template_marker: <|turn>model

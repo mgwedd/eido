@@ -1,29 +1,96 @@
 import { INJECTION_REASONS } from "../inference/index"
 import type { DatabaseSync } from "node:sqlite"
+import { writeQueueFor } from "../db/write-queue"
 import type { Cite, Digest, DigestCoverage, DigestLine } from "./types"
 
-/**
- * The digests table of eido-data.db. The service applies it itself on creation; it is
- * idempotent (CREATE ... IF NOT EXISTS). Rows are never deleted: after a rebuild the old
- * digest stays readable under its old key.
- */
-export const DIGEST_MIGRATION_SQL = `
-CREATE TABLE IF NOT EXISTS digests (
-  key TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('thread','document')),
-  subject_ref TEXT NOT NULL,
-  prompt_version TEXT NOT NULL,
-  model_id TEXT NOT NULL,
-  fingerprint TEXT NOT NULL,
-  lines_json TEXT NOT NULL,
-  coverage_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS digests_subject ON digests(kind, subject_ref, created_at);
-`
+export interface StoredSection {
+  key: string
+  sourceFingerprint: string
+  sectionIdentity: string
+  promptVersion: string
+  modelId: string
+  lines: { text: string; refs: string[] }[]
+  dropped: number
+  createdAt: string
+}
 
-export function applyDigestMigration(db: DatabaseSync): void {
-  db.exec(DIGEST_MIGRATION_SQL)
+export function readSection(
+  db: DatabaseSync,
+  key: string
+): StoredSection | undefined {
+  const row = db.prepare("SELECT * FROM digest_sections WHERE key = ?").get(key)
+  if (row === undefined || typeof row["lines_json"] !== "string")
+    return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(row["lines_json"])
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(parsed)) return undefined
+  const lines: { text: string; refs: string[] }[] = []
+  for (const entry of parsed) {
+    if (
+      !isRecord(entry) ||
+      typeof entry["text"] !== "string" ||
+      !Array.isArray(entry["refs"]) ||
+      entry["refs"].length === 0 ||
+      !entry["refs"].every((ref: unknown) => typeof ref === "string")
+    )
+      return undefined
+    lines.push({ text: entry["text"], refs: entry["refs"] })
+  }
+  if (
+    typeof row["dropped"] !== "number" ||
+    !Number.isInteger(row["dropped"]) ||
+    row["dropped"] < 0
+  )
+    return undefined
+  return {
+    key,
+    sourceFingerprint: String(row["source_fingerprint"]),
+    sectionIdentity: String(row["section_identity"]),
+    promptVersion: String(row["prompt_version"]),
+    modelId: String(row["model_id"]),
+    lines,
+    dropped: row["dropped"],
+    createdAt: String(row["created_at"]),
+  }
+}
+
+export function writeSection(
+  db: DatabaseSync,
+  row: StoredSection
+): Promise<void> {
+  return writeQueueFor(db).run(() => {
+    db.prepare(
+      `INSERT OR REPLACE INTO digest_sections
+    (key, source_fingerprint, section_identity, prompt_version, model_id, lines_json, dropped, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      row.key,
+      row.sourceFingerprint,
+      row.sectionIdentity,
+      row.promptVersion,
+      row.modelId,
+      JSON.stringify(row.lines),
+      row.dropped,
+      row.createdAt
+    )
+  })
+}
+
+/** Deletes old partial work only when explicitly called; returns the number of rows removed. */
+export function pruneSections(
+  db: DatabaseSync,
+  before: string
+): Promise<number> {
+  return writeQueueFor(db).run(() =>
+    Number(
+      db.prepare("DELETE FROM digest_sections WHERE created_at < ?").run(before)
+        .changes
+    )
+  )
 }
 
 export interface StoredDigest {
@@ -147,20 +214,25 @@ export function readLatestDigest(
   return undefined
 }
 
-export function writeDigest(db: DatabaseSync, row: StoredDigest): void {
-  db.prepare(
-    `INSERT OR REPLACE INTO digests
+export function writeDigest(
+  db: DatabaseSync,
+  row: StoredDigest
+): Promise<void> {
+  return writeQueueFor(db).run(() => {
+    db.prepare(
+      `INSERT OR REPLACE INTO digests
        (key, kind, subject_ref, prompt_version, model_id, fingerprint, lines_json, coverage_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    row.key,
-    row.kind,
-    row.subjectRef,
-    row.promptVersion,
-    row.modelId,
-    row.fingerprint,
-    JSON.stringify(row.lines),
-    JSON.stringify(row.coverage),
-    row.createdAt
-  )
+    ).run(
+      row.key,
+      row.kind,
+      row.subjectRef,
+      row.promptVersion,
+      row.modelId,
+      row.fingerprint,
+      JSON.stringify(row.lines),
+      JSON.stringify(row.coverage),
+      row.createdAt
+    )
+  })
 }

@@ -96,26 +96,29 @@ describe("Queue nav badge", () => {
     const [sidebar, phone] = queueLinks()
     expect(sidebar?.getAttribute("aria-label")).toBe("Queue, 3 pending")
     expect(phone?.getAttribute("aria-label")).toBe("Queue, 3 pending")
-    expect(sidebar?.textContent).toBe("Queue3")
+    // The sidebar also carries the "g q" shortcut hint after the pill.
+    expect(sidebar?.textContent).toMatch(/^Queue3/)
     expect(phone?.textContent).toBe("Queue· 3")
   })
 
   test("hides the badge when nothing is pending", async () => {
     stubGate(Response.json({ intents: [] }))
     await mount()
-    for (const link of queueLinks()) {
-      expect(link.hasAttribute("aria-label")).toBe(false)
-      expect(link.textContent).toBe("Queue")
-    }
+    const [sidebar, phone] = queueLinks()
+    expect(sidebar?.hasAttribute("aria-label")).toBe(false)
+    expect(phone?.hasAttribute("aria-label")).toBe(false)
+    expect(sidebar?.textContent).not.toMatch(/\d/)
+    expect(phone?.textContent).toBe("Queue")
   })
 
   test("hides the badge, not a zero, when the gate is unreachable", async () => {
     stubGate(new TypeError("network"))
     await mount()
-    for (const link of queueLinks()) {
-      expect(link.hasAttribute("aria-label")).toBe(false)
-      expect(link.textContent).toBe("Queue")
-    }
+    const [sidebar, phone] = queueLinks()
+    expect(sidebar?.hasAttribute("aria-label")).toBe(false)
+    expect(phone?.hasAttribute("aria-label")).toBe(false)
+    expect(sidebar?.textContent).not.toMatch(/\d/)
+    expect(phone?.textContent).toBe("Queue")
   })
 
   test("shows a skeleton only while loading", async () => {

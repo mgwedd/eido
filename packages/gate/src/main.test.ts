@@ -29,7 +29,9 @@ import type { FakeBridge } from "./internal/bridge/fake-bridge"
 import {
   GateRequestError,
   createIntentClient,
+  createAuditClient,
   createProtonMailClient,
+  createConnectClient,
 } from "./internal/client"
 import { runningGate } from "./internal/runtime"
 import {
@@ -47,19 +49,56 @@ import {
 import { reloadPolicy } from "./internal/runtime"
 import { validateGatePrepareApproval } from "@eido/schemas"
 import { FileVault } from "./internal/vault/file-vault"
+import { InMemoryVault } from "./internal/vault/vault"
 import { vapidPublicKey } from "./internal/push-crypto"
-import { CONTROL_DB_FILE, GATE_LOG_FILE, gateConfig, runGate } from "./main"
-import type { GateConfig } from "./main"
+import {
+  CONTROL_DB_FILE,
+  GATE_LOG_FILE,
+  gateConfig,
+  runGate as startGate,
+} from "./main"
+import type { ConnectorManifest } from "@eido/schemas"
+import type { GateConfig, RunningGate, VaultConfig } from "./main"
 
 let dir: string
+const openGates = new Set<RunningGate>()
+const startingGates = new Set<Promise<RunningGate>>()
+
+async function runGate(config: GateConfig): Promise<RunningGate> {
+  const started = startGate(config).then((gate) => {
+    let closing: Promise<void> | undefined
+    const tracked: RunningGate = {
+      ...gate,
+      close: () => {
+        closing ??= gate.close().finally(() => {
+          openGates.delete(tracked)
+        })
+        return closing
+      },
+    }
+    openGates.add(tracked)
+    return tracked
+  })
+  startingGates.add(started)
+  try {
+    return await started
+  } finally {
+    startingGates.delete(started)
+  }
+}
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "eido-main-"))
 })
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllGlobals()
-  rmSync(dir, { recursive: true, force: true })
+  await Promise.allSettled([...startingGates])
+  try {
+    await Promise.all([...openGates].map((gate) => gate.close()))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 function config(): GateConfig {
@@ -107,6 +146,73 @@ function send(
 }
 
 describe("gateConfig", () => {
+  it("requires a pinned absolute file helper path and accepts both values together", () => {
+    const base = {
+      EIDO_GATE_DATA_DIR: "/d",
+      EIDO_GATE_SOCKET: "/d/gate.sock",
+      EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+      EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+      EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+    }
+    expect(() =>
+      gateConfig({ ...base, EIDO_FILE_HELPER_PATH: "/opt/eido-file" })
+    ).toThrow("must be set together")
+    expect(() =>
+      gateConfig({
+        ...base,
+        EIDO_FILE_HELPER_PATH: "relative",
+        EIDO_FILE_HELPER_SHA256: "a".repeat(64),
+      })
+    ).toThrow("must be an absolute path")
+    expect(() =>
+      gateConfig({
+        ...base,
+        EIDO_FILE_HELPER_PATH: "/opt/eido-file",
+        EIDO_FILE_HELPER_SHA256: "A".repeat(64),
+      })
+    ).toThrow("lowercase SHA-256")
+    expect(
+      gateConfig({
+        ...base,
+        EIDO_FILE_HELPER_PATH: "/opt/eido-file",
+        EIDO_FILE_HELPER_SHA256: "a".repeat(64),
+      }).fileHelper
+    ).toEqual({
+      path: "/opt/eido-file",
+      sha256: "a".repeat(64),
+    })
+  })
+  it("selects the gate vault for profile audit and validates rotation epochs", () => {
+    const base = {
+      EIDO_GATE_DATA_DIR: "/d",
+      EIDO_GATE_SOCKET: "/d/gate.sock",
+      EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+      EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+      EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+    }
+    expect(
+      gateConfig({
+        ...base,
+        EIDO_GATE_KEYCHAIN_PATH: "/private/gate.keychain-db",
+      }).profileAudit
+    ).toEqual({
+      vault: { kind: "keychain", path: "/private/gate.keychain-db" },
+      epoch: "1",
+    })
+    expect(
+      gateConfig({
+        ...base,
+        EIDO_GATE_KEYCHAIN_PATH: "/private/gate.keychain-db",
+        EIDO_PROFILE_AUDIT_EPOCH: "rotated_2",
+      }).profileAudit?.epoch
+    ).toBe("rotated_2")
+    expect(() =>
+      gateConfig({ ...base, EIDO_PROFILE_AUDIT_EPOCH: "bad:epoch" })
+    ).toThrow("EIDO_PROFILE_AUDIT_EPOCH must be")
+    expect(() =>
+      gateConfig({ ...base, EIDO_PROFILE_AUDIT_EPOCH: "2" })
+    ).toThrow("needs a configured gate vault")
+  })
   it("reads the sockets, data dir and relying party from the environment", () => {
     expect(
       gateConfig({
@@ -122,6 +228,24 @@ describe("gateConfig", () => {
       controlSocketPath: "/d/control.sock",
       webAuthn: WEBAUTHN,
     })
+  })
+
+  it("starts with the :8443 origin from ADR 0004", async () => {
+    const base = config()
+    const gate = await startGate(
+      gateConfig({
+        EIDO_GATE_DATA_DIR: base.dataDir,
+        EIDO_GATE_SOCKET: base.socketPath,
+        EIDO_GATE_CONTROL_SOCKET: base.controlSocketPath,
+        EIDO_WEBAUTHN_RP_ID: "node.example.ts.net",
+        EIDO_WEBAUTHN_ORIGIN: "https://node.example.ts.net:8443",
+      })
+    )
+    expect(runningGate().webAuthn).toEqual({
+      rpId: "node.example.ts.net",
+      origin: "https://node.example.ts.net:8443",
+    })
+    await gate.close()
   })
 
   const BASE = {
@@ -215,12 +339,13 @@ describe("Web Push configuration", () => {
         ...BASE,
         EIDO_PUSH_VAPID_SUBJECT: "mailto:ops@example.invalid",
       })
-    ).toThrow("Web Push needs EIDO_GATE_VAULT_FILE")
+    ).toThrow("Web Push needs EIDO_GATE_KEYCHAIN_PATH")
     expect(() =>
       gateConfig({
         ...BASE,
         EIDO_PUSH_VAPID_SUBJECT: "mailto:ops@example.invalid",
         EIDO_GATE_VAULT_FILE: "/tmp/vault",
+        EIDO_DEV_VAULT: "1",
         EIDO_PUSH_WINDOW_MS: "0",
       })
     ).toThrow("EIDO_PUSH_WINDOW_MS")
@@ -235,8 +360,7 @@ describe("Web Push configuration", () => {
         EIDO_APPROVAL_NUDGE_WINDOW_MS: "90000",
       }).push
     ).toEqual({
-      vaultPath: "/tmp/vault",
-      devVault: true,
+      vault: { kind: "file", path: "/tmp/vault", devFlag: true },
       subject: "mailto:ops@example.invalid",
       windowMs: 30000,
       nudgeThreshold: 3,
@@ -249,8 +373,7 @@ describe("Web Push configuration", () => {
     const c: GateConfig = {
       ...config(),
       push: {
-        vaultPath,
-        devVault: true,
+        vault: { kind: "file", path: vaultPath, devFlag: true },
         subject: "mailto:ops@example.invalid",
         windowMs: 60_000,
         nudgeThreshold: 5,
@@ -277,8 +400,11 @@ describe("Web Push configuration", () => {
     const c: GateConfig = {
       ...config(),
       push: {
-        vaultPath: join(dir, "bad-vapid-vault.json"),
-        devVault: true,
+        vault: {
+          kind: "file" as const,
+          path: join(dir, "bad-vapid-vault.json"),
+          devFlag: true,
+        },
         subject: "invalid-subject",
         windowMs: 60_000,
         nudgeThreshold: 5,
@@ -362,8 +488,8 @@ describe("runGate", () => {
         }
       )
       expect(misdirected.status).toBe(421)
-      const admin = await send(phone.port, "GET", "/api/gate/audit/chain", json)
-      expect(admin.status).toBe(404)
+      const audit = await send(phone.port, "GET", "/api/gate/audit/chain", json)
+      expect(audit.status).toBe(401)
       const gated = await send(phone.port, "GET", "/api/gate/approvals", json)
       expect(gated.status).toBe(401)
 
@@ -408,7 +534,46 @@ describe("runGate", () => {
   it("has no TCP listener when the phone port is not set", async () => {
     const gate = await runGate(config())
     expect(gate.phone).toBeUndefined()
-    await gate.close()
+  })
+})
+
+describe("runGate with the production vault selection", () => {
+  it("uses the injected Keychain vault instance for Web Push secrets", async () => {
+    const selected: VaultConfig = {
+      kind: "keychain",
+      path: "/Users/gate/Library/Keychains/eido.keychain-db",
+    }
+    const vault = new InMemoryVault()
+    const factory = vi.fn((selection: VaultConfig) => {
+      expect(selection).toEqual(selected)
+      return vault
+    })
+    const gate = await startGate(
+      {
+        ...config(),
+        push: {
+          vault: selected,
+          subject: "mailto:ops@example.invalid",
+          windowMs: 60_000,
+          nudgeThreshold: 5,
+          nudgeWindowMs: 120_000,
+        },
+      },
+      () => new Date(),
+      factory
+    )
+    try {
+      expect(factory).toHaveBeenCalledTimes(1)
+      const secret = await vault.get({
+        connector: "eido-web-push",
+        kind: "api_key",
+        client: "write",
+      })
+      expect(typeof secret).toBe("string")
+      expect(vapidPublicKey(secret ?? "")).toMatch(/^[A-Za-z0-9_-]+$/)
+    } finally {
+      await gate.close()
+    }
   })
 })
 
@@ -451,22 +616,35 @@ describe("gateConfig with Bridge", () => {
         username: "assistant@example.invalid",
         searchFolders: ["INBOX"],
       },
-      vaultPath: "/vault/dev.json",
-      devVault: true,
+      vault: { kind: "file", path: "/vault/dev.json", devFlag: true },
+    })
+  })
+
+  it("selects the configured Keychain for Bridge", () => {
+    const selected = gateConfig({
+      ...BASE,
+      EIDO_GATE_KEYCHAIN_PATH: "/Users/gate/Library/Keychains/eido.keychain-db",
+    })
+    expect(selected.bridge?.vault).toEqual({
+      kind: "keychain",
+      path: "/Users/gate/Library/Keychains/eido.keychain-db",
     })
   })
 
   it("leaves the development flag off unless it is exactly 1", () => {
-    const config = gateConfig({
-      ...BASE,
-      EIDO_GATE_VAULT_FILE: "/v.json",
-      EIDO_DEV_VAULT: "true",
-    })
-    expect(config.bridge?.devVault).toBe(false)
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_VAULT_FILE: "/v.json",
+        EIDO_DEV_VAULT: "true",
+      })
+    ).toThrow("EIDO_GATE_VAULT_FILE requires EIDO_DEV_VAULT=1")
   })
 
   it("refuses Bridge without a vault file", () => {
-    expect(() => gateConfig(BASE)).toThrow("Bridge needs EIDO_GATE_VAULT_FILE")
+    expect(() => gateConfig(BASE)).toThrow(
+      "Bridge needs EIDO_GATE_KEYCHAIN_PATH"
+    )
   })
 
   it("has no Bridge when its host is not set", () => {
@@ -493,15 +671,54 @@ describe("gateConfig with Gmail", () => {
       }).gmail
     ).toEqual({
       clientId: "test-client-id",
-      vaultPath: "/vault/dev.json",
-      devVault: true,
+      vault: { kind: "file", path: "/vault/dev.json", devFlag: true },
     })
   })
 
   it("requires a vault file when Gmail is enabled", () => {
     expect(() =>
       gateConfig({ ...BASE, EIDO_GMAIL_CLIENT_ID: "test-client-id" })
-    ).toThrow("Gmail needs EIDO_GATE_VAULT_FILE")
+    ).toThrow("Gmail needs EIDO_GATE_KEYCHAIN_PATH")
+  })
+
+  it("selects an absolute Keychain path for all enabled gate services", () => {
+    const selected = gateConfig({
+      ...BASE,
+      EIDO_GATE_KEYCHAIN_PATH: "/Users/gate/Library/Keychains/eido.keychain-db",
+      EIDO_GMAIL_CLIENT_ID: "test-client-id",
+      EIDO_PUSH_VAPID_SUBJECT: "mailto:ops@example.invalid",
+    })
+    const expected = {
+      kind: "keychain",
+      path: "/Users/gate/Library/Keychains/eido.keychain-db",
+    }
+    expect(selected.gmail?.vault).toEqual(expected)
+    expect(selected.push?.vault).toEqual(expected)
+  })
+
+  it("rejects conflicting, relative and dev-flagged production vault selections", () => {
+    const base = { ...BASE, EIDO_GMAIL_CLIENT_ID: "test-client-id" }
+    expect(() =>
+      gateConfig({
+        ...base,
+        EIDO_GATE_KEYCHAIN_PATH: "/Users/gate/eido.keychain-db",
+        EIDO_GATE_VAULT_FILE: "/tmp/vault.json",
+        EIDO_DEV_VAULT: "1",
+      })
+    ).toThrow("Set only one of EIDO_GATE_KEYCHAIN_PATH or EIDO_GATE_VAULT_FILE")
+    expect(() =>
+      gateConfig({
+        ...base,
+        EIDO_GATE_KEYCHAIN_PATH: "relative.keychain-db",
+      })
+    ).toThrow("EIDO_GATE_KEYCHAIN_PATH must be an absolute path")
+    expect(() =>
+      gateConfig({
+        ...base,
+        EIDO_GATE_KEYCHAIN_PATH: "/Users/gate/eido.keychain-db",
+        EIDO_DEV_VAULT: "1",
+      })
+    ).toThrow("EIDO_DEV_VAULT=1 cannot be used with EIDO_GATE_KEYCHAIN_PATH")
   })
 })
 
@@ -509,13 +726,22 @@ describe("runGate with Gmail", () => {
   it("routes an auto mark read through the pinned Gmail connector and stores its inverse", async () => {
     const c = {
       ...config(),
+      phone: {
+        host: "127.0.0.1" as const,
+        port: 0,
+        basePath: "/api/gate",
+        allowedHosts: [],
+      },
       gmail: {
-        vaultPath: join(dir, "vault", "dev.json"),
-        devVault: true,
+        vault: {
+          kind: "file" as const,
+          path: join(dir, "vault", "dev.json"),
+          devFlag: true,
+        },
         clientId: "test-client-id",
       },
     }
-    await new FileVault({ path: c.gmail.vaultPath, devFlag: true }).set(
+    await new FileVault({ path: c.gmail.vault.path, devFlag: true }).set(
       { connector: "gmail", kind: "access_token", client: "write" },
       "test-access-token"
     )
@@ -584,9 +810,357 @@ describe("runGate with Gmail", () => {
       ).toBe(
         '{"args":{"messageIds":["msg-1"],"read":false},"connector":"gmail","kind":"email.markRead"}'
       )
+      const phone = gate.phone
+      if (phone === undefined) throw new Error("phone listener did not start")
+      const host = `127.0.0.1:${String(phone.port)}`
+      const headers = { host, "content-type": "application/json" }
+      const authenticator = testAuthenticator()
+      runningGate()
+        .db.prepare(
+          "INSERT INTO credentials (credential_id, public_key, sign_count, created_at) VALUES (?, ?, 0, ?)"
+        )
+        .run(
+          authenticator.credentialId,
+          authenticator.publicKey,
+          new Date().toISOString()
+        )
+      const loginOptions = await send(
+        phone.port,
+        "POST",
+        "/api/gate/auth/login/options",
+        headers
+      )
+      const challenge =
+        typeof loginOptions.body === "object" &&
+        loginOptions.body !== null &&
+        "challenge" in loginOptions.body
+          ? String(loginOptions.body.challenge)
+          : ""
+      const login = await send(
+        phone.port,
+        "POST",
+        "/api/gate/auth/login",
+        headers,
+        { assertion: assertion(authenticator, challenge) }
+      )
+      const setCookie = login.headers["set-cookie"]
+      const cookie = Array.isArray(setCookie) ? setCookie[0] : setCookie
+      if (typeof cookie !== "string")
+        throw new Error("phone listener did not issue a session")
+      const undone = await send(
+        phone.port,
+        "POST",
+        `/api/gate/executions/${proposal.id}/undo`,
+        { ...headers, cookie: cookie.split(";")[0] ?? "" },
+        {}
+      )
+      expect(undone).toMatchObject({
+        status: 200,
+        body: { id: proposal.id, undone: true },
+      })
+      expect(calls).toEqual([
+        "GET https://gmail.googleapis.com/gmail/v1/users/me/messages/msg-1?format=minimal",
+        "POST https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",
+        "GET https://gmail.googleapis.com/gmail/v1/users/me/messages/msg-1?format=minimal",
+        "POST https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",
+      ])
+      expect(
+        runningGate()
+          .db.prepare("SELECT intent_id FROM execution_undos WHERE intent_id=?")
+          .get(proposal.id)?.["intent_id"]
+      ).toBe(proposal.id)
     } finally {
       await gate.close()
     }
+  })
+})
+
+describe("gateConfig with read connectors", () => {
+  const BASE = {
+    EIDO_GATE_DATA_DIR: "/d",
+    EIDO_GATE_SOCKET: "/d/gate.sock",
+    EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+    EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+    EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+    EIDO_GATE_VAULT_FILE: "/vault/dev.json",
+    EIDO_DEV_VAULT: "1",
+  }
+
+  it("runs the egress proxy with each configured read client", () => {
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_GMAIL_READ_CLIENT_ID: "gmail-read-client",
+        EIDO_DRIVE_CLIENT_ID: "drive-client",
+        EIDO_GATE_EGRESS_PORT: "8417",
+      }).egress
+    ).toEqual({
+      vault: { kind: "file", path: "/vault/dev.json", devFlag: true },
+      port: 8417,
+      clientIds: { gmail: "gmail-read-client", drive: "drive-client" },
+    })
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_DRIVE_CLIENT_ID: "drive-client",
+        EIDO_GATE_EGRESS_PORT: "0",
+      }).egress?.clientIds
+    ).toEqual({ drive: "drive-client" })
+  })
+
+  it("runs the egress proxy for SimpleFIN alone, which needs no OAuth client", () => {
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_SIMPLEFIN: "1",
+        EIDO_GATE_EGRESS_PORT: "8417",
+      }).egress
+    ).toEqual({
+      vault: { kind: "file", path: "/vault/dev.json", devFlag: true },
+      port: 8417,
+      clientIds: {},
+      basicUrlConnectors: ["simplefin"],
+    })
+    expect(() => gateConfig({ ...BASE, EIDO_GATE_SIMPLEFIN: "1" })).toThrow(
+      "a read connector needs EIDO_GATE_EGRESS_PORT"
+    )
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_SIMPLEFIN: "yes",
+        EIDO_GATE_EGRESS_PORT: "8417",
+      })
+    ).toThrow("EIDO_GATE_SIMPLEFIN must be 1 or unset")
+  })
+
+  it("runs no egress proxy without a read client", () => {
+    expect(gateConfig(BASE).egress).toBeUndefined()
+  })
+
+  it("rejects a read client without a port, a port without a client, and a bad port", () => {
+    expect(() =>
+      gateConfig({ ...BASE, EIDO_DRIVE_CLIENT_ID: "drive-client" })
+    ).toThrow("a read connector needs EIDO_GATE_EGRESS_PORT")
+    expect(() =>
+      gateConfig({ ...BASE, EIDO_GATE_EGRESS_PORT: "8417" })
+    ).toThrow(
+      "EIDO_GATE_EGRESS_PORT needs a read connector: EIDO_GMAIL_READ_CLIENT_ID or EIDO_DRIVE_CLIENT_ID or EIDO_GATE_SIMPLEFIN=1"
+    )
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_DRIVE_CLIENT_ID: "drive-client",
+        EIDO_GATE_EGRESS_PORT: "70000",
+      })
+    ).toThrow('EIDO_GATE_EGRESS_PORT must be a port number, not "70000"')
+  })
+
+  it("requires a vault for the egress proxy", () => {
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_VAULT_FILE: undefined,
+        EIDO_DEV_VAULT: undefined,
+        EIDO_DRIVE_CLIENT_ID: "drive-client",
+        EIDO_GATE_EGRESS_PORT: "8417",
+      })
+    ).toThrow("The read egress proxy needs EIDO_GATE_KEYCHAIN_PATH")
+  })
+})
+
+describe("runGate with a read connector", () => {
+  const EXPIRED = "synthetic-expired-read-token"
+  const FRESH = "synthetic-fresh-read-token"
+  const REFRESH = "synthetic-read-refresh-token"
+  const CLIENT_SECRET = "synthetic-read-client-secret"
+  const SECRETS = [EXPIRED, FRESH, REFRESH, CLIENT_SECRET]
+
+  function readManifest(
+    name: string,
+    host: string,
+    prefix: string,
+    patterns: readonly string[]
+  ): ConnectorManifest {
+    const pinned = manifest(name, [])
+    pinned.egress.hosts = [{ host, methods: ["GET"], pathPrefixes: [prefix] }]
+    pinned.operations = patterns.map((pathPattern, index) => ({
+      name: `read_${String(index)}`,
+      effect: "read",
+      reversibility: "reversible",
+      defaultTier: "auto",
+      sensitivity: "normal",
+      untrustedOutput: true,
+      authScopes: ["write"],
+      routes: [{ host, method: "GET", pathPattern }],
+    }))
+    return pinned
+  }
+
+  /** A fake Google: the token endpoint issues FRESH, and the APIs accept only `accepted`. */
+  function fakeGoogle(accepted: readonly string[]) {
+    const seen: string[] = []
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>((input, init) => {
+        const url = input instanceof Request ? input.url : input.toString()
+        seen.push(url)
+        if (url === "https://oauth2.googleapis.com/token")
+          return Promise.resolve(Response.json({ access_token: FRESH }))
+        const authorization = new Headers(init?.headers).get("authorization")
+        return Promise.resolve(
+          accepted.some((token) => authorization === `Bearer ${token}`)
+            ? Response.json({
+                emailAddress: "owner@example.invalid",
+                startPageToken: "42",
+              })
+            : new Response(null, { status: 401 })
+        )
+      })
+    )
+    return seen
+  }
+
+  async function readCredentials(
+    path: string,
+    connector: string,
+    access?: string
+  ): Promise<void> {
+    const vault = new FileVault({ path, devFlag: true })
+    const key = { connector, client: "read" } as const
+    await vault.set({ ...key, kind: "refresh_token" }, REFRESH)
+    await vault.set({ ...key, kind: "api_key" }, CLIENT_SECRET)
+    if (access !== undefined)
+      await vault.set({ ...key, kind: "access_token" }, access)
+  }
+
+  /** One request through the proxy over node:http, since `fetch` is the fake upstream. */
+  function throughProxy(
+    port: number,
+    connector: string,
+    target: string
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = request(
+        {
+          host: "127.0.0.1",
+          port,
+          agent: false,
+          method: "GET",
+          path: "/",
+          headers: { "x-eido-connector": connector, "x-eido-target": target },
+        },
+        (res) => {
+          const chunks: Buffer[] = []
+          res.on("data", (chunk: Buffer) => chunks.push(chunk))
+          res.on("end", () => {
+            resolve({
+              status: res.statusCode ?? 0,
+              body: Buffer.concat(chunks).toString("utf8"),
+            })
+          })
+        }
+      )
+      req.on("error", reject)
+      req.end()
+    })
+  }
+
+  it("starts no egress proxy without a read connector", async () => {
+    const gate = await runGate(config())
+    expect(gate.egress).toBeUndefined()
+  })
+
+  it("starts the proxy, refreshes an expired read token, and probes the connector", async () => {
+    const vaultPath = join(dir, "vault", "dev.json")
+    await readCredentials(vaultPath, "drive", EXPIRED)
+    const seen = fakeGoogle([FRESH])
+    const c: GateConfig = {
+      ...config(),
+      egress: {
+        vault: { kind: "file", path: vaultPath, devFlag: true },
+        port: 0,
+        clientIds: { drive: "synthetic-drive-client" },
+      },
+    }
+    const gate = await runGate(c)
+    signedPin(
+      runningGate().db,
+      readManifest("drive", "www.googleapis.com", "/drive/v3", [
+        "/drive/v3/files/{id}",
+        "/drive/v3/changes/startPageToken",
+      ])
+    )
+    const port = gate.egress?.port
+    if (port === undefined) throw new Error("the egress proxy did not start")
+    const read = await throughProxy(
+      port,
+      "drive",
+      "https://www.googleapis.com/drive/v3/files/file-1"
+    )
+    expect(read.status).toBe(200)
+    expect(JSON.parse(read.body)).toMatchObject({ startPageToken: "42" })
+    expect(seen).toEqual([
+      "https://www.googleapis.com/drive/v3/files/file-1",
+      "https://oauth2.googleapis.com/token",
+      "https://www.googleapis.com/drive/v3/files/file-1",
+    ])
+    const checked = await createConnectClient({
+      socketPath: c.controlSocketPath,
+    }).connected("drive")
+    expect(checked.connectors).toEqual([
+      { name: "drive", health: "healthy", consecutiveFailures: 0 },
+    ])
+    expect(seen.at(-1)).toBe(
+      "https://www.googleapis.com/drive/v3/changes/startPageToken"
+    )
+    const logged = [
+      read.body,
+      JSON.stringify(checked),
+      loggedText(runningGate().db),
+      readFileSync(join(c.dataDir, GATE_LOG_FILE), "utf8"),
+    ].join("\n")
+    expect(logged).toContain(`"egressPort":${String(port)}`)
+    for (const secret of SECRETS) expect(logged).not.toContain(secret)
+    await gate.close()
+    await expect(
+      throughProxy(port, "drive", "https://www.googleapis.com/drive/v3/files/x")
+    ).rejects.toThrow("ECONNREFUSED")
+  })
+
+  it("checks both Gmail clients when the compose and read clients are configured", async () => {
+    const vaultPath = join(dir, "vault", "dev.json")
+    await readCredentials(vaultPath, "gmail", FRESH)
+    await new FileVault({ path: vaultPath, devFlag: true }).set(
+      { connector: "gmail", kind: "access_token", client: "write" },
+      "synthetic-write-token"
+    )
+    fakeGoogle(["synthetic-write-token", FRESH])
+    const vault = { kind: "file" as const, path: vaultPath, devFlag: true }
+    const c: GateConfig = {
+      ...config(),
+      gmail: { vault, clientId: "synthetic-compose-client" },
+      egress: { vault, port: 0, clientIds: { gmail: "synthetic-read-client" } },
+    }
+    await runGate(c)
+    signedPin(
+      runningGate().db,
+      readManifest("gmail", "gmail.googleapis.com", "/gmail/v1/users/me", [
+        "/gmail/v1/users/me/profile",
+      ])
+    )
+    const client = createConnectClient({ socketPath: c.controlSocketPath })
+    expect((await client.connected("gmail")).connectors).toEqual([
+      { name: "gmail", health: "healthy", consecutiveFailures: 0 },
+    ])
+    // The compose client still works; a read client the token endpoint stops honouring fails the check.
+    fakeGoogle(["synthetic-write-token"])
+    await new FileVault({ path: vaultPath, devFlag: true }).delete({
+      connector: "gmail",
+      kind: "refresh_token",
+      client: "read",
+    })
+    const [failed] = (await client.connected("gmail")).connectors
+    expect(failed).toMatchObject({ name: "gmail", lastError: "auth_failed" })
   })
 })
 
@@ -667,8 +1241,7 @@ describe("runGate with Bridge", () => {
           username: USER,
           searchFolders: ["INBOX"],
         },
-        vaultPath,
-        devVault,
+        vault: { kind: "file", path: vaultPath, devFlag: devVault },
       },
     }
   }
@@ -1050,5 +1623,78 @@ describe("runGate with Bridge", () => {
       "FileVault is for development only"
     )
     expect(() => runningGate()).toThrow("the gate is not started")
+  })
+})
+
+describe("production profile audit wiring", () => {
+  const entry = {
+    action: "entity.create",
+    subjectHash: "ab".repeat(32),
+    beforeHash: null,
+    afterHash: "cd".repeat(32),
+  } as const
+
+  it("uses the configured vault and refuses writes after key loss", async () => {
+    const c = config()
+    c.profileAudit = {
+      vault: { kind: "keychain", path: "/synthetic/gate.keychain-db" },
+      epoch: "runtime",
+    }
+    const vault = new InMemoryVault()
+    const factory = vi.fn(() => vault)
+    const gate = await startGate(c, undefined, factory)
+    try {
+      const audit = createAuditClient({ socketPath: c.socketPath })
+      await audit.record(entry)
+      expect(factory).toHaveBeenCalledWith(c.profileAudit.vault)
+      const row = runningGate()
+        .db.prepare(
+          "SELECT target FROM audit_log WHERE action='audit.profile.entity.create'"
+        )
+        .get()
+      expect(row?.["target"]).toMatch(
+        /^hmac:v1:runtime:[a-f0-9]{64}:[a-f0-9]{64}$/
+      )
+      const ref = {
+        connector: "eido-profile-audit:runtime",
+        kind: "api_key",
+        client: "none",
+      } as const
+      const secret = await vault.get(ref)
+      if (secret === undefined) throw new Error("missing key")
+      await vault.delete(ref)
+      await expect(audit.record(entry)).rejects.toMatchObject({ status: 503 })
+      const logs = readFileSync(join(c.dataDir, GATE_LOG_FILE), "utf8")
+      for (const value of [secret, entry.subjectHash, entry.afterHash])
+        expect(logs).not.toContain(value)
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("keeps other gate routes available when key initialization fails", async () => {
+    const c = config()
+    c.profileAudit = {
+      vault: { kind: "keychain", path: "/synthetic/gate.keychain-db" },
+      epoch: "runtime",
+    }
+    const vault = new InMemoryVault()
+    vi.spyOn(vault, "get").mockRejectedValue(
+      new Error("synthetic-secret-error")
+    )
+    const gate = await startGate(c, undefined, () => vault)
+    try {
+      await expect(
+        createAuditClient({ socketPath: c.socketPath }).record(entry)
+      ).rejects.toMatchObject({ status: 503 })
+      await expect(
+        createIntentClient({ socketPath: c.socketPath }).listPending()
+      ).resolves.toEqual([])
+      const logs = readFileSync(join(c.dataDir, GATE_LOG_FILE), "utf8")
+      expect(logs).toContain("profile_audit_unavailable")
+      expect(logs).not.toContain("synthetic-secret-error")
+    } finally {
+      await gate.close()
+    }
   })
 })

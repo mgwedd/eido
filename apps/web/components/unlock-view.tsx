@@ -1,12 +1,15 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Loader2, ScanFace } from "lucide-react"
 
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
-import { Button } from "@eido/ui/components/button"
+import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent } from "@eido/ui/components/card"
+import { enrolUrl } from "@/lib/enrol"
+import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
 import {
   checkEnvironment,
   loadCredentialStatus,
@@ -29,16 +32,19 @@ type UnlockState =
 
 const MESSAGES = {
   "not-enrolled": "This device has no passkey yet.",
-  cancelled: "Face ID was cancelled. Eido is still locked.",
   offline: "Can't reach Eido. Check that Tailscale is connected.",
   "wrong-origin": "Open Eido from its Tailscale address to unlock.",
   unsupported: "This browser can't use passkeys.",
 } as const
 
-function alertMessage(state: UnlockState): string | null {
+function alertMessage(
+  state: UnlockState,
+  copy: ReturnType<typeof authenticatorCopy>
+): string | null {
   switch (state.status) {
-    case "not-enrolled":
     case "cancelled":
+      return `${copy.subject} was cancelled. Eido is still locked.`
+    case "not-enrolled":
     case "offline":
     case "wrong-origin":
     case "unsupported":
@@ -57,15 +63,18 @@ function alertMessage(state: UnlockState): string | null {
 function UnlockCard({
   state,
   host,
+  next = "/",
   onUnlock,
   onRetry,
 }: {
   state: UnlockState
   host: string | null
+  next?: string
   onUnlock: () => void
   onRetry: () => void
 }) {
-  const error = alertMessage(state)
+  const copy = authenticatorCopy(useAuthenticatorLabel())
+  const error = alertMessage(state, copy)
   const canUnlock =
     state.status === "ready" ||
     state.status === "expired" ||
@@ -77,7 +86,7 @@ function UnlockCard({
     state.status === "checking"
       ? "Checking this device…"
       : waiting
-        ? "Waiting for Face ID…"
+        ? `Waiting for ${copy.waitingFor}…`
         : state.status === "expired"
           ? "Your session expired. Unlock to continue."
           : ""
@@ -134,6 +143,15 @@ function UnlockCard({
             </Button>
           ) : null}
 
+          {state.status === "not-enrolled" ? (
+            <Link
+              href={enrolUrl(next)}
+              className={`${buttonVariants({ size: "lg" })} h-12 rounded-xl`}
+            >
+              Enrol this device
+            </Link>
+          ) : null}
+
           {canUnlock || waiting ? (
             <Button
               size="lg"
@@ -142,7 +160,7 @@ function UnlockCard({
               className="h-12 rounded-xl"
             >
               <ScanFace aria-hidden />
-              Unlock with Face ID
+              {copy.unlockWith}
             </Button>
           ) : null}
         </CardContent>
@@ -228,6 +246,7 @@ function UnlockView({
     <UnlockCard
       state={shown}
       host={host}
+      next={next}
       onUnlock={() => void run()}
       onRetry={retry}
     />

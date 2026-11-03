@@ -2,18 +2,21 @@ import { createHash } from "node:crypto"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { DatabaseSync } from "node:sqlite"
+import { DatabaseSync } from "node:sqlite"
 import { beforeEach, describe, expect, test } from "vitest"
 import {
   SCHEMA_VERSION,
   countMatches,
   getCursor,
+  getDocumentType,
   ingestBatch,
   openIndex,
   search,
+  setDocumentType,
 } from "./index"
 import type { IndexedDocument } from "./index"
 import { soundex, tokenize, withinOneEdit } from "./text"
+import { MIGRATIONS } from "./schema"
 
 const sha = (s: string): string => createHash("sha256").update(s).digest("hex")
 
@@ -34,6 +37,13 @@ const ingest = (documents: IndexedDocument[], nextCursor = "c1") =>
     connector: "gmail",
     stream: "inbox",
     documents,
+    heads: documents
+      .filter((document) => document.source === "files")
+      .map((document) => ({
+        source: document.source,
+        sourceRef: document.sourceRef,
+        sha256: document.sha256,
+      })),
     nextCursor,
   })
 
@@ -71,6 +81,90 @@ describe("schema", () => {
     b.close()
   })
 
+  test("migration hides legacy Drive rows until a fresh listing rebuilds their heads", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "eido-idx-")), "legacy.db")
+    const legacy = new DatabaseSync(path)
+    legacy.exec("PRAGMA foreign_keys = ON")
+    for (const migration of MIGRATIONS.slice(0, 4)) legacy.exec(migration)
+    legacy.exec("PRAGMA user_version = 4")
+    const insert = legacy.prepare(
+      `INSERT INTO documents (sha256, source, source_ref, mime, ingested_at)
+       VALUES (?, ?, ?, 'text/plain', ?)`
+    )
+    const text = legacy.prepare(
+      "INSERT INTO document_text (sha256, body) VALUES (?, ?)"
+    )
+    for (const [id, source, ref, body] of [
+      ["old", "drive", "file-1", "oldmarker"],
+      ["new", "drive", "file-1", "newmarker"],
+      ["mail", "gmail", "msg-1", "mailmarker"],
+    ] as const) {
+      const digest = sha(id)
+      insert.run(digest, source, ref, "2025-01-01T00:00:00.000Z")
+      text.run(digest, body)
+    }
+    legacy
+      .prepare(
+        "INSERT INTO cursors (connector, stream, cursor, updated_at) VALUES ('drive', 'files', 'stale', ?)"
+      )
+      .run("2025-01-01T00:00:00.000Z")
+    legacy.close()
+
+    const migrated = openIndex(path)
+    expect(countMatches(migrated, { text: "oldmarker" })).toBe(0)
+    expect(countMatches(migrated, { text: "newmarker" })).toBe(0)
+    expect(countMatches(migrated, { text: "mailmarker" })).toBe(1)
+    expect(getCursor(migrated, "drive", "files")).toBeNull()
+    expect(
+      migrated
+        .prepare(
+          "SELECT sha256 FROM document_heads WHERE source = 'drive' AND source_ref = 'file-1'"
+        )
+        .get()?.["sha256"]
+    ).toBeNull()
+    migrated.close()
+  })
+
+  test("current Drive heads and tombstones survive restart", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "eido-idx-")), "heads.db")
+    const first = openIndex(path)
+    const old = doc("drive-old", {
+      source: "drive",
+      sourceRef: "file-1",
+      body: "oldmarker",
+    })
+    const current = doc("drive-current", {
+      source: "drive",
+      sourceRef: "file-1",
+      body: "currentmarker",
+    })
+    ingestBatch(first, {
+      connector: "drive",
+      stream: "files",
+      documents: [old, current],
+      heads: [{ source: "drive", sourceRef: "file-1", sha256: current.sha256 }],
+      nextCursor: "current",
+    })
+    first.close()
+
+    const reopened = openIndex(path)
+    expect(countMatches(reopened, { text: "oldmarker" })).toBe(0)
+    expect(countMatches(reopened, { text: "currentmarker" })).toBe(1)
+    ingestBatch(reopened, {
+      connector: "drive",
+      stream: "files",
+      documents: [],
+      heads: [{ source: "drive", sourceRef: "file-1", sha256: null }],
+      nextCursor: "removed",
+    })
+    reopened.close()
+
+    const removed = openIndex(path)
+    expect(countMatches(removed, { text: "currentmarker" })).toBe(0)
+    expect(getCursor(removed, "drive", "files")?.cursor).toBe("removed")
+    removed.close()
+  })
+
   test("documents are immutable", () => {
     ingest([doc("a", { body: "x" })])
     expect(() => db.exec("UPDATE documents SET mime = 'x'")).toThrow(
@@ -90,17 +184,145 @@ describe("ingestBatch and cursors", () => {
     expect(ingest(batch)).toEqual({
       inserted: 2,
       skipped: 0,
+      pagesStored: 0,
       uidvalidityChanged: false,
     })
     expect(ingest(batch, "c2")).toEqual({
       inserted: 0,
       skipped: 2,
+      pagesStored: 0,
       uidvalidityChanged: false,
     })
     expect(db.prepare("SELECT COUNT(*) AS n FROM documents").get()?.["n"]).toBe(
       2
     )
     expect(getCursor(db, "gmail", "inbox")?.cursor).toBe("c2")
+  })
+
+  test("backfills parser-confirmed pages on a matching reparse, once", () => {
+    const legacy = doc("legacy-pdf", {
+      mime: "application/pdf",
+      body: "page one\npage two",
+    })
+    expect(ingest([legacy]).pagesStored).toBe(0)
+    const reparsed = {
+      ...legacy,
+      pages: [
+        { page: 1, text: "page one" },
+        { page: 2, text: "page two" },
+      ],
+    }
+
+    expect(ingest([reparsed])).toEqual({
+      inserted: 0,
+      skipped: 1,
+      pagesStored: 2,
+      uidvalidityChanged: false,
+    })
+    expect(ingest([reparsed]).pagesStored).toBe(0)
+    expect(
+      db
+        .prepare(
+          "SELECT page, text FROM document_pages WHERE sha256 = ? ORDER BY page"
+        )
+        .all(legacy.sha256)
+    ).toEqual([
+      { page: 1, text: "page one" },
+      { page: 2, text: "page two" },
+    ])
+
+    const mismatchedSource = { ...reparsed, sourceRef: "different-source" }
+    expect(ingest([mismatchedSource]).pagesStored).toBe(0)
+    expect(
+      db
+        .prepare("SELECT COUNT(*) AS n FROM document_pages WHERE sha256 = ?")
+        .get(legacy.sha256)?.["n"]
+    ).toBe(2)
+  })
+
+  test("records each page's range in the stored body, on first ingest and on backfill", () => {
+    const body = "page one\npage two"
+    const fresh = doc("paged", {
+      mime: "application/pdf",
+      body,
+      pages: [
+        { page: 1, text: "page one" },
+        { page: 2, text: "page two" },
+      ],
+    })
+    ingest([fresh])
+    const ranges = () =>
+      db
+        .prepare(
+          "SELECT sha256, page, start_offset, end_offset FROM document_pages ORDER BY sha256, page"
+        )
+        .all()
+        .map((r) => [r["page"], r["start_offset"], r["end_offset"]])
+    expect(ranges()).toEqual([
+      [1, 0, 8],
+      [2, 9, 17],
+    ])
+    const legacy = doc("backfilled", { mime: "application/pdf", body })
+    ingest([legacy])
+    ingest([{ ...legacy, pages: [{ page: 1, text: "page two" }] }])
+    const backfilled = db
+      .prepare(
+        "SELECT start_offset, end_offset FROM document_pages WHERE sha256 = ?"
+      )
+      .get(legacy.sha256)
+    expect(backfilled).toEqual({ start_offset: 9, end_offset: 17 })
+  })
+
+  test("a page the body does not hold is stored without a range", () => {
+    const orphan = doc("orphan", {
+      mime: "application/pdf",
+      body: "body text",
+      pages: [{ page: 1, text: "not in the body" }],
+    })
+    ingest([orphan])
+    expect(
+      db
+        .prepare(
+          "SELECT start_offset, end_offset FROM document_pages WHERE sha256 = ?"
+        )
+        .get(orphan.sha256)
+    ).toEqual({ start_offset: null, end_offset: null })
+  })
+
+  test("a half-set or empty page range is rejected", () => {
+    const parent = doc("p")
+    ingest([parent])
+    const insert = (start: number | null, end: number | null) =>
+      db
+        .prepare(
+          "INSERT INTO document_pages (sha256, page, text, start_offset, end_offset) VALUES (?, 1, 't', ?, ?)"
+        )
+        .run(parent.sha256, start, end)
+    expect(() => insert(0, null)).toThrow(/non-empty range/)
+    expect(() => insert(5, 5)).toThrow(/non-empty range/)
+  })
+
+  test("migrating a v10 database keeps stored pages with no range", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "eido-idx-")), "pages.db")
+    const legacy = new DatabaseSync(path)
+    legacy.exec("PRAGMA foreign_keys = ON")
+    MIGRATIONS.slice(0, 10).forEach((m, i) => {
+      legacy.exec(m)
+      legacy.exec(`PRAGMA user_version = ${i + 1}`)
+    })
+    legacy.exec(
+      `INSERT INTO documents (sha256, source, source_ref, mime, ingested_at) VALUES ('old', 'gmail', 'r', 'application/pdf', 't');
+       INSERT INTO document_text (sha256, body) VALUES ('old', 'page one');
+       INSERT INTO document_pages (sha256, page, text) VALUES ('old', 1, 'page one');`
+    )
+    legacy.close()
+    const migrated = openIndex(path)
+    expect(
+      migrated
+        .prepare("SELECT start_offset, end_offset FROM document_pages")
+        .get()
+    ).toEqual({ start_offset: null, end_offset: null })
+    migrated.close()
   })
 
   test("returns null cursor when none stored", () => {
@@ -120,6 +342,28 @@ describe("ingestBatch and cursors", () => {
       1
     )
     expect(countMatches(db, { text: "lost" })).toBe(0)
+    expect(getCursor(db, "gmail", "inbox")?.cursor).toBe("c1")
+  })
+
+  test("a bad head rolls back its document and cursor together", () => {
+    ingest([doc("kept", { body: "keptmarker" })], "c1")
+    const added = doc("new", {
+      source: "drive",
+      sourceRef: "file-1",
+      body: "newmarker",
+    })
+    expect(() =>
+      ingestBatch(db, {
+        connector: "gmail",
+        stream: "inbox",
+        documents: [added],
+        heads: [
+          { source: "drive", sourceRef: "wrong-file", sha256: added.sha256 },
+        ],
+        nextCursor: "c2",
+      })
+    ).toThrow("document head source mismatch")
+    expect(countMatches(db, { text: "newmarker" })).toBe(0)
     expect(getCursor(db, "gmail", "inbox")?.cursor).toBe("c1")
   })
 
@@ -145,7 +389,12 @@ describe("ingestBatch and cursors", () => {
       nextCursor: "9",
       uidvalidity: "2",
     })
-    expect(r).toEqual({ inserted: 0, skipped: 0, uidvalidityChanged: true })
+    expect(r).toEqual({
+      inserted: 0,
+      skipped: 0,
+      pagesStored: 0,
+      uidvalidityChanged: true,
+    })
     expect(getCursor(db, "p", "inbox")).toEqual({
       cursor: "7",
       uidvalidity: "1",
@@ -462,5 +711,90 @@ describe("text helpers", () => {
   test("tokenize", () => {
     expect(tokenize("Héllo, Wörld-42!")).toEqual(["hello", "world", "42"])
     expect(tokenize("!!!")).toEqual([])
+  })
+})
+
+describe("document types", () => {
+  const storedDoc = (): string => {
+    ingestBatch(db, {
+      connector: "c",
+      stream: "s",
+      documents: [doc("typed", { body: "hello" })],
+      nextCursor: "1",
+    })
+    const row = db.prepare("SELECT sha256 FROM documents").get()
+    return String(row?.["sha256"])
+  }
+
+  test("a document has no type until one is stored", () => {
+    expect(getDocumentType(db, storedDoc())).toBeNull()
+  })
+
+  test("stores a type with its source and replaces it with a later one", async () => {
+    const id = storedDoc()
+    expect(
+      await setDocumentType(db, id, { type: " Quote ", source: "model" })
+    ).toBe(true)
+    expect(getDocumentType(db, id)).toEqual({ type: "Quote", source: "model" })
+    await setDocumentType(db, id, { type: "Invoice", source: "user" })
+    expect(getDocumentType(db, id)).toEqual({ type: "Invoice", source: "user" })
+  })
+
+  test("a model label never replaces a user label", async () => {
+    const id = storedDoc()
+    await setDocumentType(db, id, { type: "Invoice", source: "user" })
+    await setDocumentType(db, id, { type: "Quote", source: "model" })
+    expect(getDocumentType(db, id)).toEqual({ type: "Invoice", source: "user" })
+    expect(() =>
+      db.prepare("UPDATE document_types SET source = 'model'").run()
+    ).toThrow(/user label/)
+  })
+
+  test("refuses an unknown document, an empty type and an over-long type", async () => {
+    const id = storedDoc()
+    expect(
+      await setDocumentType(db, "f".repeat(64), {
+        type: "Quote",
+        source: "model",
+      })
+    ).toBe(false)
+    expect(await setDocumentType(db, id, { type: "  ", source: "model" })).toBe(
+      false
+    )
+    expect(
+      await setDocumentType(db, id, { type: "x".repeat(101), source: "model" })
+    ).toBe(false)
+    expect(getDocumentType(db, id)).toBeNull()
+  })
+
+  test("a stored type is never deleted and a bad source is rejected", async () => {
+    const id = storedDoc()
+    await setDocumentType(db, id, { type: "Quote", source: "model" })
+    expect(() => db.prepare("DELETE FROM document_types").run()).toThrow(
+      /never deleted/
+    )
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO document_types (sha256, type, source, set_at) VALUES (?, 'x', 'guess', 't')"
+        )
+        .run("e".repeat(64))
+    ).toThrow()
+  })
+
+  test("migrating a v8 database adds the table and leaves documents untyped", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "eido-idx-")), "t.db")
+    const legacy = new DatabaseSync(path)
+    legacy.exec("PRAGMA foreign_keys = ON")
+    MIGRATIONS.slice(0, 8).forEach((m, i) => {
+      legacy.exec(m)
+      legacy.exec(`PRAGMA user_version = ${i + 1}`)
+    })
+    legacy.close()
+    const migrated = openIndex(path)
+    expect(
+      migrated.prepare("SELECT count(*) AS n FROM document_types").get()?.["n"]
+    ).toBe(0)
+    migrated.close()
   })
 })

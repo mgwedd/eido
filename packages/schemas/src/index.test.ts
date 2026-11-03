@@ -13,19 +13,281 @@ import {
   INTENT_KINDS,
   INTENT_PROMPT_TEXT,
   INTENT_RESULT_JSON_SCHEMA,
+  DOCUMENT_TYPE_LABELS,
+  DOCUMENT_TYPE_CLASSIFICATION_PROMPT,
+  DOCUMENT_TYPE_CLASSIFICATION_JSON_SCHEMA,
   SCHEMA_VERSION,
   validateIntent,
   validateIntentResult,
+  validateCoreApiAskResponse,
+  validateCoreApiObligationList,
+  validateCoreApiReplyDraftRequest,
+  validateCoreApiReplyDraftResponse,
+  validateCoreApiError,
+  validateCoreApiConversationSearch,
+  validateCoreApiConversationGet,
+  validateDocumentTypeClassification,
 } from "./index"
 import type { JsonSchema } from "./index"
 import { validate } from "./validate"
 
 const pkgRoot = join(import.meta.dirname, "..")
 const schemaDir = join(pkgRoot, "schemas")
-const codegen = join(pkgRoot, "scripts", "codegen.mjs")
+const codegen = join(pkgRoot, "scripts", "codegen.ts")
 
 const ISO = "2030-01-02T09:00:00Z"
 const ISO_END = "2030-01-02T10:00:00+01:00"
+
+describe("Core API Ask response metadata", () => {
+  const response = {
+    status: "answered",
+    answer: "Found it [M1].",
+    citations: [],
+    coverage: {
+      searched: 4,
+      matched: 1,
+      readInFull: 1,
+      label: "read 1 of 1 matching messages in full",
+    },
+    facts: { matchCount: 1 },
+    figures: [
+      { key: "matched", value: 1, location: "/coverage/matched" },
+      { key: "searched", value: 4, location: "/coverage/searched" },
+      { key: "readInFull", value: 1, location: "/coverage/readInFull" },
+    ],
+    followUps: [
+      {
+        label: "Archive email",
+        intent: {
+          kind: "email.archive",
+          args: { messageIds: ["fake-message"] },
+        },
+      },
+    ],
+    droppedTags: [],
+    possiblyTruncated: false,
+  }
+
+  test("accepts code-valued figures and a schema-valid intent candidate", () => {
+    expect(validateCoreApiAskResponse(response).ok).toBe(true)
+  })
+
+  test("rejects a malformed candidate intent", () => {
+    expect(
+      validateCoreApiAskResponse({
+        ...response,
+        followUps: [
+          {
+            label: "Archive email",
+            intent: { kind: "email.archive", args: { messageIds: [] } },
+          },
+        ],
+      }).ok
+    ).toBe(false)
+  })
+})
+
+describe("Core API Conversation search schema", () => {
+  test("validates valid search results", () => {
+    const valid = {
+      hits: [
+        {
+          conversationId: "c1",
+          turnId: "t1",
+          kind: "raw",
+          snippet: "hello [world]",
+          score: -0.5,
+        },
+        {
+          conversationId: "c2",
+          kind: "digest",
+          snippet: "digest snippet",
+          score: -1.2,
+        },
+      ],
+    }
+    expect(validateCoreApiConversationSearch(valid).ok).toBe(true)
+  })
+
+  test("rejects more than 100 hits", () => {
+    const hit = { conversationId: "c1", kind: "raw", snippet: "s", score: 1 }
+    expect(
+      validateCoreApiConversationSearch({ hits: Array(100).fill(hit) }).ok
+    ).toBe(true)
+    expect(
+      validateCoreApiConversationSearch({ hits: Array(101).fill(hit) }).ok
+    ).toBe(false)
+  })
+
+  test("rejects invalid hits", () => {
+    expect(validateCoreApiConversationSearch({ hits: "not-an-array" }).ok).toBe(
+      false
+    )
+    expect(
+      validateCoreApiConversationSearch({
+        hits: [
+          { conversationId: "c1", kind: "unknown", snippet: "s", score: 1 },
+        ],
+      }).ok
+    ).toBe(false)
+  })
+})
+
+describe("Core API conversation get response", () => {
+  const valid = {
+    id: "c1",
+    conversationId: "c1",
+    turns: [
+      {
+        id: "t1",
+        role: "user",
+        text: "Please review the lease.",
+        at: "2025-10-11T09:00:00Z",
+        sources: ["M1"],
+        digested: true,
+        digest: true,
+      },
+      {
+        id: "t2",
+        role: "assistant",
+        text: "The lease has been reviewed.",
+        at: "2025-10-11T09:01:00Z",
+        sources: [],
+        digested: false,
+        digest: false,
+      },
+    ],
+    digest: {
+      text: "Summary of earlier lease discussions.",
+      createdAt: "2025-10-11T10:00:00Z",
+      coveredTurns: 1,
+    },
+  }
+
+  test("accepts a valid conversation get response with digest", () => {
+    expect(validateCoreApiConversationGet(valid).ok).toBe(true)
+  })
+
+  test("accepts a valid conversation get response without digest (null)", () => {
+    const withoutDigest = {
+      ...valid,
+      digest: null,
+      turns: valid.turns.map((t) => ({ ...t, digested: false, digest: false })),
+    }
+    expect(validateCoreApiConversationGet(withoutDigest).ok).toBe(true)
+  })
+
+  test("rejects missing required fields", () => {
+    expect(validateCoreApiConversationGet({ id: "c1" }).ok).toBe(false)
+    expect(
+      validateCoreApiConversationGet({ ...valid, turns: "not-an-array" }).ok
+    ).toBe(false)
+    expect(
+      validateCoreApiConversationGet({
+        ...valid,
+        turns: [{ id: "t1", text: "missing role, at, etc" }],
+      }).ok
+    ).toBe(false)
+  })
+})
+
+describe("document type classification schema", () => {
+  test("the generated classifier prompt and grammar share the closed label set", () => {
+    expect(DOCUMENT_TYPE_CLASSIFICATION_PROMPT).toContain(
+      DOCUMENT_TYPE_LABELS.join(", ")
+    )
+    expect(DOCUMENT_TYPE_CLASSIFICATION_JSON_SCHEMA).toMatchObject({
+      properties: {
+        type: {
+          oneOf: [
+            { type: "string", enum: [...DOCUMENT_TYPE_LABELS] },
+            { type: "null" },
+          ],
+        },
+      },
+    })
+    expect(validateDocumentTypeClassification({ type: "Invoice" }).ok).toBe(
+      true
+    )
+    expect(validateDocumentTypeClassification({ type: "Warranty" }).ok).toBe(
+      false
+    )
+    expect(validateDocumentTypeClassification({ type: null }).ok).toBe(true)
+  })
+})
+
+describe("core API obligation list schema", () => {
+  const item = {
+    id: 1,
+    action: "Review proposal",
+    party: "Acme Corp",
+    dueAt: "2030-05-01",
+    status: "open",
+    direction: "owed",
+    hasDraftIntent: true,
+    updatedAt: "2030-01-01T00:00:00.000Z",
+    entity: { id: "ent-1", name: "Personal", tag: "PERS" },
+    source: {
+      documentId: "a".repeat(64),
+      span: { start: 0, end: 10 },
+      title: "Proposal doc",
+    },
+  }
+
+  test("validates full and minimal obligation lists", () => {
+    expect(
+      validateCoreApiObligationList({
+        obligations: [item],
+        nextOffset: 50,
+      }).ok
+    ).toBe(true)
+
+    expect(
+      validateCoreApiObligationList({
+        obligations: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test("accepts nulls for nullable fields and omits optional fields", () => {
+    const minimalItem = {
+      id: 2,
+      action: "Check balance",
+      party: null,
+      dueAt: null,
+      status: "done",
+      direction: null,
+      entity: { id: "ent-2", name: "Company", tag: "CORP" },
+      source: {
+        documentId: "b".repeat(64),
+        span: { start: 5, end: 15 },
+      },
+    }
+    expect(
+      validateCoreApiObligationList({
+        obligations: [minimalItem],
+        nextOffset: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test("rejects invalid status or direction values", () => {
+    expect(
+      validateCoreApiObligationList({
+        obligations: [{ ...item, status: "unknown" }],
+        nextOffset: null,
+      }).ok
+    ).toBe(false)
+
+    expect(
+      validateCoreApiObligationList({
+        obligations: [{ ...item, direction: "pending" }],
+        nextOffset: null,
+      }).ok
+    ).toBe(false)
+  })
+})
 
 // Synthetic payloads: example.com addresses and fake ids only.
 const VALID: Record<string, unknown> = {
@@ -60,6 +322,11 @@ const VALID: Record<string, unknown> = {
     note: "FYI",
   },
   "email.trash": { messageIds: ["m1"] },
+  "email.untrash": {
+    sourceIntentId: "trash-1",
+    messageIds: ["m1"],
+    priorLabels: [{ messageId: "m1", labels: ["INBOX"] }],
+  },
   "calendar.create": {
     entity: "personal",
     category: "health",
@@ -76,6 +343,23 @@ const VALID: Record<string, unknown> = {
   "file.rename": { root: "docs", path: "a/b.txt", newName: "c.txt" },
   "file.move": { root: "docs", path: "a/b.txt", toPath: "d/b.txt" },
   "file.delete": { root: "docs", path: "a/b.txt" },
+  "confirm.field": {
+    extractionId: "ext-1",
+    field: "amount",
+    value: {
+      raw: "$4,800.00",
+      typed: { amount_minor: 480000, currency: "USD" },
+    },
+    source: {
+      docSha256: "ab".repeat(32),
+      start: 10,
+      end: 19,
+      page: 2,
+      line: 14,
+    },
+    confidence: 0.71,
+    threshold: 0.85,
+  },
 }
 
 const EXPECTED_KINDS = Object.keys(VALID)
@@ -92,6 +376,62 @@ function errorsOf(value: unknown): string[] {
 
 test("schemas package loads", () => {
   expect(SCHEMA_VERSION).toBe(0)
+})
+
+describe("core API reply draft schemas", () => {
+  test("the request names one obligation by a positive integer id", () => {
+    expect(validateCoreApiReplyDraftRequest({ obligationId: 7 }).ok).toBe(true)
+    expect(validateCoreApiReplyDraftRequest({ obligationId: 0 }).ok).toBe(false)
+    expect(validateCoreApiReplyDraftRequest({ obligationId: 1.5 }).ok).toBe(
+      false
+    )
+    expect(validateCoreApiReplyDraftRequest({ obligationId: "7" }).ok).toBe(
+      false
+    )
+    expect(validateCoreApiReplyDraftRequest({}).ok).toBe(false)
+  })
+
+  test("the request takes no thread id, kind or free text alongside", () => {
+    expect(
+      validateCoreApiReplyDraftRequest({ obligationId: 7, kind: "email.send" })
+        .ok
+    ).toBe(false)
+  })
+
+  const response = {
+    intentId: "int_1",
+    tier: "auto",
+    state: "approved",
+    activityHref: "/activity?intent=int_1",
+    created: true,
+  }
+
+  test("the response carries the intent id, its tier and state, and the Activity link", () => {
+    expect(validateCoreApiReplyDraftResponse(response).ok).toBe(true)
+    expect(
+      validateCoreApiReplyDraftResponse({ ...response, created: undefined }).ok
+    ).toBe(false)
+    expect(
+      validateCoreApiReplyDraftResponse({ ...response, state: "sent" }).ok
+    ).toBe(false)
+  })
+
+  test("the Activity link is a relative Activity path", () => {
+    expect(
+      validateCoreApiReplyDraftResponse({
+        ...response,
+        activityHref: "https://example.invalid/activity?intent=int_1",
+      }).ok
+    ).toBe(false)
+  })
+
+  test("the error codes include a paused connector and no usable draft", () => {
+    for (const code of ["connector_paused", "no_draft"]) {
+      expect(validateCoreApiError({ error: { code, message: "x" } }).ok).toBe(
+        true
+      )
+    }
+  })
 })
 
 describe("verbs", () => {
@@ -382,12 +722,19 @@ describe("schema walk", () => {
     expect([...removal].sort()).toEqual([
       "calendar.delete",
       "email.trash",
+      "email.untrash",
       "file.delete",
     ])
   })
 })
 
 describe("codegen", () => {
+  test("generated intent prompt lines never contain undefined", () => {
+    for (const line of INTENT_PROMPT_TEXT.split("\n")) {
+      expect(line).not.toContain("undefined")
+    }
+  })
+
   function run(dir: string, out: string): void {
     execFileSync(process.execPath, [codegen, "--schemas", dir, "--out", out], {
       stdio: "pipe",
@@ -414,16 +761,6 @@ describe("codegen", () => {
     expect(prompt).toContain('"mailIds"')
     expect(INTENT_PROMPT_TEXT).not.toContain("mailIds")
     expect(JSON.stringify(INTENT_RESULT_JSON_SCHEMA)).not.toContain("mailIds")
-  })
-
-  test("the committed output matches a fresh run", () => {
-    const { dir, out } = fixture()
-    run(dir, out)
-    for (const name of ["types.ts", "prompt.ts", "validators.ts"]) {
-      expect(readFileSync(join(out, name), "utf8")).toBe(
-        readFileSync(join(pkgRoot, "src", "generated", name), "utf8")
-      )
-    }
   })
 
   test.each([

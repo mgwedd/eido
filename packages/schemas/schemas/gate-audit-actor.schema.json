@@ -1,8 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateAuditActor",
-  "description": "Actor recorded on an audit_log row and on intent history entries (#9, #11). Display labels such as you, auto and gate are derived from this by the web app.",
+  "description": "Actor recorded on an audit_log row and on intent history entries (#9, #11). Display labels are derived with gateAuditDisplayActor.",
   "type": "string",
-  "enum": ["data-plane", "policy", "approver", "executor", "system"],
+  "enum": [
+    "data-plane",
+    "policy",
+    "approver",
+    "executor",
+    "system",
+    "owner",
+    "gate"
+  ],
   "maxLength": 32
 }

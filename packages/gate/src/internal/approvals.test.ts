@@ -214,6 +214,52 @@ describe("a valid approval", () => {
   })
 })
 
+describe("an origin with an explicit port (ADR 0004)", () => {
+  const PORTED = {
+    rpId: "node.example.ts.net",
+    origin: "https://node.example.ts.net:8443",
+  }
+  const fromPage = { rpId: PORTED.rpId, origin: PORTED.origin }
+
+  function portedWorld(): World {
+    current = setup()
+    const auth = testAuthenticator()
+    const begun = beginRegistration(current.db, "admin")
+    if (!begun.ok) throw new Error("enrolment challenge refused")
+    const enrolled = registerCredential(
+      current.db,
+      PORTED,
+      "admin",
+      registration(auth, begun.challenge, fromPage)
+    )
+    if (!enrolled.ok) throw new Error(`enrolment refused: ${enrolled.code}`)
+    return { db: current.db, policy: current.policy, auth }
+  }
+
+  it("verifies an assertion from the :8443 origin", () => {
+    const w = portedWorld()
+    const id = pendingSend(w)
+    const request = signed(w.auth, prepare(w.db, id), fromPage)
+    expect(verifyApproval(w.db, PORTED, request).ok).toBe(true)
+    expect(intentStatus(w.db, id)?.state).toBe("approved")
+  })
+
+  it.each([
+    ["the same host on another port", "https://node.example.ts.net:8444"],
+    ["the same host with no port", "https://node.example.ts.net"],
+  ])("refuses an assertion from %s", (_name, origin) => {
+    const w = portedWorld()
+    const id = pendingSend(w)
+    const request = signed(w.auth, prepare(w.db, id), {
+      rpId: PORTED.rpId,
+      origin,
+    })
+    expect(verifyApproval(w.db, PORTED, request)).toEqual(REFUSED)
+    expect(intentStatus(w.db, id)?.state).toBe("pending")
+    expect(actions(w.db, id)).toContain("approval.refused.wrong_origin")
+  })
+})
+
 describe("replay", () => {
   it("invariant: approval replay and a second assertion are refused", () => {
     const w = world()

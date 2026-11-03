@@ -1,11 +1,19 @@
 import { createHash } from "node:crypto"
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
 import { join, relative, sep } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { fileURLToPath } from "node:url"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { ingestBatch } from "../index/ingest"
+import { insertObligation } from "../ledger/store"
 import { DATA_PLANE_ENV, OS_ADDED_ENV } from "../main"
 import { spawnPlanes } from "./spawn-planes"
 import type { Planes } from "./spawn-planes"
@@ -168,6 +176,7 @@ describe(
         tier: "approval",
         state: "pending",
         edited_from: null,
+        discarded: false,
       })
       expect(settledValue(await planes.probe("pending"))).toMatchObject([
         { id, kind: "email.send", tier: "approval" },
@@ -220,7 +229,31 @@ describe(
       )
     })
 
-    it("audits every profile change in the gate's chain, as hashes only", async () => {
+    it("rolls back a profile change when the running gate loses its audit key", async () => {
+      const vaultPath = join(planes.paths.gateDir, "test-vault.json")
+      const saved = readFileSync(vaultPath)
+      const before = await auditChain()
+      rmSync(vaultPath)
+      try {
+        const response = await fetch(`${planes.coreUrl}/entities`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "company",
+            name: "Key loss company",
+            tag: "KEYLOSS",
+          }),
+        })
+        expect(response.status).toBe(500)
+        const entities = await fetch(`${planes.coreUrl}/entities`)
+        expect(await entities.text()).not.toContain("Key loss company")
+        expect(await auditChain()).toEqual(before)
+      } finally {
+        writeFileSync(vaultPath, saved, { mode: 0o600 })
+      }
+    })
+
+    it("audits every profile change in the gate's chain with keyed tags", async () => {
       const before = await auditChain()
       const write = async (
         method: string,
@@ -264,25 +297,110 @@ describe(
       expect(await auditChain()).toEqual({ ok: true, rows: before.rows + 5 })
       const control = await planes.inspectControlDb()
       const account = hashOf([CLEAR.connector, CLEAR.accountRef])
-      expect(
-        auditActions(control).filter((row) =>
-          String(row.action).startsWith("audit.profile.")
-        )
-      ).toEqual([
-        { action: "audit.profile.entity.create", target: hashOf(entityId) },
-        { action: "audit.profile.entity.update", target: hashOf(entityId) },
-        { action: "audit.profile.account.assign", target: account },
-        { action: "audit.profile.account.unassign", target: account },
-        { action: "audit.profile.entity.delete", target: hashOf(entityId) },
+      const profileRows = auditActions(control).filter((row) =>
+        String(row.action).startsWith("audit.profile.")
+      )
+      expect(profileRows.map((row) => row.action)).toEqual([
+        "audit.profile.entity.create",
+        "audit.profile.entity.update",
+        "audit.profile.account.assign",
+        "audit.profile.account.unassign",
+        "audit.profile.entity.delete",
       ])
+      for (const row of profileRows)
+        expect(row.target).toMatch(/^hmac:v1:1:[a-f0-9]{64}:[a-f0-9]{64}$/)
+      expect(profileRows[0]?.target).toBe(profileRows[1]?.target)
+      expect(profileRows[0]?.target).toBe(profileRows[4]?.target)
+      expect(profileRows[2]?.target).toBe(profileRows[3]?.target)
+      expect(profileRows[0]?.target).not.toBe(profileRows[2]?.target)
       const stored = JSON.stringify(control)
-      for (const clear of [...Object.values(CLEAR), entityId]) {
+      for (const clear of [
+        ...Object.values(CLEAR),
+        entityId,
+        account,
+        hashOf(entityId),
+      ]) {
         expect(stored).not.toContain(clear)
       }
     })
 
+    it("audits a local obligation state change in the gate's chain, as hashes only (#104)", async () => {
+      const entity = await fetch(`${planes.coreUrl}/entities`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "company",
+          name: "Dolor Holdings",
+          tag: "DOLORTAG",
+        }),
+      })
+      const entityId = String(field(await entity.json(), "id"))
+      const data = new DatabaseSync(planes.paths.dataDb, { timeout: 2000 })
+      let obligationId: number
+      try {
+        const sha256 = hashOf("obligation source")
+        ingestBatch(data, {
+          connector: "gmail",
+          stream: "inbox",
+          documents: [
+            {
+              sha256,
+              source: "gmail",
+              sourceRef: "ref-obligation",
+              mime: "message/rfc822",
+              body: "Lorem ipsum",
+              entityId,
+            },
+          ],
+          nextCursor: "c-obligation",
+        })
+        obligationId = await insertObligation(data, {
+          entityId,
+          action: "Lorem ipsum action",
+          status: "open",
+          docId: sha256,
+          span: { start: 0, end: 5 },
+        })
+      } finally {
+        data.close()
+      }
+      const before = await auditChain()
+      for (const [change, status] of [
+        ["done", "done"],
+        ["reopen", "open"],
+        ["resolve", "done"],
+      ]) {
+        const response = await fetch(
+          `${planes.coreUrl}/obligations/${String(obligationId)}/${change}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: "{}",
+          }
+        )
+        expect([change, response.status]).toEqual([change, 200])
+        expect(await response.json()).toEqual({ id: obligationId, status })
+      }
+      expect(await auditChain()).toEqual({ ok: true, rows: before.rows + 3 })
+      const control = await planes.inspectControlDb()
+      const subject = hashOf(`obl:${String(obligationId)}`)
+      expect(
+        auditActions(control).filter((row) =>
+          String(row.action).startsWith("audit.ledger.")
+        )
+      ).toEqual([
+        { action: "audit.ledger.obligation.done", target: subject },
+        { action: "audit.ledger.obligation.reopen", target: subject },
+        { action: "audit.ledger.obligation.resolve", target: subject },
+      ])
+      expect(JSON.stringify(control)).not.toContain("Lorem ipsum action")
+    })
+
     // Last: it stops the gate.
     it("rejects every call within 2 s with GateUnavailableError once the gate is stopped", async () => {
+      const entitiesBefore: unknown = await (
+        await fetch(`${planes.coreUrl}/entities`)
+      ).json()
       await planes.stopGate()
       const controlBefore = await planes.inspectControlDb()
       const dataBefore = rowCounts(planes.paths.dataDb)
@@ -309,7 +427,7 @@ describe(
       })
       expect(performance.now() - started).toBeLessThan(2500)
       const listed = await fetch(`${planes.coreUrl}/entities`)
-      expect(await listed.json()).toEqual({ entities: [] })
+      expect(await listed.json()).toEqual(entitiesBefore)
 
       expect(await planes.inspectControlDb()).toEqual(controlBefore)
       expect(rowCounts(planes.paths.dataDb)).toEqual(dataBefore)

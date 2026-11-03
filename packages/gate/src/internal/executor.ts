@@ -1,8 +1,16 @@
 import type { DatabaseSync } from "node:sqlite"
-import { validateIntent } from "@eido/schemas"
-import type { Intent } from "@eido/schemas"
+import {
+  validateIntent,
+  validateGateFileHelperRequest,
+  validateGateFileRoots,
+} from "@eido/schemas"
+import type { Intent, GateFileHelperRequest } from "@eido/schemas"
+import { randomUUID } from "node:crypto"
+import type { FileHelper } from "./files/file-helper"
+import { approvedFileRoot } from "./files/file-roots"
+import { createFile, moveFile, trashFile } from "./files/file-ops"
 import { append } from "./audit"
-import { PROTON_CONNECTOR } from "./bridge/config"
+import { PROTON_CALENDAR_CONNECTOR, PROTON_CONNECTOR } from "./bridge/config"
 import { canonicalize, payloadHash } from "./canonical"
 import {
   getPinnedManifest,
@@ -29,7 +37,10 @@ export interface UpstreamWriter {
   kind: Intent["kind"]
   /** Gate-owned adapter identity; never selected by kind alone. */
   connector: string
-  buildRequest(this: void, intent: Intent): UpstreamRequest
+  buildRequest(
+    this: void,
+    intent: Intent
+  ): UpstreamRequest | Promise<UpstreamRequest>
   /** Reconstruct all intent semantics from the exact method, URL and canonical body. */
   intentFromRequest(
     this: void,
@@ -54,6 +65,9 @@ export const BRIDGE_DESTINATIONS = {
   "email.reply": "bridge:smtp/send",
   "email.forward": "bridge:smtp/send",
   "email.trash": "bridge:imap/move-to-trash",
+  "calendar.create": "bridge:smtp/send",
+  "calendar.edit": "bridge:smtp/send",
+  "calendar.delete": "bridge:smtp/send",
 } as const satisfies Partial<Record<Intent["kind"], string>>
 
 /** The Bridge destination for `kind`, or undefined when Bridge does not run that kind. */
@@ -77,6 +91,14 @@ type Stored = {
   tier: string
   state: string
 }
+type Ready = {
+  connector: string
+  operation: string
+  intent: Intent
+  writer: UpstreamWriter
+  stored: Stored
+}
+
 type Prepared = {
   intent: Intent
   writer: UpstreamWriter
@@ -98,6 +120,10 @@ function readIntent(db: DatabaseSync, id: string): Stored | undefined {
 
 function parse(text: string): unknown {
   return JSON.parse(text)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 function checkedIntent(value: unknown, expectedHash: string): Intent {
@@ -154,6 +180,18 @@ function recorded(
   )
     throw new Error("record_mismatch")
   return { value: { upstreamRef, result }, inverse }
+}
+
+/** The authenticated successful execution receipt used to derive a fresh restore proposal. */
+export function executionReceipt(
+  db: DatabaseSync,
+  id: string
+): UpstreamResult | undefined {
+  try {
+    return recorded(db, id, "execute")?.value
+  } catch {
+    return undefined
+  }
 }
 
 /** Rebuild the destination from a pinned write route, never from an unvalidated authority. */
@@ -244,7 +282,8 @@ function writeDestination(
 function bridgeConfigured(db: DatabaseSync, connector: string): boolean {
   const manifest = getPinnedManifest(db, connector)
   return (
-    connector === PROTON_CONNECTOR &&
+    (connector === PROTON_CONNECTOR ||
+      connector === PROTON_CALENDAR_CONNECTOR) &&
     manifest?.auth.type === "password" &&
     manifest.egress.hosts.length === 0
   )
@@ -268,7 +307,8 @@ function bridgeDestination(
 export function createExecutor(
   db: DatabaseSync,
   writers: readonly UpstreamWriter[],
-  transport: WriteTransport
+  transport: WriteTransport,
+  files?: FileHelper
 ): {
   execute(id: string): Promise<ExecutionResult>
   undo(id: string): Promise<ExecutionResult>
@@ -324,10 +364,7 @@ export function createExecutor(
       return { ok: false, code }
     })
 
-  function prepare(
-    id: string,
-    direction: Direction
-  ): Prepared | ExecutionResult {
+  function prepare(id: string, direction: Direction): Ready | ExecutionResult {
     const stored = readIntent(db, id)
     if (stored === undefined) return refuse(id, direction, "not_found")
     if (direction === "execute") {
@@ -359,6 +396,12 @@ export function createExecutor(
     } catch {
       return fail(id, direction, "hash_mismatch")
     }
+    if (
+      direction === "execute" &&
+      intent.kind === "email.untrash" &&
+      stored.tier !== "approval"
+    )
+      return refuse(id, direction, "invalid_state")
     if (direction === "execute" && stored.tier === "approval") {
       const approval = db
         .prepare(
@@ -382,7 +425,11 @@ export function createExecutor(
         return refuse(id, direction, "no_inverse")
       const inverse = validateIntent(previous.inverse)
       if (!inverse.ok) return refuse(id, direction, "invalid_inverse")
-      if (/\.(send|forward|reply|trash|delete)$/i.test(inverse.value.kind))
+      if (
+        /^(email\.(send|forward|reply|trash)|file\.delete)$/i.test(
+          inverse.value.kind
+        )
+      )
         return refuse(id, direction, "unsafe_inverse")
       if (
         "connector" in intent &&
@@ -391,6 +438,47 @@ export function createExecutor(
       )
         return refuse(id, direction, "invalid_inverse")
       intent = inverse.value
+    }
+    if (direction === "execute" && intent.kind === "email.untrash") {
+      const source = readIntent(db, intent.args.sourceIntentId)
+      let original: Intent | undefined
+      let receipt: UpstreamResult | undefined
+      try {
+        if (source !== undefined)
+          original = checkedIntent(parse(source.json), source.hash)
+        receipt = executionReceipt(db, intent.args.sourceIntentId)
+      } catch {
+        return refuse(id, direction, "invalid_restore_source")
+      }
+      const prior = isRecord(receipt?.result)
+        ? receipt.result["priorLabels"]
+        : undefined
+      const supplied = intent.args.priorLabels
+      if (
+        source?.kind !== "email.trash" ||
+        source.state !== "executed" ||
+        original?.kind !== "email.trash" ||
+        !("connector" in original) ||
+        original.connector !== intent.connector ||
+        !isRecord(prior) ||
+        !Array.isArray(original.args.messageIds) ||
+        original.args.messageIds.length !== supplied.length ||
+        intent.args.messageIds.length !== original.args.messageIds.length ||
+        !original.args.messageIds.every(
+          (messageId, index) => intent.args.messageIds[index] === messageId
+        ) ||
+        !original.args.messageIds.every((messageId, index) => {
+          const row = supplied[index]
+          const labels = prior[messageId]
+          return (
+            row?.messageId === messageId &&
+            Array.isArray(labels) &&
+            labels.length === row.labels.length &&
+            labels.every((label, i) => label === row.labels[i])
+          )
+        })
+      )
+        return refuse(id, direction, "invalid_restore_source")
     }
     // Stored pre-binding email intents have no authenticated destination; refuse rather than
     // redirect them after another connector is pinned or the original is disabled.
@@ -429,11 +517,20 @@ export function createExecutor(
     if (writer === undefined) return refuse(id, direction, "unknown_writer")
     if (writer.channel === "bridge" && !bridgeConfigured(db, connector))
       return refuse(id, direction, "connector_misconfigured")
+    return { intent, writer, stored, connector, operation }
+  }
+
+  async function build(
+    id: string,
+    direction: Direction,
+    ready: Ready
+  ): Promise<Prepared | ExecutionResult> {
+    const { intent, writer, stored, connector, operation } = ready
     let request: WriteRequest
     try {
       const expectedHash =
         direction === "execute" ? stored.hash : payloadHash(intent)
-      const built = writer.buildRequest(intent)
+      const built = await writer.buildRequest(intent)
       // Strings and canonical body bytes are copied before the projection or asynchronous call.
       const snapshot = Object.freeze({
         method: built.method,
@@ -445,7 +542,7 @@ export function createExecutor(
           ? bridgeDestination(intent.kind, snapshot)
           : writeDestination(db, connector, operation, snapshot)
       if (destination !== snapshot.url) throw new Error("noncanonical target")
-      const decoded = writer.intentFromRequest(
+      const decoded = await writer.intentFromRequest(
         Object.freeze({ ...snapshot, body: parse(snapshot.body) }),
         connector
       )
@@ -459,24 +556,70 @@ export function createExecutor(
         idempotencyKey: direction === "execute" ? id : `${id}:undo`,
       })
     } catch {
-      return fail(id, direction, "hash_mismatch")
+      return atomically(db, () => fail(id, direction, "hash_mismatch"))
     }
-    // A permanent claim is acquired before any external effect; another process/handle cannot
-    // call again, even after a crash that left the upstream outcome unknown.
-    const claim = db
-      .prepare(
-        "INSERT OR IGNORE INTO execution_attempts(intent_id,direction,started_at) VALUES (?,?,?)"
-      )
-      .run(id, direction, new Date().toISOString())
-    if (Number(claim.changes) !== 1)
-      return refuse(id, direction, "outcome_unresolved")
-    auditEvent(db, id, `${direction}.started`, {
-      request_hash: payloadHash(request),
+    return atomically(db, () => {
+      // Authority may change while MIME preparation is awaiting. Validate it again before
+      // claiming an attempt or allowing the transport to perform an external write.
+      const current = prepare(id, direction)
+      if ("ok" in current) return current
+      if (
+        JSON.stringify(current.stored) !== JSON.stringify(stored) ||
+        current.connector !== connector ||
+        current.operation !== operation ||
+        current.writer !== writer ||
+        payloadHash(current.intent) !== payloadHash(intent)
+      ) {
+        return refuse(id, direction, "invalid_state")
+      }
+      const claim = db
+        .prepare(
+          "INSERT OR IGNORE INTO execution_attempts(intent_id,direction,started_at) VALUES (?,?,?)"
+        )
+        .run(id, direction, new Date().toISOString())
+      if (Number(claim.changes) !== 1)
+        return refuse(id, direction, "outcome_unresolved")
+      auditEvent(db, id, `${direction}.started`, {
+        request_hash: payloadHash(request),
+      })
+      return { intent, writer, request, stored }
     })
-    return { intent, writer, request, stored }
   }
 
-  async function run(
+  type FileIntent = Extract<
+    Intent,
+    { kind: "file.create" | "file.rename" | "file.move" | "file.delete" }
+  >
+
+  function fileIntent(intent: Intent): intent is FileIntent {
+    return (
+      intent.kind === "file.create" ||
+      intent.kind === "file.rename" ||
+      intent.kind === "file.move" ||
+      intent.kind === "file.delete"
+    )
+  }
+
+  function moveDestination(
+    intent: Extract<FileIntent, { kind: "file.rename" | "file.move" }>
+  ): string {
+    if (intent.kind === "file.move") return intent.args.toPath
+    // A rename is one component, never a move or a platform-specific path alias.
+    if (
+      !intent.args.newName ||
+      /[\\/:\x00]/.test(intent.args.newName) ||
+      [".", ".."].includes(intent.args.newName)
+    )
+      throw new Error("invalid_path")
+    const parent = intent.args.path.slice(
+      0,
+      Math.max(0, intent.args.path.lastIndexOf("/") + 1)
+    )
+    return `${parent}${intent.args.newName}`
+  }
+
+  /** Files have no HTTP destination: authority is the signed root plus the pinned native helper. */
+  async function runFile(
     id: string,
     direction: Direction
   ): Promise<ExecutionResult> {
@@ -492,8 +635,249 @@ export function createExecutor(
       } catch {
         return refuse(id, direction, "record_mismatch")
       }
+      const stored = readIntent(db, id)
+      if (stored === undefined) return refuse(id, direction, "not_found")
+      let intent: Intent
+      try {
+        intent = checkedIntent(parse(stored.json), stored.hash)
+        if (stored.kind !== intent.kind || canonicalize(intent) !== stored.json)
+          throw new Error("hash_mismatch")
+      } catch {
+        return fail(id, direction, "hash_mismatch")
+      }
+      if (!fileIntent(intent)) return refuse(id, direction, "invalid_state")
+      if (
+        direction === "execute"
+          ? stored.state !== "approved"
+          : stored.state !== "executed"
+      )
+        return refuse(id, direction, "invalid_state")
+      if (
+        stored.tier === "forbidden" ||
+        (intent.kind === "file.delete" && stored.tier !== "approval")
+      )
+        return refuse(id, direction, "invalid_state")
+      if (
+        direction === "undo" &&
+        stored.tier !== "auto" &&
+        intent.kind !== "file.delete"
+      )
+        return refuse(id, direction, "undo_not_allowed")
+      if (stored.tier === "approval") {
+        const approval = db
+          .prepare(
+            `SELECT a.bundle_hash FROM approvals a
+          JOIN approval_nonces n ON n.nonce=a.nonce AND n.intent_id=a.intent_id
+          JOIN credentials c ON c.credential_id=a.credential_id
+          WHERE a.intent_id=? AND a.decision='approved' AND n.used_at IS NOT NULL AND c.revoked_at IS NULL`
+          )
+          .get(id)
+        if (approval?.["bundle_hash"] !== stored.hash)
+          return refuse(id, direction, "missing_approval")
+      }
+      if (files === undefined)
+        return refuse(id, direction, "file_helper_unavailable")
+      const bindings = intentBindings(db, intent.kind)
+      const binding = bindings.length === 1 ? bindings[0] : undefined
+      if (
+        binding?.connector !== "files" ||
+        pinnedOperation(db, binding.connector, binding.operation)?.effect !==
+          "write" ||
+        db
+          .prepare("SELECT health FROM connectors WHERE name=?")
+          .get(binding.connector)?.["health"] === "open"
+      )
+        return refuse(id, direction, "connector_unavailable")
+      const root = approvedFileRoot(db, intent.args.root)
+      if (root === undefined) return refuse(id, direction, "root_not_allowed")
+      let inverse: GateFileHelperRequest | undefined
+      if (direction === "undo") {
+        let previous
+        try {
+          previous = recorded(db, id, "execute")
+        } catch {
+          return refuse(id, direction, "record_mismatch")
+        }
+        if (previous === undefined || previous.inverse === null)
+          return refuse(id, direction, "no_inverse")
+        const checked = validateGateFileHelperRequest(previous.inverse)
+        if (
+          !checked.ok ||
+          !("root" in checked.value) ||
+          payloadHash(checked.value.root) !== payloadHash(root)
+        )
+          return refuse(id, direction, "invalid_inverse")
+        const candidate = checked.value
+        // No caller-selected inverse: bind every field to the original action and authenticated receipt.
+        const result = previous.value.result
+        const matching =
+          intent.kind === "file.create"
+            ? candidate.op === "trash" &&
+              candidate.path === intent.args.path &&
+              /^[0-9a-f-]{36}$/.test(candidate.trashName)
+            : intent.kind === "file.delete"
+              ? candidate.op === "restore" &&
+                candidate.path === intent.args.path &&
+                isRecord(result) &&
+                candidate.trashName === result["trashName"]
+              : candidate.op === "move" &&
+                candidate.from === moveDestination(intent) &&
+                candidate.to === intent.args.path
+        const receiptRoot = isRecord(result)
+          ? validateGateFileRoots({
+              roots: [{ id: intent.args.root, root: result["root"] }],
+            })
+          : undefined
+        if (
+          !matching ||
+          !receiptRoot?.ok ||
+          payloadHash(receiptRoot.value.roots[0]?.root) !== payloadHash(root)
+        )
+          return refuse(id, direction, "invalid_inverse")
+        inverse = candidate
+      }
+      const claim = db
+        .prepare(
+          "INSERT OR IGNORE INTO execution_attempts(intent_id,direction,started_at) VALUES (?,?,?)"
+        )
+        .run(id, direction, new Date().toISOString())
+      if (Number(claim.changes) !== 1)
+        return refuse(id, direction, "outcome_unresolved")
+      auditEvent(db, id, `${direction}.started`, {
+        request_hash: payloadHash({ intent, inverse: inverse ?? null, root }),
+      })
+      return { stored, intent, root, inverse, helper: files }
+    })
+    if ("ok" in prepared) return prepared
+    let response: UpstreamResult
+    let inverse: GateFileHelperRequest | null = null
+    try {
+      const { intent, root, helper } = prepared
+      if (direction === "undo") {
+        if (prepared.inverse === undefined)
+          return fail(id, direction, "invalid_inverse")
+        const reply = await helper(prepared.inverse)
+        if (!reply.ok || reply.op !== prepared.inverse.op)
+          return fail(
+            id,
+            direction,
+            reply.ok ? "file_helper_failed" : `file_${reply.code}`
+          )
+        inverse = prepared.inverse
+        response = { upstreamRef: null, result: { undone: true } }
+      } else {
+        const rootId = intent.args.root
+        const outcome =
+          intent.kind === "file.create"
+            ? await createFile(db, helper, {
+                rootId,
+                path: intent.args.path,
+                content: Buffer.from(intent.args.content, "utf8"),
+              })
+            : intent.kind === "file.delete"
+              ? await trashFile(db, helper, { rootId, path: intent.args.path })
+              : await moveFile(db, helper, {
+                  rootId,
+                  from: intent.args.path,
+                  to: moveDestination(intent),
+                })
+        if (!outcome.ok) return fail(id, direction, `file_${outcome.code}`)
+        const trashName =
+          "trashName" in outcome && typeof outcome.trashName === "string"
+            ? outcome.trashName
+            : undefined
+        inverse =
+          intent.kind === "file.create"
+            ? {
+                op: "trash",
+                root,
+                path: intent.args.path,
+                trashName: randomUUID(),
+              }
+            : intent.kind === "file.delete"
+              ? trashName === undefined
+                ? null
+                : { op: "restore", root, path: intent.args.path, trashName }
+              : {
+                  op: "move",
+                  root,
+                  from: moveDestination(intent),
+                  to: intent.args.path,
+                }
+        if (inverse === null) return fail(id, direction, "file_helper_failed")
+        response = {
+          upstreamRef: null,
+          result: { root, ...(trashName === undefined ? {} : { trashName }) },
+        }
+      }
+    } catch {
+      return fail(id, direction, "file_helper_failed")
+    }
+    return atomically(db, () => {
+      const current = readIntent(db, id)
+      if (
+        current?.hash !== prepared.stored.hash ||
+        current.json !== prepared.stored.json ||
+        current.state !== prepared.stored.state ||
+        current.tier !== prepared.stored.tier
+      )
+        return fail(id, direction, "changed_during_execution")
+      const seq = auditEvent(
+        db,
+        id,
+        direction,
+        {
+          upstream_ref: response.upstreamRef,
+          result: response.result,
+          inverse,
+        },
+        {
+          from: current.state,
+          to: "executed",
+          reason: direction === "undo" ? "undone" : null,
+        }
+      )
+      if (direction === "execute") {
+        db.prepare(
+          "INSERT INTO executions(intent_id,upstream_ref,result,inverse_op,audit_seq) VALUES (?,?,?,?,?)"
+        ).run(
+          id,
+          response.upstreamRef,
+          canonicalize(response.result),
+          canonicalize(inverse),
+          seq
+        )
+        db.prepare("UPDATE intents SET state='executed' WHERE id=?").run(id)
+      } else
+        db.prepare(
+          "INSERT INTO execution_undos(intent_id,upstream_ref,result,audit_seq) VALUES (?,?,?,?)"
+        ).run(id, response.upstreamRef, canonicalize(response.result), seq)
+      return { ok: true, ...response }
+    })
+  }
+
+  async function run(
+    id: string,
+    direction: Direction
+  ): Promise<ExecutionResult> {
+    if (readIntent(db, id)?.kind.startsWith("file."))
+      return runFile(id, direction)
+    const ready = atomically(db, () => {
+      try {
+        const existing = recorded(db, id, direction)
+        if (existing !== undefined) {
+          auditEvent(db, id, `${direction}.replayed`, {
+            result_hash: payloadHash(existing.value.result),
+          })
+          return { ok: true as const, ...existing.value }
+        }
+      } catch {
+        return refuse(id, direction, "record_mismatch")
+      }
       return prepare(id, direction)
     })
+    if ("ok" in ready) return ready
+    const prepared = await build(id, direction, ready)
     if ("ok" in prepared) return prepared
     let response: UpstreamResult
     let inverse: unknown = null

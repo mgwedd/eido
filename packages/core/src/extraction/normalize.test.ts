@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest"
 import { buildText } from "../parsers/offsets"
-import { normalizeParsed, passageReasons } from "./normalize"
+import {
+  normalizeParsed,
+  originalRangeForNormalized,
+  passageReasons,
+} from "./normalize"
 
 // Three lines on one page: a fullwidth forged closing tag, a zero-width split ChatML marker, and
 // a clean line. Every name and text here is invented.
@@ -45,11 +49,28 @@ describe("normalizeParsed", () => {
     expect(doc).toEqual({
       text: "AB",
       offsets: [{ offset: 0, page: 1, line: 1 }],
+      originalOffsets: [{ offset: 1, page: 1, line: 1 }],
+      sourceStarts: [1, 2],
+      sourceEnds: [2, 3],
       runs: [
         { start: 0, end: 0, reasons: ["hidden-characters"] },
         { start: 0, end: 2, reasons: [] },
       ],
     })
+  })
+
+  test("maps a normalized quote past a stripped zero-width character to its original range", () => {
+    const source = buildText([{ page: 1, lines: ["A\u200bquoted text"] }])
+    const doc = normalizeParsed(source)
+    const normalizedStart = doc.text.indexOf("quoted")
+    const { start: originalStart, end: originalEnd } =
+      originalRangeForNormalized(
+        doc,
+        normalizedStart,
+        normalizedStart + "quoted".length
+      )
+
+    expect(source.text.slice(originalStart, originalEnd)).toBe("quoted")
   })
 })
 

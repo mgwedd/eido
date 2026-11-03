@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateIntentInjection",
+  "description": "Why core's fence flagged the material an intent was built from (#281). Present only on a flagged intent: a clean one carries no such field. Display-only, like the rationale: the gate stores it next to the intent and never hashes it or tiers on it.",
+  "type": "object",
+  "properties": {
+    "reasons": {
+      "type": "array",
+      "description": "In the fixed order the fence lists them.",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "enum": [
+          "fence-tag",
+          "template-marker",
+          "boundary-confusion",
+          "hidden-characters"
+        ]
+      }
+    }
+  },
+  "required": ["reasons"],
+  "additionalProperties": false
+}

@@ -8,3 +8,12 @@ export type {
   AskResult,
   SearchPlan,
 } from "./types"
+export { citeSectionId, selectZoomContext, verifyPassage } from "./zoom"
+export type {
+  OmitReason,
+  ZoomInput,
+  ZoomItem,
+  ZoomResult,
+  ZoomSection,
+  ZoomSectionCoverage,
+} from "./zoom"

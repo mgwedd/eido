@@ -51,6 +51,35 @@ function backfillDocumentEntities(
   )
 }
 
+/** Apply any pending ledger migrations to an already-open index database. */
+export function activateDataLedger(
+  db: DatabaseSync,
+  options: OpenDataDbOptions = {}
+): void {
+  const version = ledgerVersion(db)
+  if (version > LEDGER_SCHEMA_VERSION) {
+    throw new LedgerError(
+      "newer_schema",
+      `ledger schema version ${version} is newer than supported ${LEDGER_SCHEMA_VERSION}`
+    )
+  }
+  for (let next = version + 1; next <= LEDGER_SCHEMA_VERSION; next++) {
+    db.exec("BEGIN IMMEDIATE")
+    try {
+      db.exec(LEDGER_MIGRATIONS[next - 1] ?? "")
+      if (next === 1) backfillDocumentEntities(db, options.defaultEntityId)
+      db.prepare(
+        `INSERT INTO ledger_schema (id, version) VALUES (1, ?)
+         ON CONFLICT (id) DO UPDATE SET version = excluded.version`
+      ).run(next)
+      db.exec("COMMIT")
+    } catch (error) {
+      if (db.isTransaction) db.exec("ROLLBACK")
+      throw error
+    }
+  }
+}
+
 /**
  * Open (or create) eido-data.db with the index schema and the ledger schema at their current
  * versions. Idempotent. Each ledger migration, its backfill and its version bump commit together.
@@ -61,28 +90,7 @@ export function openDataDb(
 ): DatabaseSync {
   const db = openIndex(path)
   try {
-    const version = ledgerVersion(db)
-    if (version > LEDGER_SCHEMA_VERSION) {
-      throw new LedgerError(
-        "newer_schema",
-        `ledger schema version ${version} is newer than supported ${LEDGER_SCHEMA_VERSION}`
-      )
-    }
-    for (let next = version + 1; next <= LEDGER_SCHEMA_VERSION; next++) {
-      db.exec("BEGIN IMMEDIATE")
-      try {
-        db.exec(LEDGER_MIGRATIONS[next - 1] ?? "")
-        if (next === 1) backfillDocumentEntities(db, options.defaultEntityId)
-        db.prepare(
-          `INSERT INTO ledger_schema (id, version) VALUES (1, ?)
-           ON CONFLICT (id) DO UPDATE SET version = excluded.version`
-        ).run(next)
-        db.exec("COMMIT")
-      } catch (error) {
-        db.exec("ROLLBACK")
-        throw error
-      }
-    }
+    activateDataLedger(db, options)
   } catch (error) {
     db.close()
     throw error

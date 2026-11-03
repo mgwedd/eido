@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 12
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -81,6 +81,144 @@ BEGIN SELECT RAISE(ABORT, 'mail addresses are immutable'); END;
 `,
   // v4: the default entity of documents whose account has no assignment
   DEFAULT_ENTITY_MIGRATION_SQL,
+  // v5: invalidate pre-migration Drive visibility and force a full listing. Old change
+  // cursors did not record removals, so even a sole stored version may be stale.
+  `
+CREATE TABLE document_heads (
+  source TEXT NOT NULL,
+  source_ref TEXT NOT NULL,
+  sha256 TEXT REFERENCES documents(sha256),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (source, source_ref)
+);
+CREATE TRIGGER document_heads_source_on_insert BEFORE INSERT ON document_heads
+WHEN NEW.sha256 IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM documents d WHERE d.sha256 = NEW.sha256
+    AND d.source = NEW.source AND d.source_ref = NEW.source_ref
+)
+BEGIN SELECT RAISE(ABORT, 'document head source mismatch'); END;
+CREATE TRIGGER document_heads_source_on_update BEFORE UPDATE ON document_heads
+WHEN NEW.sha256 IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM documents d WHERE d.sha256 = NEW.sha256
+    AND d.source = NEW.source AND d.source_ref = NEW.source_ref
+)
+BEGIN SELECT RAISE(ABORT, 'document head source mismatch'); END;
+INSERT INTO document_heads (source, source_ref, sha256, updated_at)
+SELECT d.source, d.source_ref, NULL, max(d.ingested_at)
+FROM documents d
+WHERE d.source = 'drive' GROUP BY d.source, d.source_ref;
+DELETE FROM cursors WHERE connector = 'drive' AND stream = 'files';
+`,
+  // v6: retain parser-confirmed pages for source-cited document digests. Existing documents have
+  // no page rows until reparsed; no page number is inferred from flattened text.
+  `
+CREATE TABLE document_pages (
+  sha256 TEXT NOT NULL REFERENCES documents(sha256),
+  page INTEGER NOT NULL CHECK (page >= 1),
+  text TEXT NOT NULL,
+  PRIMARY KEY (sha256, page)
+);
+CREATE TRIGGER document_pages_no_update BEFORE UPDATE ON document_pages
+BEGIN SELECT RAISE(ABORT, 'document pages are immutable'); END;
+CREATE TRIGGER document_pages_no_delete BEFORE DELETE ON document_pages
+BEGIN SELECT RAISE(ABORT, 'document pages are immutable'); END;
+`,
+  // v7: stored delivery headers distinguish automated messages from legacy mail with unknown facts.
+  `
+CREATE TABLE mail_message_facts (
+  sha256 TEXT PRIMARY KEY REFERENCES documents(sha256),
+  list_unsubscribe INTEGER NOT NULL CHECK (list_unsubscribe IN (0, 1)),
+  auto_submitted TEXT,
+  precedence TEXT
+);
+CREATE TRIGGER mail_message_facts_no_update BEFORE UPDATE ON mail_message_facts
+BEGIN SELECT RAISE(ABORT, 'mail message facts are immutable'); END;
+CREATE TRIGGER mail_message_facts_no_delete BEFORE DELETE ON mail_message_facts
+BEGIN SELECT RAISE(ABORT, 'mail message facts are immutable'); END;
+`,
+  // v8: connector-native thread IDs are only unique within a mailbox. Keep that identity beside
+  // each stored message so equal IDs in different accounts cannot merge unrelated conversations.
+  `
+CREATE TABLE mail_message_mailboxes (
+  sha256 TEXT NOT NULL REFERENCES documents(sha256),
+  mailbox_id TEXT NOT NULL CHECK (length(mailbox_id) > 0),
+  PRIMARY KEY (sha256, mailbox_id)
+);
+CREATE TRIGGER mail_message_mailboxes_no_update BEFORE UPDATE ON mail_message_mailboxes
+BEGIN SELECT RAISE(ABORT, 'mail message mailbox identities are immutable'); END;
+CREATE TRIGGER mail_message_mailboxes_no_delete BEFORE DELETE ON mail_message_mailboxes
+BEGIN SELECT RAISE(ABORT, 'mail message mailbox identities are immutable'); END;
+`,
+  // v9: the semantic type of a classified document (Quote, Tax bill) and who set it. Kept beside
+  // `documents`, which is immutable. A document with no row here is untyped; nothing is inferred.
+  `
+CREATE TABLE document_types (
+  sha256 TEXT PRIMARY KEY REFERENCES documents(sha256),
+  type TEXT NOT NULL CHECK (length(trim(type)) > 0 AND length(type) <= 100),
+  source TEXT NOT NULL CHECK (source IN ('model', 'user')),
+  set_at TEXT NOT NULL CHECK (length(set_at) > 0)
+);
+CREATE INDEX document_types_type ON document_types(type);
+CREATE TRIGGER document_types_no_delete BEFORE DELETE ON document_types
+BEGIN SELECT RAISE(ABORT, 'document types are never deleted'); END;
+CREATE TRIGGER document_types_user_wins BEFORE UPDATE ON document_types
+WHEN OLD.source = 'user' AND NEW.source = 'model'
+BEGIN SELECT RAISE(ABORT, 'a user label is not replaced by a model label'); END;
+`,
+  // v10: phishing signals computed from a mail message's headers and links when it is parsed. A
+  // message with no row here has no signal; nothing is inferred for mail stored before this.
+  `
+CREATE TABLE mail_message_signals (
+  sha256 TEXT NOT NULL REFERENCES documents(sha256),
+  kind TEXT NOT NULL CHECK (kind IN (
+    'spf_fail', 'dkim_fail', 'dmarc_fail', 'display_name_address', 'reply_to_domain',
+    'punycode_domain', 'mixed_script_domain', 'lookalike_domain', 'link_mismatch'
+  )),
+  detail TEXT NOT NULL CHECK (length(detail) <= 300),
+  PRIMARY KEY (sha256, kind, detail)
+);
+CREATE TRIGGER mail_message_signals_no_update BEFORE UPDATE ON mail_message_signals
+BEGIN SELECT RAISE(ABORT, 'mail message signals are immutable'); END;
+CREATE TRIGGER mail_message_signals_no_delete BEFORE DELETE ON mail_message_signals
+BEGIN SELECT RAISE(ABORT, 'mail message signals are immutable'); END;
+`,
+  // v11: where each stored page sits in `document_text.body`, so a page is a verified range of the
+  // body. Pages stored before this have no offsets (NULL); nothing is inferred for them.
+  `
+ALTER TABLE document_pages ADD COLUMN start_offset INTEGER CHECK (start_offset >= 0);
+ALTER TABLE document_pages ADD COLUMN end_offset INTEGER;
+CREATE TRIGGER document_pages_offsets_valid BEFORE INSERT ON document_pages
+WHEN (NEW.start_offset IS NULL) <> (NEW.end_offset IS NULL)
+  OR NEW.end_offset <= NEW.start_offset
+BEGIN SELECT RAISE(ABORT, 'document page offsets must be a non-empty range'); END;
+`,
+  // v12: bank accounts and transactions (#51)
+  `
+CREATE TABLE accounts (
+  id TEXT PRIMARY KEY,
+  connector TEXT NOT NULL,
+  name TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  entity_id TEXT REFERENCES entities(id),
+  balance_cents INTEGER,
+  balance_at TEXT
+);
+CREATE TABLE transactions (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  entity_id TEXT NOT NULL REFERENCES entities(id),
+  posted_at TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  description TEXT NOT NULL,
+  category TEXT,
+  raw_json TEXT NOT NULL,
+  ingested_at TEXT NOT NULL
+);
+CREATE INDEX transactions_account ON transactions(account_id);
+CREATE INDEX transactions_entity ON transactions(entity_id);
+CREATE INDEX transactions_posted ON transactions(posted_at);
+`,
 ]
 
 /** Open (or create) the index database and bring its schema to the current version. Idempotent. */

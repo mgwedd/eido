@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiReplyDraftResponse",
+  "description": "Response of POST /replies/draft (#540). 201 with created true: the gate stored a new email.draft intent. 200 with created false: the thread already has a live draft intent, which is returned instead of a second one. activityHref opens the intent in Activity.",
+  "type": "object",
+  "properties": {
+    "intentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "tier": {
+      "$ref": "gate-tier.schema.json"
+    },
+    "state": {
+      "$ref": "gate-intent-state.schema.json"
+    },
+    "activityHref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "^/activity\\?intent="
+    },
+    "created": {
+      "type": "boolean"
+    }
+  },
+  "required": ["intentId", "tier", "state", "activityHref", "created"],
+  "additionalProperties": false
+}

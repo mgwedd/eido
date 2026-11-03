@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client"
 import { afterEach, describe, expect, test, vi } from "vitest"
 import { QueueView } from "../components/queue-view"
 import { queued } from "./fixtures/queue"
+import { stubIphone } from "./platform"
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -40,13 +41,13 @@ const PAYLOAD = JSON.stringify({
 const HASH = createHash("sha256").update(PAYLOAD).digest("hex")
 const NONCE = "n".repeat(43)
 
-function prepared(hash: string) {
+function prepared(hash: string, payload = PAYLOAD) {
   return {
     intentId: "intent-a",
     kind: "email.reply",
     origin: "reactive",
     state: "pending",
-    payload: PAYLOAD,
+    payload,
     payloadHash: hash,
     nonce: NONCE,
     documentIds: ["d1", "d2"],
@@ -56,79 +57,113 @@ function prepared(hash: string) {
 
 type Routes = {
   hash?: string
+  payload?: string
   history?: "ok" | "fail" | "empty"
   decision?: number
 }
 
+// Fetches the stub has not answered yet; settle() waits for them.
+let inflight = 0
+
+function track(response: Promise<Response>): Promise<Response> {
+  inflight += 1
+  return response.finally(() => {
+    inflight -= 1
+  })
+}
+
 function routed(routes: Routes = {}) {
   const calls: { url: string; body?: string }[] = []
+  const respond = (url: string, init?: RequestInit): Promise<Response> => {
+    calls.push({
+      url,
+      body: typeof init?.body === "string" ? init.body : undefined,
+    })
+    if (url.endsWith("/approvals"))
+      return Promise.resolve(Response.json({ intents: queued }))
+    if (url.endsWith("/nonce"))
+      return Promise.resolve(
+        Response.json(prepared(routes.hash ?? HASH, routes.payload))
+      )
+    if (url.endsWith("/history"))
+      return Promise.resolve(
+        routes.history === "fail"
+          ? new Response(null, { status: 500 })
+          : Response.json({
+              intentId: "intent-a",
+              entries:
+                routes.history === "empty"
+                  ? []
+                  : [
+                      {
+                        at: "2026-10-17T10:00:00.000Z",
+                        from: null,
+                        to: "proposed",
+                        actor: "data-plane",
+                      },
+                      {
+                        at: "2026-10-17T10:01:00.000Z",
+                        from: "proposed",
+                        to: "pending",
+                        actor: "policy",
+                      },
+                    ],
+            })
+      )
+    return Promise.resolve(
+      routes.decision === 409
+        ? new Response(null, { status: 409 })
+        : Response.json({ intentId: "intent-a", state: "rejected" })
+    )
+  }
   vi.stubGlobal(
     "fetch",
-    vi.fn((url: string, init?: RequestInit) => {
-      calls.push({
-        url,
-        body: typeof init?.body === "string" ? init.body : undefined,
-      })
-      if (url.endsWith("/approvals"))
-        return Promise.resolve(Response.json({ intents: queued }))
-      if (url.endsWith("/nonce"))
-        return Promise.resolve(Response.json(prepared(routes.hash ?? HASH)))
-      if (url.endsWith("/history"))
-        return Promise.resolve(
-          routes.history === "fail"
-            ? new Response(null, { status: 500 })
-            : Response.json({
-                intentId: "intent-a",
-                entries:
-                  routes.history === "empty"
-                    ? []
-                    : [
-                        {
-                          at: "2026-10-17T10:00:00.000Z",
-                          from: null,
-                          to: "proposed",
-                          actor: "data-plane",
-                        },
-                        {
-                          at: "2026-10-17T10:01:00.000Z",
-                          from: "proposed",
-                          to: "pending",
-                          actor: "policy",
-                        },
-                      ],
-              })
-        )
-      return Promise.resolve(
-        routes.decision === 409
-          ? new Response(null, { status: 409 })
-          : Response.json({ intentId: "intent-a", state: "rejected" })
-      )
-    })
+    vi.fn((url: string, init?: RequestInit) => track(respond(url, init)))
   )
   return calls
+}
+
+// The card loads in a chain of fetches (queue, then nonce), so a single fixed
+// sleep can end before it is ready on a slow runner. Wait in short steps until
+// no fetch is pending, the payload hash check has finished and one more step has passed.
+async function settle() {
+  for (let step = 0; step < 100; step += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    if (
+      inflight === 0 &&
+      !document.body.textContent?.includes("Loading the payload")
+    )
+      return
+  }
+  throw new Error("fetches did not settle")
 }
 
 async function render(): Promise<HTMLElement> {
   const container = document.createElement("div")
   document.body.appendChild(container)
-  await act(async () => {
+  act(() => {
     createRoot(container).render(<QueueView />)
-    await new Promise((resolve) => setTimeout(resolve, 20))
   })
+  await settle()
   return container
 }
 
 const button = (label: string) =>
-  [...document.querySelectorAll("button")].find((b) => b.textContent === label)
+  [...document.querySelectorAll("button")].find((b) =>
+    b.textContent?.startsWith(label)
+  )
 
 async function click(label: string) {
-  await act(async () => {
+  act(() => {
     button(label)?.click()
-    await new Promise((resolve) => setTimeout(resolve, 20))
   })
+  await settle()
 }
 
 afterEach(() => {
+  inflight = 0
   vi.unstubAllGlobals()
   signApproval.mockReset()
   document.body.innerHTML = ""
@@ -149,11 +184,35 @@ describe("Queue card", () => {
     expect(view.textContent).toContain("Context used · 2 linked sources")
     expect(view.textContent).toContain("The thread waited three days.")
     expect(view.textContent).toContain(
-      `Payload hash · ${HASH.slice(0, 4)} ${HASH.slice(4, 8)}`
+      `Hashed on this device · ${HASH.slice(0, 4)} ${HASH.slice(4, 8)}`
     )
     expect(view.querySelector("time")?.getAttribute("title")).toBe(
       "2026-10-17T10:00:00.000Z"
     )
+  })
+
+  test("the footer hash is computed from the payload bytes and changes with them", async () => {
+    const changed = PAYLOAD.replace("Hello there", "Hello there!")
+    const changedHash = createHash("sha256").update(changed).digest("hex")
+    routed({ payload: changed, hash: changedHash })
+    const view = await render()
+    expect(view.textContent).toContain(
+      `Hashed on this device · ${changedHash.slice(0, 4)} ${changedHash.slice(4, 8)}`
+    )
+  })
+
+  test("a payload_changed result at sign time shows the mismatch alert and no Approve", async () => {
+    routed()
+    signApproval.mockResolvedValue({
+      ok: false,
+      error: { code: "payload_changed", message: "x" },
+    })
+    const view = await render()
+    await click("Approve")
+    expect(view.querySelector('[role="alert"]')?.textContent).toBe(
+      "Payload changed. Reload the card."
+    )
+    expect(button("Approve")?.disabled).toBe(true)
   })
 
   test("a payload that does not match its hash shows the mismatch alert and no Approve", async () => {
@@ -232,8 +291,23 @@ describe("Queue card", () => {
     expect(view.textContent).toContain("Approved")
   })
 
-  test("a cancelled Face ID shows its own message and keeps the card", async () => {
+  test("a cancelled passkey prompt shows its own message and keeps the card", async () => {
     routed()
+    signApproval.mockResolvedValue({
+      ok: false,
+      error: { code: "cancelled", message: "x" },
+    })
+    const view = await render()
+    await click("Approve")
+    expect(view.textContent).toContain(
+      "The passkey prompt did not complete. Nothing was approved."
+    )
+    expect(button("Approve")?.disabled).toBe(false)
+  })
+
+  test("on an iPhone the cancelled message names Face ID", async () => {
+    routed()
+    stubIphone()
     signApproval.mockResolvedValue({
       ok: false,
       error: { code: "cancelled", message: "x" },
@@ -243,7 +317,6 @@ describe("Queue card", () => {
     expect(view.textContent).toContain(
       "Face ID did not complete. Nothing was approved."
     )
-    expect(button("Approve")?.disabled).toBe(false)
   })
 
   test("a refused signature explains what happened", async () => {

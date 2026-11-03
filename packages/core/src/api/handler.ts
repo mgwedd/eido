@@ -1,28 +1,75 @@
 import { GateUnavailableError } from "@eido/gate"
 import type {
+  CoreApiAccountList,
   CoreApiAssignmentList,
   CoreApiAskRequest,
   CoreApiAskResponse,
   CoreApiEntity,
   CoreApiEntityList,
+  CoreApiDefaultEntity,
   CoreApiError,
   CoreApiProfile,
   CoreApiProfileResponse,
+  CoreApiSendFrom,
   GateConnectorHealth,
+  GateProposeResult,
   ProfileAccountAssignment,
 } from "@eido/schemas"
-import { validateCoreApiAskRequest } from "@eido/schemas"
+import {
+  validateCoreApiAskRequest,
+  validateCoreApiConfirmExtractionRequest,
+  validateCoreApiDefaultEntityRequest,
+  validateCoreApiReplyDraftRequest,
+  validateGateIntentProposal,
+  validateIntent,
+} from "@eido/schemas"
+import type { IntentClient, IntentProposal } from "@eido/gate"
 import type { AskResult } from "../ask/types"
+import { assignableAccounts } from "../connectors/accounts"
+import type { KnownAccount } from "../connectors/accounts"
+import type { ObligationStateStore } from "../ledger/obligation-state"
+import {
+  DOCUMENT_BLOB_PATH,
+  DOCUMENT_TYPE_PATH,
+  documentBlobRoute,
+  documentsRoute,
+  setOwnerDocumentType,
+} from "./documents-route"
+import type { DocumentsDeps } from "./documents-route"
+import { confirmExtractionField } from "../ledger/confirm"
+import { LedgerError } from "../ledger/errors"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
 import type { ProfileStore } from "../profile/store"
+import type { ConversationStore } from "../conversation/store"
+import {
+  CONVERSATION_SEARCH_PATH,
+  conversationSearchRoute,
+} from "./conversation-search-route"
+import {
+  CONVERSATION_GET_PATH,
+  conversationGetRoute,
+} from "./conversation-get-route"
+import { BRIEF_PATH, briefRoute } from "./brief-route"
+import { dueSoonRoute } from "./due-soon"
+import { REPLY_DRAFT_PATH } from "./reply-draft-route"
+import type { ReplyDraftResult, ReplyDrafter } from "./reply-draft-route"
+import {
+  OBLIGATION_CHANGE_PATH,
+  changeObligation,
+  listObligationsRoute,
+} from "./obligations-route"
 
 export interface ApiDeps {
   profile: ProfileStore
   /** Read-only projection from the gate; no connector credentials or mail payloads. */
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
+  /** Accounts the configured connectors have reported. Absent: none are configured. */
+  connectorAccounts?: () => readonly KnownAccount[]
+  /** The Proton account the assistant sends from. Absent: Proton is not configured. */
+  sendFrom?: string
   /**
-   * Host header values core answers to, such as `127.0.0.1:8787`. A request with any other
+   * Host header values core answers to, such as `127.0.0.1:8789`. A request with any other
    * Host gets 421. Core has no auth, so this stops a page that rebinds its own domain to the
    * listen address (DNS rebinding) from driving core through the owner's browser.
    */
@@ -38,6 +85,23 @@ export interface ApiDeps {
    * served.
    */
   ask?: (question: string) => Promise<AskResult>
+  /**
+   * Drafts one reply for an owed-reply obligation (`createReplyDrafter`). When absent (no model
+   * configured), `/replies/draft` is not served.
+   */
+  draftReply?: ReplyDrafter
+  /** Proposes a validated intent through the gate; absent when the gate client is unavailable. */
+  propose?: IntentClient["propose"]
+  /** The gate's intent status, read for `hasDraftIntent` on `/obligations`; absent, no row has a draft. */
+  intentStatus?: IntentClient["status"]
+  /** Local obligation state changes (#104). When absent, `/obligations/...` is not served. */
+  obligations?: ObligationStateStore
+  /** The data DB the Documents list and viewer, Today due-soon and morning brief read. When absent, none of them is served. */
+  documents?: DocumentsDeps
+  /** The conversation store behind `/conversations/search`. When absent, the route is not served. */
+  conversations?: ConversationStore
+  /** The clock `/today/due-soon` reads "today" from. Absent: the system clock. */
+  now?: () => Date
 }
 
 export type ApiHandler = (request: Request) => Promise<Response>
@@ -50,6 +114,7 @@ const STATUS: Record<ErrorCode, number> = {
   duplicate_tag: 409,
   not_found: 404,
   entity_in_use: 409,
+  invalid_transition: 409,
   bad_request: 400,
   unsupported_media_type: 415,
   payload_too_large: 413,
@@ -57,6 +122,8 @@ const STATUS: Record<ErrorCode, number> = {
   misdirected_request: 421,
   busy: 503,
   gate_unavailable: 503,
+  connector_paused: 409,
+  no_draft: 422,
   internal: 500,
 }
 
@@ -201,6 +268,30 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return notAllowed("GET", "PATCH")
     }
 
+    if (path === "/default-entity") {
+      if (method === "GET") {
+        const body: CoreApiDefaultEntity = {
+          entityId: await profile.getDefaultEntityId(),
+        }
+        return json(body)
+      }
+      if (method === "PUT") {
+        const validation = validateCoreApiDefaultEntityRequest(
+          await readJson(request)
+        )
+        if (!validation.ok) {
+          return failure("invalid", "invalid input", {
+            fields: toFieldErrors(validation.errors),
+          })
+        }
+        const body: CoreApiDefaultEntity = {
+          entityId: await profile.setDefaultEntityId(validation.value.entityId),
+        }
+        return json(body)
+      }
+      return notAllowed("GET", "PUT")
+    }
+
     if (path === "/connectors/health") {
       if (method !== "GET") return notAllowed("GET")
       if (deps.connectorHealth === undefined) {
@@ -209,6 +300,28 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       const body: GateConnectorHealth = {
         connectors: await deps.connectorHealth(),
       }
+      return json(body)
+    }
+
+    if (path === "/connectors/accounts") {
+      if (method !== "GET") return notAllowed("GET")
+      const known = deps.connectorAccounts?.() ?? []
+      if (known.length > 0 && deps.connectorHealth === undefined) {
+        return failure("gate_unavailable", "connector health unavailable")
+      }
+      const health =
+        deps.connectorHealth === undefined || known.length === 0
+          ? []
+          : await deps.connectorHealth()
+      const body: CoreApiAccountList = {
+        accounts: assignableAccounts(known, health),
+      }
+      return json(body)
+    }
+
+    if (path === "/connectors/send-from") {
+      if (method !== "GET") return notAllowed("GET")
+      const body: CoreApiSendFrom = { address: deps.sendFrom ?? null }
       return json(body)
     }
 
@@ -270,6 +383,83 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return json(body)
     }
 
+    if (path === REPLY_DRAFT_PATH && deps.draftReply !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const validation = validateCoreApiReplyDraftRequest(
+        await readJson(request)
+      )
+      if (!validation.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(validation.errors),
+        })
+      }
+      let result: ReplyDraftResult
+      try {
+        result = await deps.draftReply(validation.value.obligationId)
+      } catch (error) {
+        if (error instanceof GateUnavailableError) throw error
+        return failure("busy", "drafting is temporarily unavailable")
+      }
+      if (result.ok) return json(result.body, result.status)
+      const { code, message, fields } = result
+      return failure(code, message, fields ? { fields } : {})
+    }
+
+    if (path === "/intents" && deps.propose !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const validation = validateGateIntentProposal(await readJson(request))
+      if (!validation.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(validation.errors),
+        })
+      }
+      if (validation.value.origin !== "reactive") {
+        return failure("invalid", "origin must be reactive", {
+          fields: [{ field: "origin", message: "must be reactive" }],
+        })
+      }
+      const intent = validateIntent(validation.value.intent)
+      if (!intent.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(intent.errors),
+        })
+      }
+      const proposal: IntentProposal = {
+        ...validation.value,
+        intent: intent.value,
+        origin: "reactive",
+      }
+      const result: GateProposeResult = await deps.propose(proposal)
+      return json({ id: result.id, tier: result.tier, state: result.state })
+    }
+
+    if (path === "/obligations" && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = await listObligationsRoute(
+        deps.documents.db,
+        url.searchParams,
+        deps.intentStatus
+      )
+      if (result.ok) return json(result.body)
+      return failure(result.code, result.message, { fields: result.fields })
+    }
+
+    const obligationMatch = OBLIGATION_CHANGE_PATH.exec(path)
+    if (obligationMatch && deps.obligations !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const result = await changeObligation(
+        deps.obligations,
+        obligationMatch,
+        await readJson(request)
+      )
+      if (result.ok) return json(result.body)
+      return failure(
+        result.code,
+        result.message,
+        result.fields ? { fields: result.fields } : {}
+      )
+    }
+
     if (path === "/entity-assignments") {
       if (method === "GET") {
         const body: CoreApiAssignmentList = {
@@ -304,6 +494,145 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return new Response(null, { status: 204 })
       }
       return notAllowed("GET", "PUT", "DELETE")
+    }
+
+    const typeMatch = DOCUMENT_TYPE_PATH.exec(path)
+    if (typeMatch !== null && deps.documents !== undefined) {
+      if (method !== "PUT") return notAllowed("PUT")
+      const result = await setOwnerDocumentType(
+        deps.documents,
+        typeMatch,
+        await readJson(request)
+      )
+      if (result.ok) return json(result.body)
+      const { code, message, fields } = result
+      return failure(code, message, fields ? { fields } : {})
+    }
+
+    if (path === "/today/due-soon" && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const timezone = (await profile.getProfile())?.timezone ?? null
+      const result = dueSoonRoute(
+        deps.documents.db,
+        url.searchParams,
+        timezone,
+        deps.now?.() ?? new Date()
+      )
+      if (result.ok) return json(result.body)
+      return failure(result.code, result.message, { fields: result.fields })
+    }
+
+    const briefMatch = BRIEF_PATH.exec(path)
+    if (briefMatch !== null && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = briefRoute(deps.documents.db, briefMatch)
+      if (result.ok) return json(result.body)
+      return failure(result.code, result.message)
+    }
+
+    if (path === CONVERSATION_SEARCH_PATH && deps.conversations !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = conversationSearchRoute(
+        deps.conversations,
+        url.searchParams
+      )
+      if (result.ok) return json(result.body)
+      const { code, message, fields } = result
+      return failure(code, message, fields ? { fields } : {})
+    }
+
+    const conversationGetMatch = CONVERSATION_GET_PATH.exec(path)
+    if (
+      conversationGetMatch !== null &&
+      path !== CONVERSATION_SEARCH_PATH &&
+      deps.conversations !== undefined
+    ) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = conversationGetRoute(
+        deps.conversations,
+        conversationGetMatch[1]
+      )
+      if (result.ok) return json(result.body)
+      const { code, message } = result
+      return failure(
+        code,
+        message,
+        "fields" in result && result.fields ? { fields: result.fields } : {}
+      )
+    }
+
+    const blobMatch = DOCUMENT_BLOB_PATH.exec(path)
+    if (blobMatch !== null && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = documentBlobRoute(deps.documents.db, blobMatch[1]!)
+      if (!result.ok) return failure(result.code, result.message)
+      return new Response(new Uint8Array(result.buffer), {
+        status: 200,
+        headers: {
+          "content-type": result.mime,
+          "content-disposition": `attachment; filename="${blobMatch[1]}"`,
+          "cache-control": "no-store",
+        },
+      })
+    }
+
+    const confirmMatch = /^\/extractions\/(\d+)\/confirm$/.exec(path)
+    if (confirmMatch !== null && deps.documents !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const body = await readJson(request)
+      const valid = validateCoreApiConfirmExtractionRequest(body)
+      if (!valid.ok) {
+        return failure("invalid", "invalid confirm extraction request", {
+          fields: toFieldErrors(valid.errors),
+        })
+      }
+      try {
+        const result = await confirmExtractionField(deps.documents.db, {
+          extractionId: Number(confirmMatch[1]),
+          field: valid.value.field,
+          value: valid.value.value,
+          threshold: deps.documents.threshold,
+        })
+        return json(result)
+      } catch (error) {
+        if (error instanceof LedgerError) {
+          if (error.code === "extraction_not_found") {
+            return failure("not_found", error.message)
+          }
+          if (error.code === "invalid_value") {
+            return failure("invalid", error.message, {
+              fields: [{ field: "value", message: error.message }],
+            })
+          }
+          return failure("bad_request", error.message)
+        }
+        throw error
+      }
+    }
+
+    if (deps.documents !== undefined) {
+      const result = documentsRoute(
+        method,
+        path,
+        url.searchParams,
+        deps.documents
+      )
+      if (result !== null) {
+        if (result.ok) {
+          if (
+            "lines" in result.body &&
+            deps.documents.accessAudit !== undefined
+          ) {
+            await deps.documents.accessAudit.recordDocumentOpen({
+              documentSha256: result.body.document.sha256,
+            })
+          }
+          return json(result.body)
+        }
+        if (result.code === "method_not_allowed") return notAllowed("GET")
+        const { code, message, fields } = result
+        return failure(code, message, fields ? { fields } : {})
+      }
     }
 
     return failure("not_found", "no such route")

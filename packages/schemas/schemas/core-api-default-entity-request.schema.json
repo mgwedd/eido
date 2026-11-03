@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiDefaultEntityRequest",
+  "description": "Request body for setting or clearing the profile default entity.",
+  "type": "object",
+  "properties": {
+    "entityId": {
+      "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    }
+  },
+  "required": ["entityId"],
+  "additionalProperties": false
+}

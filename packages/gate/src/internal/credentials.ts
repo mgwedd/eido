@@ -1,7 +1,13 @@
 import type { DatabaseSync } from "node:sqlite"
+import type { GatePasskeyList, GateWebAuthnRegistration } from "@eido/schemas"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
+import { consumeEnrolmentCode } from "./enrolment"
+import type { ConsumeRefusal } from "./enrolment"
 import { newNonce } from "./nonces"
+import { startSession } from "./sessions"
+import type { Clock } from "./sessions"
+import type { Surface } from "./surface"
 import { atomically } from "./transaction"
 import {
   ES256,
@@ -14,26 +20,23 @@ import {
 } from "./webauthn"
 import type { CeremonyFailure, WebAuthnConfig } from "./webauthn"
 
-// Passkey enrolment and revocation. Both are admin actions: the gate accepts them only from its
-// Mac-side admin surface (the localhost route #78 serves), never from the phone-facing API, so
-// a stolen phone session cannot enrol a key or revoke the owner's. Enrolment uses attestation
+// Passkey enrolment and revocation. Revocation is an admin action: the gate accepts it only from
+// its Mac-side admin surface (the control socket #78 serves), never from the phone-facing API, so
+// a stolen phone session cannot revoke the owner's key. Enrolment happens on the admin surface,
+// or on the phone with a single-use code the owner issued on the Mac (#202): no session can
+// enrol a key without that code. Enrolment uses attestation
 // "none": the browser's registration response (clientDataJSON, authenticatorData, and the
 // public key as SubjectPublicKeyInfo from getPublicKey()) is checked for the issued challenge,
 // the origin and RP id, user presence and verification, and the attested credential id.
 // Every call, accepted or refused, is audited with hashes only.
 
-/** Which listener a request arrived on: the Mac-side admin route, or the phone-facing API. */
-export type Surface = "admin" | "phone"
+export type { Surface } from "./surface"
 
-export type Registration = {
-  credentialId: string
-  clientDataJSON: string
-  authenticatorData: string
-  /** AuthenticatorAttestationResponse.getPublicKey(): SubjectPublicKeyInfo DER, base64url. */
-  publicKey: string
-  /** AuthenticatorAttestationResponse.getPublicKeyAlgorithm(): a COSE algorithm id. */
-  publicKeyAlgorithm: number
-}
+/**
+ * The browser's registration response: the public key is getPublicKey() (SubjectPublicKeyInfo
+ * DER, base64url) and the algorithm getPublicKeyAlgorithm() (a COSE id).
+ */
+export type Registration = GateWebAuthnRegistration
 
 export type RegistrationRefusal =
   | CeremonyFailure
@@ -50,6 +53,10 @@ export type BeginRegistrationResult =
 
 export type RegisterResult =
   { ok: true; credentialId: string } | { ok: false; code: RegistrationRefusal }
+
+export type EnrolResult =
+  | { ok: true; credentialId: string; token: string; expiresAt: Date }
+  | { ok: false; code: RegistrationRefusal | ConsumeRefusal }
 
 export type RevokeResult =
   | { ok: true }
@@ -84,11 +91,23 @@ export function beginRegistration(
     audit(db, surface, "credential.register_refused", "", "admin_only")
     return { ok: false, code: "admin_only" }
   }
+  return { ok: true, challenge: issueChallenge(db, new Date()) }
+}
+
+function issueChallenge(db: DatabaseSync, at: Date): string {
   const challenge = newNonce()
   db.prepare(
     "INSERT INTO registration_challenges (challenge, issued_at, used_at) VALUES (?, ?, NULL)"
-  ).run(challenge, new Date().toISOString())
-  return { ok: true, challenge }
+  ).run(challenge, at.toISOString())
+  return challenge
+}
+
+/**
+ * Issues a registration challenge for the phone's enrol options route, which has already
+ * checked the enrolment code. The code is consumed only when the enrolment itself succeeds.
+ */
+export function beginPhoneRegistration(db: DatabaseSync, now: Clock): string {
+  return issueChallenge(db, now())
 }
 
 type Accepted = {
@@ -181,34 +200,148 @@ export function registerCredential(
   if (!checked.ok) return refuse(checked.code)
   const { accepted } = checked
   return atomically(db, () => {
-    const exists = db
-      .prepare("SELECT 1 FROM credentials WHERE credential_id = ?")
-      .get(registration.credentialId)
-    if (exists !== undefined) return refuse("credential_exists")
-    const now = new Date().toISOString()
-    const used = db
-      .prepare(
-        "UPDATE registration_challenges SET used_at = ? WHERE challenge = ? AND used_at IS NULL"
-      )
-      .run(now, accepted.challenge)
-    if (Number(used.changes) !== 1) return refuse("unknown_challenge")
-    db.prepare(
-      "INSERT INTO credentials (credential_id, public_key, sign_count, created_at, revoked_at) VALUES (?, ?, ?, ?, NULL)"
-    ).run(
-      registration.credentialId,
-      accepted.publicKey.toString("base64url"),
-      accepted.signCount,
-      now
+    const at = new Date()
+    const claimed = claimChallenge(db, registration, accepted, at)
+    if (claimed !== undefined) return refuse(claimed)
+    return storeCredential(db, surface, registration, accepted, at)
+  })
+}
+
+/**
+ * In the caller's transaction: refuses a credential id that was ever enrolled, revoked ones
+ * included, and consumes the challenge. Undefined when the enrolment may go ahead.
+ */
+function claimChallenge(
+  db: DatabaseSync,
+  registration: Registration,
+  accepted: Accepted,
+  at: Date
+): RegistrationRefusal | undefined {
+  const exists = db
+    .prepare("SELECT 1 FROM credentials WHERE credential_id = ?")
+    .get(registration.credentialId)
+  if (exists !== undefined) return "credential_exists"
+  const used = db
+    .prepare(
+      "UPDATE registration_challenges SET used_at = ? WHERE challenge = ? AND used_at IS NULL"
     )
+    .run(at.toISOString(), accepted.challenge)
+  return Number(used.changes) === 1 ? undefined : "unknown_challenge"
+}
+
+function storeCredential(
+  db: DatabaseSync,
+  surface: Surface,
+  registration: Registration,
+  accepted: Accepted,
+  at: Date
+): { ok: true; credentialId: string } {
+  db.prepare(
+    "INSERT INTO credentials (credential_id, public_key, sign_count, created_at, revoked_at) VALUES (?, ?, ?, ?, NULL)"
+  ).run(
+    registration.credentialId,
+    accepted.publicKey.toString("base64url"),
+    accepted.signCount,
+    at.toISOString()
+  )
+  audit(
+    db,
+    surface,
+    "credential.registered",
+    registration.credentialId,
+    "registered"
+  )
+  return { ok: true, credentialId: registration.credentialId }
+}
+
+/**
+ * Enrols a passkey from the phone with a Mac-issued enrolment code (#202), and signs the phone
+ * in. In one transaction: the challenge and the code are consumed, the credential is stored and
+ * a session starts. A registration that fails its checks leaves the code unused; a refused code
+ * is audited by the code check and stores nothing. Earlier credentials, revoked ones included,
+ * are untouched.
+ */
+export function enrolWithCode(
+  db: DatabaseSync,
+  config: WebAuthnConfig,
+  code: string,
+  registration: Registration,
+  now: Clock
+): EnrolResult {
+  const refuse = (refusal: RegistrationRefusal): EnrolResult => {
     audit(
       db,
-      surface,
-      "credential.registered",
+      "phone",
+      "credential.register_refused",
       registration.credentialId,
-      "registered"
+      refusal
     )
-    return { ok: true, credentialId: registration.credentialId }
+    return { ok: false, code: refusal }
+  }
+  const checked = checkRegistration(db, config, registration)
+  if (!checked.ok) return refuse(checked.code)
+  const { accepted } = checked
+  const at = now()
+  return atomically(db, (): EnrolResult => {
+    const claimed = claimChallenge(db, registration, accepted, at)
+    if (claimed !== undefined) return refuse(claimed)
+    const consumed = consumeEnrolmentCode(db, "phone", code, () => at)
+    if (!consumed.ok) return consumed
+    storeCredential(db, "phone", registration, accepted, at)
+    const session = startSession(db, registration.credentialId, at)
+    return { ok: true, credentialId: registration.credentialId, ...session }
   })
+}
+
+/**
+ * Every enrolled passkey, revoked ones included. Credential ids are given as SHA-256
+ * fingerprints; public keys and sign counters stay inside the gate. `current` marks the
+ * passkey with id `currentCredentialId`: the one that opened the caller's session (#420).
+ */
+export function listPasskeys(
+  db: DatabaseSync,
+  currentCredentialId?: string
+): GatePasskeyList["passkeys"] {
+  return db
+    .prepare(
+      "SELECT credential_id, created_at, revoked_at FROM credentials ORDER BY created_at, credential_id"
+    )
+    .all()
+    .map((row) => {
+      const credentialId = String(row["credential_id"])
+      return {
+        fingerprint: hex(credentialId),
+        createdAt: String(row["created_at"]),
+        revokedAt:
+          typeof row["revoked_at"] === "string" ? row["revoked_at"] : null,
+        current: credentialId === currentCredentialId,
+      }
+    })
+}
+
+/**
+ * Revokes the passkey whose credential id has this SHA-256 fingerprint (#419), the form the
+ * owner sees in Settings and in `pnpm --filter @eido/gate passkeys`. Admin surface only.
+ */
+export function revokeByFingerprint(
+  db: DatabaseSync,
+  surface: Surface,
+  fingerprint: string
+): RevokeResult {
+  // Without a credential id to hash, a refusal's audit row hashes the fingerprint given instead.
+  const refuse = (code: "admin_only" | "unknown_credential"): RevokeResult => {
+    audit(db, surface, "credential.revoke_refused", fingerprint, code)
+    return { ok: false, code }
+  }
+  // The surface is checked first, so a phone cannot probe which fingerprints exist.
+  if (surface !== "admin") return refuse("admin_only")
+  const match = db
+    .prepare("SELECT credential_id FROM credentials")
+    .all()
+    .map((row) => String(row["credential_id"]))
+    .find((id) => hex(id) === fingerprint)
+  if (match === undefined) return refuse("unknown_credential")
+  return revokeCredential(db, surface, match)
 }
 
 /** Revokes a passkey, so no later assertion from it verifies. Admin surface only. */

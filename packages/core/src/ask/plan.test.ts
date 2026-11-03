@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { parsePlan } from "./plan"
+import { askScope, parsePlan } from "./plan"
 
 describe("parsePlan", () => {
   test("a full plan, with terms trimmed", () => {
@@ -40,5 +40,13 @@ describe("parsePlan", () => {
     ["a non-string before", '{"terms":["x"],"before":20300101,"wants":"find"}'],
   ])("rejects %s", (_, text) => {
     expect(parsePlan(text)).toBeNull()
+  })
+})
+
+describe("askScope", () => {
+  test("summarize is broad; find and count are focused", () => {
+    expect(askScope({ terms: ["x"], wants: "summarize" })).toBe("broad")
+    expect(askScope({ terms: ["x"], wants: "find" })).toBe("focused")
+    expect(askScope({ terms: ["x"], wants: "count" })).toBe("focused")
   })
 })

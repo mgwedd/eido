@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite"
+import { writeQueueFor } from "../db/write-queue"
 import { plainContent } from "../inference/fence"
 import type {
   FencedBlock,
@@ -17,6 +18,14 @@ export interface PackMember {
   /** From `fence`: the member's text looked like an injection attempt. It is still sent. */
   injectionSuspected: boolean
   injectionReasons: InjectionReason[]
+  /** Present when the member is ranked passages of its document rather than the whole body. */
+  excerpt?: PackExcerpt
+}
+
+/** Passages of one document: UTF-16 ranges in its indexed body, and the body characters left out. */
+export interface PackExcerpt {
+  passages: { start: number; end: number }[]
+  omittedChars: number
 }
 
 /** One member's place in the prompt: its tag line (trusted, from the index) and its block. */
@@ -25,6 +34,8 @@ export interface PackBlock {
   /** The connector the document came from, from the index. */
   label: string
   block: FencedBlock
+  /** Phishing signals computed for the message, as fixed phrases; absent or empty means none. */
+  signals?: readonly string[]
 }
 
 export interface ContextPack {
@@ -41,7 +52,11 @@ export { ESTIMATE_BOUNDARY } from "../inference/fence"
 
 /** A member's tag line and block as they follow the previous text in the prompt. */
 export function blockParts(entry: PackBlock): PromptPart[] {
-  return [`\n\n${entry.tag} ${entry.label}\n`, entry.block]
+  const warnings =
+    entry.signals === undefined || entry.signals.length === 0
+      ? ""
+      : ` | Eido checks found: ${entry.signals.join("; ")}`
+  return [`\n\n${entry.tag} ${entry.label}${warnings}\n`, entry.block]
 }
 
 /** The pack as prompt parts: the legend, then each member's tag line and fenced block. */
@@ -68,14 +83,24 @@ export function packIdFor(packHash: string): string {
 }
 
 /** Store a pack record. Storing the same pack again is a no-op. Returns whether a row was added. */
-export function storeContextPack(db: DatabaseSync, pack: ContextPack): boolean {
-  db.exec(CREATE_TABLE)
-  const { changes } = db
-    .prepare(
-      "INSERT OR IGNORE INTO context_packs (id, members_json, token_count, pack_hash) VALUES (?, ?, ?, ?)"
-    )
-    .run(pack.id, JSON.stringify(pack.members), pack.tokenCount, pack.packHash)
-  return Number(changes) > 0
+export function storeContextPack(
+  db: DatabaseSync,
+  pack: ContextPack
+): Promise<boolean> {
+  return writeQueueFor(db).run(() => {
+    db.exec(CREATE_TABLE)
+    const { changes } = db
+      .prepare(
+        "INSERT OR IGNORE INTO context_packs (id, members_json, token_count, pack_hash) VALUES (?, ?, ?, ?)"
+      )
+      .run(
+        pack.id,
+        JSON.stringify(pack.members),
+        pack.tokenCount,
+        pack.packHash
+      )
+    return Number(changes) > 0
+  })
 }
 
 function isEdge(value: unknown): value is MemberEdge {
@@ -106,6 +131,7 @@ function parseMember(value: unknown): PackMember {
   const tokens: unknown = Reflect.get(value, "tokens")
   const suspected: unknown = Reflect.get(value, "injectionSuspected")
   const reasons: unknown = Reflect.get(value, "injectionReasons")
+  const excerpt = parseExcerpt(Reflect.get(value, "excerpt"))
   if (
     typeof tag !== "string" ||
     typeof sha256 !== "string" ||
@@ -123,7 +149,36 @@ function parseMember(value: unknown): PackMember {
     tokens,
     injectionSuspected: suspected,
     injectionReasons: reasons,
+    ...(excerpt === undefined ? {} : { excerpt }),
   }
+}
+
+const isOffset = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0
+
+function parsePassage(value: unknown): { start: number; end: number } {
+  if (typeof value !== "object" || value === null)
+    throw new Error("context pack member has a malformed field")
+  const start: unknown = Reflect.get(value, "start")
+  const end: unknown = Reflect.get(value, "end")
+  if (!isOffset(start) || !isOffset(end) || end <= start)
+    throw new Error("context pack member has a malformed field")
+  return { start, end }
+}
+
+function parseExcerpt(value: unknown): PackExcerpt | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "object" || value === null)
+    throw new Error("context pack member has a malformed field")
+  const passages: unknown = Reflect.get(value, "passages")
+  const omittedChars: unknown = Reflect.get(value, "omittedChars")
+  if (
+    !Array.isArray(passages) ||
+    passages.length === 0 ||
+    !isOffset(omittedChars)
+  )
+    throw new Error("context pack member has a malformed field")
+  return { passages: passages.map(parsePassage), omittedChars }
 }
 
 /** Read a stored pack record back, or null when no pack has that id. */
@@ -136,7 +191,12 @@ export function readContextPack(
   tokenCount: number
   packHash: string
 } | null {
-  db.exec(CREATE_TABLE)
+  const table = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'context_packs'"
+    )
+    .get()
+  if (table === undefined) return null
   const row = db
     .prepare(
       "SELECT id, members_json, token_count, pack_hash FROM context_packs WHERE id = ?"

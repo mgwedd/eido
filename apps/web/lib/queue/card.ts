@@ -41,7 +41,7 @@ function plain(value: unknown): string {
   return JSON.stringify(value)
 }
 
-const LABELS: Readonly<Record<string, string>> = {
+export const LABELS: Readonly<Record<string, string>> = {
   to: "To",
   cc: "Cc",
   bcc: "Bcc",
@@ -125,6 +125,25 @@ function titleFor(kind: string, args: Args): string {
       return "Cancel event"
     case "reminder.create":
       return title ? `Create reminder: ${title}` : "Create reminder"
+    case "confirm.field": {
+      const field =
+        typeof args["field"] === "string"
+          ? args["field"].replace(/_/g, " ")
+          : "field"
+      const val =
+        typeof args["value"] === "object" && args["value"] !== null
+          ? plain(
+              (args["value"] as Record<string, unknown>)["typed"] ??
+                (args["value"] as Record<string, unknown>)["raw"] ??
+                ""
+            )
+          : ""
+      const doc =
+        typeof args["documentTitle"] === "string"
+          ? `${args["documentTitle"]} `
+          : ""
+      return `Confirm ${doc}${field}: ${val}`
+    }
     default:
       return subject || describeKind(kind)
   }
@@ -232,4 +251,47 @@ export function swipeLabel(dx: number): "Approve" | "Reject" | null {
   if (dx >= SWIPE_LABEL_PX) return "Approve"
   if (dx <= -SWIPE_LABEL_PX) return "Reject"
   return null
+}
+
+export type ConfirmFieldCardData = {
+  extractionId: string
+  field: "action" | "party" | "reference_number" | "amount" | "due_date"
+  value: {
+    raw: string
+    typed?: string | number | { amount_minor: number; currency: string } | null
+  }
+  source: {
+    docSha256: string
+    messageId?: string
+    page?: number
+    line?: number
+    start: number
+    end: number
+  }
+  confidence: number
+  threshold: number
+  documentTitle?: string
+  documentSource?: string
+  contextSources?: string[]
+  contextPackId?: string
+}
+
+export function parseConfirmField(
+  payload: string
+): ConfirmFieldCardData | undefined {
+  try {
+    const parsed: unknown = JSON.parse(payload)
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "kind" in parsed &&
+      parsed.kind === "confirm.field" &&
+      "args" in parsed &&
+      typeof parsed.args === "object" &&
+      parsed.args !== null
+    ) {
+      return parsed.args as ConfirmFieldCardData
+    }
+  } catch {}
+  return undefined
 }

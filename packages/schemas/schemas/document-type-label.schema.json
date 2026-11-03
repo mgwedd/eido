@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DocumentTypeLabel",
+  "description": "The semantic types the owner can set on a stored document, and the set the document classifier (#398) picks from. Closed on purpose: a label outside it is refused.",
+  "type": "string",
+  "enum": [
+    "Invoice",
+    "Quote",
+    "Receipt",
+    "Tax bill",
+    "Contract",
+    "Insurance policy",
+    "Statement",
+    "Letter",
+    "Other"
+  ]
+}

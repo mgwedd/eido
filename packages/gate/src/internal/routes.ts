@@ -2,23 +2,34 @@ import type { DatabaseSync } from "node:sqlite"
 import {
   validateGateAuditRecordRequest,
   validateGateIntentProposal,
+  validateGatePasskeyRevokeRequest,
+  validateIntent,
 } from "@eido/schemas"
 import type {
   GateAuditRecordRequest,
   GateAuditRecordResult,
   GateConnectorHealth,
+  GateEnrolmentCode,
   GateIntentHistory,
+  GateIntentStatus,
+  GatePasskeyList,
   GatePendingIntentList,
   GateProposeRefusal,
   GateProposeResult,
 } from "@eido/schemas"
 import { append, verifyChain } from "./audit"
 import { getConnectorHealth } from "./connector-health"
+import { connectedRoute } from "./connector-connect"
+import type { ConnectorProbes } from "./connector-connect"
+import { listPasskeys, revokeByFingerprint } from "./credentials"
+import { issueEnrolmentCode } from "./enrolment"
 import { mailRoute } from "./bridge/mail-routes"
 import type { MailReads } from "./bridge/mail-routes"
 import { payloadHash } from "./canonical"
 import { apiError, NOT_FOUND } from "./http"
 import type { GateRequest, Handler, Reply } from "./http"
+import { draftDiscarded } from "./draft-discard"
+import { executionReceipt } from "./executor"
 import type { ExecutionResult } from "./executor"
 import {
   intentHistory,
@@ -27,18 +38,32 @@ import {
   propose,
 } from "./intents"
 import type { Policy } from "./policy"
+import type { Clock } from "./sessions"
+import type { ProfileAudit } from "./profile-audit"
+import type { FileHelper } from "./files/file-helper"
+import type { FileReads } from "./files/file-reads"
+import { fileReadRoute } from "./files/file-reads"
+import { fileRootControlRoute } from "./file-root-routes"
+import type { WebAuthnConfig } from "./webauthn"
 
 // The gate's routes. The data-plane listener serves the intent API (propose, and three
-// read-only views without payload bodies), connector health, and POST /audit, which appends one hash-only
-// audit.profile.* row for a profile change in core (#181). The control listener is a separate socket that the
-// data plane is never given; it serves the same reads plus the audit chain check. The phone
-// listener (#85) and the Mac-local admin listener (#78) are further handlers over the same
-// server wrapper, each on its own listener.
+// read-only views without payload bodies), connector health, and POST /audit, which appends one
+// hash-only audit.profile.* row for a profile change in core (#181), audit.ledger.* row for an
+// obligation state change (#104), or audit.access.* row for sensitive reads and uses (#322). The control listener is a separate socket that the
+// data plane is never given; it serves the same reads, the audit chain check and the owner's
+// enrolment codes (#78). The phone listener (#85) is a further handler over the same server
+// wrapper, on its own listener.
 
 export type GateState = {
   db: DatabaseSync
   policy: Policy
   notifyPending?: () => void
+  profileAudit?: ProfileAudit
+  fileHelper?: FileHelper
+  files?: FileReads
+  webAuthn?: WebAuthnConfig
+  /** Health probes by connector name, run after the owner connects one (#98). */
+  probes?: ConnectorProbes
 }
 
 const MAX_ERRORS = 50
@@ -58,6 +83,14 @@ function trimmed(errors: readonly string[]): string[] {
   return errors
     .slice(0, MAX_ERRORS)
     .map((error) => error.slice(0, MAX_ERROR_LENGTH))
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
 }
 
 async function proposeRoute(
@@ -100,6 +133,9 @@ async function proposeRoute(
     ...(proposal.rationale === undefined
       ? {}
       : { rationale: proposal.rationale }),
+    ...(proposal.injection === undefined
+      ? {}
+      : { injection: proposal.injection }),
   })
   if (result.ok) {
     if (result.state === "pending") gate.notifyPending?.()
@@ -132,13 +168,22 @@ async function proposeRoute(
 const HEX64 = /^[0-9a-f]{64}$/
 
 // Which sides of a change each action has: create and assign add a record (assign may replace
-// one), delete and unassign remove one, update replaces one.
+// one), delete and unassign remove one, update replaces one. An obligation state change (#104)
+// replaces the obligation's state record. Sensitive reads and local AI uses (#322) have neither side.
 const SIDES = {
   "entity.create": { before: "absent", after: "present" },
   "entity.update": { before: "present", after: "present" },
   "entity.delete": { before: "present", after: "absent" },
   "account.assign": { before: "either", after: "present" },
   "account.unassign": { before: "present", after: "absent" },
+  "obligation.done": { before: "present", after: "present" },
+  "obligation.resolve": { before: "present", after: "present" },
+  "obligation.reopen": { before: "present", after: "present" },
+  defaultEntity: { before: "either", after: "either" },
+  "access.document_open": { before: "absent", after: "absent" },
+  "access.inference_use": { before: "absent", after: "absent" },
+  "access.content_copy": { before: "absent", after: "absent" },
+  "access.instruction_change": { before: "absent", after: "absent" },
 } as const satisfies Record<
   GateAuditRecordRequest["action"],
   { before: Side; after: Side }
@@ -178,6 +223,13 @@ function auditRequestRefusal(db: DatabaseSync, reason: string): void {
   })
 }
 
+// Obligation state changes are ledger rows; entity and account changes are profile rows;
+// sensitive reads and local AI uses are access rows (#322).
+function auditGroup(action: GateAuditRecordRequest["action"]): string {
+  if (action.startsWith("access.")) return "audit.access"
+  return action.startsWith("obligation.") ? "audit.ledger" : "audit.profile"
+}
+
 // Appends the change as one row: the action names it, the target is the subject's hash and the
 // detail hash covers the whole entry. Nothing in clear text reaches the log.
 async function auditRoute(
@@ -209,15 +261,34 @@ async function auditRoute(
     )
   }
   const entry = checked.value
+  let digests = {
+    subjectHash: entry.subjectHash,
+    beforeHash: entry.beforeHash,
+    afterHash: entry.afterHash,
+  }
+  if (
+    auditGroup(entry.action) === "audit.profile" ||
+    auditGroup(entry.action) === "audit.access"
+  ) {
+    try {
+      if (gate.profileAudit === undefined) throw new Error("unavailable")
+      digests = await gate.profileAudit.tag(entry)
+    } catch {
+      return apiError(503, "unavailable", "profile audit key is unavailable")
+    }
+  }
+  const group = auditGroup(entry.action)
+  const actionName = entry.action.startsWith("access.")
+    ? entry.action.slice("access.".length)
+    : entry.action
+  const storedAction = `${group}.${actionName}`
   const { seq } = append(gate.db, {
     actor: "data-plane",
-    action: `audit.profile.${entry.action}`,
-    target: entry.subjectHash,
+    action: storedAction,
+    target: digests.subjectHash,
     detailHash: payloadHash({
       action: entry.action,
-      subjectHash: entry.subjectHash,
-      beforeHash: entry.beforeHash,
-      afterHash: entry.afterHash,
+      ...digests,
     }),
   })
   const result: GateAuditRecordResult = { seq }
@@ -225,6 +296,77 @@ async function auditRoute(
 }
 
 const INTENT_PATH = /^\/intents\/([^/]+)(\/history)?$/
+const RESTORE_PATH = /^\/intents\/([^/]+)\/restore$/
+
+/** Create a fresh approval proposal from an executed Gmail trash's authenticated prior labels. */
+function restoreTrashRoute(
+  request: GateRequest,
+  gate: GateState
+): Reply | undefined {
+  if (request.method !== "POST") return undefined
+  const match = RESTORE_PATH.exec(request.path)
+  if (match === null) return undefined
+  const sourceId = decodeURIComponent(match[1] ?? "")
+  const source = gate.db
+    .prepare(
+      "SELECT kind, payload_json, payload_hash, state FROM intents WHERE id=?"
+    )
+    .get(sourceId)
+  const receipt = executionReceipt(gate.db, sourceId)
+  if (
+    source === undefined ||
+    source["kind"] !== "email.trash" ||
+    source["state"] !== "executed" ||
+    receipt === undefined
+  ) {
+    return apiError(409, "unavailable", "this trash action cannot be restored")
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(String(source["payload_json"]))
+  } catch {
+    return apiError(409, "unavailable", "this trash action cannot be restored")
+  }
+  const checked = validateIntent(parsed)
+  const result = receipt.result
+  const prior = isRecord(result) ? result["priorLabels"] : undefined
+  if (
+    !checked.ok ||
+    checked.value.kind !== "email.trash" ||
+    checked.value.connector !== "gmail" ||
+    payloadHash(checked.value) !== String(source["payload_hash"]) ||
+    !isRecord(prior)
+  ) {
+    return apiError(409, "unavailable", "this trash action cannot be restored")
+  }
+  const priorLabels = checked.value.args.messageIds.map((messageId) => {
+    const labels = prior[messageId]
+    return isStringArray(labels) ? { messageId, labels } : undefined
+  })
+  if (priorLabels.some((entry) => entry === undefined))
+    return apiError(409, "unavailable", "this trash action cannot be restored")
+  const proposed = propose(gate.db, gate.policy, {
+    intent: {
+      kind: "email.untrash",
+      connector: "gmail",
+      args: {
+        sourceIntentId: sourceId,
+        messageIds: checked.value.args.messageIds,
+        priorLabels,
+      },
+    },
+    origin: "reactive",
+  })
+  if (!proposed.ok) {
+    auditRefusal(gate.db, "restore_unavailable")
+    return apiError(409, "unavailable", "this trash action cannot be restored")
+  }
+  if (proposed.state === "pending") gate.notifyPending?.()
+  return {
+    status: 201,
+    body: { id: proposed.intentId, tier: proposed.tier, state: proposed.state },
+  }
+}
 
 function connectorHealthRoute(
   request: GateRequest,
@@ -259,7 +401,13 @@ function readRoute(request: GateRequest, gate: GateState): Reply | undefined {
   if (summary === undefined) {
     return apiError(404, "not_found", "no such intent")
   }
-  if (match[2] === undefined) return { status: 200, body: summary }
+  if (match[2] === undefined) {
+    const status: GateIntentStatus = {
+      ...summary,
+      discarded: draftDiscarded(gate.db, id),
+    }
+    return { status: 200, body: status }
+  }
   const history: GateIntentHistory = {
     intentId: id,
     entries: intentHistory(gate.db, id),
@@ -276,8 +424,12 @@ export function dataPlaneHandler(
   mail?: MailReads,
   execute?: (id: string) => Promise<ExecutionResult>
 ): Handler {
-  return (request) => {
+  return async (request) => {
     const state = gate()
+    const fileReply = await fileReadRoute(request, state.files)
+    if (fileReply !== undefined) return fileReply
+    const restore = restoreTrashRoute(request, state)
+    if (restore !== undefined) return restore
     if (request.method === "POST" && request.path === "/intents") {
       return proposeRoute(request, state, execute)
     }
@@ -295,13 +447,79 @@ export function dataPlaneHandler(
   }
 }
 
-/** The control listener: the intent reads plus the audit chain check. Never given to the data plane. */
-export function controlHandler(gate: () => GateState): Handler {
-  return (request) => {
+// The owner issues a phone enrolment code from the Mac (#78). Only the control socket, readable
+// by the gate user alone, serves this; the phone listener 404s it.
+function enrolmentCodeRoute(db: DatabaseSync, now: Clock): Reply {
+  const issued = issueEnrolmentCode(db, "admin", now)
+  if (!issued.ok)
+    return apiError(403, "forbidden", "enrolment codes are issued on the Mac")
+  const body: GateEnrolmentCode = {
+    code: issued.code,
+    expiresAt: issued.expiresAt.toISOString(),
+  }
+  return { status: 201, body }
+}
+
+// The owner revokes a lost or replaced phone's passkey from the Mac (#419), by the fingerprint
+// GET /passkeys lists. Like enrolment codes, only the control socket serves this; the phone
+// listener has no revoke route, so a stolen phone session cannot revoke the owner's key.
+async function revokePasskeyRoute(
+  request: GateRequest,
+  db: DatabaseSync
+): Promise<Reply> {
+  const body = await request.body()
+  if (!body.ok) {
+    return apiError(413, "invalid_request", "the body is over 1 MiB")
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body.text)
+  } catch {
+    return apiError(400, "invalid_request", "the body is not valid JSON")
+  }
+  const checked = validateGatePasskeyRevokeRequest(parsed)
+  if (!checked.ok) {
+    return apiError(400, "invalid_request", "the body must name a fingerprint")
+  }
+  const revoked = revokeByFingerprint(db, "admin", checked.value.fingerprint)
+  if (!revoked.ok) {
+    return revoked.code === "already_revoked"
+      ? apiError(409, "already_decided", "the passkey is already revoked")
+      : apiError(404, "not_found", "no passkey has that fingerprint")
+  }
+  const list: GatePasskeyList = { passkeys: listPasskeys(db) }
+  return { status: 200, body: list }
+}
+
+/**
+ * The control listener: the intent reads, the audit chain check, enrolment codes, passkey
+ * revocation and the connector check after a connect (#98). Never given to the data plane or the phone.
+ */
+export function controlHandler(gate: () => GateState, now: Clock): Handler {
+  return async (request) => {
     const state = gate()
+    const fileReply = await fileRootControlRoute(request, state)
+    if (fileReply !== undefined) return fileReply
+    if (request.method === "GET" && request.path === "/passkeys") {
+      const body: GatePasskeyList = { passkeys: listPasskeys(state.db) }
+      return { status: 200, body }
+    }
+    if (request.method === "POST" && request.path === "/passkeys/revoke") {
+      return revokePasskeyRoute(request, state.db)
+    }
     if (request.method === "GET" && request.path === "/audit/chain") {
       return { status: 200, body: verifyChain(state.db) }
     }
+    if (request.method === "POST" && request.path === "/enrolment-codes") {
+      return enrolmentCodeRoute(state.db, now)
+    }
+    const connected = await connectedRoute(
+      request,
+      state.db,
+      state.probes,
+      () => now().getTime()
+    )
+    if (connected !== undefined) return connected
     return (
       connectorHealthRoute(request, state) ??
       readRoute(request, state) ??

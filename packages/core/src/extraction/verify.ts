@@ -11,6 +11,8 @@ import type {
 import type { ExtractionFieldName } from "../ledger/types"
 import { lookupOffset } from "../parsers/offsets"
 import type { OffsetTable } from "../parsers/types"
+import { originalRangeForNormalized } from "./normalize"
+import type { NormalizedText } from "./normalize"
 import type { FieldScorer, Passage } from "./types"
 
 export type CandidateItem = ExtractionCandidates["items"][number]
@@ -86,7 +88,11 @@ export function spanAt(
 export function verifyItem(
   item: CandidateItem,
   passage: Passage,
-  source: { text: string; offsets: OffsetTable },
+  source: {
+    text: string
+    offsets: OffsetTable
+    normalized?: NormalizedText
+  },
   threshold: number,
   scorer: FieldScorer
 ): ItemOutcome {
@@ -96,7 +102,16 @@ export function verifyItem(
     if (quote === undefined) continue
     const start = locateQuote(source.text, quote, passage)
     if (start === -1) return { kind: "dropped" }
-    spans[field] = spanAt(source.offsets, start, start + quote.length)
+    const end = start + quote.length
+    const originalRange =
+      source.normalized === undefined
+        ? { start, end }
+        : originalRangeForNormalized(source.normalized, start, end)
+    spans[field] = spanAt(
+      source.offsets,
+      originalRange.start,
+      originalRange.end
+    )
   }
 
   const fields: Record<string, unknown> = {}

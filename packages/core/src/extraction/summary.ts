@@ -12,6 +12,8 @@ export function summarize(counts: Counts): string {
   switch (counts.status) {
     case "no_candidates":
       return "no candidate passages"
+    case "already_processed":
+      return "skipped: this document was already processed"
     case "model_output_rejected":
       return "model output rejected after one corrective retry"
     case "refused_over_budget":

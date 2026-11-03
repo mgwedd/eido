@@ -9,7 +9,10 @@ import { canonicalize } from "./canonical"
 export type WebAuthnConfig = {
   /** The relying-party id: the single hostname the web app is served on. */
   rpId: string
-  /** `https://<rpId>`, the only origin an assertion may come from. */
+  /**
+   * The only origin a ceremony may come from: `https://<rpId>` or `https://<rpId>:<port>`,
+   * compared exactly, port included, with clientDataJSON.origin.
+   */
   origin: string
 }
 
@@ -169,9 +172,26 @@ export function verifyAssertionSignature(
   }
 }
 
-/** The origin and RP id come from config; the origin must be `https://<rpId>`. */
+const ORIGIN_ERROR =
+  "the WebAuthn origin must be https://<rpId> or https://<rpId>:<port>"
+
+/** 1 to 65535 with no leading zero; 443 is left out because browsers omit the default port. */
+const PORT = /^[1-9][0-9]{0,4}$/
+
+/**
+ * The origin and RP id come from config. The origin must be `https://<rpId>`, or
+ * `https://<rpId>:<port>` (ADR 0004 serves the app on its own port), written as the browser
+ * serializes it into clientDataJSON so the exact comparison in `checkCeremony` can match.
+ */
 export function checkWebAuthnConfig(config: WebAuthnConfig): void {
-  if (config.rpId === "" || config.origin !== `https://${config.rpId}`) {
-    throw new Error("the WebAuthn origin must be https://<rpId>")
+  const base = `https://${config.rpId}`
+  if (config.rpId === "" || !config.origin.startsWith(base)) {
+    throw new Error(ORIGIN_ERROR)
+  }
+  const rest = config.origin.slice(base.length)
+  if (rest === "") return
+  const port = rest.startsWith(":") ? rest.slice(1) : ""
+  if (!PORT.test(port) || Number(port) > 65535 || port === "443") {
+    throw new Error(ORIGIN_ERROR)
   }
 }

@@ -74,6 +74,10 @@ describe("classifyRequest", () => {
       expect(classify(p), p).toBe("network-only")
     }
     expect(classify("/unlock", { mode: "navigate" })).toBe("network-only")
+    expect(classify("/enroll", { mode: "navigate" })).toBe("network-only")
+    expect(classify("/api/gate/passkey/enroll", { method: "GET" })).toBe(
+      "network-only"
+    )
   })
 
   test("writes, cross-origin, probes and the worker itself bypass the cache", () => {

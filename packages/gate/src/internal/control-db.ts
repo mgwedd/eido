@@ -193,6 +193,39 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      last_attempt_at INTEGER
    ) STRICT;
    INSERT INTO push_state (singleton) VALUES (1);`,
+  // Time of the last successful connector read, for the phone's connector settings (#397).
+  // Existing rows have no recorded success.
+  `ALTER TABLE connectors ADD COLUMN last_success_at TEXT;`,
+  // Single-use enrolment codes issued on the Mac (#78). Only the SHA-256 of the normalised code
+  // is stored. Issuing a new code supersedes every earlier unused one.
+  `CREATE TABLE enrolment_codes (
+     code_hash TEXT PRIMARY KEY,
+     issued_at TEXT NOT NULL,
+     expires_at TEXT NOT NULL,
+     used_at TEXT,
+     superseded_at TEXT
+   ) STRICT;`,
+  // Profile audit HMAC key fingerprints bind each epoch to its vault secret (#204).
+  `CREATE TABLE profile_audit_keys (
+     epoch TEXT PRIMARY KEY,
+     key_hash TEXT NOT NULL
+   ) STRICT;`,
+  // The owner-signed local file roots (#313). Loaded only after its policy.set approval on
+  // target file-roots, its audit row and the chain verify, and only if it is the latest.
+  `CREATE TABLE approved_file_roots (
+     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+     payload_json TEXT NOT NULL,
+     payload_hash TEXT NOT NULL,
+     approval_id TEXT NOT NULL REFERENCES control_approvals(id)
+   ) STRICT;`,
+  // The fence's injection flag on an intent (#300): a JSON GateIntentInjection, NULL for an intent
+  // from clean material. Display-only on the approval card, never part of the payload or its hash.
+  `ALTER TABLE intents ADD COLUMN injection_reasons_json TEXT;`,
+  // A connector's daily request quota (#51): the local day (YYYY-MM-DD) the count belongs to, and
+  // the upstream requests the proxy sent that day. Only connectors whose manifest sets a
+  // health.rateLimit use them.
+  `ALTER TABLE connectors ADD COLUMN quota_day TEXT;
+   ALTER TABLE connectors ADD COLUMN quota_requests INTEGER NOT NULL DEFAULT 0;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

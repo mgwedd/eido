@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiObligationState",
+  "description": "Response of core's local obligation state changes (#104): POST /obligations/:id/done and /resolve move an open obligation to done; POST /obligations/:id/reopen moves a done one back to open. None is an external write.",
+  "type": "object",
+  "properties": {
+    "id": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["open", "done", "dismissed"] }
+  },
+  "required": ["id", "status"],
+  "additionalProperties": false
+}

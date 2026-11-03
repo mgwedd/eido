@@ -6,9 +6,19 @@ const NUMBER = new Intl.NumberFormat("en-US")
 /** A count with thousands separators: 1284 -> "1,284". */
 export const formatCount = (n: number): string => NUMBER.format(n)
 
-/** `read 6 of 1,284 matching messages in full`. */
-export function coverageLabel(readInFull: number, matched: number): string {
-  return `read ${formatCount(readInFull)} of ${formatCount(matched)} matching messages in full`
+/**
+ * `read 6 of 1,284 matching messages in full`, and `and passages of 2` when the model read only
+ * ranked passages of some.
+ */
+export function coverageLabel(
+  readInFull: number,
+  matched: number,
+  readPartially = 0
+): string {
+  const full = `read ${formatCount(readInFull)} of ${formatCount(matched)} matching messages in full`
+  return readPartially === 0
+    ? full
+    : `${full} and passages of ${formatCount(readPartially)}`
 }
 
 /** The answer for a plan with no matches, written by code. */
@@ -21,8 +31,14 @@ export function noMatchAnswer(terms: string[], searched: number): string {
  * What replaces an answer that claims something never happened. The index only shows what was
  * found, so the strongest honest wording is that the messages read did not contain it.
  */
-export function absenceReplacement(readInFull: number): string {
-  return `No match found in the ${formatCount(readInFull)} messages read in full.`
+export function absenceReplacement(
+  readInFull: number,
+  readPartially = 0
+): string {
+  const full = `No match found in the ${formatCount(readInFull)} messages read in full`
+  return readPartially === 0
+    ? `${full}.`
+    : `${full} or the passages read from ${formatCount(readPartially)} more.`
 }
 
 export interface Facts {

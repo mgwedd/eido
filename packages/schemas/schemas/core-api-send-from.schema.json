@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiSendFrom",
+  "description": "Response of GET /connectors/send-from: the address the assistant sends from, which is the Proton connector's configured account. It is read-only; null when Proton is not configured.",
+  "type": "object",
+  "properties": {
+    "address": {
+      "oneOf": [
+        { "type": "string", "minLength": 3, "maxLength": 320 },
+        { "type": "null" }
+      ]
+    }
+  },
+  "required": ["address"],
+  "additionalProperties": false
+}

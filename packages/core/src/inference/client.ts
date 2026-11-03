@@ -5,10 +5,19 @@ import {
   estimateTokens,
   truncationSuspected,
 } from "./budget"
-import { InferenceError, UnsupportedModelServerError } from "./errors"
+import {
+  InferenceError,
+  MaterialMarkerError,
+  UnsupportedModelServerError,
+} from "./errors"
 import type { RequiredServerFeature } from "./errors"
 import { newBoundary } from "./fence"
-import { buildCompletionBody, buildTemplateBody, promptText } from "./request"
+import {
+  buildCompletionBody,
+  buildTemplateBody,
+  canonicalize,
+  promptText,
+} from "./request"
 import {
   applyEvent,
   finishStream,
@@ -143,6 +152,131 @@ async function readStream(
   }
 }
 
+function completionProbabilities(
+  value: unknown,
+  text: string
+): readonly { bytes: readonly number[]; probability: number }[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  const decoder = new TextDecoder("utf-8", { fatal: true })
+  const result: { bytes: number[]; probability: number }[] = []
+  const allBytes: number[] = []
+  try {
+    for (const entry of value) {
+      if (!isRecord(entry)) return undefined
+      const token = entry
+      if (!Array.isArray(token.bytes)) return undefined
+      const bytes: number[] = []
+      for (const byte of token.bytes) {
+        if (
+          typeof byte !== "number" ||
+          !Number.isInteger(byte) ||
+          byte < 0 ||
+          byte > 255
+        )
+          return undefined
+        bytes.push(byte)
+      }
+      if (bytes.length === 0) return undefined
+      const probability =
+        typeof token.logprob === "number" &&
+        Number.isFinite(token.logprob) &&
+        token.logprob <= 0
+          ? Math.exp(token.logprob)
+          : token.prob
+      if (
+        typeof probability !== "number" ||
+        !Number.isFinite(probability) ||
+        probability < 0 ||
+        probability > 1
+      )
+        return undefined
+      allBytes.push(...bytes)
+      result.push({ bytes, probability })
+    }
+  } catch {
+    return undefined
+  }
+  try {
+    return decoder.decode(new Uint8Array(allBytes)) === text
+      ? result
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function readCompletion(
+  response: Response,
+  signal: AbortSignal | undefined
+): Promise<{
+  text: string
+  finishReason: "stop" | "length"
+  promptTokens: number
+  tokenProbabilities?: readonly {
+    bytes: readonly number[]
+    probability: number
+  }[]
+}> {
+  if (response.body === null)
+    throw new InferenceError(
+      "malformed",
+      response.status,
+      "response has no body"
+    )
+  const type = response.headers.get("content-type") ?? ""
+  if (!type.includes("application/json"))
+    return readStream(response, response.body, signal)
+  let answer: unknown
+  try {
+    answer = await response.json()
+  } catch (cause) {
+    if (signal?.aborted === true) throw abortedError(cause)
+    throw new InferenceError(
+      "malformed",
+      response.status,
+      "completion answer is not JSON",
+      { cause }
+    )
+  }
+  if (
+    !isRecord(answer) ||
+    typeof answer.content !== "string" ||
+    typeof answer.tokens_evaluated !== "number" ||
+    !Number.isSafeInteger(answer.tokens_evaluated) ||
+    answer.tokens_evaluated < 0
+  ) {
+    throw new InferenceError(
+      "malformed",
+      response.status,
+      "completion answer is malformed"
+    )
+  }
+  const finish =
+    answer.stop_type === "eos" || answer.stop_type === "word"
+      ? "stop"
+      : answer.stop_type === "limit"
+        ? "length"
+        : undefined
+  if (finish === undefined)
+    throw new InferenceError(
+      "malformed",
+      response.status,
+      "completion stop_type is not handled"
+    )
+  const probabilities = completionProbabilities(
+    answer.completion_probabilities,
+    answer.content
+  )
+  return {
+    text: answer.content,
+    finishReason: finish,
+    promptTokens: answer.tokens_evaluated,
+    ...(probabilities === undefined
+      ? {}
+      : { tokenProbabilities: probabilities }),
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }
@@ -234,6 +368,23 @@ interface TokenizeArgs {
   parseSpecial: boolean
 }
 
+function tokenizeBody(
+  content: string,
+  args: TokenizeArgs,
+  withPieces = false
+): string {
+  return JSON.stringify({
+    content,
+    add_special: args.addSpecial,
+    parse_special: args.parseSpecial,
+    ...(withPieces ? { with_pieces: true } : {}),
+  })
+}
+
+function isTokenId(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+}
+
 async function tokenize(
   doFetch: typeof fetch,
   baseUrl: string,
@@ -245,20 +396,11 @@ async function tokenize(
     doFetch,
     baseUrl,
     "tokenize",
-    JSON.stringify({
-      content,
-      add_special: args.addSpecial,
-      parse_special: args.parseSpecial,
-    }),
+    tokenizeBody(content, args),
     signal
   )
   const tokens = answer.tokens
-  if (
-    !Array.isArray(tokens) ||
-    !tokens.every(
-      (t): t is number => typeof t === "number" && Number.isInteger(t) && t >= 0
-    )
-  ) {
+  if (!Array.isArray(tokens) || !tokens.every(isTokenId)) {
     throw new InferenceError(
       "malformed",
       200,
@@ -266,6 +408,73 @@ async function tokenize(
     )
   }
   return tokens
+}
+
+/** One token with its text; `piece` is null when the server sent it as raw bytes. */
+interface Piece {
+  id: number
+  piece: string | null
+}
+
+function isByteList(value: unknown): boolean {
+  return Array.isArray(value) && value.every((b) => isTokenId(b) && b <= 255)
+}
+
+/** `/tokenize` with `with_pieces`: each id with its text, so trusted pieces show their markers. */
+async function tokenizePieces(
+  doFetch: typeof fetch,
+  baseUrl: string,
+  content: string,
+  args: TokenizeArgs,
+  signal: AbortSignal | undefined
+): Promise<Piece[]> {
+  const answer = await postJson(
+    doFetch,
+    baseUrl,
+    "tokenize",
+    tokenizeBody(content, args, true),
+    signal
+  )
+  const tokens = answer.tokens
+  const pieces: Piece[] = []
+  if (Array.isArray(tokens)) {
+    for (const token of tokens) {
+      if (!isRecord(token) || !isTokenId(token.id)) break
+      if (typeof token.piece === "string") {
+        pieces.push({ id: token.id, piece: token.piece })
+      } else if (isByteList(token.piece)) {
+        pieces.push({ id: token.id, piece: null })
+      } else break
+    }
+  }
+  if (!Array.isArray(tokens) || pieces.length !== tokens.length) {
+    throw new InferenceError(
+      "malformed",
+      200,
+      "/tokenize answer has no list of token ids"
+    )
+  }
+  return pieces
+}
+
+const MARKER_PUNCTUATION = /[<>[\]|]/u
+const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u
+// One whole `<|…>` or `<…|>` form (so `<|…|>` too), with something between the bars and
+// brackets. In the pinned Gemma 4 vocabulary only `<|"|>` (id 52) has this shape and no letter.
+const BARRED_ANGLE_FORM = /^(?:<\|[\s\S]+>|<[\s\S]+\|>)$/u
+
+/**
+ * Whether a token of the rendered template reads as a chat-template marker: its text mixes
+ * letters or digits with `<`, `>`, `[`, `]` or `|`, as `<|turn>`, `<channel|>`, `[INST]` and
+ * `<|im_start|>` do, or it is one whole barred angle form such as Gemma 4's `<|"|>` (#542).
+ * Plain words, punctuation and whitespace do not, so material may share them: ` <`, `|>`, `||`,
+ * `->`, `[]` and letterless `[...]` or `[*]` are ordinary tokens.
+ */
+export function isMarkerPiece(piece: string): boolean {
+  return (
+    (MARKER_PUNCTUATION.test(piece) && LETTER_OR_DIGIT.test(piece)) ||
+    BARRED_ANGLE_FORM.test(piece)
+  )
 }
 
 // A private-use character no template writes, around a per-request nonce.
@@ -318,6 +527,10 @@ export function splitRendered(
  * tokenized with special tokens on; every material span alone with `parse_special: false`, so
  * no text inside material can become a control token. The first piece carries the BOS token,
  * which the server strips from the rendered template.
+ *
+ * A server still matches user-defined tokens in plain text (Gemma 4's `<|channel>`, #536), so
+ * any material span holding an id that a trusted piece uses as a marker is refused with
+ * `MaterialMarkerError`, and nothing is sent.
  */
 async function promptTokens(
   doFetch: typeof fetch,
@@ -327,30 +540,37 @@ async function promptTokens(
   signal: AbortSignal | undefined
 ): Promise<number[]> {
   const ids: number[] = []
+  const markers = new Set<number>()
+  const materialIds = new Set<number>()
   for (const [i, piece] of pieces.entries()) {
     if (i === 0 || piece !== "") {
-      ids.push(
-        ...(await tokenize(
-          doFetch,
-          baseUrl,
-          piece,
-          { addSpecial: i === 0, parseSpecial: true },
-          signal
-        ))
-      )
+      for (const token of await tokenizePieces(
+        doFetch,
+        baseUrl,
+        piece,
+        { addSpecial: i === 0, parseSpecial: true },
+        signal
+      )) {
+        ids.push(token.id)
+        if (token.piece !== null && isMarkerPiece(token.piece))
+          markers.add(token.id)
+      }
     }
     const span = spans[i]
     if (span === undefined || span === "") continue
-    ids.push(
-      ...(await tokenize(
-        doFetch,
-        baseUrl,
-        span,
-        { addSpecial: false, parseSpecial: false },
-        signal
-      ))
+    const spanIds = await tokenize(
+      doFetch,
+      baseUrl,
+      span,
+      { addSpecial: false, parseSpecial: false },
+      signal
     )
+    for (const id of spanIds) materialIds.add(id)
+    ids.push(...spanIds)
   }
+  const found = [...materialIds].filter((id) => markers.has(id))
+  if (found.length > 0)
+    throw new MaterialMarkerError(found.sort((a, b) => a - b))
   return ids
 }
 
@@ -382,6 +602,7 @@ export function createModelClient(
   const tripwireMin =
     config.tripwireMinPromptTokens ?? DEFAULT_TRIPWIRE_MIN_PROMPT_TOKENS
   const doFetch = deps.fetch ?? fetch
+  const chatTemplateKwargs = config.chatTemplateKwargs
 
   return {
     async complete(
@@ -400,11 +621,16 @@ export function createModelClient(
 
       const nonce = newBoundary()
       const spans: string[] = []
-      const templateBody = buildTemplateBody(req, boundary, (span) => {
-        const mark = placeholder(nonce, spans.length)
-        spans.push(span)
-        return mark
-      })
+      const templateBody = buildTemplateBody(
+        req,
+        boundary,
+        (span) => {
+          const mark = placeholder(nonce, spans.length)
+          spans.push(span)
+          return mark
+        },
+        chatTemplateKwargs
+      )
       const rendered = await applyTemplate(
         doFetch,
         baseUrl,
@@ -434,16 +660,12 @@ export function createModelClient(
           `model server answered ${String(response.status)}`
         )
       }
-      if (response.body === null) {
-        throw new InferenceError(
-          "malformed",
-          response.status,
-          "response has no body"
-        )
-      }
-      const streamed = await readStream(response, response.body, opts.signal)
+      const streamed = await readCompletion(response, opts.signal)
       return {
         text: streamed.text,
+        ...(streamed.tokenProbabilities === undefined
+          ? {}
+          : { tokenProbabilities: streamed.tokenProbabilities }),
         estimatedPromptTokens,
         reportedPromptTokens: streamed.promptTokens,
         truncationSuspected: truncationSuspected(
@@ -480,6 +702,9 @@ export async function connectModelClient(
         { role: "system", content: PROBE_TEXT },
         { role: "user", content: PROBE_TEXT },
       ],
+      ...(config.chatTemplateKwargs === undefined
+        ? {}
+        : { chat_template_kwargs: canonicalize(config.chatTemplateKwargs) }),
     }),
     deps.signal
   )
@@ -561,4 +786,44 @@ export async function readContextTokens(
     )
   }
   return nCtx
+}
+
+/** Reads the active local model id used to key model-dependent caches. */
+export async function readModelId(
+  baseUrl: string,
+  deps: ModelClientDeps = {}
+): Promise<string> {
+  let response: Response
+  try {
+    response = await (deps.fetch ?? fetch)(
+      `${loopbackBaseUrl(baseUrl)}/v1/models`
+    )
+  } catch (cause) {
+    throw new Error("local model server is unreachable at /v1/models", {
+      cause,
+    })
+  }
+  if (!response.ok)
+    throw new Error(
+      `local model server answered ${String(response.status)} for /v1/models`
+    )
+  let value: unknown
+  try {
+    value = await response.json()
+  } catch (cause) {
+    throw new Error("local model server /v1/models response is not JSON", {
+      cause,
+    })
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("local model server /v1/models response is not an object")
+  const data: unknown = Reflect.get(value, "data")
+  const first: unknown = Array.isArray(data) ? data[0] : undefined
+  const id: unknown =
+    typeof first === "object" && first !== null && !Array.isArray(first)
+      ? Reflect.get(first, "id")
+      : undefined
+  if (typeof id !== "string" || id.trim() === "")
+    throw new Error("local model server /v1/models has no model id")
+  return id
 }

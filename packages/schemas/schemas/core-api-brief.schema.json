@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiBrief",
+  "description": "Response of GET /brief/latest and GET /brief/:date: one stored morning brief. `date` is the brief's local calendar date; `generatedAt` is the instant it was built. Every item line carries its ledger row and the source quote it was read from; the `more` line points at the whole ledger; a `deferred` line links the ledger row of an item triage sent to the brief.",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "generatedAt": { "type": "string", "minLength": 1 },
+    "windowStart": { "type": "string", "minLength": 1 },
+    "windowEnd": { "type": "string", "minLength": 1 },
+    "lines": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "title": "CoreApiBriefItemLine",
+            "type": "object",
+            "properties": {
+              "kind": { "enum": ["overdue", "due", "changed", "needs-you"] },
+              "text": { "type": "string", "minLength": 1 },
+              "ledger": {
+                "type": "object",
+                "properties": {
+                  "type": { "enum": ["obligation", "extraction"] },
+                  "id": { "type": "string", "minLength": 1 }
+                },
+                "required": ["type", "id"],
+                "additionalProperties": false
+              },
+              "source": {
+                "type": "object",
+                "properties": {
+                  "documentId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "span": { "$ref": "source-span.schema.json" }
+                },
+                "required": ["documentId", "span"],
+                "additionalProperties": false
+              },
+              "detail": {
+                "title": "CoreApiBriefDetail",
+                "type": "object",
+                "properties": {
+                  "text": { "type": "string", "minLength": 1 },
+                  "cites": {
+                    "type": "array",
+                    "items": {
+                      "title": "CoreApiBriefCite",
+                      "type": "object",
+                      "properties": {
+                        "messageId": { "type": "string", "minLength": 1 },
+                        "documentId": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        },
+                        "page": { "type": "integer", "minimum": 1 }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": ["text", "cites"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["kind", "text", "ledger", "source"],
+            "additionalProperties": false
+          },
+          {
+            "title": "CoreApiBriefDeferredLine",
+            "type": "object",
+            "properties": {
+              "kind": { "const": "deferred" },
+              "text": { "type": "string", "minLength": 1 },
+              "ledger": {
+                "type": "object",
+                "properties": {
+                  "type": { "enum": ["obligation", "extraction"] },
+                  "id": { "type": "string", "minLength": 1 }
+                },
+                "required": ["type", "id"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["kind", "text", "ledger"],
+            "additionalProperties": false
+          },
+          {
+            "title": "CoreApiBriefMoreLine",
+            "type": "object",
+            "properties": {
+              "kind": { "const": "more" },
+              "text": { "type": "string", "minLength": 1 },
+              "count": { "type": "integer", "minimum": 1 },
+              "ledger": {
+                "type": "object",
+                "properties": { "type": { "const": "ledger" } },
+                "required": ["type"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["kind", "text", "count", "ledger"],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "messagesRead": { "type": "integer", "minimum": 0 },
+        "messagesTotal": { "type": "integer", "minimum": 0 },
+        "documentsRead": { "type": "integer", "minimum": 0 },
+        "documentsTotal": { "type": "integer", "minimum": 0 },
+        "windowStart": { "type": "string", "minLength": 1 },
+        "windowEnd": { "type": "string", "minLength": 1 },
+        "skipped": { "type": "integer", "minimum": 0 }
+      },
+      "required": [
+        "messagesRead",
+        "messagesTotal",
+        "documentsRead",
+        "documentsTotal",
+        "windowStart",
+        "windowEnd",
+        "skipped"
+      ],
+      "additionalProperties": false
+    },
+    "coverageLine": { "type": "string" }
+  },
+  "required": [
+    "id",
+    "date",
+    "generatedAt",
+    "windowStart",
+    "windowEnd",
+    "lines",
+    "coverage",
+    "coverageLine"
+  ],
+  "additionalProperties": false
+}

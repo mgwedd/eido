@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { UnlockView } from "@/components/unlock-view"
+import { IPHONE_UA, MAC_UA } from "./platform"
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -39,6 +40,7 @@ let root: Root
 
 function setup(opts: {
   hostname?: string
+  userAgent?: string
   webauthn?: boolean
   status?: unknown
   get?: () => Promise<unknown>
@@ -52,6 +54,8 @@ function setup(opts: {
     vi.stubGlobal("PublicKeyCredential", FakeCredential)
     vi.stubGlobal("AuthenticatorAssertionResponse", FakeAssertionResponse)
     vi.stubGlobal("navigator", {
+      userAgent: opts.userAgent ?? "",
+      maxTouchPoints: 0,
       credentials: {
         get: vi.fn(opts.get ?? (async () => new FakeCredential())),
       },
@@ -112,10 +116,19 @@ describe("UnlockView", () => {
   it("unlocks with the button and goes to the requested page", async () => {
     setup({})
     await render()
-    expect(button()?.textContent).toContain("Unlock with Face ID")
+    expect(button()?.textContent).toContain("Unlock with passkey")
     expect(replace).not.toHaveBeenCalled()
     await press()
     expect(replace).toHaveBeenCalledWith("/queue")
+  })
+
+  it("names Face ID on an iPhone and Touch ID on a Mac", async () => {
+    setup({ userAgent: IPHONE_UA })
+    await render()
+    expect(button()?.textContent).toContain("Unlock with Face ID")
+    setup({ userAgent: MAC_UA })
+    await render()
+    expect(button()?.textContent).toContain("Unlock with Touch ID")
   })
 
   it("says the session expired and does not skip ahead on a stale live session", async () => {
@@ -152,7 +165,15 @@ describe("UnlockView", () => {
     expect(button()).toBeNull()
   })
 
-  it("stays locked and lets the user try again after Face ID is cancelled", async () => {
+  it("links the not-enrolled state to enrolment, keeping the page to return to", async () => {
+    setup({ status: { enrolled: false, sessionExpiresAt: null } })
+    await render("/queue")
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(
+      "/enroll?next=%2Fqueue"
+    )
+  })
+
+  it("stays locked and lets the user try again after the passkey prompt is cancelled", async () => {
     setup({
       get: async () => {
         throw new DOMException("cancelled", "NotAllowedError")
@@ -162,7 +183,7 @@ describe("UnlockView", () => {
     await press()
     expect(replace).not.toHaveBeenCalled()
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "Face ID was cancelled. Eido is still locked."
+      "The passkey prompt was cancelled. Eido is still locked."
     )
     expect(button()?.disabled).toBe(false)
   })
@@ -206,6 +227,6 @@ describe("UnlockView", () => {
     )
     setup({})
     await press()
-    expect(button()?.textContent).toContain("Unlock with Face ID")
+    expect(button()?.textContent).toContain("Unlock with passkey")
   })
 })

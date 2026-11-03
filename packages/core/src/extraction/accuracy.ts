@@ -5,6 +5,7 @@ import { ingestBatch } from "../index/ingest"
 import type { ExtractionFieldName } from "../ledger/types"
 import type { Parser } from "../parsers/parse-document"
 import { createExtractor } from "./pipeline"
+import { writeQueueFor } from "../db/write-queue"
 import type { ExtractorDeps } from "./pipeline"
 import type { ExtractionStatus } from "./types"
 
@@ -274,7 +275,8 @@ export function formatReport(report: AccuracyReport): string {
   return lines.join("\n")
 }
 
-export type AccuracyDeps = Omit<ExtractorDeps, "parser"> & {
+export type AccuracyDeps = ExtractorDeps & {
+  /** Parses each original once; its text is stored as the document body the extractor reads. */
   parser: Pick<Parser, "parseDocument" | "storeOriginal">
   /** The entity the documents are filed under. */
   entityId: string
@@ -312,21 +314,32 @@ export async function runAccuracy(
       continue
     }
     seen.set(sha256, label.file)
-    ingestBatch(deps.db, {
-      connector: "accuracy",
-      stream: "local",
-      documents: [
-        {
-          sha256,
-          source: "local",
-          sourceRef: label.file,
-          mime,
-          entityId: deps.entityId,
-          body: "",
-        },
-      ],
-      nextCursor: String(index),
-    })
+    const parsed = await deps.parser.parseDocument({ blobSha256: sha256, mime })
+    if (!parsed.ok) {
+      outcomes.push({
+        file: label.file,
+        kind: "failed",
+        reason: `the document could not be parsed (${parsed.reason})`,
+      })
+      continue
+    }
+    await writeQueueFor(deps.db).run(() =>
+      ingestBatch(deps.db, {
+        connector: "accuracy",
+        stream: "local",
+        documents: [
+          {
+            sha256,
+            source: "local",
+            sourceRef: label.file,
+            mime,
+            entityId: deps.entityId,
+            body: parsed.text,
+          },
+        ],
+        nextCursor: String(index),
+      })
+    )
     try {
       const result = await extractor.extractDocument(sha256)
       outcomes.push({

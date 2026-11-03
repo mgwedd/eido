@@ -28,6 +28,9 @@
       "$ref": "intent-email-trash.schema.json"
     },
     {
+      "$ref": "intent-email-untrash.schema.json"
+    },
+    {
       "$ref": "intent-calendar-create.schema.json"
     },
     {
@@ -50,6 +53,9 @@
     },
     {
       "$ref": "intent-file-delete.schema.json"
+    },
+    {
+      "$ref": "intent-confirm-field.schema.json"
     }
   ]
 }

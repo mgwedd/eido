@@ -23,6 +23,15 @@ export type ParsedMessage = {
   replyTo: Mailbox[]
   to: Mailbox[]
   cc: Mailbox[]
+  bcc: Mailbox[]
+  /** Mail headers used for deterministic delivery automation filtering. */
+  listUnsubscribe: boolean
+  autoSubmitted?: string
+  precedence?: string
+  /** Every Authentication-Results header, in message order, top first. */
+  authenticationResults: string[]
+  /** The HTML part as sent, for link checks only; never indexed. */
+  html?: string
   /** The text part when there is one, otherwise the HTML part reduced to text. */
   text: string
   attachments: ParsedAttachment[]
@@ -61,6 +70,26 @@ export async function parseMessage(
     replyTo: mailboxes(email.replyTo),
     to: mailboxes(email.to),
     cc: mailboxes(email.cc),
+    bcc: mailboxes(email.bcc),
+    listUnsubscribe: email.headers.some(
+      (header) => header.key === "list-unsubscribe"
+    ),
+    ...(() => {
+      const value = email.headers.find(
+        (header) => header.key === "auto-submitted"
+      )?.value
+      return value === undefined ? {} : { autoSubmitted: value }
+    })(),
+    ...(() => {
+      const value = email.headers.find(
+        (header) => header.key === "precedence"
+      )?.value
+      return value === undefined ? {} : { precedence: value }
+    })(),
+    authenticationResults: email.headers
+      .filter((header) => header.key === "authentication-results")
+      .map((header) => header.value),
+    ...(email.html === undefined ? {} : { html: email.html }),
     text: stripInvisible(text).trim(),
     attachments: email.attachments.map((a, index) => ({
       filename: a.filename ?? `attachment-${index + 1}`,

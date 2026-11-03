@@ -2,7 +2,13 @@ import { existsSync, readdirSync } from "node:fs"
 import path from "node:path"
 import { describe, expect, test } from "vitest"
 
-import { isActive, MAX_PHONE_TABS, NAV_ITEMS, phoneItems } from "./nav"
+import {
+  isActive,
+  MAX_PHONE_TABS,
+  NAV_ITEMS,
+  phoneItems,
+  phoneOverflowItems,
+} from "./nav"
 
 const APP_DIR = path.join(__dirname, "..", "app")
 
@@ -55,6 +61,17 @@ describe("nav registry", () => {
       { href: "/queue", label: "Queue", icon, phone: true },
     ]
     expect(phoneItems(items).map((item) => item.href)).toEqual(["/", "/queue"])
+    expect(phoneOverflowItems(items).map((item) => item.href)).toEqual([
+      "/settings",
+    ])
+  })
+
+  test("every page outside the phone tab bar is still linked on phones", () => {
+    expect(phoneOverflowItems().map((item) => item.href)).toEqual([
+      "/connectors",
+      "/settings",
+      "/profile",
+    ])
   })
 
   test("the page test sees the shell route group", () => {

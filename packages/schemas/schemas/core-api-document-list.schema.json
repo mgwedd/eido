@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiDocumentList",
+  "description": "Response of GET /documents?entity=&type=&source=&q=&limit=&offset=. Newest ingested first; with `q`, best text match first. No match is an empty list. `nextOffset` is the offset of the next page, or null on the last page.",
+  "type": "object",
+  "properties": {
+    "documents": {
+      "type": "array",
+      "items": { "$ref": "core-api-document-summary.schema.json" }
+    },
+    "nextOffset": {
+      "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+    }
+  },
+  "required": ["documents", "nextOffset"],
+  "additionalProperties": false
+}

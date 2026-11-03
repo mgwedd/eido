@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 /* eslint-disable @typescript-eslint/require-await -- fetch and navigator.credentials.get return promises, so their stubs are async functions with nothing to await */
+import { IPHONE_UA } from "./platform"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { GatePrepareApproval } from "@eido/schemas"
 import {
@@ -13,8 +14,10 @@ const prepared: GatePrepareApproval = {
   kind: "email.send",
   origin: "reactive",
   state: "pending",
-  payload: "{}",
-  payloadHash: "a".repeat(64),
+  payload: '{"a":1}',
+  // SHA-256 of the 7 bytes {"a":1}, computed with Python hashlib.
+  payloadHash:
+    "015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862",
   nonce: "N".repeat(43),
   documentIds: [],
 }
@@ -33,11 +36,15 @@ class FakeCredential {
   response: unknown = new FakeAssertionResponse()
 }
 
-function stubWebAuthn(get: () => Promise<unknown>) {
+function stubWebAuthn(get: () => Promise<unknown>, userAgent = "") {
   vi.stubGlobal("AuthenticatorAssertionResponse", FakeAssertionResponse)
   vi.stubGlobal("PublicKeyCredential", FakeCredential)
   const spy = vi.fn(get)
-  vi.stubGlobal("navigator", { credentials: { get: spy } })
+  vi.stubGlobal("navigator", {
+    userAgent,
+    maxTouchPoints: 0,
+    credentials: { get: spy },
+  })
   return spy
 }
 
@@ -110,6 +117,52 @@ describe("prepareApproval", () => {
   })
 })
 
+describe("device-side payload check", () => {
+  const altered = { ...prepared, payload: '{"a":2}' }
+
+  it("refuses an approval whose payload does not hash to the gate's hash", async () => {
+    vi.stubGlobal("fetch", async () => json(200, altered))
+    expect(await prepareApproval("intent-1")).toEqual({
+      ok: false,
+      error: {
+        code: "payload_changed",
+        message: "The payload changed. Nothing was signed.",
+      },
+    })
+  })
+
+  it("refuses a payload that is not JSON", async () => {
+    vi.stubGlobal("fetch", async () =>
+      json(200, { ...prepared, payload: "{nope" })
+    )
+    expect(failureCode(await prepareApproval("intent-1"))).toBe(
+      "payload_changed"
+    )
+  })
+
+  it("never calls credentials.get or the gate when the payload was altered after prepare", async () => {
+    const get = stubWebAuthn(async () => new FakeCredential())
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    expect(failureCode(await signApproval(altered))).toBe("payload_changed")
+    expect(get).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("changes the challenge when one byte of the payload changes", async () => {
+    const hash =
+      "7e8059f495589fcd981232cc11d00b00da3802c01d688fa1cf1f6bed6e5bb33c"
+    const original = await assertionOptions(prepared, "eido.example.invalid")
+    const changed = await assertionOptions(
+      { ...prepared, payloadHash: hash },
+      "eido.example.invalid"
+    )
+    expect(toHex(changed.publicKey?.challenge as ArrayBuffer)).not.toBe(
+      toHex(original.publicKey?.challenge as ArrayBuffer)
+    )
+  })
+})
+
 describe("signApproval", () => {
   it("signs over the nonce of each prepared call and sends that nonce", async () => {
     const get = stubWebAuthn(async () => new FakeCredential())
@@ -174,7 +227,7 @@ describe("signApproval", () => {
     expect(call[1].headers).toEqual({ "content-type": "application/json" })
   })
 
-  it("sends nothing when Face ID is cancelled", async () => {
+  it("sends nothing when the passkey prompt is cancelled", async () => {
     stubWebAuthn(async () => {
       throw new DOMException("cancelled", "NotAllowedError")
     })
@@ -182,6 +235,20 @@ describe("signApproval", () => {
     vi.stubGlobal("fetch", fetchMock)
     expect(failureCode(await signApproval(prepared))).toBe("cancelled")
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("says Face ID did not complete on an iPhone and the passkey prompt elsewhere", async () => {
+    stubWebAuthn(async () => null, IPHONE_UA)
+    vi.stubGlobal("fetch", vi.fn())
+    const onIphone = await signApproval(prepared)
+    expect(onIphone.ok === false && onIphone.error.message).toBe(
+      "Face ID did not complete."
+    )
+    stubWebAuthn(async () => null)
+    const elsewhere = await signApproval(prepared)
+    expect(elsewhere.ok === false && elsewhere.error.message).toBe(
+      "The passkey prompt did not complete."
+    )
   })
 
   it("sends nothing when the device returns no assertion", async () => {
