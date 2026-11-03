@@ -1,5 +1,7 @@
 import type { DatabaseSync } from "node:sqlite"
 import { GateUnavailableError } from "@eido/gate"
+import type { CoreApiError, CoreApiObligationList } from "@eido/schemas"
+import { validateCoreApiObligationList } from "@eido/schemas"
 import { beforeEach, describe, expect, test } from "vitest"
 import { addDocs, ledgerFixture, testDoc } from "../ledger/ledger.test-support"
 import {
@@ -15,6 +17,7 @@ import type { ProfileStore } from "../profile/store"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
 
+let fixture: Awaited<ReturnType<typeof ledgerFixture>>
 let db: DatabaseSync
 let profile: ProfileStore
 let audits: ObligationAuditEntry[]
@@ -30,7 +33,7 @@ function handlerWith(audit: ObligationAuditSink): ApiHandler {
 }
 
 beforeEach(async () => {
-  const fixture = await ledgerFixture()
+  fixture = await ledgerFixture()
   db = fixture.db
   profile = fixture.profile
   const [docId = ""] = addDocs(db, [
@@ -185,5 +188,240 @@ describe("POST /obligations/:id/{done,resolve,reopen}", () => {
     expect(
       (await post(`/obligations/${String(id)}/done`, "{}", h)).status
     ).toBe(404)
+  })
+})
+
+describe("GET /obligations", () => {
+  let listHandle: ApiHandler
+  let propertyId: string
+  let companyId: string
+  let docA: string
+  let docB: string
+
+  beforeEach(() => {
+    propertyId = fixture.property.id
+    companyId = fixture.company.id
+    const docs = addDocs(db, [
+      testDoc("doc-prop", { entityId: propertyId, title: "Utility Bill" }),
+      testDoc("doc-comp", { entityId: companyId, title: "Vendor Contract" }),
+    ])
+    docA = docs[0]!
+    docB = docs[1]!
+    listHandle = createApiHandler({
+      profile,
+      allowedHosts: ["core.test"],
+      documents: { db },
+    })
+  })
+
+  const get = (query = "", init?: RequestInit): Promise<Response> =>
+    listHandle(new Request(`http://core.test/obligations${query}`, init))
+
+  async function list(query = ""): Promise<CoreApiObligationList> {
+    const response = await get(query)
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as unknown
+    const checked = validateCoreApiObligationList(json)
+    if (!checked.ok) throw new Error(checked.errors.join("; "))
+    return checked.value
+  }
+
+  async function errorOf(
+    response: Response
+  ): Promise<CoreApiError["error"] & { status: number }> {
+    const body = (await response.json()) as CoreApiError
+    return { status: response.status, ...body.error }
+  }
+
+  test("empty ledger returns an empty list", async () => {
+    const fresh = await ledgerFixture()
+    const emptyHandle = createApiHandler({
+      profile: fresh.profile,
+      allowedHosts: ["core.test"],
+      documents: { db: fresh.db },
+    })
+    const response = await emptyHandle(
+      new Request("http://core.test/obligations")
+    )
+    expect(response.status).toBe(200)
+    const body: unknown = await response.json()
+    expect(body).toEqual({ obligations: [], nextOffset: null })
+  })
+
+  test("returns obligations with entity, source, status, and default draft intent", async () => {
+    const oblId = await insertObligation(db, {
+      entityId: propertyId,
+      action: "Review contract",
+      party: "Acme Corp",
+      dueAt: "2026-06-01",
+      status: "open",
+      direction: "owed",
+      docId: docA,
+      span: { start: 10, end: 20 },
+    })
+    const body = await list()
+    const found = body.obligations.find((o) => o.id === oblId)
+    expect(found).toBeDefined()
+    expect(found).toMatchObject({
+      id: oblId,
+      action: "Review contract",
+      party: "Acme Corp",
+      dueAt: "2026-06-01",
+      status: "open",
+      direction: "owed",
+      hasDraftIntent: false,
+      entity: {
+        id: propertyId,
+        name: "Test Property",
+        tag: "PROP",
+      },
+      source: {
+        documentId: docA,
+        span: { start: 10, end: 20 },
+        title: "Utility Bill",
+      },
+    })
+    expect(typeof found?.updatedAt).toBe("string")
+  })
+
+  test("filters by entity", async () => {
+    const compOblId = await insertObligation(db, {
+      entityId: companyId,
+      action: "Sign NDA",
+      status: "open",
+      docId: docB,
+      span: { start: 0, end: 5 },
+    })
+    const propList = await list(`?entity=${propertyId}`)
+    expect(propList.obligations.every((o) => o.entity.id === propertyId)).toBe(
+      true
+    )
+    expect(propList.obligations.some((o) => o.id === id)).toBe(true)
+    expect(propList.obligations.some((o) => o.id === compOblId)).toBe(false)
+
+    const compList = await list(`?entity=${companyId}`)
+    expect(compList.obligations.every((o) => o.entity.id === companyId)).toBe(
+      true
+    )
+    expect(compList.obligations.some((o) => o.id === compOblId)).toBe(true)
+
+    const unknownList = await list("?entity=non-existent")
+    expect(unknownList).toEqual({ obligations: [], nextOffset: null })
+  })
+
+  test("filters by status", async () => {
+    const doneId = await insertObligation(db, {
+      entityId: propertyId,
+      action: "Done task",
+      status: "done",
+      docId: docA,
+      span: { start: 0, end: 5 },
+    })
+    const dismissedId = await insertObligation(db, {
+      entityId: propertyId,
+      action: "Dismissed task",
+      status: "dismissed",
+      docId: docA,
+      span: { start: 0, end: 5 },
+    })
+
+    const openList = await list("?status=open")
+    expect(openList.obligations.every((o) => o.status === "open")).toBe(true)
+    expect(openList.obligations.some((o) => o.id === id)).toBe(true)
+
+    const doneList = await list("?status=done")
+    expect(doneList.obligations.every((o) => o.status === "done")).toBe(true)
+    expect(doneList.obligations.some((o) => o.id === doneId)).toBe(true)
+
+    const dismissedList = await list("?status=dismissed")
+    expect(
+      dismissedList.obligations.every((o) => o.status === "dismissed")
+    ).toBe(true)
+    expect(dismissedList.obligations.some((o) => o.id === dismissedId)).toBe(
+      true
+    )
+
+    const err = await errorOf(await get("?status=unknown"))
+    expect(err.status).toBe(422)
+    expect(err.code).toBe("invalid")
+    expect(err.fields?.[0]?.field).toBe("status")
+  })
+
+  test("orders by due_at ASC NULLS LAST, id ASC", async () => {
+    // Current 'id' from beforeEach has dueAt: null.
+    const earlyId = await insertObligation(db, {
+      entityId: propertyId,
+      action: "Early task",
+      dueAt: "2026-01-15",
+      status: "open",
+      docId: docA,
+      span: { start: 0, end: 5 },
+    })
+    const laterId = await insertObligation(db, {
+      entityId: propertyId,
+      action: "Later task",
+      dueAt: "2026-03-20",
+      status: "open",
+      docId: docA,
+      span: { start: 0, end: 5 },
+    })
+    const nullId2 = await insertObligation(db, {
+      entityId: propertyId,
+      action: "Another null due date",
+      status: "open",
+      docId: docA,
+      span: { start: 0, end: 5 },
+    })
+
+    const body = await list("?status=open")
+    const ids = body.obligations.map((o) => o.id)
+    // earlyId (2026-01-15) -> laterId (2026-03-20) -> id (null, smaller id) -> nullId2 (null, larger id)
+    expect(ids).toEqual([earlyId, laterId, id, nullId2])
+  })
+
+  test("pages with limit and offset, and enforces bounds", async () => {
+    for (let i = 0; i < 5; i++) {
+      await insertObligation(db, {
+        entityId: propertyId,
+        action: `Task ${i}`,
+        dueAt: `2026-01-0${i + 1}`,
+        status: "open",
+        docId: docA,
+        span: { start: 0, end: 5 },
+      })
+    }
+    const page1 = await list("?limit=2&status=open")
+    expect(page1.obligations).toHaveLength(2)
+    expect(page1.nextOffset).toBe(2)
+
+    const page2 = await list("?limit=2&offset=2&status=open")
+    expect(page2.obligations).toHaveLength(2)
+    expect(page2.nextOffset).toBe(4)
+
+    const page3 = await list("?limit=2&offset=4&status=open")
+    // Total open obligations: 1 from beforeEach (null due date) + 5 = 6
+    expect(page3.obligations).toHaveLength(2)
+    expect(page3.nextOffset).toBeNull()
+
+    // Out of bounds
+    expect((await errorOf(await get("?limit=0"))).status).toBe(422)
+    expect((await errorOf(await get("?limit=201"))).status).toBe(422)
+    expect((await errorOf(await get("?limit=abc"))).status).toBe(422)
+    expect((await errorOf(await get("?offset=-1"))).status).toBe(422)
+    expect((await errorOf(await get("?offset=xyz"))).status).toBe(422)
+  })
+
+  test("answers only GET", async () => {
+    const response = await listHandle(
+      new Request("http://core.test/obligations", { method: "POST" })
+    )
+    expect(response.status).toBe(405)
+    expect(response.headers.get("allow")).toBe("GET")
+  })
+
+  test("is not served without documents dependency", async () => {
+    const h = createApiHandler({ profile, allowedHosts: ["core.test"] })
+    const response = await h(new Request("http://core.test/obligations"))
+    expect(response.status).toBe(404)
   })
 })

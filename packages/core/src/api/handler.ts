@@ -42,7 +42,11 @@ import type { ProfileErrorCode } from "../profile/errors"
 import type { ProfileStore } from "../profile/store"
 import { BRIEF_PATH, briefRoute } from "./brief-route"
 import { dueSoonRoute } from "./due-soon"
-import { OBLIGATION_CHANGE_PATH, changeObligation } from "./obligations-route"
+import {
+  OBLIGATION_CHANGE_PATH,
+  changeObligation,
+  listObligationsRoute,
+} from "./obligations-route"
 
 export interface ApiDeps {
   profile: ProfileStore
@@ -382,6 +386,13 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       }
       const result: GateProposeResult = await deps.propose(proposal)
       return json({ id: result.id, tier: result.tier, state: result.state })
+    }
+
+    if (path === "/obligations" && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = listObligationsRoute(deps.documents.db, url.searchParams)
+      if (result.ok) return json(result.body)
+      return failure(result.code, result.message, { fields: result.fields })
     }
 
     const obligationMatch = OBLIGATION_CHANGE_PATH.exec(path)
