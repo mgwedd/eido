@@ -7,6 +7,8 @@
     "serve-routes": "node --disable-warning=ExperimentalWarning tailscale/bin.ts",
     "backup": "node --disable-warning=ExperimentalWarning backup/bin.ts",
     "bridge": "node --disable-warning=ExperimentalWarning bridge/bin.ts",
+    "llama": "node --disable-warning=ExperimentalWarning llama/bin.ts",
+    "host": "node --disable-warning=ExperimentalWarning host/bin.ts",
     "lint": "eslint",
     "typecheck": "tsc -p . --noEmit",
     "test": "vitest run --coverage",

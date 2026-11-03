@@ -11,6 +11,8 @@ export default defineConfig({
         "stack/**/*.ts",
         "backup/**/*.ts",
         "bridge/**/*.ts",
+        "llama/**/*.ts",
+        "host/**/*.ts",
       ],
       exclude: [
         "**/*.test.ts", // test files are not product code
@@ -19,6 +21,8 @@ export default defineConfig({
         "stack/bin.ts", // entry point: hands process.argv and real processes, signals and files to main()
         "backup/test-support.ts", // helpers for the backup tests
         "backup/bin.ts", // entry point: hands process.argv, the restic binary and the clock to main()
+        "llama/bin.ts", // entry point: hands process.argv and real files, processes, launchctl, signals and fetch to main()
+        "host/bin.ts", // entry point: hands process.argv and the real fdesetup and tailscale to main()
       ],
       reporter: ["text", "json-summary", "cobertura"],
       thresholds: {

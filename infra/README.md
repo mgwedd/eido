@@ -1,6 +1,6 @@
 # Infra
 
-Host setup for the Mac: the local stack and `tailscale serve` routes now; Proton Bridge supervision now; pf and llama-server later (#29, #70). Never commit secrets here; `infra/secrets` is denied to agents.
+Host setup for the Mac: the local stack, `tailscale serve` routes, Proton Bridge supervision, nightly backups, host checks and the pinned llama-server; pf later (#70). Never commit secrets here; `infra/secrets` is denied to agents.
 
 ## Local stack (#374)
 
@@ -97,6 +97,10 @@ Paths come from one place: `infra/backup/config.ts` reads the data directories f
 ### Failure signals
 
 A failed run logs `ERROR run: ...` to `~/Library/Logs/eido/backup.log` and exits 1. `backup check` exits 1 when the drive is absent, the repository has no snapshot, or the newest is over 36 hours old, so it is safe to wire into anything that watches exit codes. Showing a failure beyond the log and `check` (for example on the Today page) is an open question in #30; no UI is built for it here.
+
+## Host checks and llama-server (#29)
+
+`pnpm --filter @eido/infra host check` checks that FileVault is on and Tailscale is running; it only reads. `pnpm --filter @eido/infra llama <verify|launch|check-template|install|status|…>` runs `llama-server` on `127.0.0.1` from the pin in `infra/model.lock`, and refuses to start when the binary or model does not match it. The runbook, with the recorded results and how to update the pin, is `infra/llama-server.md`.
 
 ## Proton Bridge LaunchAgent (#68)
 

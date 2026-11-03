@@ -70,6 +70,7 @@ describe("nav registry", () => {
     expect(phoneOverflowItems().map((item) => item.href)).toEqual([
       "/connectors",
       "/settings",
+      "/profile",
     ])
   })
 

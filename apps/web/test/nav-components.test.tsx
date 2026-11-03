@@ -57,7 +57,7 @@ test("phone tab bar marks nothing current on an unlisted page", () => {
   expect(html).not.toContain("aria-current")
 })
 
-test("phone header links open Connectors and Settings with 44px targets", () => {
+test("phone header links open Connectors, Settings and Profile with 44px targets", () => {
   const html = renderToStaticMarkup(<PhoneMoreLinks />)
   expect(html).toMatch(/^<nav aria-label="More" class="[^"]*\bmd:hidden\b/)
   const links = [...html.matchAll(/<a ([^>]*)>/g)].map(([, attrs = ""]) => ({
@@ -68,5 +68,6 @@ test("phone header links open Connectors and Settings with 44px targets", () => 
   expect(links).toEqual([
     { href: "/connectors", label: "Connectors", big: true },
     { href: "/settings", label: "Settings", big: true },
+    { href: "/profile", label: "Profile", big: true },
   ])
 })
