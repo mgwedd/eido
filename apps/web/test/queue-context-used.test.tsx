@@ -51,17 +51,19 @@ afterEach(() => {
 
 describe("QueueContextUsed", () => {
   test("lists the source names and asks core for exactly those ids", async () => {
-    const fetchMock = vi.fn((_url: string) =>
-      Promise.resolve(
+    const urls: string[] = []
+    const fetchMock = vi.fn((url: string) => {
+      urls.push(url)
+      return Promise.resolve(
         Response.json({
           documents: [summary(invoice, "Water invoice"), summary(quote, null)],
           nextOffset: null,
         })
       )
-    )
+    })
     vi.stubGlobal("fetch", fetchMock)
     await mount([invoice, quote])
-    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+    expect(urls[0]).toBe(
       `/api/core/documents?ids=${invoice},${quote}&limit=200`
     )
     expect(container.textContent).toBe(
