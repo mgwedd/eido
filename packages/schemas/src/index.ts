@@ -31,6 +31,7 @@ export {
   validateGateFileHelperRequest,
   validateGateFileHelperResponse,
   validateGateFileRoots,
+  validateGateLocalFileRequest,
   validateGateFileRootsRequest,
   validateGateEditRequest,
   validateGateEnrolOptions,
@@ -92,6 +93,7 @@ export {
   validateCoreApiSendFrom,
   validateCoreApiError,
   validateCoreApiTodayDueSoon,
+  validateCoreApiBrief,
   validateAskCoverage,
   validateAskCitation,
 } from "./generated/validators"

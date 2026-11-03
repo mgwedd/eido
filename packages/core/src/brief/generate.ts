@@ -119,7 +119,10 @@ function obligationLines(
       text =
         dueAt === today ? `${action}: due today` : `${action}: due ${dueAt}`
     } else {
-      text = `New: ${action}${dueAt === undefined ? "" : `, due ${dueAt}`}`
+      // Created in the window (its source document was ingested in it) reads as new; any other
+      // change to an open obligation (reopened, due date moved) reads as updated.
+      const created = row["created"] === 1
+      text = `${created ? "New" : "Updated"}: ${action}${dueAt === undefined ? "" : `, due ${dueAt}`}`
     }
     const threadId =
       typeof row["thread_id"] === "string" ? row["thread_id"] : null
@@ -157,17 +160,20 @@ function selectObligations(
        ORDER BY o.due_at, o.id`
     )
     .all(today, horizon)
-  // Created in the window: the obligation's source document was ingested in it. Obligations
-  // already listed as overdue or due are not repeated.
+  // Changed in the window: the obligation's change time (#481) is in it, set on creation and on a
+  // status or due-date change. Re-ingesting its source does not move it. Obligations already
+  // listed as overdue or due are not repeated.
   const changed = db
     .prepare(
-      `SELECT ${OBLIGATION_COLUMNS} FROM obligations o
+      `SELECT ${OBLIGATION_COLUMNS},
+         (d.ingested_at > ? AND d.ingested_at <= ?) AS created
+       FROM obligations o
        JOIN documents d ON d.sha256 = o.doc_id
        WHERE o.status = 'open' AND (o.due_at IS NULL OR o.due_at > ?)
-         AND d.ingested_at > ? AND d.ingested_at <= ?
-       ORDER BY d.ingested_at, o.id`
+         AND o.updated_at > ? AND o.updated_at <= ?
+       ORDER BY o.updated_at, o.id`
     )
-    .all(horizon, windowStart, windowEnd)
+    .all(windowStart, windowEnd, horizon, windowStart, windowEnd)
   const parts = [
     obligationLines(db, overdue, "overdue", today),
     obligationLines(db, due, "due", today),

@@ -215,6 +215,27 @@ CREATE UNIQUE INDEX obligations_reply_anchor
 ALTER TABLE obligations ADD COLUMN resolution_reason TEXT CHECK (resolution_reason IS NULL OR resolution_reason = 'replied');
 `,
   BRIEF_SCHEMA_SQL,
+  `
+-- Change time of an obligation (#481): set when it is created and whenever its status or due date
+-- changes, so the morning brief can list what changed. Rows stored before this migration take
+-- their source document's ingest time, the closest record of when they appeared. A write that
+-- sets neither field to a new value leaves it alone; a writer may set updated_at itself.
+-- Amounts live on extractions, not obligations, so an amount change is not an obligation change.
+ALTER TABLE obligations ADD COLUMN updated_at TEXT;
+UPDATE obligations SET updated_at = (SELECT ingested_at FROM documents WHERE sha256 = obligations.doc_id);
+CREATE TRIGGER obligations_updated_at_on_insert AFTER INSERT ON obligations
+WHEN NEW.updated_at IS NULL
+BEGIN
+  UPDATE obligations SET updated_at = (SELECT ingested_at FROM documents WHERE sha256 = NEW.doc_id)
+  WHERE id = NEW.id;
+END;
+CREATE TRIGGER obligations_updated_at_on_change AFTER UPDATE ON obligations
+WHEN NEW.updated_at IS OLD.updated_at AND (NEW.status IS NOT OLD.status OR NEW.due_at IS NOT OLD.due_at)
+BEGIN
+  UPDATE obligations SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = NEW.id;
+END;
+CREATE INDEX obligations_updated_at ON obligations(updated_at);
+`,
 ]
 
 export const LEDGER_SCHEMA_VERSION = LEDGER_MIGRATIONS.length

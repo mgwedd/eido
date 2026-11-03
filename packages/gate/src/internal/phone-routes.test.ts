@@ -42,6 +42,7 @@ import { preparePushRegistration } from "./push-subscriptions"
 import type { PhoneState } from "./phone-routes"
 import {
   assertion,
+  signedFileRoots,
   auditRows,
   controlAuthorization,
   loggedText,
@@ -1517,6 +1518,19 @@ describe("phoneHandler: approvals", () => {
     })
 
     it("refuses an edit policy forbids", async () => {
+      await signedFileRoots(s.db, {
+        roots: [
+          {
+            id: "notes",
+            root: {
+              path: "/synthetic/notes",
+              dev: "1",
+              ino: "2",
+              trashDir: "trash",
+            },
+          },
+        ],
+      })
       const created = propose(s.db, s.policy, {
         intent: sample("file.delete"),
         origin: "task",
