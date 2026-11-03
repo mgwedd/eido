@@ -126,7 +126,7 @@ describe("searchConversations", () => {
       { conversationId: "c1", turnId: "t1", kind: "raw" },
     ])
     expect(fixture.store.searchConversations("zebrafish")[0]?.snippet).toBe(
-      "Please review the [zebrafish] lease renewal."
+      "Please review the \uE000zebrafish\uE001 lease renewal."
     )
   })
 
@@ -223,7 +223,7 @@ describe("searchConversations", () => {
       rawTurn(1, "Opening paragraph.\n\nThe quokka paragraph.\n\nClosing.")
     )
     expect(fixture.store.searchConversations("quokka")).toMatchObject([
-      { turnId: "t1", snippet: "The [quokka] paragraph." },
+      { turnId: "t1", snippet: "The \uE000quokka\uE001 paragraph." },
     ])
   })
 

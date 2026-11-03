@@ -56,6 +56,7 @@ export type SearchHit = {
   conversationId: string
   turnId?: string
   kind: SearchKind
+  /** Matches are wrapped in U+E000 (start) and U+E001 (end). */
   snippet: string
   score: number
 }
