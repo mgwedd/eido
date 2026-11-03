@@ -20,6 +20,7 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/queue", roles: ["owner"] },
   { path: "/ask", roles: ["owner"] },
   { path: "/ledger", roles: ["owner"] },
+  { path: "/ledger/replies", roles: ["owner"] },
   { path: "/activity", roles: ["owner"] },
   { path: "/documents", roles: ["owner"] },
   { path: "/connectors", roles: ["owner"] },

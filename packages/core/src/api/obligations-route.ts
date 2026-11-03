@@ -143,6 +143,19 @@ export function listObligationsRoute(
     }
   }
 
+  const rawDirection = param(params, "direction")
+  let direction: "owed" | "waiting" | undefined
+  if (rawDirection !== undefined) {
+    if (rawDirection === "owed" || rawDirection === "waiting") {
+      direction = rawDirection
+    } else {
+      errors.push({
+        field: "direction",
+        message: "must be one of: owed, waiting",
+      })
+    }
+  }
+
   if (errors.length > 0) {
     return {
       ok: false,
@@ -164,6 +177,11 @@ export function listObligationsRoute(
   if (status !== undefined) {
     conditions.push("o.status = ?")
     values.push(status)
+  }
+
+  if (direction !== undefined) {
+    conditions.push("o.direction = ?")
+    values.push(direction)
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""
