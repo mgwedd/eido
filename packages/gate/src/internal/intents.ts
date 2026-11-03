@@ -9,7 +9,7 @@ import type {
 import { append } from "./audit"
 import { canonicalize, hashCanonicalString, payloadHash } from "./canonical"
 import { issueCurrentNonce } from "./nonces"
-import { intentTier } from "./policy"
+import { escalateProactive, intentTier } from "./policy"
 import { intentBindings } from "./connectors"
 import type { Policy, Tier, TierDecision } from "./policy"
 import { atomically } from "./transaction"
@@ -433,7 +433,8 @@ export function propose(
     return { ok: false, code: "invalid_payload", errors: checked.errors }
   }
   const { id, decision } = atomically(db, () => {
-    const decision = intentTier(db, policy, checked.intent)
+    const base = intentTier(db, policy, checked.intent)
+    const decision = escalateProactive(base, input.origin)
     const id = insert(db, {
       checked,
       tier: decision.tier,
@@ -466,6 +467,20 @@ export function propose(
         document_ids: documentIds,
       }),
     })
+    if (base.tier !== decision.tier) {
+      append(db, {
+        actor: "policy",
+        action: "intent.tier_escalated",
+        target: id,
+        detailHash: payloadHash({
+          from: base.tier,
+          to: decision.tier,
+          reason: "proactive",
+          payload_hash: checked.hash,
+          origin: input.origin,
+        }),
+      })
+    }
     applyTier(db, id, decision)
     return { id, decision }
   })
@@ -530,7 +545,10 @@ export function editIntent(
   if (original.state !== "pending") return refuse("not_pending")
   if (!checked.ok) return refuse("invalid_payload", checked.errors)
   if (checked.intent.kind !== original.kind) return refuse("kind_changed")
-  const decision = intentTier(db, policy, checked.intent)
+  const decision = escalateProactive(
+    intentTier(db, policy, checked.intent),
+    original.origin
+  )
   if (decision.tier === "forbidden") {
     return refuse("forbidden", [decision.reason])
   }

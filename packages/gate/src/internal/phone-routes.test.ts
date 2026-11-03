@@ -1505,7 +1505,7 @@ describe("phoneHandler: approvals", () => {
     it("refuses an edit that would change the tier, keeping the original pending", async () => {
       const created = propose(s.db, s.policy, {
         intent: sample("calendar.create", { guests: ["guest@example.com"] }),
-        origin: "proactive",
+        origin: "reactive",
       })
       if (!created.ok || created.state !== "pending")
         throw new Error("not pending")

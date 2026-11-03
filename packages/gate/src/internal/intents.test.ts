@@ -208,6 +208,101 @@ describe("proposing", () => {
   })
 })
 
+describe("proactive origin", () => {
+  const proposeWith = (
+    s: Setup,
+    intent: unknown,
+    origin: "reactive" | "proactive" | "task"
+  ) => propose(s.db, s.policy, { intent, origin })
+
+  it("raises an auto-tier proactive intent to pending approval, and leaves reactive and task at auto", () => {
+    const s = fresh()
+    expect(proposeWith(s, sample("calendar.create"), "reactive")).toMatchObject(
+      { ok: true, tier: "auto", state: "approved" }
+    )
+    expect(proposeWith(s, sample("calendar.create"), "task")).toMatchObject({
+      ok: true,
+      tier: "auto",
+      state: "approved",
+    })
+    const proactive = ok(proposeWith(s, sample("calendar.create"), "proactive"))
+    expect(proactive).toMatchObject({ tier: "approval", state: "pending" })
+    expect(intentStatus(s.db, proactive.intentId)).toEqual({
+      state: "pending",
+      tier: "approval",
+    })
+  })
+
+  it("still refuses a proactive intent whose operation is forbidden", () => {
+    const s = fresh()
+    const result = proposeWith(
+      s,
+      sample("file.delete", { root: "secrets" }),
+      "proactive"
+    )
+    expect(result).toMatchObject({
+      ok: false,
+      code: "forbidden",
+      errors: ["root_not_allowed"],
+    })
+    expect(
+      auditRows(s.db).some((r) => r.action === "intent.tier_escalated")
+    ).toBe(false)
+  })
+
+  it("does not escalate an intent already at approval", () => {
+    const s = fresh()
+    const result = ok(proposeWith(s, sample("email.send"), "proactive"))
+    expect(result.tier).toBe("approval")
+    expect(
+      auditRows(s.db).some((r) => r.action === "intent.tier_escalated")
+    ).toBe(false)
+  })
+
+  it("audits the escalation between proposed and pending with a hash and no payload body", () => {
+    const s = fresh()
+    const { intentId, payloadHash: hash } = ok(
+      proposeWith(
+        s,
+        sample("calendar.create", { title: BODY_MARKER }),
+        "proactive"
+      )
+    )
+    const rows = auditRows(s.db).filter((r) => r.target === intentId)
+    expect(rows.map((r) => r.action)).toEqual([
+      "intent.proposed",
+      "intent.tier_escalated",
+      "intent.transition",
+    ])
+    const escalated = rows[1]
+    expect(escalated).toMatchObject({ actor: "policy" })
+    expect(escalated?.detail_hash).toBe(
+      payloadHash({
+        from: "auto",
+        to: "approval",
+        reason: "proactive",
+        payload_hash: hash,
+        origin: "proactive",
+      })
+    )
+    expect(loggedText(s.db)).not.toContain(BODY_MARKER)
+    expect(verifyChain(s.db).ok).toBe(true)
+  })
+
+  it("keeps an edit of a proactive intent at approval", () => {
+    const s = fresh()
+    const original = ok(proposeWith(s, sample("calendar.create"), "proactive"))
+    const result = editIntent(
+      s.db,
+      s.policy,
+      original.intentId,
+      sample("calendar.create", { title: "Moved" }),
+      "approver"
+    )
+    expect(result).toMatchObject({ ok: true })
+  })
+})
+
 describe("transitions", () => {
   const illegal: Array<[IntentState, IntentState]> = [
     ["approved", "pending"],
