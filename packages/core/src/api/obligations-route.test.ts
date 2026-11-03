@@ -335,7 +335,9 @@ describe("GET /obligations", () => {
         span: { start: 0, end: 5 },
       })
 
-    async function flags(h: ApiHandler): Promise<Map<number, boolean>> {
+    async function flags(
+      h: ApiHandler
+    ): Promise<Map<number, boolean | undefined>> {
       const response = await h(new Request("http://core.test/obligations"))
       expect(response.status).toBe(200)
       const checked = validateCoreApiObligationList(await response.json())
