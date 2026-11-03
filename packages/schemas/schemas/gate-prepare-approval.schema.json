@@ -65,6 +65,9 @@
       "minLength": 1,
       "maxLength": 2000,
       "description": "The agent's note on why it proposed the intent. Display-only: it is not part of the payload or its hash. Absent when the proposal had none."
+    },
+    "injection": {
+      "$ref": "gate-intent-injection.schema.json"
     }
   },
   "required": [

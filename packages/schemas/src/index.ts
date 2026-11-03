@@ -37,6 +37,7 @@ export {
   validateGateEnrolRequest,
   validateGateEnrolmentCode,
   validateGateIntentHistory,
+  validateGateIntentInjection,
   validateGateIntentProposal,
   validateGateIntentStatus,
   validateGateLoginOptions,

@@ -593,6 +593,11 @@ export interface GateIntentHistory {
   }>
 }
 
+/** Why core's fence flagged the material an intent was built from (#281). Present only on a flagged intent: a clean one carries no such field. Display-only, like the rationale: the gate stores it next to the intent and never hashes it or tiers on it. */
+export interface GateIntentInjection {
+  reasons: Array<"fence-tag" | "template-marker" | "boundary-confusion" | "hidden-characters">
+}
+
 /** What produced the intent (#11 intents.origin). */
 export type GateIntentOrigin = "reactive" | "proactive" | "task"
 
@@ -606,6 +611,7 @@ export interface GateIntentProposal {
     documentIds: Array<string>
   }
   rationale?: string
+  injection?: GateIntentInjection
 }
 
 /** Intent lifecycle state, as stored by the gate (#11). rejected, executed and failed are final. */
@@ -691,6 +697,7 @@ export interface GatePendingIntentList {
     createdAt: string
     editedFrom?: string
     rationale?: string
+    injection?: GateIntentInjection
   }>
 }
 
@@ -719,6 +726,7 @@ export interface GatePrepareApproval {
   documentIds: Array<string>
   editedFrom?: string
   rationale?: string
+  injection?: GateIntentInjection
 }
 
 /** Response 422 of POST /intents (#42): the intent does not match the intent schemas and nothing was stored. Each error names a field path and a reason, for example "$.args.body: required", and never a payload value. */

@@ -2,10 +2,11 @@ import type { DatabaseSync } from "node:sqlite"
 import { GateRequestError } from "@eido/gate"
 import type { IntentClient, IntentState } from "@eido/gate"
 import { INTENT_KINDS } from "@eido/schemas"
-import type { Intent } from "@eido/schemas"
+import type { GateIntentInjection, Intent } from "@eido/schemas"
 import { assembleContext } from "../context/assemble"
 import { selectTools } from "../context/tools"
 import { PromptTooLargeError } from "../inference/errors"
+import { INJECTION_REASONS } from "../inference/fence"
 import type { InferenceQueue } from "../inference/queue"
 import type { ToolDef } from "../inference/types"
 import { checkReply } from "./check"
@@ -88,6 +89,25 @@ function gateFailures(
   }))
 }
 
+/**
+ * What `fence` found in the pack's members, for the gate's approval card: every reason any member
+ * was flagged for, in the fence's fixed order. Absent when no member was flagged, so a proposal
+ * from clean material carries no flag.
+ */
+function injectionFlag(pack: {
+  members: readonly {
+    injectionSuspected: boolean
+    injectionReasons: readonly string[]
+  }[]
+}): { injection?: GateIntentInjection } {
+  const flagged = pack.members.filter((m) => m.injectionSuspected)
+  if (flagged.length === 0) return {}
+  const reasons = INJECTION_REASONS.filter((reason) =>
+    flagged.some((m) => m.injectionReasons.includes(reason))
+  )
+  return { injection: { reasons } }
+}
+
 function validConfig(config: ProposeConfig): void {
   const max = config.maxIntentsPerRequest
   if (!Number.isInteger(max) || max < 1)
@@ -131,6 +151,7 @@ export async function proposeIntents(
   const referable = referableMessages(deps.db, pack)
   const input = { request: request.text, pack, referable, kinds }
   const context = { kinds: new Set(kinds), referable }
+  const injection = injectionFlag(pack)
   const sources = {
     contextPackId: pack.id,
     documentIds: pack.members.map((m) => m.sha256),
@@ -179,6 +200,7 @@ export async function proposeIntents(
             intent,
             origin: "reactive",
             sources,
+            ...injection,
           })
           stored.set(key, { intentId: proposed.id, status: proposed.state })
         } catch (error) {

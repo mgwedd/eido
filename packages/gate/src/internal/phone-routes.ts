@@ -307,6 +307,7 @@ function prepared(state: PhoneState, approval: PreparedApproval): Reply {
       : { contextPackId: card.contextPackId }),
     ...(card.editedFrom === null ? {} : { editedFrom: card.editedFrom }),
     ...(card.rationale === null ? {} : { rationale: card.rationale }),
+    ...(card.injection === null ? {} : { injection: card.injection }),
   }
   return { status: 200, body }
 }
