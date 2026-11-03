@@ -50,6 +50,34 @@ const autoRow = entry(117, {
 })
 const olderDayRow = entry(116, { ts: "2026-10-16T08:00:00.000Z" })
 
+const documentOpenRow = entry(115, {
+  actor: "data-plane",
+  displayActor: "auto",
+  action: "audit.access.document_open",
+  target: "hmac:v1:1:fingerprint:taggeddoc",
+})
+
+const inferenceUseRow = entry(114, {
+  actor: "data-plane",
+  displayActor: "auto",
+  action: "audit.access.inference_use",
+  target: "hmac:v1:1:fingerprint:taggedai",
+})
+
+const contentCopyRow = entry(113, {
+  actor: "data-plane",
+  displayActor: "auto",
+  action: "audit.access.content_copy",
+  target: "hmac:v1:1:fingerprint:taggedcopy",
+})
+
+const instructionChangeRow = entry(112, {
+  actor: "data-plane",
+  displayActor: "auto",
+  action: "audit.access.instruction_change",
+  target: "hmac:v1:1:fingerprint:taggedinstruct",
+})
+
 /** An auto-tier execution (a mark-read intent) the gate can still undo. */
 const EXECUTED_ID = "5d2e8f71-3b4c-4a9e-8f06-1e7c9b2d4a63"
 const executedRow = entry(130, {
@@ -118,8 +146,12 @@ export {
   autoRow,
   chainBroken,
   chainOk,
+  contentCopyRow,
+  documentOpenRow,
   entry,
   history,
+  inferenceUseRow,
+  instructionChangeRow,
   intentRow,
   olderDayRow,
   refusedRow,

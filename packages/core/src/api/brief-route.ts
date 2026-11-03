@@ -26,7 +26,7 @@ function isCalendarDate(value: string): boolean {
 }
 
 function toLine(line: BriefLine): CoreApiBrief["lines"][number] {
-  if (line.kind === "more") return line
+  if (line.kind === "more" || line.kind === "deferred") return line
   const span: SourceSpan = {
     start: line.source.start,
     end: line.source.end,

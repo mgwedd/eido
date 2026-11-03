@@ -41,7 +41,9 @@ import {
 // guests other than the owner force approval, and a file root outside the allowed list is
 // forbidden. For an edit or a delete, the guests are the event's stored attendees together with
 // the proposed ones; attendees that cannot be read force approval. Operations are read only
-// through pinnedOperation, so a disabled connector exposes nothing.
+// through pinnedOperation, so a disabled connector exposes nothing. Origin is applied last,
+// by escalateProactive: a proactive intent (one nobody asked for) is raised from auto to
+// approval, so it reaches the owner as a card. Forbidden stays forbidden; a tier is never lowered.
 
 export type IntentKind = Intent["kind"]
 export type Tier = ConnectorTier
@@ -279,6 +281,20 @@ export function intentTier(
     default:
       return decision
   }
+}
+
+/**
+ * Raises `auto` to `approval` for a proactive intent. The owner asked for a reactive intent, so
+ * auto is acceptable there; nobody asked for a proactive one, so it must be approved first.
+ * `forbidden` and `approval` pass through unchanged.
+ */
+export function escalateProactive(
+  decision: TierDecision,
+  origin: string
+): TierDecision {
+  return origin === "proactive" && decision.tier === "auto"
+    ? { tier: "approval" }
+    : decision
 }
 
 type TableResult =

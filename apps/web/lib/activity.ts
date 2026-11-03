@@ -46,6 +46,18 @@ export const ROW_KIND_LABEL: Readonly<Record<RowKind, string | null>> = {
   normal: null,
 }
 
+export const ACCESS_AUDIT_LABELS: Readonly<Record<string, string>> = {
+  "audit.access.document_open": "Viewed document",
+  "audit.access.inference_use": "Local inference used",
+  "audit.access.content_copy": "Copied text",
+  "audit.access.instruction_change": "Updated assistant instructions",
+}
+
+/** Formats an audit action: maps audit.access.* events to human-readable labels without excerpts. */
+export function formatAction(action: string): string {
+  return ACCESS_AUDIT_LABELS[action] ?? action
+}
+
 export const ACTOR_LABEL = { you: "you", auto: "auto", gate: "gate" } as const
 
 /** "Oct 18, 2026, 9:04:12 AM" in the viewer's locale and time zone. */

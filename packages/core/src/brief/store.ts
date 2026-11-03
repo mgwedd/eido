@@ -3,6 +3,7 @@ import { coverageLine } from "./coverage"
 import type {
   Brief,
   BriefCoverage,
+  BriefDeferredLine,
   BriefItemLine,
   BriefLine,
   BriefMoreLine,
@@ -61,6 +62,16 @@ function isMoreLine(value: Record<string, unknown>): value is BriefMoreLine {
   )
 }
 
+function isDeferredLine(
+  value: Record<string, unknown>
+): value is BriefDeferredLine {
+  return (
+    typeof value["text"] === "string" &&
+    value["kind"] === "deferred" &&
+    isLedger(value["ledger"])
+  )
+}
+
 function parseLines(json: string): BriefLine[] {
   const parsed: unknown = JSON.parse(json)
   if (!Array.isArray(parsed))
@@ -68,6 +79,7 @@ function parseLines(json: string): BriefLine[] {
   return parsed.map((entry: unknown): BriefLine => {
     if (isRecord(entry) && isItemLine(entry)) return entry
     if (isRecord(entry) && isMoreLine(entry)) return entry
+    if (isRecord(entry) && isDeferredLine(entry)) return entry
     throw new Error("stored brief line is malformed")
   })
 }

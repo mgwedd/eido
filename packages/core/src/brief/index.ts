@@ -8,6 +8,7 @@ export type {
   Brief,
   BriefConfig,
   BriefCoverage,
+  BriefDeferredLine,
   BriefItemLine,
   BriefLine,
   BriefMoreLine,

@@ -38,7 +38,7 @@ const inverse: Intent = {
 }
 const url = "https://mail.example.com/v1/labels"
 
-function fixture() {
+function fixture(origin: "reactive" | "proactive" = "reactive") {
   const mail = manifest("mail", MAIL_OPS)
   const labelsOperation = mail.operations.find(
     (operation) => operation.intentKind === "email.label"
@@ -95,7 +95,7 @@ function fixture() {
   })
   const proposed = propose(s.db, s.policy, {
     intent: label,
-    origin: "reactive",
+    origin,
   })
   if (!proposed.ok) throw new Error(proposed.code)
   return {
@@ -170,6 +170,30 @@ function dualConnectorFixture() {
 }
 
 describe("executor", () => {
+  it("queues a proactive auto-tier intent for approval and never calls the transport", async () => {
+    const f = fixture("proactive")
+    expect(intentStatus(s.db, f.id)).toEqual({
+      state: "pending",
+      tier: "approval",
+    })
+    expect(await f.executor.execute(f.id)).toMatchObject({
+      ok: false,
+      code: "invalid_state",
+    })
+    expect(f.transport).not.toHaveBeenCalled()
+    expect(f.labels.has("work")).toBe(false)
+  })
+
+  it("still runs the same intent proposed reactively at auto", async () => {
+    const f = fixture("reactive")
+    expect(intentStatus(s.db, f.id)).toEqual({
+      state: "approved",
+      tier: "auto",
+    })
+    expect((await f.executor.execute(f.id)).ok).toBe(true)
+    expect(f.transport).toHaveBeenCalledTimes(1)
+  })
+
   it("tiers and dispatches the same kind through each selected pinned connector", async () => {
     const f = dualConnectorFixture()
     const gmail = f.proposeFor("gmail")

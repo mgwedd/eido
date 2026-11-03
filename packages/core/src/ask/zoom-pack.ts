@@ -4,6 +4,7 @@ import type { ContextPack } from "../context/pack-store"
 import { ESTIMATE_BOUNDARY, storeContextPack } from "../context/pack-store"
 import { loadThread, threadKeyOf } from "../digest/thread"
 import type { DigestService } from "../digest/service"
+import type { DigestSubject, DocumentPage } from "../digest/types"
 import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
 import { fence, plainContent, toMaterial } from "../inference/fence"
 import type { PromptPart } from "../inference/fence"
@@ -47,7 +48,61 @@ function summaryParts(zoom: ZoomResult): PromptPart[] {
 }
 
 /**
- * The thread of the best matching message, read through the section zoom: ranked digest lines,
+ * What the zoom reads for the best matching document: its thread when it is one of several
+ * messages, else its pages when it has several with stored offsets into the body. Undefined
+ * otherwise. A page with no stored offsets is not a section: no range is guessed for it.
+ */
+function zoomSource(
+  db: DatabaseSync,
+  topHit: string
+): { subject: DigestSubject; sections: ZoomSection[] } | undefined {
+  const key = threadKeyOf(db, topHit)
+  const loaded = key === undefined ? undefined : loadThread(db, key)
+  if (
+    loaded !== undefined &&
+    loaded.subject.kind === "thread" &&
+    loaded.subject.messages.length >= 2
+  ) {
+    return {
+      subject: loaded.subject,
+      sections: loaded.subject.messages.flatMap((m) => {
+        const sha256 = loaded.shaByMessageId.get(m.id)
+        return sha256 === undefined
+          ? []
+          : [{ id: m.id, sha256, start: 0, end: m.body.length }]
+      }),
+    }
+  }
+  if (loaded !== undefined) return undefined
+  const rows = db
+    .prepare(
+      `SELECT page, text, start_offset, end_offset FROM document_pages
+       WHERE sha256 = ? ORDER BY page`
+    )
+    .all(topHit)
+  const pages: DocumentPage[] = []
+  const sections: ZoomSection[] = []
+  for (const row of rows) {
+    const { page, text, start_offset: start, end_offset: end } = row
+    if (typeof page !== "number" || typeof text !== "string") continue
+    pages.push({ page, text })
+    if (typeof start === "number" && typeof end === "number")
+      sections.push({
+        id: `${topHit}#${String(page)}`,
+        sha256: topHit,
+        start,
+        end,
+      })
+  }
+  if (pages.length < 2 || sections.length === 0) return undefined
+  return {
+    subject: { kind: "document", docSha256: topHit, pages },
+    sections,
+  }
+}
+
+/**
+ * The thread or paged document of the best matching message, read through the section zoom: ranked digest lines,
  * then verified raw passages, all within `budgetTokens` as the request will really size them.
  * Undefined when the best match is not in a thread of several messages, so the caller reads it
  * the usual way. A refusal when nothing of the thread fits.
@@ -63,18 +118,10 @@ export async function buildZoomedAsk(
     charsPerToken?: number
   }
 ): Promise<ZoomedAsk | ContextRefusal | undefined> {
-  const key = threadKeyOf(db, args.topHit)
-  const loaded = key === undefined ? undefined : loadThread(db, key)
-  if (loaded === undefined || loaded.subject.kind !== "thread") return undefined
-  const { messages } = loaded.subject
-  if (messages.length < 2) return undefined
-  const sections: ZoomSection[] = messages.flatMap((m) => {
-    const sha256 = loaded.shaByMessageId.get(m.id)
-    return sha256 === undefined
-      ? []
-      : [{ id: m.id, sha256, start: 0, end: m.body.length }]
-  })
-  const stored = args.digest.getDigest(loaded.subject)
+  const source = zoomSource(db, args.topHit)
+  if (source === undefined) return undefined
+  const { subject, sections } = source
+  const stored = args.digest.getDigest(subject)
   const digest = "lines" in stored ? stored : undefined
   const charsPerToken = args.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
 

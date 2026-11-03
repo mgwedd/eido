@@ -42,6 +42,8 @@ import {
 import { DEFAULT_DIGEST_IDLE_TTL_MINUTES } from "./conversation/digest"
 import { createProfileStore, readDefaultEntityId } from "./profile/store"
 import type { ProfileStore } from "./profile/store"
+import { createAccessAuditor } from "./access-audit/index"
+import type { AccessAuditor } from "./access-audit/index"
 import type { InferenceQueue } from "./inference/queue"
 import { createDigestService } from "./digest/service"
 import type { DigestService } from "./digest/service"
@@ -415,6 +417,8 @@ export type DataPlane = {
   files: FilesFacade
   /** Local obligation state changes (#104); each is audited by the gate. */
   obligations: ObligationStateStore
+  /** Sensitive reads and local AI uses (#322); each is audited by the gate. */
+  accessAudit: AccessAuditor
   log: (event: string, fields?: Readonly<Record<string, string>>) => void
   /** Waits for the profile store's queued calls to settle, then closes eido-data.db. */
   close: () => Promise<void>
@@ -684,6 +688,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     entityId: async () => (await profile.getDefaultEntityId()) ?? undefined,
   })
   const obligations = createObligationStateStore(db, { audit: audit.record })
+  const accessAudit = createAccessAuditor({ audit: audit.record })
   let digestService: DigestService | undefined
   let digestServicePromise: Promise<DigestService> | undefined
   const getDigestService = async (): Promise<DigestService> => {
@@ -885,6 +890,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     profile,
     files,
     obligations,
+    accessAudit,
     log,
     stopGmailSync,
     stopProtonSync,
@@ -1025,7 +1031,7 @@ export async function serveDataPlane(
     sendFrom: config.protonUsername,
     ...(ask === undefined ? {} : { ask }),
     propose: plane.gate.propose,
-    documents: { db: plane.db },
+    documents: { db: plane.db, accessAudit: plane.accessAudit },
     ...config,
   })
   const closeApi = api.close.bind(api)

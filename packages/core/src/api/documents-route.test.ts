@@ -386,6 +386,37 @@ describe("GET /documents/:sha256", () => {
     expect(body.linked?.documents[0]?.sha256).toBe(quote)
   })
 
+  test("records an access audit event through accessAudit when viewing a document", async () => {
+    const opened: string[] = []
+    const auditedHandle = createApiHandler({
+      profile,
+      allowedHosts: ["core.test"],
+      basePath: "/api/core",
+      documents: {
+        db,
+        accessAudit: {
+          recordDocumentOpen: (input) => {
+            opened.push(input.documentSha256)
+            return Promise.resolve({ emitted: true })
+          },
+        },
+      },
+    })
+
+    const listRes = await auditedHandle(
+      new Request("http://core.test/api/core/documents")
+    )
+    expect(listRes.status).toBe(200)
+    expect(opened).toEqual([])
+
+    const viewRes = await auditedHandle(
+      new Request(`http://core.test/api/core/documents/${invoice}`)
+    )
+    expect(viewRes.status).toBe(200)
+    expect(opened).toEqual([invoice])
+  })
+  })
+
   test("only GET is allowed", async () => {
     const response = await handle(
       new Request(`http://core.test/api/core/documents/${invoice}`, {

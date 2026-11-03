@@ -179,3 +179,78 @@ describe("a broad question over a thread with a digest", () => {
     expect(result.citations[0]?.excerpt).toBeUndefined()
   })
 })
+
+describe("a broad question over a paged document", () => {
+  const PAGE_FILLER = "Routine clauses about the maintenance schedule. "
+  const CLAUSE = "The termination fee is 1200 euro after month six."
+  const pages = [
+    `Page one.\n\n${PAGE_FILLER.repeat(12)}`,
+    `Page two.\n\n${PAGE_FILLER.repeat(12)}\n\n${CLAUSE}`,
+    `Page three.\n\n${PAGE_FILLER.repeat(12)}`,
+  ]
+  const body = pages.join("\n")
+  const docSha = sha("lease-pdf")
+
+  function lease(pageTexts: string[] = pages): void {
+    ingest(db, [
+      {
+        sha256: docSha,
+        source: "gmail",
+        sourceRef: "lease#0",
+        mime: "application/pdf",
+        title: "lease.pdf",
+        body,
+        pages: pageTexts.map((text, i) => ({ page: i + 1, text })),
+      },
+    ])
+  }
+
+  const pageDigest = (text: string, page: number): Digest => ({
+    key: "k",
+    lines: [{ text, cites: [{ docSha256: docSha, page, ...flag }] }],
+    coverage: { sections: 1, linesKept: 1, linesDropped: 0, splitSegments: 0 },
+  })
+
+  test("sends the page digest line and the raw clause, citing offsets inside the stored body", async () => {
+    lease()
+    model = await scripted([
+      planReply({ terms: ["termination"], wants: "summarize" }),
+      answerReply("The fee is 1200 euro [M1]."),
+    ])
+    const result = await ask(
+      "Summarize the termination terms",
+      deps(model, pageDigest("Maintenance duties are listed", 1))
+    )
+    expect(result.status).toBe("answered")
+    const prompt = answerPrompt(model)
+    expect(prompt).toContain("Maintenance duties are listed")
+    expect(prompt).toContain(CLAUSE)
+    const start = body.indexOf(CLAUSE)
+    expect(result.citations[0]).toMatchObject({ tag: "M1", documentId: docSha })
+    // The first passage is the clause, as its exact range in the stored body.
+    expect(result.citations[0]?.excerpt?.passages[0]).toEqual({
+      start,
+      end: start + CLAUSE.length,
+    })
+  })
+
+  test("pages the body does not hold have no range, so the document is read the usual way", async () => {
+    // Page text that is not in the body (a body edited after parsing) gets no stored range.
+    lease(pages.map((_, i) => `unrelated page ${String(i + 1)}`))
+    model = await scripted([
+      planReply({ terms: ["termination"], wants: "summarize" }),
+      answerReply("The fee is 1200 euro [M1]."),
+    ])
+    let consulted = false
+    await ask("Summarize the termination terms", {
+      ...deps(model, { status: "absent" }),
+      digest: {
+        getDigest: () => {
+          consulted = true
+          return { status: "absent" }
+        },
+      },
+    })
+    expect(consulted).toBe(false)
+  })
+})

@@ -240,6 +240,91 @@ describe("ingestBatch and cursors", () => {
     ).toBe(2)
   })
 
+  test("records each page's range in the stored body, on first ingest and on backfill", () => {
+    const body = "page one\npage two"
+    const fresh = doc("paged", {
+      mime: "application/pdf",
+      body,
+      pages: [
+        { page: 1, text: "page one" },
+        { page: 2, text: "page two" },
+      ],
+    })
+    ingest([fresh])
+    const ranges = () =>
+      db
+        .prepare(
+          "SELECT sha256, page, start_offset, end_offset FROM document_pages ORDER BY sha256, page"
+        )
+        .all()
+        .map((r) => [r["page"], r["start_offset"], r["end_offset"]])
+    expect(ranges()).toEqual([
+      [1, 0, 8],
+      [2, 9, 17],
+    ])
+    const legacy = doc("backfilled", { mime: "application/pdf", body })
+    ingest([legacy])
+    ingest([{ ...legacy, pages: [{ page: 1, text: "page two" }] }])
+    const backfilled = db
+      .prepare(
+        "SELECT start_offset, end_offset FROM document_pages WHERE sha256 = ?"
+      )
+      .get(legacy.sha256)
+    expect(backfilled).toEqual({ start_offset: 9, end_offset: 17 })
+  })
+
+  test("a page the body does not hold is stored without a range", () => {
+    const orphan = doc("orphan", {
+      mime: "application/pdf",
+      body: "body text",
+      pages: [{ page: 1, text: "not in the body" }],
+    })
+    ingest([orphan])
+    expect(
+      db
+        .prepare(
+          "SELECT start_offset, end_offset FROM document_pages WHERE sha256 = ?"
+        )
+        .get(orphan.sha256)
+    ).toEqual({ start_offset: null, end_offset: null })
+  })
+
+  test("a half-set or empty page range is rejected", () => {
+    const parent = doc("p")
+    ingest([parent])
+    const insert = (start: number | null, end: number | null) =>
+      db
+        .prepare(
+          "INSERT INTO document_pages (sha256, page, text, start_offset, end_offset) VALUES (?, 1, 't', ?, ?)"
+        )
+        .run(parent.sha256, start, end)
+    expect(() => insert(0, null)).toThrow(/non-empty range/)
+    expect(() => insert(5, 5)).toThrow(/non-empty range/)
+  })
+
+  test("migrating a v10 database keeps stored pages with no range", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "eido-idx-")), "pages.db")
+    const legacy = new DatabaseSync(path)
+    legacy.exec("PRAGMA foreign_keys = ON")
+    MIGRATIONS.slice(0, 10).forEach((m, i) => {
+      legacy.exec(m)
+      legacy.exec(`PRAGMA user_version = ${i + 1}`)
+    })
+    legacy.exec(
+      `INSERT INTO documents (sha256, source, source_ref, mime, ingested_at) VALUES ('old', 'gmail', 'r', 'application/pdf', 't');
+       INSERT INTO document_text (sha256, body) VALUES ('old', 'page one');
+       INSERT INTO document_pages (sha256, page, text) VALUES ('old', 1, 'page one');`
+    )
+    legacy.close()
+    const migrated = openIndex(path)
+    expect(
+      migrated
+        .prepare("SELECT start_offset, end_offset FROM document_pages")
+        .get()
+    ).toEqual({ start_offset: null, end_offset: null })
+    migrated.close()
+  })
+
   test("returns null cursor when none stored", () => {
     expect(getCursor(db, "gmail", "inbox")).toBeNull()
   })
