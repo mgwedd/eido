@@ -221,6 +221,10 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
   // The fence's injection flag on an intent (#300): a JSON GateIntentInjection, NULL for an intent
   // from clean material. Display-only on the approval card, never part of the payload or its hash.
   `ALTER TABLE intents ADD COLUMN injection_reasons_json TEXT;`,
+  // Rate limit tracking for connectors with a quota (#51).
+  `ALTER TABLE connectors ADD COLUMN requests_today INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE connectors ADD COLUMN rate_window_start TEXT;
+   ALTER TABLE connectors ADD COLUMN next_sync_at TEXT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

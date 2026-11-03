@@ -10,7 +10,7 @@
     "auth": {
       "type": "object",
       "properties": {
-        "type": { "enum": ["oauth2", "password", "api_key", "none"] },
+        "type": { "enum": ["oauth2", "password", "api_key", "basic-url", "none"] },
         "scopes": {
           "type": "array",
           "maxItems": 20,
@@ -126,6 +126,23 @@
             }
           },
           "required": ["failureThreshold", "halfOpenProbeAfterMs"],
+          "additionalProperties": false
+        },
+        "rateLimit": {
+          "type": "object",
+          "properties": {
+            "requestsPerWindow": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            "windowSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 604800
+            }
+          },
+          "required": ["requestsPerWindow", "windowSeconds"],
           "additionalProperties": false
         }
       },

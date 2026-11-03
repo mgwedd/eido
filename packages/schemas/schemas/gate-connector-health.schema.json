@@ -39,6 +39,22 @@
             "format": "date-time",
             "minLength": 20,
             "maxLength": 40
+          },
+          "requestsToday": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000
+          },
+          "requestLimit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000
+          },
+          "nextSyncAt": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 20,
+            "maxLength": 40
           }
         },
         "required": ["name", "health", "consecutiveFailures"],
