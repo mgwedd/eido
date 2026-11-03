@@ -6,6 +6,7 @@ import type {
   GateFileRootsPrepared,
   GateFileRootsRequest,
 } from "@eido/schemas"
+import type { PreparedFolders } from "@/lib/file-roots"
 
 /** The list the owner signed earlier, as GET /file-roots returns it. */
 const signedRoots: GateFileRoots = {
@@ -127,8 +128,29 @@ function challengeHex(challenge: string): string {
   return `${hex.slice(0, 4)} ${hex.slice(4, 8)} ${hex.slice(8, 12)} ${hex.slice(12, 16)}`
 }
 
+/** The checked review of `identifiedRoots`, written out by hand: studio resolved through a link. */
+function reviewedFolders(): PreparedFolders {
+  const prepared = preparedFor(identifiedRoots)
+  const [notes, studio] = identifiedRoots.roots
+  if (notes === undefined || studio === undefined)
+    throw new Error("identifiedRoots holds notes and studio")
+  return {
+    prepared,
+    folders: [
+      { id: "notes", requested: "/Users/owner.example/Notes", root: notes.root },
+      {
+        id: "studio",
+        requested: "/Users/owner.example/Studio",
+        root: studio.root,
+      },
+    ],
+    challenge: new Uint8Array(Buffer.from(prepared.challenge, "base64url")),
+  }
+}
+
 export {
   CONTROL_ID,
+  reviewedFolders,
   NONCE,
   challengeHex,
   identifiedRoots,

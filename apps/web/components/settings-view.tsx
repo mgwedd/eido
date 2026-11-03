@@ -437,7 +437,7 @@ function PermissionsSection({ load }: { load: SettingsData["permissions"] }) {
 
 function AllowedFoldersRow({ load }: { load: SettingsData["fileRoots"] }) {
   if (load.status !== "ready")
-    return <SectionError load={load} what="Allowed folders" />
+    return <SectionError load={load} what="Allowed folder list" />
   const count = load.value.roots.length
   return (
     <div className="flex min-h-11 items-center justify-between gap-3">
@@ -472,7 +472,6 @@ function DataSection({
       title="Data"
       tip="Encrypted backups run on the Mac. The gate checks snapshot freshness; a backup older than 36 hours is marked stale."
     >
-      <AllowedFoldersRow load={fileRoots} />
       {load.status === "ready" ? (
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm">Last backup</span>
@@ -510,6 +509,7 @@ function DataSection({
       ) : (
         <SectionError load={load} what="Backup status" />
       )}
+      <AllowedFoldersRow load={fileRoots} />
     </Section>
   )
 }

@@ -4,6 +4,7 @@ import {
   aboutInfo,
   chainReason,
   chainSummary,
+  folderCount,
   loadAuditChain,
   loadBackupStatus,
   loadPasskeys,
@@ -156,5 +157,13 @@ describe("aboutInfo", () => {
   })
   test("no version means no About section", () => {
     expect(aboutInfo({})).toBeNull()
+  })
+})
+
+describe("folderCount", () => {
+  test("names none, one and many folders", () => {
+    expect(folderCount(0)).toBe("No allowed folders")
+    expect(folderCount(1)).toBe("1 allowed folder")
+    expect(folderCount(3)).toBe("3 allowed folders")
   })
 })

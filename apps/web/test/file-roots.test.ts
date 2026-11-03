@@ -51,8 +51,8 @@ function gate(
 
 const json = (body: unknown, status = 200) => () =>
   new Response(JSON.stringify(body), { status })
-const apiError = (status: number) =>
-  json({ error: "invalid_request", message: "refused" }, status)
+const apiError = (status: number, code: string) =>
+  json({ code, message: "refused" }, status)
 
 beforeEach(() => stubWebAuthnGlobals())
 afterEach(() => vi.unstubAllGlobals())
@@ -179,13 +179,13 @@ describe("prepareFileRoots", () => {
     ],
     [
       "no file helper",
-      { [PREPARE]: apiError(503) },
+      { [PREPARE]: apiError(503, "unavailable") },
       "The file helper isn't running on the host. Nothing was changed.",
       false,
     ],
     [
       "a folder the host cannot identify",
-      { [PREPARE]: apiError(400) },
+      { [PREPARE]: apiError(400, "invalid_request") },
       "The host couldn't identify every folder. Nothing was changed.",
       false,
     ],
@@ -322,13 +322,13 @@ describe("signFileRoots", () => {
   test.each([
     [
       "a refused signature",
-      { [COMPLETE]: apiError(409) },
+      { [COMPLETE]: apiError(409, "already_decided") },
       "The gate refused the signature. The allowed folders are unchanged.",
       false,
     ],
     [
       "no WebAuthn on the gate",
-      { [COMPLETE]: apiError(503) },
+      { [COMPLETE]: apiError(503, "unavailable") },
       "The gate can't check signatures right now. Nothing was changed.",
       false,
     ],

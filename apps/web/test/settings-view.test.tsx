@@ -16,6 +16,7 @@ import {
   permissionsNoForbidden,
   revokedPasskey,
 } from "./fixtures/settings"
+import { signedRoots } from "./fixtures/file-roots"
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -71,6 +72,7 @@ const healthy: Routes = {
   "/api/gate/permissions": ok(permissions),
   "/api/gate/backup/status": ok(backupFresh),
   "/api/gate/audit/chain": ok(chainOk),
+  "/api/gate/file-roots": ok(signedRoots),
 }
 
 async function render() {
@@ -297,7 +299,7 @@ test("a section whose read fails says so; the others still render; retry reloads
     retry.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
-  expect(fn.mock.calls.length).toBe(before + 4)
+  expect(fn.mock.calls.length).toBe(before + 5)
 })
 
 test("an expired session sends the user to unlock", async () => {
@@ -356,4 +358,36 @@ test("how-it-works tooltip opens from a tap on its focusable trigger", async () 
   expect(document.body.textContent).toContain(
     "enrolled and removed from the Mac"
   )
+})
+
+test("data lists the signed folder count and links to Review", async () => {
+  gate(healthy)
+  await render()
+  const data = container.querySelector('[aria-labelledby="settings-data"]')
+  expect(data?.textContent).toContain("2 allowed folders")
+  const review = [...(data?.querySelectorAll("a") ?? [])].find(
+    (a) => a.textContent === "Review"
+  )
+  expect(review?.getAttribute("href")).toBe("/settings/folders/review")
+})
+
+test("data with no signed folders offers no Review", async () => {
+  gate({ ...healthy, "/api/gate/file-roots": ok({ roots: [] }) })
+  await render()
+  const data = container.querySelector('[aria-labelledby="settings-data"]')
+  expect(data?.textContent).toContain("No allowed folders")
+  expect(
+    [...(data?.querySelectorAll("a") ?? [])].some(
+      (a) => a.textContent === "Review"
+    )
+  ).toBe(false)
+})
+
+test("a folder list the gate cannot read says so", async () => {
+  gate({
+    ...healthy,
+    "/api/gate/file-roots": () => new Response("{}", { status: 500 }),
+  })
+  await render()
+  expect(text()).toContain("Could not read allowed folder list from the gate.")
 })

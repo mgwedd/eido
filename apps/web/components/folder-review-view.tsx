@@ -1,6 +1,6 @@
 "use client"
 
-import { ArrowLeft, Link2, WifiOff } from "lucide-react"
+import { ArrowLeft, Link2, ScanFace, TriangleAlert, WifiOff } from "lucide-react"
 import Link from "next/link"
 import * as React from "react"
 
@@ -153,7 +153,7 @@ function LinkChip() {
   return (
     <Badge
       variant="outline"
-      className="gap-1 border-amber-500/40 text-amber-600 dark:border-amber-400/40 dark:text-amber-400"
+      className="gap-1 border-status-warn/40 text-status-warn"
     >
       <Link2 aria-hidden className="size-3" />
       Resolved through a link
@@ -165,8 +165,8 @@ function LinkBanner({ folders }: { folders: readonly ReviewFolder[] }) {
   const linked = folders.filter(resolvedThroughLink)
   if (linked.length === 0) return null
   return (
-    <Alert className="border-amber-500/40 text-amber-700 dark:border-amber-400/40 dark:text-amber-300">
-      <Link2 aria-hidden />
+    <Alert role="status" className="border-status-warn/40 text-status-warn">
+      <TriangleAlert aria-hidden />
       <AlertTitle>
         {plural(linked.length, "folder", "folders")} resolved to a different
         place.
@@ -185,11 +185,23 @@ function LinkBanner({ folders }: { folders: readonly ReviewFolder[] }) {
   )
 }
 
-function Field({ term, children }: { term: string; children: string }) {
+function Field({
+  term,
+  children,
+  changed = false,
+}: {
+  term: string
+  children: string
+  changed?: boolean
+}) {
   return (
     <div className="flex flex-col gap-0.5">
       <dt className="text-xs text-muted-foreground">{term}</dt>
-      <dd className="font-mono text-sm break-all">{children}</dd>
+      <dd
+        className={`font-mono text-sm break-all ${changed ? "text-status-warn" : ""}`}
+      >
+        {children}
+      </dd>
     </div>
   )
 }
@@ -209,7 +221,9 @@ function FolderCards({ folders }: { folders: readonly ReviewFolder[] }) {
               </div>
               <dl className="flex flex-col gap-2">
                 <Field term="Requested">{folder.requested}</Field>
-                <Field term="On the host">{folder.root.path}</Field>
+                <Field term="On the host" changed={resolvedThroughLink(folder)}>
+                  {folder.root.path}
+                </Field>
                 <Field term="Identity">{identity(folder.root)}</Field>
                 <Field term="Trash">{trashPath(folder.root)}</Field>
               </dl>
@@ -243,7 +257,9 @@ function FolderTable({ folders }: { folders: readonly ReviewFolder[] }) {
               </TableCell>
               <TableCell>
                 <span className="flex flex-col items-start gap-1">
-                  <span className="font-mono break-all">
+                  <span
+                    className={`font-mono break-all ${resolvedThroughLink(folder) ? "text-status-warn" : ""}`}
+                  >
                     {folder.root.path}
                   </span>
                   {resolvedThroughLink(folder) ? <LinkChip /> : null}
@@ -329,34 +345,37 @@ function FolderReviewBody({
           <FolderCards folders={folders} />
           <FolderTable folders={folders} />
           <Card>
-            <CardContent className="flex flex-col gap-1">
-              <h2 className="text-sm font-semibold">What you sign</h2>
-              <p className="text-sm text-muted-foreground">
-                The gate replaces the whole list. Folders not listed here stop
-                being readable.
-              </p>
-              <p className="text-sm">
-                <span className="text-muted-foreground">Challenge · </span>
-                <span className="font-mono">{challengeCode(challenge)}</span>
-              </p>
+            <CardContent className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1">
+                <h2 className="text-sm font-semibold">What you sign</h2>
+                <p className="text-sm text-muted-foreground">
+                  The gate replaces the whole list. Folders not listed here
+                  stop being readable.
+                </p>
+                <p className="text-sm">
+                  <span className="text-muted-foreground">Challenge · </span>
+                  <span className="font-mono">{challengeCode(challenge)}</span>
+                </p>
+              </div>
+              <div className="flex flex-col-reverse gap-2 md:flex-row md:justify-end">
+                <Button
+                  variant="ghost"
+                  className="min-h-11 md:min-h-9"
+                  onClick={onCancel}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  className="h-12 rounded-xl text-base md:h-9 md:rounded-lg md:text-sm"
+                  disabled={waiting || !reachable}
+                  onClick={onSign}
+                >
+                  <ScanFace aria-hidden />
+                  {signLabel(label)}
+                </Button>
+              </div>
             </CardContent>
           </Card>
-          <div className="flex flex-col-reverse gap-2 md:flex-row md:justify-end">
-            <Button
-              variant="ghost"
-              className="min-h-11 md:min-h-9"
-              onClick={onCancel}
-            >
-              Cancel
-            </Button>
-            <Button
-              className="h-12 rounded-xl text-base md:h-9 md:rounded-lg md:text-sm"
-              disabled={waiting || !reachable}
-              onClick={onSign}
-            >
-              {signLabel(label)}
-            </Button>
-          </div>
         </>
       )
     }
