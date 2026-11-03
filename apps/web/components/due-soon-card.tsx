@@ -5,7 +5,7 @@ import { Badge } from "@eido/ui/components/badge"
 import { Button } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
-import { cn } from "cn"
+import { cn } from "@eido/ui/lib/utils"
 import {
   documentSpanUrl,
   DUE_SOON_DESKTOP_LIMIT,
