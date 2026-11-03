@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiConversationGet",
+  "description": "Response of GET /conversations/:id: a stored conversation's raw turns in order, with digests marked, so Ask can open a search hit and scroll to the hit's turn.",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+    "conversationId": { "type": "string" },
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "role": {
+            "type": "string",
+            "enum": ["user", "assistant", "summary"]
+          },
+          "text": { "type": "string" },
+          "at": { "type": "string" },
+          "sources": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "digested": { "type": "boolean" },
+          "digest": { "type": "boolean" }
+        },
+        "required": ["id", "role", "text", "at", "sources", "digested"],
+        "additionalProperties": false
+      }
+    },
+    "digest": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string" },
+            "createdAt": { "type": "string" },
+            "coveredTurns": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["text", "createdAt", "coveredTurns"],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "required": ["id", "conversationId", "turns", "digest"],
+  "additionalProperties": false
+}

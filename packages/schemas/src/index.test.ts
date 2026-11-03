@@ -21,6 +21,7 @@ import {
   validateIntentResult,
   validateCoreApiAskResponse,
   validateCoreApiConversationSearch,
+  validateCoreApiConversationGet,
   validateDocumentTypeClassification,
 } from "./index"
 import type { JsonSchema } from "./index"
@@ -123,6 +124,64 @@ describe("Core API Conversation search schema", () => {
         hits: [
           { conversationId: "c1", kind: "unknown", snippet: "s", score: 1 },
         ],
+      }).ok
+    ).toBe(false)
+  })
+})
+
+describe("Core API conversation get response", () => {
+  const valid = {
+    id: "c1",
+    conversationId: "c1",
+    turns: [
+      {
+        id: "t1",
+        role: "user",
+        text: "Please review the lease.",
+        at: "2025-10-11T09:00:00Z",
+        sources: ["M1"],
+        digested: true,
+        digest: true,
+      },
+      {
+        id: "t2",
+        role: "assistant",
+        text: "The lease has been reviewed.",
+        at: "2025-10-11T09:01:00Z",
+        sources: [],
+        digested: false,
+        digest: false,
+      },
+    ],
+    digest: {
+      text: "Summary of earlier lease discussions.",
+      createdAt: "2025-10-11T10:00:00Z",
+      coveredTurns: 1,
+    },
+  }
+
+  test("accepts a valid conversation get response with digest", () => {
+    expect(validateCoreApiConversationGet(valid).ok).toBe(true)
+  })
+
+  test("accepts a valid conversation get response without digest (null)", () => {
+    const withoutDigest = {
+      ...valid,
+      digest: null,
+      turns: valid.turns.map((t) => ({ ...t, digested: false, digest: false })),
+    }
+    expect(validateCoreApiConversationGet(withoutDigest).ok).toBe(true)
+  })
+
+  test("rejects missing required fields", () => {
+    expect(validateCoreApiConversationGet({ id: "c1" }).ok).toBe(false)
+    expect(
+      validateCoreApiConversationGet({ ...valid, turns: "not-an-array" }).ok
+    ).toBe(false)
+    expect(
+      validateCoreApiConversationGet({
+        ...valid,
+        turns: [{ id: "t1", text: "missing role, at, etc" }],
       }).ok
     ).toBe(false)
   })
