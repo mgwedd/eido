@@ -459,14 +459,22 @@ async function tokenizePieces(
 
 const MARKER_PUNCTUATION = /[<>[\]|]/u
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u
+// One whole `<|…>` or `<…|>` form (so `<|…|>` too), with something between the bars and
+// brackets. In the pinned Gemma 4 vocabulary only `<|"|>` (id 52) has this shape and no letter.
+const BARRED_ANGLE_FORM = /^(?:<\|[\s\S]+>|<[\s\S]+\|>)$/u
 
 /**
  * Whether a token of the rendered template reads as a chat-template marker: its text mixes
  * letters or digits with `<`, `>`, `[`, `]` or `|`, as `<|turn>`, `<channel|>`, `[INST]` and
- * `<|im_start|>` do. Plain words, punctuation and whitespace do not, so material may share them.
+ * `<|im_start|>` do, or it is one whole barred angle form such as Gemma 4's `<|"|>` (#542).
+ * Plain words, punctuation and whitespace do not, so material may share them: ` <`, `|>`, `||`,
+ * `->`, `[]` and letterless `[...]` or `[*]` are ordinary tokens.
  */
 export function isMarkerPiece(piece: string): boolean {
-  return MARKER_PUNCTUATION.test(piece) && LETTER_OR_DIGIT.test(piece)
+  return (
+    (MARKER_PUNCTUATION.test(piece) && LETTER_OR_DIGIT.test(piece)) ||
+    BARRED_ANGLE_FORM.test(piece)
+  )
 }
 
 // A private-use character no template writes, around a per-request nonce.
