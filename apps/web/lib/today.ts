@@ -24,6 +24,7 @@ const KIND_LABELS: Readonly<
   "file.rename": { source: "Files", action: "Rename file" },
   "file.move": { source: "Files", action: "Move file" },
   "file.delete": { source: "Files", action: "Move file to trash" },
+  "confirm.field": { source: "Extraction", action: "Confirm field" },
 }
 
 /**

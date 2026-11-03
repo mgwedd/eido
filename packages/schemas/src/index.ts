@@ -95,6 +95,8 @@ export {
   validateCoreApiTodayDueSoon,
   validateCoreApiBrief,
   validateCoreApiConversationSearch,
+  validateCoreApiConfirmExtractionRequest,
+  validateCoreApiConfirmExtractionResponse,
   validateAskCoverage,
   validateAskCitation,
 } from "./generated/validators"

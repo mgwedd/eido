@@ -207,6 +207,23 @@ const VALID: Record<string, unknown> = {
   "file.rename": { root: "docs", path: "a/b.txt", newName: "c.txt" },
   "file.move": { root: "docs", path: "a/b.txt", toPath: "d/b.txt" },
   "file.delete": { root: "docs", path: "a/b.txt" },
+  "confirm.field": {
+    extractionId: "ext-1",
+    field: "amount",
+    value: {
+      raw: "$4,800.00",
+      typed: { amount_minor: 480000, currency: "USD" },
+    },
+    source: {
+      docSha256: "ab".repeat(32),
+      start: 10,
+      end: 19,
+      page: 2,
+      line: 14,
+    },
+    confidence: 0.71,
+    threshold: 0.85,
+  },
 }
 
 const EXPECTED_KINDS = Object.keys(VALID)

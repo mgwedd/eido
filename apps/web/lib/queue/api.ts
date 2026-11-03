@@ -111,3 +111,59 @@ export async function rejectIntent(
     }
   }
 }
+
+export async function confirmFieldIntent(
+  intentId: string,
+  extractionId: string | number,
+  field: string,
+  value?: unknown
+): Promise<{ ok: true; state: string } | { ok: false; message: string }> {
+  try {
+    const coreRes = await fetch(
+      `/api/core/extractions/${encodeURIComponent(String(extractionId))}/confirm`,
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          field,
+          ...(value !== undefined ? { value } : {}),
+        }),
+      }
+    )
+    if (!coreRes.ok) {
+      let msg = `Extraction confirmation failed (${coreRes.status})`
+      try {
+        const errJson = (await coreRes.json()) as {
+          error?: { message?: string }
+        }
+        if (errJson.error?.message) msg = errJson.error.message
+      } catch {}
+      return { ok: false, message: msg }
+    }
+  } catch {
+    return { ok: false, message: "Could not reach Core API" }
+  }
+
+  const body: GateDecisionRequest = {
+    intentId,
+    decision: "approved",
+  }
+  try {
+    const gateRes = await fetch(
+      `/api/gate/approvals/${encodeURIComponent(intentId)}/decision`,
+      {
+        method: "POST",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    )
+    if (!gateRes.ok) {
+      return { ok: false, message: `Gate decision failed (${gateRes.status})` }
+    }
+    return { ok: true, state: "approved" }
+  } catch {
+    return { ok: false, message: "Could not reach Gate API" }
+  }
+}

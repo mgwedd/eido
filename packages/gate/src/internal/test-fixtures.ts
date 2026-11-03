@@ -166,6 +166,25 @@ const ARGS = {
   "file.rename": { root: ALLOWED_ROOT, path: "a.txt", newName: "b.txt" },
   "file.move": { root: ALLOWED_ROOT, path: "a.txt", toPath: "old/a.txt" },
   "file.delete": { root: ALLOWED_ROOT, path: "a.txt" },
+  "confirm.field": {
+    extractionId: "ext-1",
+    field: "amount",
+    value: {
+      raw: "$100.00",
+      typed: { amount_minor: 10000, currency: "USD" },
+    },
+    source: {
+      docSha256: SAMPLE_SHA256,
+      start: 10,
+      end: 17,
+      page: 1,
+      line: 2,
+    },
+    confidence: 0.75,
+    threshold: 0.85,
+    documentTitle: "Invoice #123",
+    documentSource: "a scan",
+  },
 } satisfies { [K in IntentKind]: Extract<Intent, { kind: K }>["args"] }
 
 /** A valid intent of `kind`, with `args` overriding the sample args; parsed, not cast. */

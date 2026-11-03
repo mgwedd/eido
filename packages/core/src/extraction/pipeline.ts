@@ -1,3 +1,4 @@
+import type { IntentClient } from "@eido/gate"
 import type { DatabaseSync } from "node:sqlite"
 import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
 import { writeQueueFor } from "../db/write-queue"
@@ -31,6 +32,7 @@ import {
 import { getDocumentType, setDocumentType } from "../index/document-type"
 import type { CandidateItem, ItemOutcome } from "./verify"
 import { defaultFieldConfidence, verifyItem } from "./verify"
+import { proposeConfirm } from "./propose-confirm"
 import { summarize } from "./summary"
 import type {
   ConfirmCandidate,
@@ -68,6 +70,7 @@ export type ExtractorDeps = {
   db: DatabaseSync
   model: ModelClient
   config: ExtractionConfig
+  gate?: Pick<IntentClient, "propose">
   /** Per-field confidence. Default: 1.0 for a field that verified and parsed. */
   fieldConfidence?: FieldScorer
   log?: (event: ExtractionLogEvent) => void
@@ -287,14 +290,24 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
     { role: "user", content: passageMessage("") },
   ])
 
-  function loadDocument(docId: string): { entityId: string } {
+  function loadDocument(docId: string): {
+    entityId: string
+    source: string
+    title?: string
+  } {
     const row = db
-      .prepare("SELECT entity_id FROM documents WHERE sha256 = ?")
+      .prepare(
+        "SELECT d.entity_id, d.source, t.title FROM documents d LEFT JOIN document_text t ON t.sha256 = d.sha256 WHERE d.sha256 = ?"
+      )
       .get(docId)
     if (row === undefined) {
       throw new ExtractionError("document_not_found", "no such document")
     }
-    return { entityId: String(row["entity_id"]) }
+    return {
+      entityId: String(row["entity_id"]),
+      source: String(row["source"]),
+      ...(row["title"] ? { title: String(row["title"]) } : {}),
+    }
   }
 
   async function extractDocument(
@@ -607,6 +620,15 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         })
       }
     })
+    if (deps.gate !== undefined) {
+      for (const candidate of confirmations) {
+        await proposeConfirm(deps.gate, candidate, {
+          documentTitle: doc.title,
+          documentSource: doc.source,
+          offsets: parsed.offsets,
+        })
+      }
+    }
     return finish("ok", {
       proposed: outcomes.length,
       verified,

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiConfirmExtractionResponse",
+  "description": "Response of POST /extractions/:id/confirm.",
+  "type": "object",
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "confirmedAt": {
+      "type": "string"
+    },
+    "extractionConfirmed": {
+      "type": "boolean"
+    },
+    "obligationId": {
+      "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+    }
+  },
+  "required": ["ok", "confirmedAt", "extractionConfirmed"],
+  "additionalProperties": false
+}

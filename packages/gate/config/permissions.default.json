@@ -16,6 +16,7 @@
     "file.create": "auto",
     "file.rename": "auto",
     "file.move": "auto",
-    "file.delete": "approval"
+    "file.delete": "approval",
+    "confirm.field": "approval"
   }
 }

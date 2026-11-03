@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
 import { Button } from "@eido/ui/components/button"
 import { Card, CardContent } from "@eido/ui/components/card"
+import { Input } from "@eido/ui/components/input"
 import {
   Sheet,
   SheetContent,
@@ -21,14 +22,20 @@ import { ShortcutKeys } from "@/components/shortcuts-provider"
 import { useKeydown } from "@/hooks/use-keydown"
 import { shortHash } from "@/lib/approval/challenge"
 import { prepareApproval, signApproval } from "@/lib/approval/sign"
-import { loadHistory, loadQueue, rejectIntent } from "@/lib/queue/api"
+import {
+  confirmFieldIntent,
+  loadHistory,
+  loadQueue,
+  rejectIntent,
+} from "@/lib/queue/api"
 import {
   REJECT_REASONS,
   buildCard,
   historyRows,
-  swipeLabel,
+  parseConfirmField,
   swipeOutcome,
   waitingSince,
+  type ConfirmFieldCardData,
 } from "@/lib/queue/card"
 import { isInteractiveTarget, isShortcutEvent } from "@/lib/shortcuts"
 import { formatWaiting } from "@/lib/relative-time"
@@ -60,6 +67,44 @@ const localTime = (iso: string) =>
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(iso))
+
+function formatFieldValue(
+  typed: ConfirmFieldCardData["value"]["typed"],
+  raw: string
+): string {
+  if (typed === undefined || typed === null) return raw
+  if (typeof typed === "string") return typed
+  if (typeof typed === "number") return String(typed)
+  if (
+    typeof typed === "object" &&
+    "amount_minor" in typed &&
+    "currency" in typed
+  ) {
+    const amount = (typed.amount_minor / 100).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
+    return `${typed.currency} ${amount}`
+  }
+  return raw
+}
+
+function formatFieldLabel(field: string): string {
+  switch (field) {
+    case "action":
+      return "Action"
+    case "party":
+      return "Party"
+    case "amount":
+      return "Amount"
+    case "due_date":
+      return "Due date"
+    case "reference_number":
+      return "Reference number"
+    default:
+      return field.replace(/_/g, " ")
+  }
+}
 
 function useQueue() {
   const [state, setState] = React.useState<ListState>({ status: "loading" })
@@ -195,10 +240,12 @@ function ApprovalCard({
   intent,
   now,
   onDecided,
+  onSkip,
 }: {
   intent: PendingIntent
   now: Date
   onDecided: (message: string) => void
+  onSkip?: () => void
 }) {
   const [card, setCard] = React.useState<CardState>({ status: "loading" })
   const [history, setHistory] = React.useState<HistoryState>({
@@ -212,6 +259,25 @@ function ApprovalCard({
   const dragStart = React.useRef<number | null>(null)
   const [dragging, setDragging] = React.useState(false)
   const heading = React.useRef<HTMLHeadingElement>(null)
+
+  const isConfirm = intent.kind === "confirm.field"
+  const payloadText =
+    card.status === "ready" ? card.prepared.payload : undefined
+  const confirmData = React.useMemo(
+    () =>
+      isConfirm && payloadText ? parseConfirmField(payloadText) : undefined,
+    [isConfirm, payloadText]
+  )
+
+  const [isEditing, setIsEditing] = React.useState(false)
+  const [customEditValue, setCustomEditValue] = React.useState<string | null>(
+    null
+  )
+  const editValue =
+    customEditValue ??
+    (confirmData
+      ? formatFieldValue(confirmData.value.typed, confirmData.value.raw)
+      : "")
 
   React.useEffect(() => {
     const controller = new AbortController()
@@ -242,7 +308,7 @@ function ApprovalCard({
   }, [intent.id, historyReloads])
 
   const view =
-    card.status === "ready"
+    card.status === "ready" && !isConfirm
       ? buildCard(card.prepared.kind, card.prepared.payload)
       : undefined
   const waiting = formatWaiting(
@@ -254,6 +320,8 @@ function ApprovalCard({
   )
   const busy = action.status === "signing"
   const canApprove = card.status === "ready" && view !== undefined && !busy
+  const canConfirm =
+    card.status === "ready" && confirmData !== undefined && !busy
 
   const approve = async () => {
     if (card.status !== "ready") return
@@ -277,17 +345,52 @@ function ApprovalCard({
     })
   }
 
+  const handleConfirm = async (customValue?: unknown) => {
+    if (!confirmData) return
+    setAction({ status: "signing" })
+    const result = await confirmFieldIntent(
+      intent.id,
+      confirmData.extractionId,
+      confirmData.field,
+      customValue
+    )
+    if (result.ok) {
+      return onDecided("Confirmed")
+    }
+    setAction({ status: "error", message: result.message })
+  }
+
   useKeydown((event) => {
     if (!isShortcutEvent(event) || event.repeat) return
-    if (event.key === "a" && canApprove) {
-      event.preventDefault()
-      void approve()
-    } else if (event.key === "r" && !busy) {
-      event.preventDefault()
-      setRejectOpen(true)
-    } else if (event.key === "Enter" && !isInteractiveTarget(event.target)) {
-      event.preventDefault()
-      heading.current?.focus()
+    if (isConfirm) {
+      if (
+        (event.key === "c" || event.key === "a") &&
+        canConfirm &&
+        !isEditing
+      ) {
+        event.preventDefault()
+        void handleConfirm(isEditing ? editValue : undefined)
+      } else if (event.key === "e" && !busy) {
+        event.preventDefault()
+        setIsEditing((prev) => !prev)
+      } else if (event.key === "s" && !busy) {
+        event.preventDefault()
+        onSkip?.()
+      } else if (event.key === "Enter" && !isInteractiveTarget(event.target)) {
+        event.preventDefault()
+        heading.current?.focus()
+      }
+    } else {
+      if (event.key === "a" && canApprove) {
+        event.preventDefault()
+        void approve()
+      } else if (event.key === "r" && !busy) {
+        event.preventDefault()
+        setRejectOpen(true)
+      } else if (event.key === "Enter" && !isInteractiveTarget(event.target)) {
+        event.preventDefault()
+        heading.current?.focus()
+      }
     }
   })
 
@@ -307,10 +410,38 @@ function ApprovalCard({
     dragStart.current = null
     setDragging(false)
     setDx(0)
-    if (outcome === "approve" && canApprove) void approve()
-    if (outcome === "reject" && !busy) setRejectOpen(true)
+    if (isConfirm) {
+      if (outcome === "approve" && canConfirm)
+        void handleConfirm(isEditing ? editValue : undefined)
+      if (outcome === "reject") onSkip?.()
+    } else {
+      if (outcome === "approve" && canApprove) void approve()
+      if (outcome === "reject" && !busy) setRejectOpen(true)
+    }
   }
-  const label = swipeLabel(dx)
+
+  const label =
+    dx >= 40
+      ? isConfirm
+        ? "Confirm"
+        : "Approve"
+      : dx <= -40
+        ? isConfirm
+          ? "Skip"
+          : "Reject"
+        : null
+
+  const documentUrl = confirmData
+    ? `/documents/${confirmData.source.docSha256}?start=${confirmData.source.start}&end=${confirmData.source.end}${
+        confirmData.source.page !== undefined
+          ? `&page=${confirmData.source.page}`
+          : ""
+      }${
+        confirmData.source.line !== undefined
+          ? `&line=${confirmData.source.line}`
+          : ""
+      }&from=${encodeURIComponent(`/queue?intent=${intent.id}`)}`
+    : undefined
 
   return (
     <article
@@ -341,7 +472,16 @@ function ApprovalCard({
             <p className="text-sm text-muted-foreground">
               {describeKind(intent.kind)}
             </p>
-            <Badge variant="outline">Approval</Badge>
+            {isConfirm ? (
+              <Badge
+                variant="outline"
+                className="border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+              >
+                Confirm
+              </Badge>
+            ) : (
+              <Badge variant="outline">Approval</Badge>
+            )}
           </div>
           {label ? (
             <p className="text-sm font-semibold" aria-hidden="true">
@@ -354,7 +494,9 @@ function ApprovalCard({
             tabIndex={-1}
             className="text-lg font-semibold outline-none"
           >
-            {view?.title ?? describeKind(intent.kind)}
+            {confirmData
+              ? `Confirm ${confirmData.documentTitle ? `${confirmData.documentTitle} ` : ""}${formatFieldLabel(confirmData.field)}`
+              : (view?.title ?? describeKind(intent.kind))}
           </h2>
           {card.status === "loading" ? (
             <>
@@ -364,7 +506,8 @@ function ApprovalCard({
               <Skeleton className="h-20 w-full" />
             </>
           ) : null}
-          {card.status === "failed" || (card.status === "ready" && !view) ? (
+          {card.status === "failed" ||
+          (card.status === "ready" && !view && !confirmData) ? (
             <div className="flex flex-col items-start gap-2">
               <p role="alert" className="text-sm">
                 Could not load the payload.
@@ -390,7 +533,94 @@ function ApprovalCard({
               </Button>
             </div>
           ) : null}
-          {view ? (
+
+          {confirmData ? (
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-medium tracking-wider text-muted-foreground uppercase">
+                  {formatFieldLabel(confirmData.field)}
+                </span>
+                <div className="flex flex-wrap items-baseline gap-3">
+                  <span className="text-3xl font-bold tracking-tight">
+                    {formatFieldValue(
+                      confirmData.value.typed,
+                      confirmData.value.raw
+                    )}
+                  </span>
+                  {confirmData.value.raw &&
+                  confirmData.value.raw !==
+                    formatFieldValue(
+                      confirmData.value.typed,
+                      confirmData.value.raw
+                    ) ? (
+                    <span className="font-mono text-sm text-muted-foreground">
+                      (raw: &ldquo;{confirmData.value.raw}&rdquo;)
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              {isEditing ? (
+                <div className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
+                  <label
+                    htmlFor={`edit-field-${intent.id}`}
+                    className="text-xs font-medium text-muted-foreground"
+                  >
+                    Edit {formatFieldLabel(confirmData.field)}
+                  </label>
+                  <Input
+                    id={`edit-field-${intent.id}`}
+                    type="text"
+                    value={editValue}
+                    onChange={(e) => setCustomEditValue(e.target.value)}
+                    onInput={(e) =>
+                      setCustomEditValue((e.target as HTMLInputElement).value)
+                    }
+                    placeholder="Enter new value"
+                    disabled={busy}
+                  />
+                </div>
+              ) : null}
+
+              {documentUrl ? (
+                <div className="text-sm">
+                  <Link
+                    href={documentUrl}
+                    className="text-primary underline underline-offset-4 hover:text-primary/80"
+                  >
+                    Source: {confirmData.documentTitle ?? "Document"}
+                    {confirmData.source.page !== undefined
+                      ? ` · Page ${confirmData.source.page}`
+                      : ""}
+                    {confirmData.source.line !== undefined
+                      ? ` · Line ${confirmData.source.line}`
+                      : ""}
+                  </Link>
+                </div>
+              ) : null}
+
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-muted-foreground">Confidence:</span>
+                <span>
+                  {Math.round(confirmData.confidence * 100)}% (threshold{" "}
+                  {Math.round(confirmData.threshold * 100)}%)
+                </span>
+              </div>
+
+              {confirmData.contextSources &&
+              confirmData.contextSources.length > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Context sources: {confirmData.contextSources.join(", ")}
+                </p>
+              ) : card.status === "ready" &&
+                card.prepared.documentIds.length > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Context used · {card.prepared.documentIds.length} linked
+                  sources
+                </p>
+              ) : null}
+            </div>
+          ) : view ? (
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
               {view.fields.map((field) => (
                 <React.Fragment key={field.label}>
@@ -408,7 +638,10 @@ function ApprovalCard({
               ))}
             </dl>
           ) : null}
-          {card.status === "ready" && card.prepared.documentIds.length > 0 ? (
+
+          {card.status === "ready" &&
+          !confirmData &&
+          card.prepared.documentIds.length > 0 ? (
             <p className="text-xs text-muted-foreground">
               Context used · {card.prepared.documentIds.length} linked sources
             </p>
@@ -448,7 +681,7 @@ function ApprovalCard({
       </Card>
       {action.status === "signing" ? (
         <p role="status" className="text-sm">
-          Waiting for Face ID
+          {isConfirm ? "Confirming…" : "Waiting for Face ID"}
         </p>
       ) : null}
       {action.status === "error" ? (
@@ -457,31 +690,72 @@ function ApprovalCard({
         </Alert>
       ) : null}
       <p className="text-center text-xs text-muted-foreground">
-        Swipe right to approve · left to reject
+        {isConfirm
+          ? "Swipe right to confirm · left to skip"
+          : "Swipe right to approve · left to reject"}
       </p>
-      <div className="flex items-center justify-center gap-3">
-        <Button
-          variant="outline"
-          size="lg"
-          className="min-h-11"
-          disabled={busy}
-          aria-keyshortcuts="r"
-          onClick={() => setRejectOpen(true)}
-        >
-          Reject
-          <ShortcutKeys keys={["r"]} />
-        </Button>
-        <Button
-          size="lg"
-          className="min-h-[60px] flex-1"
-          disabled={!canApprove}
-          aria-keyshortcuts="a"
-          onClick={() => void approve()}
-        >
-          Approve
-          <ShortcutKeys keys={["a"]} />
-        </Button>
-      </div>
+      {isConfirm ? (
+        <div className="flex items-center justify-center gap-3">
+          <Button
+            variant="outline"
+            size="lg"
+            className="min-h-11"
+            disabled={busy}
+            aria-keyshortcuts="s"
+            onClick={onSkip}
+          >
+            Skip
+            <ShortcutKeys keys={["s"]} />
+          </Button>
+          <Button
+            variant="outline"
+            size="lg"
+            className="min-h-11"
+            disabled={busy}
+            aria-keyshortcuts="e"
+            onClick={() => setIsEditing((prev) => !prev)}
+          >
+            {isEditing ? "Cancel edit" : "Edit value"}
+            <ShortcutKeys keys={["e"]} />
+          </Button>
+          <Button
+            size="lg"
+            className="min-h-[60px] flex-1 bg-blue-600 text-white hover:bg-blue-700"
+            disabled={!canConfirm}
+            aria-keyshortcuts="c"
+            onClick={() =>
+              void handleConfirm(isEditing ? editValue : undefined)
+            }
+          >
+            Confirm
+            <ShortcutKeys keys={["c"]} />
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center justify-center gap-3">
+          <Button
+            variant="outline"
+            size="lg"
+            className="min-h-11"
+            disabled={busy}
+            aria-keyshortcuts="r"
+            onClick={() => setRejectOpen(true)}
+          >
+            Reject
+            <ShortcutKeys keys={["r"]} />
+          </Button>
+          <Button
+            size="lg"
+            className="min-h-[60px] flex-1"
+            disabled={!canApprove}
+            aria-keyshortcuts="a"
+            onClick={() => void approve()}
+          >
+            Approve
+            <ShortcutKeys keys={["a"]} />
+          </Button>
+        </div>
+      )}
       <RejectSheet
         open={rejectOpen}
         busy={busy}
@@ -503,6 +777,7 @@ function QueueRow({
   selected: boolean
   onSelect: () => void
 }) {
+  const isConfirm = intent.kind === "confirm.field"
   return (
     <li>
       <button
@@ -512,7 +787,19 @@ function QueueRow({
         onClick={onSelect}
         className="flex min-h-11 w-full flex-col items-start rounded-lg border p-3 text-left aria-[current=true]:bg-muted"
       >
-        <span className="text-sm font-medium">{describeKind(intent.kind)}</span>
+        <div className="flex w-full items-center justify-between gap-2">
+          <span className="text-sm font-medium">
+            {describeKind(intent.kind)}
+          </span>
+          {isConfirm ? (
+            <Badge
+              variant="outline"
+              className="border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+            >
+              Confirm
+            </Badge>
+          ) : null}
+        </div>
         <span className="text-xs text-muted-foreground">
           {formatWaiting(intent.createdAt, now)}
         </span>
@@ -553,6 +840,13 @@ function QueueView({ initialId }: { initialId?: string }) {
     setMessage(text)
     remove(id)
     setSelectedId(undefined)
+  }
+
+  const handleSkip = () => {
+    if (intents.length <= 1) return
+    const currentIndex = selected ? intents.indexOf(selected) : 0
+    const nextIndex = (currentIndex + 1) % intents.length
+    setSelectedId(intents[nextIndex]?.id)
   }
 
   return (
@@ -616,6 +910,7 @@ function QueueView({ initialId }: { initialId?: string }) {
             intent={selected}
             now={now}
             onDecided={(text) => decided(selected.id, text)}
+            onSkip={handleSkip}
           />
         </div>
       ) : null}
