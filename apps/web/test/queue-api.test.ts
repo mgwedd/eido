@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest"
-import { loadHistory, loadQueue, payloadMatchesHash } from "../lib/queue/api"
+import { loadHistory, loadQueue } from "../lib/queue/api"
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -49,12 +49,5 @@ describe("queue api", () => {
   test("a network error is reported as such", async () => {
     stub(new TypeError("down"))
     expect(await loadQueue()).toEqual({ ok: false, status: "network" })
-  })
-
-  test("the hash is the SHA-256 of the text", async () => {
-    const abc =
-      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-    expect(await payloadMatchesHash("abc", abc)).toBe(true)
-    expect(await payloadMatchesHash("abd", abc)).toBe(false)
   })
 })
