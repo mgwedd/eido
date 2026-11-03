@@ -100,6 +100,7 @@ export {
   validateCoreApiConfirmExtractionRequest,
   validateCoreApiConfirmExtractionResponse,
   validateCoreApiObligationList,
+  validateCoreApiObligationState,
   validateCoreApiReplyDraftRequest,
   validateCoreApiReplyDraftResponse,
   validateAskCoverage,
