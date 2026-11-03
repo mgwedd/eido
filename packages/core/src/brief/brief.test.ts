@@ -724,17 +724,20 @@ describe("generateBrief deferred lines", () => {
     digestEvent({ ref: `obl:${String(obligation)}`, triggerKey: "t:obl" })
     digestEvent({ ref: `ext:${String(extraction)}`, triggerKey: "t:ext" })
     const brief = await generateBrief(db, NOW, { ...CONFIG, maxLines: 1 })
-    const deferred = brief.lines.filter((line) => line.kind === "deferred")
+    // Equal scores tie on a random event id, so compare in a fixed order.
+    const deferred = brief.lines
+      .filter((line) => line.kind === "deferred")
+      .sort((a, b) => (a.ledger.type < b.ledger.type ? -1 : 1))
     expect(deferred).toEqual([
-      {
-        kind: "deferred",
-        text: "Renew the lease (Landlord Example), due 2026-12-01",
-        ledger: { type: "obligation", id: String(obligation) },
-      },
       {
         kind: "deferred",
         text: 'Confirm amount: "CHF 120.00"',
         ledger: { type: "extraction", id: String(extraction) },
+      },
+      {
+        kind: "deferred",
+        text: "Renew the lease (Landlord Example), due 2026-12-01",
+        ledger: { type: "obligation", id: String(obligation) },
       },
     ])
     // The ledger items still fill maxLines on their own; the deferred lines are extra.
