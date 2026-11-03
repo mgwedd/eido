@@ -40,6 +40,11 @@ import { LedgerError } from "../ledger/errors"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
 import type { ProfileStore } from "../profile/store"
+import type { ConversationStore } from "../conversation/store"
+import {
+  CONVERSATION_SEARCH_PATH,
+  conversationSearchRoute,
+} from "./conversation-search-route"
 import { BRIEF_PATH, briefRoute } from "./brief-route"
 import { dueSoonRoute } from "./due-soon"
 import { OBLIGATION_CHANGE_PATH, changeObligation } from "./obligations-route"
@@ -75,6 +80,8 @@ export interface ApiDeps {
   obligations?: ObligationStateStore
   /** The data DB the Documents list and viewer, Today due-soon and morning brief read. When absent, none of them is served. */
   documents?: DocumentsDeps
+  /** The conversation store behind `/conversations/search`. When absent, the route is not served. */
+  conversations?: ConversationStore
   /** The clock `/today/due-soon` reads "today" from. Absent: the system clock. */
   now?: () => Date
 }
@@ -468,6 +475,17 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       const result = briefRoute(deps.documents.db, briefMatch)
       if (result.ok) return json(result.body)
       return failure(result.code, result.message)
+    }
+
+    if (path === CONVERSATION_SEARCH_PATH && deps.conversations !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = conversationSearchRoute(
+        deps.conversations,
+        url.searchParams
+      )
+      if (result.ok) return json(result.body)
+      const { code, message, fields } = result
+      return failure(code, message, fields ? { fields } : {})
     }
 
     const blobMatch = DOCUMENT_BLOB_PATH.exec(path)
