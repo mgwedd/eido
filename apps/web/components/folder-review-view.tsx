@@ -1,12 +1,18 @@
 "use client"
 
-import { ArrowLeft, Link2, ScanFace, TriangleAlert, WifiOff } from "lucide-react"
+import {
+  ArrowLeft,
+  Link2,
+  ScanFace,
+  TriangleAlert,
+  WifiOff,
+} from "lucide-react"
 import Link from "next/link"
 import * as React from "react"
 
 import { Alert, AlertDescription, AlertTitle } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
-import { Button, buttonVariants } from "@eido/ui/components/button"
+import { Button } from "@eido/ui/components/button"
 import { Card, CardContent } from "@eido/ui/components/card"
 import {
   Table,
@@ -349,8 +355,8 @@ function FolderReviewBody({
               <div className="flex flex-col gap-1">
                 <h2 className="text-sm font-semibold">What you sign</h2>
                 <p className="text-sm text-muted-foreground">
-                  The gate replaces the whole list. Folders not listed here
-                  stop being readable.
+                  The gate replaces the whole list. Folders not listed here stop
+                  being readable.
                 </p>
                 <p className="text-sm">
                   <span className="text-muted-foreground">Challenge · </span>

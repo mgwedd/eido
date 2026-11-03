@@ -62,8 +62,7 @@ function prompt() {
   }
   return {
     device,
-    approve: () =>
-      resolve(new PublicKeyCredential() as unknown as Credential),
+    approve: () => resolve(new PublicKeyCredential()),
   }
 }
 
@@ -95,9 +94,9 @@ async function render(device?: FileRootsDevice, untilPrepared = true) {
   })
   if (untilPrepared)
     await vi.waitFor(async () => {
-    await act(settle)
-    expect(container.textContent).not.toContain(PREPARING)
-  })
+      await act(settle)
+      expect(container.textContent).not.toContain(PREPARING)
+    })
 }
 
 const button = (name: RegExp) => {

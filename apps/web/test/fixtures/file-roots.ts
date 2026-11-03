@@ -137,7 +137,11 @@ function reviewedFolders(): PreparedFolders {
   return {
     prepared,
     folders: [
-      { id: "notes", requested: "/Users/owner.example/Notes", root: notes.root },
+      {
+        id: "notes",
+        requested: "/Users/owner.example/Notes",
+        root: notes.root,
+      },
       {
         id: "studio",
         requested: "/Users/owner.example/Studio",
