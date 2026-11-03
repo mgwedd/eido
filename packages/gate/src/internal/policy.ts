@@ -60,6 +60,77 @@ export type AttendeeRead =
 /** Reads the stored attendees of an event from the calendar connector's record (#21). */
 export type StoredAttendees = (eventUid: string) => AttendeeRead
 
+export type StoredAttendeeSource = {
+  get(eventUid: string):
+    | {
+        event?: Record<string, unknown>
+        attendees?: readonly string[]
+        guests?: readonly string[]
+      }
+    | undefined
+}
+
+/**
+ * Creates a StoredAttendees lookup function for Gate's PolicyOptions backed by
+ * the calendar connector's record / tracker (#21, #290).
+ * Returns `{ ok: false }` for an unknown eventUid or a failed read.
+ */
+export function createStoredAttendeesReader(
+  source: StoredAttendeeSource
+): StoredAttendees {
+  return (eventUid: string): AttendeeRead => {
+    try {
+      const found = source.get(eventUid)
+      if (found === undefined) {
+        return { ok: false }
+      }
+      if (Array.isArray(found.attendees)) {
+        return {
+          ok: true,
+          attendees: found.attendees.filter(
+            (a): a is string => typeof a === "string"
+          ),
+        }
+      }
+      if (found.event !== undefined && typeof found.event === "object") {
+        if (Array.isArray(found.event["attendees"])) {
+          return {
+            ok: true,
+            attendees: found.event["attendees"]
+              .map((a) =>
+                typeof a === "string"
+                  ? a
+                  : typeof a === "object" && a !== null && "address" in a
+                    ? String((a as { address: unknown }).address)
+                    : ""
+              )
+              .filter((a) => a !== ""),
+          }
+        }
+        if (Array.isArray(found.event["guests"])) {
+          return {
+            ok: true,
+            attendees: found.event["guests"].filter(
+              (g): g is string => typeof g === "string"
+            ),
+          }
+        }
+      }
+      if (Array.isArray(found.guests)) {
+        return {
+          ok: true,
+          attendees: found.guests.filter(
+            (g): g is string => typeof g === "string"
+          ),
+        }
+      }
+      return { ok: true, attendees: [] }
+    } catch {
+      return { ok: false }
+    }
+  }
+}
+
 export type PolicyOptions = {
   /** The gate's data dir; the overlay is `permissions.json` in it. */
   dataDir: string

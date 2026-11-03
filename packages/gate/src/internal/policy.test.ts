@@ -11,6 +11,7 @@ import {
   ownerConfigOwnershipError,
   ownershipError,
   SHIPPED_DEFAULT_PATH,
+  createStoredAttendeesReader,
   intentTier,
   kindTier,
   loadPolicy,
@@ -594,5 +595,54 @@ describe("invalid overlays are rejected, not applied, and audited", () => {
     expect(() => loadPolicy(s.db, { ...s.options, shippedPath })).toThrow(
       "invalid shipped permission table: permissions.default.json: version must be a positive integer"
     )
+  })
+})
+
+describe("createStoredAttendeesReader", () => {
+  it("reads attendees from store with attendees, guests, or event objects", () => {
+    const store = new Map<
+      string,
+      {
+        event?: Record<string, unknown>
+        attendees?: string[]
+        guests?: string[]
+      }
+    >()
+    store.set("evt-attendees", { attendees: [OWNER, "guest@example.com"] })
+    store.set("evt-guests", { guests: ["guest2@example.com"] })
+    store.set("evt-tracked", { event: { guests: ["guest3@example.com"] } })
+    store.set("evt-tracked-attendees", {
+      event: { attendees: [{ address: OWNER }] },
+    })
+
+    const reader = createStoredAttendeesReader(store)
+    expect(reader("evt-attendees")).toEqual({
+      ok: true,
+      attendees: [OWNER, "guest@example.com"],
+    })
+    expect(reader("evt-guests")).toEqual({
+      ok: true,
+      attendees: ["guest2@example.com"],
+    })
+    expect(reader("evt-tracked")).toEqual({
+      ok: true,
+      attendees: ["guest3@example.com"],
+    })
+    expect(reader("evt-tracked-attendees")).toEqual({
+      ok: true,
+      attendees: [OWNER],
+    })
+  })
+
+  it("returns { ok: false } for unknown eventUid or read failure", () => {
+    const store = {
+      get: (uid: string) => {
+        if (uid === "throw") throw new Error("store failure")
+        return undefined
+      },
+    }
+    const reader = createStoredAttendeesReader(store)
+    expect(reader("unknown")).toEqual({ ok: false })
+    expect(reader("throw")).toEqual({ ok: false })
   })
 })
