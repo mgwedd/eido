@@ -139,10 +139,15 @@ function stubFetch(
     obligations?: CoreApiObligationList
     entities?: CoreApiEntityList
     obligationsStatus?: number
+    /** Answers POST /api/core/replies/draft; absent, the route is not stubbed. */
+    draft?: (init: RequestInit | undefined) => Promise<Response>
   } = {}
 ) {
-  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const urlStr = toUrlString(input)
+    if (urlStr.includes("/api/core/replies/draft") && options.draft) {
+      return options.draft(init)
+    }
     if (urlStr.includes("/api/core/entities")) {
       return Promise.resolve(
         new Response(
@@ -206,6 +211,7 @@ describe("RepliesView", () => {
       "About",
       "Entity",
       "Waiting",
+      "Action",
       "Who",
       "About",
       "Entity",
@@ -450,5 +456,187 @@ describe("RepliesView", () => {
     await renderReplies()
 
     expect(container.textContent).toContain("Sign in required to view replies.")
+  })
+
+  describe("Draft reply", () => {
+    const DRAFT_ROUTE = "/api/core/replies/draft"
+    const json = (status: number, body: unknown) =>
+      Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        })
+      )
+    const savedBody = (created: boolean) => ({
+      intentId: "intent-9",
+      tier: "auto",
+      state: "approved",
+      activityHref: "/activity?intent=intent-9",
+      created,
+    })
+    const requestBody = (init: RequestInit | undefined): string =>
+      typeof init?.body === "string" ? init.body : ""
+    const draftCalls = (fetchMock: ReturnType<typeof stubFetch>) =>
+      fetchMock.mock.calls.filter(([url]) =>
+        toUrlString(url).includes(DRAFT_ROUTE)
+      )
+    const draftButtons = () =>
+      Array.from(container.querySelectorAll("button")).filter((b) =>
+        /^(Draft reply|Drafting…)$/.test(b.textContent?.trim() ?? "")
+      )
+    const savedLinks = () =>
+      Array.from(container.querySelectorAll("a")).filter(
+        (a) => a.textContent?.trim() === "Draft saved"
+      )
+
+    test("one click makes one POST for that obligation and shows Draft saved on that row only", async () => {
+      const fetchMock = stubFetch({ draft: () => json(201, savedBody(true)) })
+      await renderReplies()
+      // Two owed rows, each rendered in the desktop table and the phone list.
+      expect(draftButtons()).toHaveLength(4)
+
+      await click(draftButtons()[0])
+
+      const calls = draftCalls(fetchMock)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.[1]?.method).toBe("POST")
+      expect(JSON.parse(requestBody(calls[0]?.[1]))).toEqual({
+        obligationId: 1,
+      })
+      // Desktop and phone render of the saved row link to the Activity entry.
+      expect(savedLinks().map((a) => a.getAttribute("href"))).toEqual([
+        "/activity?intent=intent-9",
+        "/activity?intent=intent-9",
+      ])
+      // The other owed row still offers the button.
+      expect(draftButtons()).toHaveLength(2)
+      // Nothing but the draft route was written to.
+      const writes = fetchMock.mock.calls.filter(
+        ([, init]) => init?.method === "POST"
+      )
+      expect(writes).toHaveLength(1)
+    })
+
+    test("a second click while pending makes no second request and the button is disabled", async () => {
+      let resolve: (r: Response) => void = () => undefined
+      const pending = new Promise<Response>((r) => {
+        resolve = r
+      })
+      const fetchMock = stubFetch({ draft: () => pending })
+      await renderReplies()
+
+      const first = draftButtons()[0]
+      await click(first)
+      await click(first)
+
+      expect(draftCalls(fetchMock)).toHaveLength(1)
+      const busy = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent?.trim() === "Drafting…"
+      )
+      expect(busy?.hasAttribute("disabled")).toBe(true)
+      expect(busy?.getAttribute("aria-busy")).toBe("true")
+
+      await act(async () => {
+        resolve(
+          new Response(JSON.stringify(savedBody(true)), {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          })
+        )
+        await flush()
+      })
+      expect(savedLinks()).toHaveLength(2)
+    })
+
+    test("a 200 for a thread that already has a draft shows Draft saved", async () => {
+      stubFetch({ draft: () => json(200, savedBody(false)) })
+      await renderReplies()
+
+      await click(draftButtons()[0])
+
+      expect(savedLinks()[0]?.getAttribute("href")).toBe(
+        "/activity?intent=intent-9"
+      )
+    })
+
+    test("a row the list says has a draft intent shows Draft saved linking to Activity, with no button", async () => {
+      const [first, ...rest] = sampleObligations
+      if (!first) throw new Error("fixture")
+      stubFetch({
+        obligations: {
+          obligations: [{ ...first, hasDraftIntent: true }, ...rest],
+          nextOffset: null,
+        },
+      })
+      await renderReplies()
+
+      expect(savedLinks().map((a) => a.getAttribute("href"))).toEqual([
+        "/activity",
+        "/activity",
+      ])
+      expect(draftButtons()).toHaveLength(2)
+    })
+
+    test("a failed draft says why, stays retryable, and a retry can save", async () => {
+      let answer = () =>
+        json(409, { error: { code: "connector_paused", message: "paused" } })
+      const fetchMock = stubFetch({ draft: () => answer() })
+      await renderReplies()
+
+      await click(draftButtons()[0])
+
+      const alert = container.querySelector('[role="alert"]')
+      expect(alert?.textContent).toBe(
+        "Mail connector paused. Nothing was drafted. Open Connectors"
+      )
+      expect(alert?.querySelector("a")?.getAttribute("href")).toBe(
+        "/connectors"
+      )
+      expect(savedLinks()).toHaveLength(0)
+      const retry = draftButtons()[0]
+      expect(retry?.hasAttribute("disabled")).toBe(false)
+
+      answer = () => json(201, savedBody(true))
+      await click(retry)
+
+      expect(draftCalls(fetchMock)).toHaveLength(2)
+      expect(savedLinks()).toHaveLength(2)
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+    })
+
+    test("offline disables every button with a reason and a click makes no request", async () => {
+      const fetchMock = stubFetch({ draft: () => json(201, savedBody(true)) })
+      await renderReplies({ isOffline: true })
+
+      const buttons = draftButtons()
+      expect(buttons).toHaveLength(4)
+      expect(buttons.every((b) => b.hasAttribute("disabled"))).toBe(true)
+      expect(buttons[0]?.getAttribute("title")).toBe("Unavailable offline")
+      await click(buttons[0])
+      expect(draftCalls(fetchMock)).toHaveLength(0)
+    })
+
+    test("a paused Gmail connector is shown on the page", async () => {
+      stubFetch()
+      await renderReplies({
+        initialConnectors: [
+          {
+            name: "gmail",
+            enabled: false,
+            pinnedAt: "2026-01-01T00:00:00Z",
+            scopes: [],
+            health: "healthy",
+            consecutiveFailures: 0,
+            manifestHash: "abc",
+          },
+        ],
+      })
+
+      expect(
+        Array.from(container.querySelectorAll('[role="status"]')).map((el) =>
+          el.textContent?.trim()
+        )
+      ).toContain("Gmail paused: its threads are not included.")
+    })
   })
 })
