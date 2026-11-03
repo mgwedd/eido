@@ -43,12 +43,15 @@ const ID = /^[1-9][0-9]{0,15}$/
 const DIGITS = /^\d+$/
 
 /** A query parameter with surrounding whitespace removed; empty means absent. */
-function param(params: URLSearchParams, name: string): string | undefined {
+export function param(
+  params: URLSearchParams,
+  name: string
+): string | undefined {
   const value = params.get(name)?.trim()
   return value === undefined || value === "" ? undefined : value
 }
 
-function readCount(
+export function readCount(
   params: URLSearchParams,
   name: string,
   min: number,

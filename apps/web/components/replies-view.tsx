@@ -365,6 +365,15 @@ export function RepliesView({
             Replies owed
           </Link>
           <Link
+            href="/ledger/transactions"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "sm" }),
+              "h-8 px-3 text-xs"
+            )}
+          >
+            Transactions
+          </Link>
+          <Link
             href="/documents"
             className={cn(
               buttonVariants({ variant: "ghost", size: "sm" }),
