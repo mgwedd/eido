@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import type { MailSignal } from "./mail-signals"
+import { pageOffsetsInBody } from "./page-offsets"
+import type { PageText } from "./page-offsets"
 import { soundex, tokenize } from "./text"
 
 export type MailAddressRole = "from" | "reply_to" | "to" | "cc" | "bcc"
@@ -110,6 +112,29 @@ export function getCursor(
   }
 }
 
+/** Stores the pages with their `[start, end)` in `body` where the page text is found there. */
+function insertPages(
+  db: DatabaseSync,
+  sha256: string,
+  body: string,
+  pages: readonly PageText[]
+): void {
+  const offsets = pageOffsetsInBody(body, pages)
+  const insertPage = db.prepare(
+    "INSERT INTO document_pages (sha256, page, text, start_offset, end_offset) VALUES (?, ?, ?, ?, ?)"
+  )
+  for (const page of pages) {
+    const range = offsets.get(page.page)
+    insertPage.run(
+      sha256,
+      page.page,
+      page.text,
+      range?.start ?? null,
+      range?.end ?? null
+    )
+  }
+}
+
 function insertDocument(
   db: DatabaseSync,
   doc: IndexedDocument,
@@ -160,11 +185,10 @@ function insertDocument(
       .prepare("SELECT 1 FROM document_pages WHERE sha256 = ? LIMIT 1")
       .get(doc.sha256)
     if (hasPages !== undefined) return { inserted: false, pagesStored: 0 }
-    const insertPage = db.prepare(
-      "INSERT INTO document_pages (sha256, page, text) VALUES (?, ?, ?)"
-    )
-    for (const page of doc.pages)
-      insertPage.run(doc.sha256, page.page, page.text)
+    const storedText = db
+      .prepare("SELECT body FROM document_text WHERE sha256 = ?")
+      .get(doc.sha256)
+    insertPages(db, doc.sha256, String(storedText?.["body"] ?? ""), doc.pages)
     return { inserted: false, pagesStored: doc.pages.length }
   }
   const h = doc.headers
@@ -182,11 +206,7 @@ function insertDocument(
     h?.threadId ?? null,
     h?.attachmentOf ?? null
   )
-  const insertPage = db.prepare(
-    "INSERT INTO document_pages (sha256, page, text) VALUES (?, ?, ?)"
-  )
-  for (const page of doc.pages ?? [])
-    insertPage.run(doc.sha256, page.page, page.text)
+  insertPages(db, doc.sha256, doc.body, doc.pages ?? [])
   const insertName = db.prepare(
     "INSERT INTO name_keys (sha256, role, name, phonetic_key) VALUES (?, ?, ?, ?)"
   )
