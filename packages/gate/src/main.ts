@@ -27,6 +27,7 @@ import type { Handler, LoopbackHost } from "./internal/http"
 import { fileLog } from "./internal/log"
 import { defaultBackupStampPath } from "./internal/backup-status"
 import { phoneHandler } from "./internal/phone-routes"
+import { readReviewedManifest } from "./internal/repin"
 import { createPushNotifier } from "./internal/push-notify"
 import {
   generateVapidPrivateKey,
@@ -370,6 +371,8 @@ export async function runGate(
       ...runningGate(),
       profileAudit,
       backupStampPath: config.backupStampPath ?? defaultBackupStampPath(),
+      reviewedManifest: (connector: string) =>
+        readReviewedManifest(config.dataDir, connector),
       notifyPending: notifier?.notifyPending,
       ...(config.push === undefined
         ? {}

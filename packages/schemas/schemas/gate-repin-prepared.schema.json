@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateRepinPrepared",
+  "description": "Response of POST /connector-settings/:name/repin on the phone listener (#97): a signed manifest.pin control ceremony over the re-reviewed manifest of a drift-disabled connector. Nothing changes until the passkey signs the challenge. The device hashes payload itself, checks its operation names against the drift it shows, and rebuilds the challenge before signing.",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "purpose": { "const": "manifest.pin" },
+    "target": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "payload": { "type": "string", "minLength": 2, "maxLength": 262144 },
+    "payloadHash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "challenge": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    }
+  },
+  "required": [
+    "id",
+    "purpose",
+    "target",
+    "payload",
+    "payloadHash",
+    "nonce",
+    "challenge"
+  ],
+  "additionalProperties": false
+}

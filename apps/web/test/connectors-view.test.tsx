@@ -2,6 +2,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
+import { repinConnector } from "../lib/connector-repin"
 import { ConnectorsView } from "../components/connectors-view"
 import { formatDateTime } from "../lib/connectors"
 import {
@@ -14,6 +15,9 @@ import {
   protonMailOpen,
   sharedBridgeOpen,
 } from "./fixtures/connectors"
+
+vi.mock("../lib/connector-repin", () => ({ repinConnector: vi.fn() }))
+const repin = vi.mocked(repinConnector)
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -34,6 +38,7 @@ afterEach(() => {
   act(() => root.unmount())
   container.remove()
   vi.unstubAllGlobals()
+  repin.mockReset()
 })
 
 async function render() {
@@ -249,4 +254,96 @@ test("a manually disabled connector shows no drift section", async () => {
     "Disabled: the gate refuses reads from this connector"
   )
   expect(card.textContent).not.toContain("tool manifest changed")
+})
+
+test("a connector that is not drift-disabled has no re-pin action", async () => {
+  respond({ connectors: [driveDisabled, gmail] })
+  await render()
+  expect(container.textContent).not.toContain("Review and re-pin")
+})
+
+test("Review and re-pin signs, then reloads the connectors so the card shows enabled", async () => {
+  let reads = 0
+  const fetchMock = vi.fn<typeof fetch>((input) => {
+    const url = input instanceof Request ? input.url : input.toString()
+    if (url.endsWith("/repin")) return Promise.resolve(Response.json({}))
+    reads += 1
+    return Promise.resolve(
+      Response.json({ connectors: [reads === 1 ? driveDrifted : drive] })
+    )
+  })
+  vi.stubGlobal("fetch", fetchMock)
+  repin.mockResolvedValueOnce({ ok: true })
+  await render()
+  const button = [...container.querySelectorAll("button")].find(
+    (b) => b.textContent === "Review and re-pin"
+  )!
+  await act(async () => {
+    button.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  expect(repin).toHaveBeenCalledWith("drive", driveDrifted.drift)
+  expect(reads).toBe(2)
+  expect(container.textContent).not.toContain("Review and re-pin")
+  expect(cardFor("Drive")!.textContent).not.toContain("Disabled")
+})
+
+test("a refused re-pin shows the message, keeps the connector disabled and re-enables the button", async () => {
+  respond({ connectors: [driveDrifted] })
+  repin.mockResolvedValueOnce({
+    ok: false,
+    message: "The gate refused the signature. The old pin is unchanged.",
+  })
+  await render()
+  const button = [...container.querySelectorAll("button")].find(
+    (b) => b.textContent === "Review and re-pin"
+  )!
+  await act(async () => {
+    button.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    "The gate refused the signature. The old pin is unchanged."
+  )
+  expect(cardFor("Drive")!.textContent).toContain("Disabled")
+  expect(button.disabled).toBe(false)
+})
+
+test("while the passkey prompt is open the card says it is waiting for Face ID", async () => {
+  respond({ connectors: [driveDrifted] })
+  repin.mockReturnValueOnce(new Promise(() => undefined))
+  await render()
+  const button = [...container.querySelectorAll("button")].find(
+    (b) => b.textContent === "Review and re-pin"
+  )!
+  await act(async () => {
+    button.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  expect(
+    [...container.querySelectorAll('[role="status"]')].map((n) => n.textContent)
+  ).toContain("Waiting for Face ID…")
+  expect(button.disabled).toBe(true)
+})
+
+test("an expired session during re-pin sends the owner to unlock", async () => {
+  respond({ connectors: [driveDrifted] })
+  repin.mockResolvedValueOnce({ ok: false, expired: true })
+  const replace = vi.fn()
+  vi.stubGlobal("location", {
+    ...window.location,
+    replace,
+    pathname: "/connectors",
+    search: "",
+  })
+  await render()
+  const button = [...container.querySelectorAll("button")].find(
+    (b) => b.textContent === "Review and re-pin"
+  )!
+  await act(async () => {
+    button.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  expect(replace).toHaveBeenCalledTimes(1)
+  expect(String(replace.mock.calls[0]![0])).toContain("/unlock")
 })

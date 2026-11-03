@@ -26,6 +26,9 @@ import {
   validateGateProposeRefusal,
   validateGateProposeResult,
   validateGateRejectReason,
+  validateGateRepinPrepared,
+  validateGateRepinRequest,
+  validateGateRepinResult,
   validateGateSession,
   gateAuditDisplayActor,
 } from "./index"
@@ -1058,5 +1061,60 @@ describe("Proton mail read routes", () => {
         lastSuccess: AT,
       }).ok
     ).toBe(false)
+  })
+})
+
+describe("connector re-pin", () => {
+  const prepared = {
+    id: "ctl-1",
+    purpose: "manifest.pin",
+    target: "drive",
+    payload: '{"name":"drive"}',
+    payloadHash: HASH,
+    nonce: NONCE,
+    challenge: NONCE,
+  }
+  const assertion = {
+    credentialId: "Y3JlZA",
+    authenticatorData: "YXV0aA",
+    clientDataJSON: "Y2xpZW50",
+    signature: "c2ln",
+  }
+
+  test("a prepared card is bound to the manifest.pin purpose", () => {
+    expect(validateGateRepinPrepared(prepared).ok).toBe(true)
+    expect(
+      validateGateRepinPrepared({ ...prepared, purpose: "intent.approve" }).ok
+    ).toBe(false)
+  })
+
+  test("a prepared card refuses a malformed hash, nonce or challenge", () => {
+    expect(
+      validateGateRepinPrepared({ ...prepared, payloadHash: "abc" }).ok
+    ).toBe(false)
+    expect(
+      validateGateRepinPrepared({ ...prepared, nonce: `${"A".repeat(42)}=` }).ok
+    ).toBe(false)
+    expect(
+      validateGateRepinPrepared({ ...prepared, challenge: "short" }).ok
+    ).toBe(false)
+  })
+
+  test("a request needs the id, nonce and assertion and no other key", () => {
+    const request = { id: "ctl-1", nonce: NONCE, assertion }
+    expect(validateGateRepinRequest(request).ok).toBe(true)
+    expect(
+      errorsOf(validateGateRepinRequest(without(request, "assertion")))
+    ).toEqual(["$.assertion: required"])
+    expect(
+      errorsOf(validateGateRepinRequest({ ...request, manifest: {} }))
+    ).toEqual(["$.manifest: unknown key"])
+  })
+
+  test("a result names the connector and the pinned manifest hash", () => {
+    expect(
+      validateGateRepinResult({ connector: "drive", manifestHash: HASH }).ok
+    ).toBe(true)
+    expect(validateGateRepinResult({ connector: "drive" }).ok).toBe(false)
   })
 })

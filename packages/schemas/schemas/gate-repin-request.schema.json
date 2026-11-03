@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateRepinRequest",
+  "description": "Body of POST /connector-settings/:name/repin/decision (#97): the control approval prepared by GateRepinPrepared, signed by the passkey.",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "nonce": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "assertion": { "$ref": "gate-webauthn-assertion.schema.json" }
+  },
+  "required": ["id", "nonce", "assertion"],
+  "additionalProperties": false
+}
