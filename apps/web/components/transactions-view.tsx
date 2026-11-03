@@ -25,6 +25,7 @@ import { cn } from "@eido/ui/lib/utils"
 import {
   formatAmount,
   formatPostedDate,
+  linkedObligationUrl,
   loadTransactions,
   summarizeTransactions,
   TRANSACTIONS_PAGE_SIZE,
@@ -168,6 +169,9 @@ function TransactionsTable({
             <TableHead scope="col" className="px-4 py-3">
               Entity
             </TableHead>
+            <TableHead scope="col" className="px-4 py-3">
+              Linked obligation
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -193,11 +197,55 @@ function TransactionsTable({
               <TableCell className="px-4 py-3">
                 <EntityChip name={row.entity.name} />
               </TableCell>
+              <TableCell className="px-4 py-3 whitespace-normal">
+                {row.linkedObligation ? (
+                  <Link
+                    href={linkedObligationUrl(row.entity.id)}
+                    className="text-foreground underline-offset-4 hover:underline"
+                  >
+                    {row.linkedObligation.action}
+                  </Link>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
     </div>
+  )
+}
+
+/** A phone row's two lines; the second ends with the linked obligation when there is one. */
+function TransactionRowContent({
+  row,
+  now,
+}: {
+  row: TransactionItem
+  now: Date
+}) {
+  return (
+    <>
+      <div className="flex items-start justify-between gap-3">
+        <span className="min-w-0 text-sm leading-snug font-medium break-words text-foreground">
+          {row.description}
+        </span>
+        <span
+          className={cn(
+            "shrink-0 text-sm font-medium tabular-nums",
+            amountClass(row.amountCents)
+          )}
+        >
+          {formatAmount(row.amountCents, row.currency)}
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {formatPostedDate(row.postedAt, now)} · {row.entity.name} ·{" "}
+        {row.account.name}
+        {row.linkedObligation ? ` · ${row.linkedObligation.action}` : null}
+      </p>
+    </>
   )
 }
 
@@ -211,24 +259,19 @@ function TransactionsList({
   return (
     <ul className="flex flex-col divide-y divide-border rounded-lg border border-border px-3 md:hidden">
       {rows.map((row) => (
-        <li key={row.id} className="flex flex-col gap-1 py-3">
-          <div className="flex items-start justify-between gap-3">
-            <span className="min-w-0 text-sm leading-snug font-medium break-words text-foreground">
-              {row.description}
-            </span>
-            <span
-              className={cn(
-                "shrink-0 text-sm font-medium tabular-nums",
-                amountClass(row.amountCents)
-              )}
+        <li key={row.id}>
+          {row.linkedObligation ? (
+            <Link
+              href={linkedObligationUrl(row.entity.id)}
+              className="flex flex-col gap-1 py-3"
             >
-              {formatAmount(row.amountCents, row.currency)}
-            </span>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {formatPostedDate(row.postedAt, now)} · {row.entity.name} ·{" "}
-            {row.account.name}
-          </p>
+              <TransactionRowContent row={row} now={now} />
+            </Link>
+          ) : (
+            <div className="flex flex-col gap-1 py-3">
+              <TransactionRowContent row={row} now={now} />
+            </div>
+          )}
         </li>
       ))}
     </ul>

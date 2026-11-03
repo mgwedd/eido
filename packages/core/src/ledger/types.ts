@@ -77,7 +77,11 @@ export interface ObligationSource {
 }
 
 export type LinkEndpoint =
-  `doc:${string}` | `obl:${number}` | `ent:${string}` | `party:${string}`
+  | `doc:${string}`
+  | `obl:${number}`
+  | `ent:${string}`
+  | `party:${string}`
+  | `txn:${string}`
 
 export type LinkKind =
   | "thread"
@@ -86,6 +90,8 @@ export type LinkKind =
   | "references"
   | "supersedes"
   | "about_party"
+  /** A bank transaction (`txn:`) paid an obligation (`obl:`). */
+  | "pays"
 
 export interface Link {
   src: LinkEndpoint

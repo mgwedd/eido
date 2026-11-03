@@ -1,9 +1,12 @@
 import type { DatabaseSync } from "node:sqlite"
 import type { CoreApiError, CoreApiTransactionList } from "@eido/schemas"
 import { beforeEach, describe, expect, test } from "vitest"
-import { ledgerFixture } from "../ledger/ledger.test-support"
+import { openIndex } from "../index/schema"
+import { insertLinks, insertObligation } from "../ledger"
+import { addDocs, ledgerFixture, testDoc } from "../ledger/ledger.test-support"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
+import { listTransactionsRoute } from "./transactions-route"
 
 let db: DatabaseSync
 let handle: ApiHandler
@@ -96,6 +99,7 @@ describe("GET /transactions", () => {
       currency: "USD",
       account: { id: "acct-chk", name: "Checking" },
       entity: { id: propertyId, name: "Test Property", tag: "PROP" },
+      linkedObligation: null,
     })
     expect(body.nextOffset).toBeNull()
   })
@@ -162,6 +166,48 @@ describe("GET /transactions", () => {
     })
   })
 
+  async function addObligation(entityId: string, action: string) {
+    const [docId = ""] = addDocs(db, [testDoc(action, { entityId })])
+    return insertObligation(db, {
+      entityId,
+      action,
+      dueAt: "2026-10-20",
+      status: "open",
+      docId,
+      span: { start: 0, end: 4 },
+    })
+  }
+
+  async function pays(transactionId: string, obligationId: number) {
+    await insertLinks(db, [
+      {
+        src: `txn:${transactionId}`,
+        dst: `obl:${obligationId}`,
+        kind: "pays",
+        confidence: 0.9,
+        origin: "match",
+      },
+    ])
+  }
+
+  test("returns the obligation a transaction paid and null for the others", async () => {
+    const id = await addObligation(propertyId, "Pay the power bill")
+    await pays("acct-chk:2", id)
+    const body = await list()
+    expect(body.transactions.map((t) => [t.id, t.linkedObligation])).toEqual([
+      ["acct-chk:2", { id, action: "Pay the power bill" }],
+      ["acct-biz:1", null],
+      ["acct-chk:1", null],
+    ])
+  })
+
+  test("leaves out a link to an obligation of another entity", async () => {
+    const id = await addObligation(companyId, "Pay the client refund")
+    await pays("acct-chk:2", id)
+    const body = await list("?account=acct-chk")
+    expect(body.transactions[0]?.linkedObligation).toBeNull()
+  })
+
   test("rejects a bad limit with a field error", async () => {
     const response = await get("?limit=0")
     expect(response.status).toBe(422)
@@ -181,6 +227,23 @@ describe("GET /transactions", () => {
     )
     expect(response.status).toBe(405)
     expect(response.headers.get("allow")).toBe("GET")
+  })
+})
+
+describe("GET /transactions before the ledger is applied", () => {
+  test("lists transactions with no linked obligation", () => {
+    const index = openIndex(":memory:")
+    index.exec(`
+      INSERT INTO entities (id, kind, name, tag, created_at)
+        VALUES ('ent-home', 'personal', 'Home', 'HOME', '2026-01-01T00:00:00Z');
+      INSERT INTO accounts (id, connector, name, currency) VALUES ('acct', 'simplefin', 'Everyday', 'USD');
+      INSERT INTO transactions
+        (id, account_id, entity_id, posted_at, amount_cents, currency, description, raw_json, ingested_at)
+        VALUES ('acct:1', 'acct', 'ent-home', '2026-10-01T00:00:00.000Z', -500, 'USD', 'Lorem', '{}', '2026-10-02T00:00:00.000Z');`)
+    const result = listTransactionsRoute(index, new URLSearchParams())
+    expect(
+      result.ok ? result.body.transactions.map((t) => t.linkedObligation) : []
+    ).toEqual([null])
   })
 })
 
