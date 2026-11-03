@@ -210,6 +210,14 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      epoch TEXT PRIMARY KEY,
      key_hash TEXT NOT NULL
    ) STRICT;`,
+  // The owner-signed local file roots (#313). Loaded only after its policy.set approval on
+  // target file-roots, its audit row and the chain verify, and only if it is the latest.
+  `CREATE TABLE approved_file_roots (
+     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+     payload_json TEXT NOT NULL,
+     payload_hash TEXT NOT NULL,
+     approval_id TEXT NOT NULL REFERENCES control_approvals(id)
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

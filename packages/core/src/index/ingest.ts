@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
+import type { MailSignal } from "./mail-signals"
 import { soundex, tokenize } from "./text"
 
 export type MailAddressRole = "from" | "reply_to" | "to" | "cc" | "bcc"
@@ -32,6 +33,8 @@ export interface IndexedDocument {
     autoSubmitted?: string
     precedence?: string
   }
+  /** Phishing signals computed when the message was parsed; absent or empty means none. */
+  mailSignals?: MailSignal[]
   /** Account identity used to scope connector-native mail thread ids. */
   mailboxId?: string
   /** The canonical bytes the sha256 was computed from. When given, the digest is verified. */
@@ -82,6 +85,11 @@ function storeMailMetadata(db: DatabaseSync, doc: IndexedDocument): void {
       doc.mailFacts.precedence ?? null
     )
   }
+  const insertSignal = db.prepare(
+    "INSERT OR IGNORE INTO mail_message_signals (sha256, kind, detail) VALUES (?, ?, ?)"
+  )
+  for (const { kind, detail } of doc.mailSignals ?? [])
+    insertSignal.run(doc.sha256, kind, detail)
 }
 
 export function getCursor(

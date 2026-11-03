@@ -1,3 +1,4 @@
+import { BRIEF_SCHEMA_SQL } from "../brief/schema"
 import { CONVERSATION_SCHEMA_SQL } from "../conversation/schema"
 
 /**
@@ -15,7 +16,8 @@ import { CONVERSATION_SCHEMA_SQL } from "../conversation/schema"
  *     column CHECK cannot be changed in place; they apply to writes from now on and leave rows
  *     stored under v1 as they are.
  * v3 adds injection provenance to obligations; v4 adds conversation storage and search; v5 adds
- *     resumable digest section and final digest caches.
+ *     resumable digest section and final digest caches; the last migration adds the `briefs`
+ *     table (#53).
  */
 export const LEDGER_MIGRATIONS: readonly string[] = [
   `
@@ -212,6 +214,7 @@ CREATE UNIQUE INDEX obligations_reply_anchor
   `
 ALTER TABLE obligations ADD COLUMN resolution_reason TEXT CHECK (resolution_reason IS NULL OR resolution_reason = 'replied');
 `,
+  BRIEF_SCHEMA_SQL,
 ]
 
 export const LEDGER_SCHEMA_VERSION = LEDGER_MIGRATIONS.length

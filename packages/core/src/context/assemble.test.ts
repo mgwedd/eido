@@ -162,6 +162,70 @@ describe("assembleContext on a 200-message thread", () => {
   })
 })
 
+describe("assembleContext phishing signals", () => {
+  const reply = mail({
+    id: "sig-reply",
+    date: "2030-01-02T00:00:00.000Z",
+    body: "Thanks, see below.",
+    inReplyTo: "<sig-seed@example.invalid>",
+    references: ["<sig-seed@example.invalid>"],
+  })
+
+  test("a flagged member shows its signals on its own tag line and a clean one shows none", async () => {
+    const seed = mail({
+      id: "sig-seed",
+      date: "2030-01-01T00:00:00.000Z",
+      body: "Please pay the attached invoice today.",
+      signals: [
+        { kind: "dmarc_fail", detail: "fail" },
+        { kind: "reply_to_domain", detail: "example.invalid" },
+        { kind: "link_mismatch", detail: "example.com -> example.invalid" },
+        { kind: "link_mismatch", detail: "a.example.com -> example.invalid" },
+      ],
+    })
+    ingest(db, [seed, reply])
+    const result = await assembleContext(db, {
+      seed: seed.sha256,
+      task: "ask",
+      budgetTokens: BUDGETS.ask,
+    })
+    if (!isPack(result)) throw new Error("refused")
+    const text = packText(result)
+    expect(text).toContain(
+      "\n\n[M1] gmail | Eido checks found: sender failed DMARC; Reply-To is on a different domain than the sender; a link's text shows a different domain than where it goes\n<material"
+    )
+    expect(text).toContain("\n\n[M2] gmail\n<material")
+  })
+
+  test("the signals are in the text the token estimate and the hash are taken over", async () => {
+    const flagged = mail({
+      id: "sig-seed",
+      date: "2030-01-01T00:00:00.000Z",
+      body: "Please pay the attached invoice today.",
+      signals: [{ kind: "dmarc_fail", detail: "fail" }],
+    })
+    const clean = mail({
+      id: "sig-clean",
+      date: "2030-01-01T00:00:00.000Z",
+      body: "Please pay the attached invoice today.",
+    })
+    ingest(db, [flagged, clean])
+    const [a, b] = await Promise.all(
+      [flagged, clean].map((d) =>
+        assembleContext(db, {
+          seed: d.sha256,
+          task: "ask",
+          budgetTokens: BUDGETS.ask,
+        })
+      )
+    )
+    if (a === undefined || b === undefined || !isPack(a) || !isPack(b))
+      throw new Error("refused")
+    expect(a.packHash).not.toBe(b.packHash)
+    expect(a.tokenCount).toBeGreaterThan(b.tokenCount)
+  })
+})
+
 describe("assembleContext edges and refusal", () => {
   test("a seed larger than the budget is refused and nothing is stored", async () => {
     const big = mail({
