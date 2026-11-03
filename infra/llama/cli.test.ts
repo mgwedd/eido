@@ -16,8 +16,7 @@ const MODEL = `${ROOT}/models/gemma-4-26B_q4_0-it.gguf`
 const BIN = `${ROOT}/llama.cpp/b11149/llama-server`
 const PLIST = `${HOME}/Library/LaunchAgents/com.eido.llama-server.plist`
 const VERSION = "version: 0.5.0-dev (build 11149, commit d2e54583c)\n"
-const REFERENCE =
-  "<|turn>user\nThanks.<turn|>\n<|turn>model\n"
+const REFERENCE = "<|turn>user\nThanks.<turn|>\n<|turn>model\n"
 
 const reply = (status: number, body: unknown): HttpResponse => ({
   status,
@@ -71,8 +70,7 @@ function harness(o: Options = {}) {
     "/repo/infra/model.lock": LOCK,
     [MODEL]: "",
     [BIN]: "",
-    "/repo/infra/llama/fixtures/gemma-4-26B_q4_0-it.gguf.prompt.txt":
-      REFERENCE,
+    "/repo/infra/llama/fixtures/gemma-4-26B_q4_0-it.gguf.prompt.txt": REFERENCE,
     ...o.files,
   }
   const http: Record<string, HttpResponse | Error> = {
