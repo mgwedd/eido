@@ -10,7 +10,7 @@ export default defineConfig({
       exclude: [
         "**/*.test.{ts,tsx}", // test files are not product code
       ],
-      reporter: ["text", "json-summary"],
+      reporter: ["text", "json-summary", "cobertura"],
       thresholds: {
         lines: 90,
         statements: 90,

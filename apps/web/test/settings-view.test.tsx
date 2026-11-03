@@ -98,14 +98,21 @@ test("shows the sections in the issue's order", async () => {
   ])
 })
 
-test("omits sections whose data source does not exist: no Profile or Data", async () => {
+test("omits sections whose data source does not exist: no Data", async () => {
   gate(healthy)
   await render()
   for (const absent of ["Profile", "Data"])
     expect(
       [...container.querySelectorAll("h2")].map((h) => h.textContent)
     ).not.toContain(absent)
-  expect(container.querySelector('a[href="/profile"]')).toBeNull()
+})
+
+test("a phone-only row links to the Profile page", async () => {
+  gate(healthy)
+  await render()
+  const link = container.querySelector('a[href="/profile"]')
+  expect(link?.textContent).toBe("Profile")
+  expect(link?.className).toContain("md:hidden")
 })
 
 test("lists passkeys with created time, this device and revoked status", async () => {

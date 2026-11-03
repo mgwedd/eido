@@ -1,6 +1,7 @@
 "use client"
 
-import { Info, WifiOff } from "lucide-react"
+import { ChevronRight, UserRound, WifiOff } from "lucide-react"
+import Link from "next/link"
 import { useTheme } from "next-themes"
 import * as React from "react"
 
@@ -9,12 +10,8 @@ import { Button } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { Switch } from "@eido/ui/components/switch"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@eido/ui/components/tooltip"
+import { TooltipProvider } from "@eido/ui/components/tooltip"
+import { InfoTip } from "@/components/info-tip"
 import { expiredUnlockUrl } from "@/lib/auth/unlock"
 import { formatDateTime } from "@/lib/connectors"
 import {
@@ -97,22 +94,6 @@ function useSettings(): { state: SettingsState; retry: () => void } {
 }
 
 /** How-it-works text: opens on hover, focus or tap; the trigger is a 44px target. */
-function InfoTip({ label, children }: { label: string; children: string }) {
-  const [open, setOpen] = React.useState(false)
-  return (
-    <Tooltip open={open} onOpenChange={setOpen}>
-      <TooltipTrigger
-        aria-label={label}
-        onClick={() => setOpen((value) => !value)}
-        className="-my-2 -mr-2 inline-flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-      >
-        <Info aria-hidden className="size-4" />
-      </TooltipTrigger>
-      <TooltipContent>{children}</TooltipContent>
-    </Tooltip>
-  )
-}
-
 function Section({
   id,
   title,
@@ -488,6 +469,20 @@ function AboutSection({ info }: { info: AboutInfo }) {
   )
 }
 
+/** Phones reach Profile from here; the desktop sidebar links it directly. */
+function ProfileRow() {
+  return (
+    <Link
+      href="/profile"
+      className="flex min-h-11 items-center gap-3 rounded-xl border bg-card px-4 text-sm font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:hidden"
+    >
+      <UserRound aria-hidden className="size-4 text-muted-foreground" />
+      <span className="flex-1">Profile</span>
+      <ChevronRight aria-hidden className="size-4 text-muted-foreground" />
+    </Link>
+  )
+}
+
 function SettingsBody({
   state,
   onRetry,
@@ -505,6 +500,7 @@ function SettingsBody({
         <p role="status" className="sr-only">
           Loading settings…
         </p>
+        <ProfileRow />
         <AppearanceSection key="appearance" />
         <NotificationsSection key="notifications" device={pushDevice} />
         <Skeleton className="h-32 w-full" />
@@ -518,6 +514,7 @@ function SettingsBody({
   )
   return (
     <>
+      <ProfileRow />
       <AppearanceSection key="appearance" />
       <NotificationsSection key="notifications" device={pushDevice} />
       <PasskeysSection load={state.passkeys} />

@@ -34,6 +34,8 @@ export interface PackBlock {
   /** The connector the document came from, from the index. */
   label: string
   block: FencedBlock
+  /** Phishing signals computed for the message, as fixed phrases; absent or empty means none. */
+  signals?: readonly string[]
 }
 
 export interface ContextPack {
@@ -50,7 +52,11 @@ export { ESTIMATE_BOUNDARY } from "../inference/fence"
 
 /** A member's tag line and block as they follow the previous text in the prompt. */
 export function blockParts(entry: PackBlock): PromptPart[] {
-  return [`\n\n${entry.tag} ${entry.label}\n`, entry.block]
+  const warnings =
+    entry.signals === undefined || entry.signals.length === 0
+      ? ""
+      : ` | Eido checks found: ${entry.signals.join("; ")}`
+  return [`\n\n${entry.tag} ${entry.label}${warnings}\n`, entry.block]
 }
 
 /** The pack as prompt parts: the legend, then each member's tag line and fenced block. */

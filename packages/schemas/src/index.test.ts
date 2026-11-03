@@ -507,16 +507,6 @@ describe("codegen", () => {
     expect(JSON.stringify(INTENT_RESULT_JSON_SCHEMA)).not.toContain("mailIds")
   })
 
-  test("the committed output matches a fresh run", () => {
-    const { dir, out } = fixture()
-    run(dir, out)
-    for (const name of ["types.ts", "prompt.ts", "validators.ts"]) {
-      expect(readFileSync(join(out, name), "utf8")).toBe(
-        readFileSync(join(pkgRoot, "src", "generated", name), "utf8")
-      )
-    }
-  })
-
   test.each([
     ["keyword", { type: "integer", multipleOf: 2 }, "not supported"],
     ["format", { type: "string", maxLength: 5, format: "email" }, "format"],

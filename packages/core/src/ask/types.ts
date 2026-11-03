@@ -5,6 +5,7 @@ import type {
   CoreApiAskResponse,
 } from "@eido/schemas"
 import type { InferenceQueue } from "../inference/queue"
+import type { DigestService } from "../digest/service"
 import type { Turn } from "../conversation/types"
 
 /** What the model's first step asks code to run. Code runs it; the model never counts. */
@@ -40,6 +41,12 @@ export interface AskDeps {
   searchLimit?: number
   /** The clock the plan's relative dates are resolved against. Default `new Date()`. */
   now?: () => Date
+  /**
+   * The stored digests. When set, a broad question whose best match is in a thread of several
+   * messages reads the thread through `selectZoomContext`: ranked digest lines, then verified
+   * raw passages. Unset, a broad question reads whole members as before.
+   */
+  digest?: Pick<DigestService, "getDigest">
   /** Compacted turns from this Ask conversation, included to resolve follow-up questions. */
   conversation?: readonly Turn[]
   /** Maps a document source to its stable tag in this conversation. */

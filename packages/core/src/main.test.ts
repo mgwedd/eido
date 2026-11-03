@@ -1225,6 +1225,7 @@ describe("serveDataPlane", () => {
       ],
       nextCursor: "{}",
     })
+    const digest = vi.spyOn(plane, "getDigestService")
     let api: CoreApi | undefined
     try {
       api = await serveDataPlane(plane, config.api)
@@ -1234,6 +1235,8 @@ describe("serveDataPlane", () => {
         body: JSON.stringify({ question: "When was the invoice paid?" }),
       })
       expect(response.status).toBe(200)
+      // Ask reads thread digests through the plane's digest service (#475).
+      expect(digest).toHaveBeenCalled()
       expect(await response.json()).toMatchObject({
         status: "answered",
         answer: "The invoice was paid [M1].",

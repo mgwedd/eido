@@ -226,6 +226,27 @@ describe("POST /intents", () => {
     expect(actions().slice(before)).toEqual(["intent.invalid"])
   })
 
+  it("stores the injection flag next to the intent and lists it for the owner", async () => {
+    const result = await client.propose({
+      ...proposal,
+      injection: { reasons: ["boundary-confusion"] },
+    })
+    const listed = pendingIntents(s.db).find((i) => i.id === result.id)
+    expect(listed?.injection).toEqual({ reasons: ["boundary-confusion"] })
+  })
+
+  it("refuses an injection flag with an unknown or empty reason list with 400", async () => {
+    for (const injection of [{ reasons: ["lorem"] }, { reasons: [] }]) {
+      const reply = await raw(
+        dataSocket,
+        "POST",
+        "/intents",
+        JSON.stringify({ ...proposal, injection })
+      )
+      expect(reply.status).toBe(400)
+    }
+  })
+
   it("refuses a body that is not a proposal, such as one carrying its own hash, with 400", async () => {
     const reply = await raw(
       dataSocket,

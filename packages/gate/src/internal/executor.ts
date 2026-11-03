@@ -10,7 +10,7 @@ import type { FileHelper } from "./files/file-helper"
 import { approvedFileRoot } from "./files/file-roots"
 import { createFile, moveFile, trashFile } from "./files/file-ops"
 import { append } from "./audit"
-import { PROTON_CONNECTOR } from "./bridge/config"
+import { PROTON_CALENDAR_CONNECTOR, PROTON_CONNECTOR } from "./bridge/config"
 import { canonicalize, payloadHash } from "./canonical"
 import {
   getPinnedManifest,
@@ -65,6 +65,9 @@ export const BRIDGE_DESTINATIONS = {
   "email.reply": "bridge:smtp/send",
   "email.forward": "bridge:smtp/send",
   "email.trash": "bridge:imap/move-to-trash",
+  "calendar.create": "bridge:smtp/send",
+  "calendar.edit": "bridge:smtp/send",
+  "calendar.delete": "bridge:smtp/send",
 } as const satisfies Partial<Record<Intent["kind"], string>>
 
 /** The Bridge destination for `kind`, or undefined when Bridge does not run that kind. */
@@ -279,7 +282,8 @@ function writeDestination(
 function bridgeConfigured(db: DatabaseSync, connector: string): boolean {
   const manifest = getPinnedManifest(db, connector)
   return (
-    connector === PROTON_CONNECTOR &&
+    (connector === PROTON_CONNECTOR ||
+      connector === PROTON_CALENDAR_CONNECTOR) &&
     manifest?.auth.type === "password" &&
     manifest.egress.hosts.length === 0
   )
@@ -421,7 +425,11 @@ export function createExecutor(
         return refuse(id, direction, "no_inverse")
       const inverse = validateIntent(previous.inverse)
       if (!inverse.ok) return refuse(id, direction, "invalid_inverse")
-      if (/\.(send|forward|reply|trash|delete)$/i.test(inverse.value.kind))
+      if (
+        /^(email\.(send|forward|reply|trash)|file\.delete)$/i.test(
+          inverse.value.kind
+        )
+      )
         return refuse(id, direction, "unsafe_inverse")
       if (
         "connector" in intent &&

@@ -25,7 +25,8 @@
     "stack:dev": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts dev",
     "stack:prod": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts prod",
     "stack:stop": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts stop",
-    "stack:status": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts status"
+    "stack:status": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts status",
+    "postinstall": "node packages/schemas/scripts/codegen.ts"
   },
   "devDependencies": {
     "@eido/eslint-config": "workspace:*",

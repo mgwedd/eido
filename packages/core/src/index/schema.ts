@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 9
+export const SCHEMA_VERSION = 10
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -164,6 +164,23 @@ BEGIN SELECT RAISE(ABORT, 'document types are never deleted'); END;
 CREATE TRIGGER document_types_user_wins BEFORE UPDATE ON document_types
 WHEN OLD.source = 'user' AND NEW.source = 'model'
 BEGIN SELECT RAISE(ABORT, 'a user label is not replaced by a model label'); END;
+`,
+  // v10: phishing signals computed from a mail message's headers and links when it is parsed. A
+  // message with no row here has no signal; nothing is inferred for mail stored before this.
+  `
+CREATE TABLE mail_message_signals (
+  sha256 TEXT NOT NULL REFERENCES documents(sha256),
+  kind TEXT NOT NULL CHECK (kind IN (
+    'spf_fail', 'dkim_fail', 'dmarc_fail', 'display_name_address', 'reply_to_domain',
+    'punycode_domain', 'mixed_script_domain', 'lookalike_domain', 'link_mismatch'
+  )),
+  detail TEXT NOT NULL CHECK (length(detail) <= 300),
+  PRIMARY KEY (sha256, kind, detail)
+);
+CREATE TRIGGER mail_message_signals_no_update BEFORE UPDATE ON mail_message_signals
+BEGIN SELECT RAISE(ABORT, 'mail message signals are immutable'); END;
+CREATE TRIGGER mail_message_signals_no_delete BEFORE DELETE ON mail_message_signals
+BEGIN SELECT RAISE(ABORT, 'mail message signals are immutable'); END;
 `,
 ]
 

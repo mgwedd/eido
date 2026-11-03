@@ -4,6 +4,7 @@ import {
   MessageSquare,
   Plug,
   Settings,
+  UserRound,
   Sun,
   type LucideIcon,
 } from "lucide-react"
@@ -19,7 +20,7 @@ export type NavItem = {
 /**
  * Ordered navigation. An entry is added by the PR that ships its page, so there is
  * never a nav item without a working route (nav.test.ts checks every href).
- * Today's page is #34, Queue #33, Ask #35, Activity #36.
+ * Today's page is #34, Queue #33, Ask #35, Activity #36, Profile #81.
  */
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/", label: "Today", icon: Sun, phone: true },
@@ -28,6 +29,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/activity", label: "Activity", icon: History, phone: true },
   { href: "/connectors", label: "Connectors", icon: Plug, phone: false },
   { href: "/settings", label: "Settings", icon: Settings, phone: false },
+  { href: "/profile", label: "Profile", icon: UserRound, phone: false },
 ]
 
 export const MAX_PHONE_TABS = 5
