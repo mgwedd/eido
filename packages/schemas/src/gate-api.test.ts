@@ -29,6 +29,9 @@ import {
   validateGateRepinPrepared,
   validateGateRepinRequest,
   validateGateRepinResult,
+  validateGateFileRootsPrepared,
+  validateGateFileRootsCompletion,
+  validateGateFileRootsSaved,
   validateGateSession,
   gateAuditDisplayActor,
 } from "./index"
@@ -1141,5 +1144,96 @@ describe("connector re-pin", () => {
       validateGateRepinResult({ connector: "drive", manifestHash: HASH }).ok
     ).toBe(true)
     expect(validateGateRepinResult({ connector: "drive" }).ok).toBe(false)
+  })
+})
+
+describe("allowed folders signing", () => {
+  const roots = {
+    roots: [
+      {
+        id: "notes",
+        root: {
+          path: "/Users/owner.example/Notes",
+          dev: "1000004",
+          ino: "2a",
+          trashDir: ".eido-trash",
+        },
+      },
+    ],
+  }
+  const prepared = {
+    id: "ctl-1",
+    purpose: "policy.set",
+    target: "file-roots",
+    payloadHash: HASH,
+    nonce: NONCE,
+    challenge: NONCE,
+    roots,
+  }
+  const assertion = {
+    credentialId: "Y3JlZA",
+    authenticatorData: "YXV0aA",
+    clientDataJSON: "Y2xpZW50",
+    signature: "c2ln",
+  }
+
+  test("a prepared list is bound to policy.set on file-roots", () => {
+    expect(validateGateFileRootsPrepared(prepared).ok).toBe(true)
+    expect(
+      errorsOf(
+        validateGateFileRootsPrepared({ ...prepared, purpose: "manifest.pin" })
+      )
+    ).toEqual(['$.purpose: must be "policy.set"'])
+    expect(
+      validateGateFileRootsPrepared({ ...prepared, target: "drive" }).ok
+    ).toBe(false)
+  })
+
+  test("a prepared list refuses a malformed hash, nonce, challenge or root", () => {
+    expect(
+      validateGateFileRootsPrepared({ ...prepared, payloadHash: "abc" }).ok
+    ).toBe(false)
+    expect(
+      validateGateFileRootsPrepared({
+        ...prepared,
+        nonce: `${"A".repeat(42)}=`,
+      }).ok
+    ).toBe(false)
+    expect(
+      validateGateFileRootsPrepared({ ...prepared, challenge: "short" }).ok
+    ).toBe(false)
+    expect(
+      validateGateFileRootsPrepared({
+        ...prepared,
+        roots: { roots: [{ id: "Notes", root: roots.roots[0]?.root }] },
+      }).ok
+    ).toBe(false)
+    expect(
+      errorsOf(validateGateFileRootsPrepared(without(prepared, "roots")))
+    ).toEqual(["$.roots: required"])
+  })
+
+  test("a completion carries the roots and the signed authorization", () => {
+    const completion = {
+      roots,
+      authorization: { id: "ctl-1", nonce: NONCE, assertion },
+    }
+    expect(validateGateFileRootsCompletion(completion).ok).toBe(true)
+    expect(
+      errorsOf(
+        validateGateFileRootsCompletion({
+          roots,
+          authorization: { id: "ctl-1", nonce: NONCE },
+        })
+      )
+    ).toEqual(["$.authorization.assertion: required"])
+    expect(
+      errorsOf(validateGateFileRootsCompletion({ ...completion, extra: 1 }))
+    ).toEqual(["$.extra: unknown key"])
+  })
+
+  test("a saved result is only saved: true", () => {
+    expect(validateGateFileRootsSaved({ saved: true }).ok).toBe(true)
+    expect(validateGateFileRootsSaved({ saved: false }).ok).toBe(false)
   })
 })
