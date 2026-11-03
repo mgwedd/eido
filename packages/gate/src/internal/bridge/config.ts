@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs"
 
 /** The pinned connector whose intents run through Bridge (core's manifest, #22). */
 export const PROTON_CONNECTOR = "proton-mail"
+export const PROTON_CALENDAR_CONNECTOR = "proton-calendar"
 
 export const BRIDGE_TLS_MODES = ["starttls", "tls"] as const
 /** `none` is only for direct test fixtures; bridgeConfig never returns it. */

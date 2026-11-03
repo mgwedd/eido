@@ -36,7 +36,8 @@
               "ambiguous_operation",
               "manifest_forbidden",
               "root_not_allowed",
-              "connector_disabled"
+              "connector_disabled",
+              "event_not_found"
             ]
           }
         },

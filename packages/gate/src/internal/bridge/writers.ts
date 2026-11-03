@@ -14,8 +14,9 @@ import type {
   OutgoingMail,
   ProtonBridge,
 } from "./bridge"
-import { PROTON_CONNECTOR } from "./config"
+import { PROTON_CALENDAR_CONNECTOR, PROTON_CONNECTOR } from "./config"
 import { BridgeError } from "./errors"
+import { executeCalendarIntent, type ExecuteCalendarOptions } from "./calendar"
 
 // The executor's writers and transport for Proton Bridge (#195). Each approved (or auto-tier)
 // intent reaches here only after createExecutor has checked its state, tier, hash, signed
@@ -40,10 +41,44 @@ const isBridgeIntent = (intent: Intent): intent is BridgeIntent =>
 
 const KINDS = Object.keys(BRIDGE_DESTINATIONS).filter(isBridgeKind)
 
+function isCalendarResult(result: unknown): result is {
+  eventUid: string
+  sequence: number
+  prior?: Record<string, unknown>
+} {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    "eventUid" in result &&
+    typeof result.eventUid === "string"
+  )
+}
+
+function calendarInverse(kind: BridgeKind, result: unknown): unknown {
+  if (kind === "calendar.create" && isCalendarResult(result)) {
+    return { kind: "calendar.delete", args: { eventUid: result.eventUid } }
+  }
+  if (
+    (kind === "calendar.edit" || kind === "calendar.delete") &&
+    isCalendarResult(result) &&
+    result.prior
+  ) {
+    return {
+      kind: "calendar.edit",
+      args: {
+        eventUid: result.eventUid,
+        ...result.prior,
+      },
+    }
+  }
+  return null
+}
+
 function writer(kind: BridgeKind): UpstreamWriter {
+  const isCalendar = kind.startsWith("calendar.")
   return {
     kind,
-    connector: PROTON_CONNECTOR,
+    connector: isCalendar ? PROTON_CALENDAR_CONNECTOR : PROTON_CONNECTOR,
     channel: "bridge",
     buildRequest: (intent) => ({
       method: "POST",
@@ -51,7 +86,7 @@ function writer(kind: BridgeKind): UpstreamWriter {
       body: intent,
     }),
     intentFromRequest: (request) => request.body,
-    inverse: () => null,
+    inverse: (_intent, result) => calendarInverse(kind, result),
   }
 }
 
@@ -61,11 +96,15 @@ export const BRIDGE_WRITERS: readonly UpstreamWriter[] = KINDS.map(writer)
 function bridgeIntent(request: WriteRequest): BridgeIntent {
   const parsed: unknown = JSON.parse(request.body)
   const checked = validateIntent(parsed)
+  const expectedConnector =
+    checked.ok && checked.value.kind.startsWith("calendar.")
+      ? PROTON_CALENDAR_CONNECTOR
+      : PROTON_CONNECTOR
   if (
     !checked.ok ||
     !isBridgeIntent(checked.value) ||
     checked.value.kind !== request.intentKind ||
-    request.connector !== PROTON_CONNECTOR ||
+    request.connector !== expectedConnector ||
     request.method !== "POST" ||
     BRIDGE_DESTINATIONS[checked.value.kind] !== request.url
   ) {
@@ -199,9 +238,14 @@ async function sent(
 
 async function run(
   bridge: ProtonBridge,
-  intent: BridgeIntent
+  intent: BridgeIntent,
+  options?: ExecuteCalendarOptions
 ): Promise<UpstreamResult> {
   switch (intent.kind) {
+    case "calendar.create":
+    case "calendar.edit":
+    case "calendar.delete":
+      return executeCalendarIntent(bridge, intent, options)
     case "email.draft":
       return draft(bridge, intent)
     case "email.send": {
@@ -285,6 +329,9 @@ async function run(
 }
 
 /** The executor transport for Bridge writes: one adapter action per request. */
-export function bridgeTransport(bridge: ProtonBridge): WriteTransport {
-  return async (request) => run(bridge, bridgeIntent(request))
+export function bridgeTransport(
+  bridge: ProtonBridge,
+  options?: ExecuteCalendarOptions
+): WriteTransport {
+  return async (request) => run(bridge, bridgeIntent(request), options)
 }

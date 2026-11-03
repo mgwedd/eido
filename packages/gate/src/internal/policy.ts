@@ -52,7 +52,7 @@ export type PermissionTable = {
 
 /** An event's current attendees, or `ok: false` when they cannot be read. */
 export type AttendeeRead =
-  { ok: true; attendees: readonly string[] } | { ok: false }
+  { ok: true; attendees: readonly string[] } | { ok: false; notFound?: boolean }
 
 /** Reads the stored attendees of an event from the calendar connector's record (#21). */
 export type StoredAttendees = (eventUid: string) => AttendeeRead
@@ -88,6 +88,7 @@ export type ForbiddenReason =
   | "manifest_forbidden"
   | "root_not_allowed"
   | "connector_disabled"
+  | "event_not_found"
 
 export type TierDecision =
   { tier: ConfigTier } | { tier: "forbidden"; reason: ForbiddenReason }
@@ -203,30 +204,28 @@ function hasOtherGuest(
   return (guests ?? []).some((guest) => !own.has(normalizeAddress(guest)))
 }
 
-/** The event's stored attendees, or undefined when there is no reader or the read fails. */
-function readAttendees(
-  policy: Policy,
-  eventUid: string
-): readonly string[] | undefined {
-  if (policy.storedAttendees === undefined) return undefined
-  try {
-    const read = policy.storedAttendees(eventUid)
-    return read.ok ? read.attendees : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/** Approval when the event's stored or proposed guests include anyone but the owner. */
+/** Approval when the event's stored or proposed guests include anyone but the owner; forbidden if unknown. */
 function changesEventWithGuests(
   policy: Policy,
   eventUid: string,
   proposed: readonly string[] | undefined,
   decision: TierDecision
 ): TierDecision {
-  const stored = readAttendees(policy, eventUid)
-  if (stored === undefined) return { tier: "approval" }
-  return hasOtherGuest([...stored, ...(proposed ?? [])], policy.ownerAddresses)
+  if (policy.storedAttendees === undefined) return { tier: "approval" }
+  let read: AttendeeRead
+  try {
+    read = policy.storedAttendees(eventUid)
+  } catch {
+    return { tier: "approval" }
+  }
+  if (!read.ok) {
+    if (read.notFound) return forbidden("event_not_found")
+    return { tier: "approval" }
+  }
+  return hasOtherGuest(
+    [...read.attendees, ...(proposed ?? [])],
+    policy.ownerAddresses
+  )
     ? { tier: "approval" }
     : decision
 }
