@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateFileRootsCompletion",
+  "description": "Body of POST /file-roots/complete on the phone listener (#574): the roots exactly as GateFileRootsPrepared returned them and the control approval signed by the passkey. The gate stores them only when the signature verifies over these roots.",
+  "type": "object",
+  "properties": {
+    "roots": { "$ref": "gate-file-roots.schema.json" },
+    "authorization": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "nonce": {
+          "type": "string",
+          "minLength": 43,
+          "maxLength": 43,
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "assertion": { "$ref": "gate-webauthn-assertion.schema.json" }
+      },
+      "required": ["id", "nonce", "assertion"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["roots", "authorization"],
+  "additionalProperties": false
+}

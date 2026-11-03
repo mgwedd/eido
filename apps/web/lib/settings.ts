@@ -1,10 +1,12 @@
 import {
   validateGateAuditChainStatus,
   validateGateBackupStatus,
+  validateGateFileRoots,
   validateGatePasskeyList,
   validateGatePermissionList,
   type GateAuditChainStatus,
   type GateBackupStatus,
+  type GateFileRoots,
   type GatePasskeyList,
   type GatePermissionList,
 } from "@eido/schemas"
@@ -14,12 +16,14 @@ export type PermissionTier = GatePermissionList["tiers"][number]
 export type PermissionList = GatePermissionList
 export type ChainStatus = GateAuditChainStatus
 export type BackupStatus = GateBackupStatus
+export type FileRoots = GateFileRoots
 export type Tier = PermissionTier["tier"]
 
 export const PASSKEYS_URL = "/api/gate/passkeys"
 export const PERMISSIONS_URL = "/api/gate/permissions"
 export const BACKUP_STATUS_URL = "/api/gate/backup/status"
 export const AUDIT_CHAIN_URL = "/api/gate/audit/chain"
+export const FILE_ROOTS_URL = "/api/gate/file-roots"
 
 /** One section's read: data, a gate that cannot be reached, or a failed read. */
 export type SectionLoad<T> =
@@ -63,6 +67,14 @@ export const loadBackupStatus = (signal: AbortSignal) =>
   loadSection(BACKUP_STATUS_URL, validateGateBackupStatus, signal)
 export const loadAuditChain = (signal: AbortSignal) =>
   loadSection(AUDIT_CHAIN_URL, validateGateAuditChainStatus, signal)
+export const loadFileRoots = (signal: AbortSignal) =>
+  loadSection(FILE_ROOTS_URL, validateGateFileRoots, signal)
+
+/** "1 allowed folder", "3 allowed folders", "No allowed folders". */
+export function folderCount(count: number): string {
+  if (count === 0) return "No allowed folders"
+  return `${count} allowed ${count === 1 ? "folder" : "folders"}`
+}
 
 /** First eight hex characters of the credential fingerprint: enough to tell keys apart. */
 export function shortFingerprint(fingerprint: string): string {
