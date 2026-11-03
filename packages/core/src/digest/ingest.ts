@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite"
 import type { DigestService } from "./service"
-import type { DigestSubject, ThreadMessage } from "./types"
+import { loadThread } from "./thread"
+import type { DigestSubject } from "./types"
 import type { IndexedDocument } from "../index/ingest"
 
 /** Schedule digests only from rows committed by ingestion and persisted page provenance. */
@@ -51,39 +52,8 @@ export function scheduleIngestedDigests(
     }
   }
 
-  const messages = db.prepare(
-    `SELECT d.sha256, d.source_ref, t.message_id, t.body, t.in_reply_to FROM documents d
-     JOIN document_text t ON t.sha256 = d.sha256
-     WHERE d.source = ? AND d.entity_id IS ? AND t.thread_id = ?
-       AND d.mime = 'message/rfc822'
-     ORDER BY COALESCE(t.occurred_at, ''), d.ingested_at, d.sha256`
-  )
-  for (const [subjectThreadId, thread] of threads) {
-    const threadMessages: ThreadMessage[] = messages
-      .all(thread.source, thread.entityId, thread.threadId)
-      .flatMap((row) => {
-        const id =
-          typeof row["message_id"] === "string" && row["message_id"] !== ""
-            ? row["message_id"]
-            : typeof row["source_ref"] === "string"
-              ? row["source_ref"]
-              : row["sha256"]
-        const body = row["body"]
-        const inReplyTo = row["in_reply_to"]
-        if (typeof id !== "string" || typeof body !== "string") return []
-        return [
-          {
-            id,
-            body,
-            ...(typeof inReplyTo === "string" ? { inReplyTo } : {}),
-          },
-        ]
-      })
-    if (threadMessages.length === 0) continue
-    service.scheduleDigest({
-      kind: "thread",
-      threadId: subjectThreadId,
-      messages: threadMessages,
-    })
+  for (const thread of threads.values()) {
+    const loaded = loadThread(db, thread)
+    if (loaded !== undefined) service.scheduleDigest(loaded.subject)
   }
 }

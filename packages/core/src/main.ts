@@ -391,6 +391,8 @@ export type DataPlane = {
   /** Accounts the configured connectors have reported: Proton's at startup, Gmail's per run. */
   connectorAccounts: () => readonly KnownAccount[]
   getInferenceQueue: () => Promise<InferenceQueue>
+  /** The model-backed digest service; Ask reads thread digests through it. */
+  getDigestService: () => Promise<DigestService>
   getModelContextTokens: () => number
   /** Schedule digests for documents committed by a connector batch. */
   scheduleIngestedDocuments: (documents: readonly IndexedDocument[]) => void
@@ -786,6 +788,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     stopProtonSync,
     connectorAccounts: accounts.list,
     getInferenceQueue: model.getQueue,
+    getDigestService,
     getModelContextTokens: model.getContextTokens,
     scheduleIngestedDocuments: onIngested,
     scheduleReplyObligations: scheduleReplies,
@@ -816,6 +819,7 @@ export async function serveDataPlane(
   const modelBaseUrl = config.modelBaseUrl
   const conversation = plane.conversation
   const getQueue = plane.getInferenceQueue
+  const getDigestService = plane.getDigestService
   const ask =
     modelBaseUrl === undefined
       ? undefined
@@ -824,7 +828,9 @@ export async function serveDataPlane(
             if (question.trim() === "/compact") {
               return compactAskResult("Nothing to compact yet")
             }
-            return askPipeline(question, plane.db, await getQueue())
+            return askPipeline(question, plane.db, await getQueue(), {
+              digest: await getDigestService(),
+            })
           }
           const queue = await getQueue()
           const conversationId = "ask"
@@ -861,6 +867,7 @@ export async function serveDataPlane(
             { queue }
           )
           const result = await askPipeline(question, plane.db, queue, {
+            digest: await getDigestService(),
             budgetTokens: askBudgetTokens,
             conversation: compacted.turns,
             allocateSourceTag: (sourceRef) =>
@@ -934,7 +941,10 @@ function askPipeline(
   db: DatabaseSync,
   queue: ReturnType<typeof createInferenceQueue>,
   conversation: Partial<
-    Pick<AskDeps, "budgetTokens" | "conversation" | "allocateSourceTag">
+    Pick<
+      AskDeps,
+      "budgetTokens" | "conversation" | "allocateSourceTag" | "digest"
+    >
   > = {}
 ) {
   return ask(question, {
