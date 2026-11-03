@@ -397,6 +397,47 @@ export function createPasskeyAdminClient(options: IntentClientOptions): {
   }
 }
 
+/** How long the gate may take to check a connector after a connect: a refresh and one read. */
+const CONNECT_CHECK_TIMEOUT_MS = 60_000
+
+/**
+ * The `connect` command's client for the control socket (#98): connector health, and the check
+ * the gate runs once a new credential is in the vault.
+ */
+export function createConnectClient(options: IntentClientOptions): {
+  health: () => Promise<GateConnectorHealth>
+  connected: (connector: string) => Promise<GateConnectorHealth>
+} {
+  const quick = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  const slow = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? CONNECT_CHECK_TIMEOUT_MS,
+  }
+  return {
+    health: async () =>
+      expect(
+        await call(quick, "GET", "/connector-health"),
+        [200],
+        validateGateConnectorHealth,
+        "GateConnectorHealth"
+      ),
+    connected: async (connector) =>
+      expect(
+        await call(
+          slow,
+          "POST",
+          `/connectors/${encodeURIComponent(connector)}/connected`
+        ),
+        [200],
+        validateGateConnectorHealth,
+        "GateConnectorHealth"
+      ),
+  }
+}
+
 export type FileClient = {
   roots(): Promise<GateFileRoots>
   perform(request: GateLocalFileRequest): Promise<GateFileHelperResponse>
