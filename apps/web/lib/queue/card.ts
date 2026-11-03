@@ -41,7 +41,7 @@ function plain(value: unknown): string {
   return JSON.stringify(value)
 }
 
-const LABELS: Readonly<Record<string, string>> = {
+export const LABELS: Readonly<Record<string, string>> = {
   to: "To",
   cc: "Cc",
   bcc: "Bcc",
