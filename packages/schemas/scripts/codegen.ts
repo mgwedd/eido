@@ -377,6 +377,12 @@ function main(): void {
       file.startsWith("gate-") ||
       file.startsWith("core-api-ask-") ||
       file.startsWith("core-api-default-entity") ||
+      file.startsWith("core-api-profile") ||
+      file.startsWith("core-api-entity") ||
+      file.startsWith("core-api-assignment-") ||
+      file.startsWith("core-api-account-") ||
+      file === "core-api-send-from.schema.json" ||
+      file === "core-api-error.schema.json" ||
       file.startsWith("core-api-document-") ||
       file.startsWith("core-api-today-") ||
       file === "ask-coverage.schema.json" ||
