@@ -1,6 +1,6 @@
 # Infra
 
-Host setup for the Mac: the local stack and `tailscale serve` routes now; Proton Bridge supervision now; pf and llama-server later (#29, #70). Never commit secrets here; `infra/secrets` is denied to agents.
+Host setup for the Mac: the local stack, `tailscale serve` routes, Proton Bridge supervision, host checks and the pinned llama-server; pf later (#70). Never commit secrets here; `infra/secrets` is denied to agents.
 
 ## Local stack (#374)
 
@@ -33,6 +33,10 @@ pnpm --filter @eido/infra serve-routes measure  # with the backends stopped: wha
 ```
 
 Each command takes `--port`, `--web-port`, `--core-port` and `--gate-port` to override the defaults.
+
+## Host checks and llama-server (#29)
+
+`pnpm --filter @eido/infra host check` checks that FileVault is on and Tailscale is running; it only reads. `pnpm --filter @eido/infra llama <verify|launch|check-template|install|status|…>` runs `llama-server` on `127.0.0.1` from the pin in `infra/model.lock`, and refuses to start when the binary or model does not match it. The runbook, with the recorded results and how to update the pin, is `infra/llama-server.md`.
 
 ## Proton Bridge LaunchAgent (#68)
 

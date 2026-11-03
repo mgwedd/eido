@@ -1,0 +1,14 @@
+<|start_header_id|>system<|end_header_id|>
+
+You are a test assistant. Answer briefly.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+What is the weather in Testville?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+<|eot_id|><|start_header_id|>tool<|end_header_id|>
+
+{"forecast":"sunny"}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+It is sunny in Testville.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Thanks.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
