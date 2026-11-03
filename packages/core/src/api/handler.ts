@@ -17,6 +17,7 @@ import type {
 } from "@eido/schemas"
 import {
   validateCoreApiAskRequest,
+  validateCoreApiConfirmExtractionRequest,
   validateCoreApiDefaultEntityRequest,
   validateGateIntentProposal,
   validateIntent,
@@ -27,11 +28,15 @@ import { assignableAccounts } from "../connectors/accounts"
 import type { KnownAccount } from "../connectors/accounts"
 import type { ObligationStateStore } from "../ledger/obligation-state"
 import {
+  DOCUMENT_BLOB_PATH,
   DOCUMENT_TYPE_PATH,
+  documentBlobRoute,
   documentsRoute,
   setOwnerDocumentType,
 } from "./documents-route"
 import type { DocumentsDeps } from "./documents-route"
+import { confirmExtractionField } from "../ledger/confirm"
+import { LedgerError } from "../ledger/errors"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
 import type { ProfileStore } from "../profile/store"
@@ -463,6 +468,55 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       const result = briefRoute(deps.documents.db, briefMatch)
       if (result.ok) return json(result.body)
       return failure(result.code, result.message)
+    }
+
+    const blobMatch = DOCUMENT_BLOB_PATH.exec(path)
+    if (blobMatch !== null && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = documentBlobRoute(deps.documents.db, blobMatch[1]!)
+      if (!result.ok) return failure(result.code, result.message)
+      return new Response(new Uint8Array(result.buffer), {
+        status: 200,
+        headers: {
+          "content-type": result.mime,
+          "content-disposition": `attachment; filename="${blobMatch[1]}"`,
+          "cache-control": "no-store",
+        },
+      })
+    }
+
+    const confirmMatch = /^\/extractions\/(\d+)\/confirm$/.exec(path)
+    if (confirmMatch !== null && deps.documents !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const body = await readJson(request)
+      const valid = validateCoreApiConfirmExtractionRequest(body)
+      if (!valid.ok) {
+        return failure("invalid", "invalid confirm extraction request", {
+          fields: toFieldErrors(valid.errors),
+        })
+      }
+      try {
+        const result = await confirmExtractionField(deps.documents.db, {
+          extractionId: Number(confirmMatch[1]),
+          field: valid.value.field,
+          value: valid.value.value,
+          threshold: deps.documents.threshold,
+        })
+        return json(result)
+      } catch (error) {
+        if (error instanceof LedgerError) {
+          if (error.code === "extraction_not_found") {
+            return failure("not_found", error.message)
+          }
+          if (error.code === "invalid_value") {
+            return failure("invalid", error.message, {
+              fields: [{ field: "value", message: error.message }],
+            })
+          }
+          return failure("bad_request", error.message)
+        }
+        throw error
+      }
     }
 
     if (deps.documents !== undefined) {

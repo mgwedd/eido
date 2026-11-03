@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import * as React from "react"
 
 import { validateGatePendingIntentList } from "@eido/schemas"
@@ -125,22 +126,52 @@ function NeedsYouCard({
               {needsYouSummary(total)}
             </p>
             <ul className="flex flex-col divide-y divide-border">
-              {shown.map((intent) => (
-                <li
-                  key={intent.id}
-                  className="flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0"
-                >
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-sm font-medium">
-                      {describeKind(intent.kind)}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {formatWaiting(intent.createdAt, now)}
-                    </span>
-                  </div>
-                  <Badge variant="outline">Approval</Badge>
-                </li>
-              ))}
+              {shown.map((intent) => {
+                const isConfirm = intent.kind === "confirm.field"
+                const title =
+                  isConfirm && intent.title
+                    ? intent.title
+                    : describeKind(intent.kind)
+                const subtitle =
+                  isConfirm && intent.subtitle
+                    ? intent.subtitle
+                    : formatWaiting(intent.createdAt, now)
+
+                return (
+                  <li
+                    key={intent.id}
+                    className="flex items-start justify-between gap-3 py-3 first:pt-0 last:pb-0"
+                  >
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-sm font-medium">{title}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {subtitle}
+                      </span>
+                    </div>
+                    {isConfirm ? (
+                      <div className="flex items-center gap-2">
+                        <Badge className="border-blue-500/20 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20">
+                          Confirm
+                        </Badge>
+                        <Button
+                          asChild
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs"
+                        >
+                          <Link
+                            href={`/queue?intent=${encodeURIComponent(intent.id)}`}
+                          >
+                            Review
+                          </Link>
+                        </Button>
+                      </div>
+                    ) : (
+                      <Badge variant="outline">Approval</Badge>
+                    )}
+                  </li>
+                )
+              })}
             </ul>
           </>
         ) : null}

@@ -163,6 +163,15 @@ function pendingSend(
   return result.intentId
 }
 
+function pendingConfirmField(args?: Record<string, unknown>): string {
+  const result = propose(s.db, s.policy, {
+    intent: sample("confirm.field", args),
+    origin: "reactive",
+  })
+  if (!result.ok || result.state !== "pending") throw new Error("not pending")
+  return result.intentId
+}
+
 function intentState(id: string): unknown {
   return s.db.prepare("SELECT state FROM intents WHERE id = ?").get(id)?.[
     "state"
@@ -1264,6 +1273,27 @@ describe("phoneHandler: approvals", () => {
     ])
   })
 
+  it("lists confirm.field pending intents with title and subtitle", async () => {
+    const id = pendingConfirmField({
+      field: "amount",
+      value: { raw: "$250.00", typed: { amount_minor: 25000, currency: "USD" } },
+      documentTitle: "Water Bill",
+      documentSource: "a scan",
+      confidence: 0.71,
+    })
+    const reply = await call("GET", "/approvals", { cookie })
+    const parsed = validateGatePendingIntentList(reply.body)
+    if (!parsed.ok) throw new Error(parsed.errors.join("; "))
+    expect(parsed.value.intents).toEqual([
+      expect.objectContaining({
+        id,
+        kind: "confirm.field",
+        title: "Confirm Water Bill amount: $250.00",
+        subtitle: "Extracted from a scan · confidence 0.71",
+      }),
+    ])
+  })
+
   it("prepares the card: payload, its hash, a nonce, the sources and the rationale", async () => {
     const id = pendingSend({ rationale: "lorem ipsum dolor" })
     const reply = await call("POST", `/approvals/${id}/nonce`, { cookie })
@@ -1365,6 +1395,37 @@ describe("phoneHandler: approvals", () => {
       value: { intentId: id, state: "approved", nudge: false },
     })
     expect(intentState(id)).toBe("approved")
+  })
+
+  it("approves confirm.field without WebAuthn assertion", async () => {
+    const id = pendingConfirmField()
+    const reply = await call("POST", `/approvals/${id}/decision`, {
+      cookie,
+      body: {
+        intentId: id,
+        decision: "approved",
+      },
+    })
+    expect(reply.status).toBe(200)
+    expect(reply.body).toEqual({
+      intentId: id,
+      state: "approved",
+      nudge: false,
+    })
+    expect(intentState(id)).toBe("approved")
+  })
+
+  it("refuses approval of external intent without assertion", async () => {
+    const id = pendingSend()
+    const reply = await call("POST", `/approvals/${id}/decision`, {
+      cookie,
+      body: {
+        intentId: id,
+        decision: "approved",
+      },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect(intentState(id)).toBe("pending")
   })
 
   it("refuses an approval signed over another intent's challenge", async () => {

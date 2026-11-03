@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs"
 import type { DatabaseSync, SQLInputValue } from "node:sqlite"
 import type {
   CoreApiDocumentField,
@@ -42,6 +43,8 @@ const LIST_PATH = "/documents"
 const VIEW_PATH = /^\/documents\/([^/]+)$/
 /** `PUT /documents/:sha256/type`: the owner sets a document's type. */
 export const DOCUMENT_TYPE_PATH = /^\/documents\/([^/]+)\/type$/
+/** `GET /documents/:sha256/blob`: download of the original document blob. */
+export const DOCUMENT_BLOB_PATH = /^\/documents\/([0-9a-f]{64})\/blob$/
 const SHA256 = /^[0-9a-f]{64}$/
 const DIGITS = /^\d+$/
 
@@ -318,8 +321,94 @@ function viewDocument(
             toLine: lineOf(lines, span.end - 1),
           },
     extractions: extractionsFor(db, sha256, body, lines, threshold),
+    linked: linkedFor(db, sha256),
   }
   return { ok: true, body: view }
+}
+
+function linkedFor(
+  db: DatabaseSync,
+  sha256: string
+): CoreApiDocumentView["linked"] {
+  const obligations = (
+    db
+      .prepare(
+        `SELECT DISTINCT o.id, o.action, o.party, o.due_at AS dueAt, o.status
+         FROM obligations o
+         WHERE o.doc_id = ?
+            OR o.id IN (
+              SELECT CAST(substr(dst, 5) AS INTEGER) FROM links WHERE src = ('doc:' || ?) AND dst GLOB 'obl:*'
+              UNION
+              SELECT CAST(substr(src, 5) AS INTEGER) FROM links WHERE dst = ('doc:' || ?) AND src GLOB 'obl:*'
+            )
+         ORDER BY o.id`
+      )
+      .all(sha256, sha256, sha256) as Array<Record<string, unknown>>
+  ).map((r) => ({
+    id: Number(r["id"]),
+    action: String(r["action"]),
+    party: r["party"] === null ? null : String(r["party"]),
+    dueAt: r["dueAt"] === null ? null : String(r["dueAt"]),
+    status: String(r["status"]),
+  }))
+
+  const documents = (
+    db
+      .prepare(
+        `SELECT DISTINCT d.sha256, t.title AS name, d.source
+         FROM documents d
+         LEFT JOIN document_text t ON t.sha256 = d.sha256
+         WHERE d.sha256 != ? AND (
+           d.sha256 IN (
+             SELECT substr(dst, 5) FROM links WHERE src = ('doc:' || ?) AND dst GLOB 'doc:*'
+             UNION
+             SELECT substr(src, 5) FROM links WHERE dst = ('doc:' || ?) AND src GLOB 'doc:*'
+           )
+         )
+         ORDER BY d.ingested_at DESC`
+      )
+      .all(sha256, sha256, sha256) as Array<Record<string, unknown>>
+  ).map((r) => ({
+    sha256: String(r["sha256"]),
+    name: r["name"] === null ? null : String(r["name"]),
+    source: String(r["source"]),
+  }))
+
+  return { obligations, documents }
+}
+
+export type DocumentBlobResult =
+  | { ok: true; buffer: Buffer; mime: string }
+  | { ok: false; code: "not_found"; message: string }
+
+export function documentBlobRoute(
+  db: DatabaseSync,
+  sha256: string
+): DocumentBlobResult {
+  if (!SHA256.test(sha256)) {
+    return { ok: false, code: "not_found", message: "no such document" }
+  }
+  const row = db
+    .prepare("SELECT blob_path, mime FROM documents WHERE sha256 = ?")
+    .get(sha256)
+  if (row === undefined || row["blob_path"] === null) {
+    return { ok: false, code: "not_found", message: "blob not found" }
+  }
+  const blobPath = String(row["blob_path"])
+  try {
+    const stat = statSync(blobPath)
+    if (!stat.isFile()) {
+      return { ok: false, code: "not_found", message: "blob file not found" }
+    }
+    const buffer = readFileSync(blobPath)
+    return {
+      ok: true,
+      buffer,
+      mime: row["mime"] ? String(row["mime"]) : "application/octet-stream",
+    }
+  } catch {
+    return { ok: false, code: "not_found", message: "blob file not found" }
+  }
 }
 
 function storedFields(json: string): ExtractedFields {
@@ -378,7 +467,7 @@ function extractionsFor(
           verified:
             quoteMatches &&
             (typed === null || typed.status === "parsed") &&
-            (score >= threshold || confirmedAt !== null),
+            (score >= threshold || confirmedAt !== null || "confirmed_at" in field),
         })
       }
       return {

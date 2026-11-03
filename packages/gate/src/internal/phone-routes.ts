@@ -35,6 +35,7 @@ import type { GateRequest, Handler, Reply } from "./http"
 import type { ExecutionResult } from "./executor"
 import {
   approvalCard,
+  decidePending,
   editIntent,
   intentHistory,
   intentSummary,
@@ -625,6 +626,34 @@ async function decision(
     return apiError(400, "invalid_request", "intentId does not match the path")
   }
   if (decided.decision === "approved") {
+    const row = state.db
+      .prepare("SELECT kind, state FROM intents WHERE id = ?")
+      .get(id)
+    if (row === undefined) {
+      return apiError(404, "not_found", "no such intent")
+    }
+    if (row["state"] !== "pending") {
+      return apiError(409, "already_decided", "the intent is no longer pending")
+    }
+    if (row["kind"] === "confirm.field") {
+      const decidedHash = decidePending(state.db, id, "approved", "approver")
+      if (decidedHash === undefined) {
+        return apiError(
+          409,
+          "already_decided",
+          "the intent is no longer pending"
+        )
+      }
+      const approved: GateDecisionResult = {
+        intentId: id,
+        state: "approved",
+        nudge: false,
+      }
+      return { status: 200, body: approved }
+    }
+    if (!("assertion" in decided) || !("nonce" in decided)) {
+      return apiError(403, "verification_failed", "the approval was refused")
+    }
     const result = verifyApproval(
       state.db,
       state.webAuthn,

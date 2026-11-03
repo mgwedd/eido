@@ -22,6 +22,8 @@ export {
 } from "./prefilter"
 export type { PrefilterOptions, PrefilterResult } from "./prefilter"
 export { defaultFieldConfidence } from "./verify"
+export { proposeConfirm } from "./propose-confirm"
+export type { ProposeConfirmOptions } from "./propose-confirm"
 export type {
   ConfirmCandidate,
   ExtractionLogEvent,

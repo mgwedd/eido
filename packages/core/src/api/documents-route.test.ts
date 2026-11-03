@@ -1,3 +1,6 @@
+import { unlinkSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import type {
   CoreApiDocumentList,
@@ -360,6 +363,29 @@ describe("GET /documents/:sha256", () => {
     expect((await view(sha("stale"))).document.source).toBe("drive")
   })
 
+  test("returns linked obligations and related documents", async () => {
+    db.prepare(
+      `INSERT INTO obligations (entity_id, action, party, due_at, status, doc_id, source_span)
+       VALUES (?, 'Pay utility', 'Example Utility', '2030-02-01', 'open', ?, '{"start":0,"end":5}')`
+    ).run(property.id, invoice)
+    db.prepare(
+      `INSERT INTO links (src, dst, kind, confidence, origin)
+       VALUES (?, ?, 'references', 1, 'header:test')`
+    ).run(`doc:${invoice}`, `doc:${quote}`)
+
+    const body = await view(invoice)
+    expect(body.linked).toBeDefined()
+    expect(body.linked?.obligations).toHaveLength(1)
+    expect(body.linked?.obligations[0]).toMatchObject({
+      action: "Pay utility",
+      party: "Example Utility",
+      dueAt: "2030-02-01",
+      status: "open",
+    })
+    expect(body.linked?.documents).toHaveLength(1)
+    expect(body.linked?.documents[0]?.sha256).toBe(quote)
+  })
+
   test("only GET is allowed", async () => {
     const response = await handle(
       new Request(`http://core.test/api/core/documents/${invoice}`, {
@@ -657,5 +683,141 @@ describe("PUT /documents/:sha256/type", () => {
       })
     )
     expect(form.status).toBe(415)
+  })
+})
+
+describe("GET /documents/:sha256/blob", () => {
+  test("downloads stored blob file", async () => {
+    const tmp = join(tmpdir(), `test-blob-${Date.now()}.pdf`)
+    writeFileSync(tmp, "PDF-DUMMY-CONTENT")
+    try {
+      const [withBlob = ""] = addDocs(db, [
+        testDoc("with_blob", {
+          entityId: property.id,
+          blobPath: tmp,
+          mime: "application/pdf",
+        }),
+      ])
+      const res = await get(`/documents/${withBlob}/blob`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toBe("application/pdf")
+      expect(await res.text()).toBe("PDF-DUMMY-CONTENT")
+    } finally {
+      try {
+        unlinkSync(tmp)
+      } catch {}
+    }
+  })
+
+  test("returns 404 for missing blob or unknown document", async () => {
+    const res1 = await get(`/documents/${quote}/blob`)
+    expect(res1.status).toBe(404)
+
+    const res2 = await get(`/documents/${"0".repeat(64)}/blob`)
+    expect(res2.status).toBe(404)
+  })
+})
+
+describe("POST /extractions/:id/confirm", () => {
+  const postConfirm = (id: number | string, body: unknown) =>
+    handle(
+      new Request(`http://core.test/api/core/extractions/${id}/confirm`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+    )
+
+  test("confirms field without editing, then confirms extraction when all fields confirmed", async () => {
+    const extId = await insertExtraction(db, {
+      docId: invoice,
+      schema: "extracted-fields",
+      status: "extracted",
+      fields: {
+        action: { raw: "Pay bill", span: { start: 0, end: 8 } },
+        amount: {
+          raw: "CHF 120.00",
+          span: { start: 16, end: 26 },
+          status: "parsed",
+          value: { amount_minor: 12000, currency: "CHF" },
+        },
+      },
+      confidence: {
+        action: 0.95,
+        amount: 0.5,
+      },
+      model: "model-a",
+      createdAt: "2026-11-01T00:00:00.000Z",
+    })
+
+    const res = await postConfirm(extId, { field: "amount" })
+    expect(res.status).toBe(200)
+    const json = (await res.json()) as {
+      ok: boolean
+      extractionConfirmed: boolean
+      obligationId: number
+    }
+    expect(json.ok).toBe(true)
+    expect(json.extractionConfirmed).toBe(true)
+    expect(json.obligationId).toBeTypeOf("number")
+  })
+
+  test("edits amount with valid string", async () => {
+    const extId = await insertExtraction(db, {
+      docId: invoice,
+      schema: "extracted-fields",
+      status: "extracted",
+      fields: {
+        action: { raw: "Pay bill", span: { start: 0, end: 8 } },
+        amount: {
+          raw: "CHF 120.00",
+          span: { start: 16, end: 26 },
+          status: "parsed",
+          value: { amount_minor: 12000, currency: "CHF" },
+        },
+      },
+      confidence: { action: 0.95, amount: 0.5 },
+      model: "model-a",
+      createdAt: "2026-11-01T00:00:00.000Z",
+    })
+
+    const res = await postConfirm(extId, {
+      field: "amount",
+      value: "USD 50.00",
+    })
+    expect(res.status).toBe(200)
+    const json = (await res.json()) as { ok: boolean }
+    expect(json.ok).toBe(true)
+  })
+
+  test("returns 422 for unparseable edited value", async () => {
+    const extId = await insertExtraction(db, {
+      docId: invoice,
+      schema: "extracted-fields",
+      status: "extracted",
+      fields: {
+        action: { raw: "Pay bill", span: { start: 0, end: 8 } },
+        amount: {
+          raw: "CHF 120.00",
+          span: { start: 16, end: 26 },
+          status: "parsed",
+          value: { amount_minor: 12000, currency: "CHF" },
+        },
+      },
+      confidence: { action: 0.95, amount: 0.5 },
+      model: "model-a",
+      createdAt: "2026-11-01T00:00:00.000Z",
+    })
+
+    const res = await postConfirm(extId, {
+      field: "amount",
+      value: "not a number",
+    })
+    expect(res.status).toBe(422)
+  })
+
+  test("returns 404 for unknown extraction", async () => {
+    const res = await postConfirm(99999, { field: "amount" })
+    expect(res.status).toBe(404)
   })
 })

@@ -382,6 +382,32 @@ describe("guards no config can lift", () => {
     expect(kindTier(db, policy, "email.draft")).toEqual({ tier: "approval" })
   })
 
+  it("confirm.field is approval by default, cannot be changed to auto, and needs no connector", () => {
+    const s = fresh([])
+    expect(kindTier(s.db, s.policy, "confirm.field")).toEqual({
+      tier: "approval",
+    })
+    expect(intentTier(s.db, s.policy, sample("confirm.field"))).toEqual({
+      tier: "approval",
+    })
+
+    // Even if shipped config were mutated to auto, kindTier returns approval
+    s.policy.shipped.tiers["confirm.field"] = "auto"
+    expect(kindTier(s.db, s.policy, "confirm.field")).toEqual({
+      tier: "approval",
+    })
+    expect(intentTier(s.db, s.policy, sample("confirm.field"))).toEqual({
+      tier: "approval",
+    })
+
+    // Overlay setting confirm.field to auto is rejected because it has no connector operation
+    s.writeOverlay({ version: 1, tiers: { "confirm.field": "auto" } })
+    const { errors } = loadPolicy(s.db, s.options, s.policy)
+    expect(errors).toContain(
+      'permissions.json: "confirm.field": auto needs an operation the pinned manifest marks reversible'
+    )
+  })
+
   it("a kind absent from the verb list is forbidden", () => {
     const { db, policy } = fresh()
     expect(kindTier(db, policy, "money.transfer")).toEqual({

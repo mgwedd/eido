@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiConfirmExtractionRequest",
+  "description": "Request body for POST /extractions/:id/confirm to confirm or edit an extracted field.",
+  "type": "object",
+  "properties": {
+    "field": {
+      "type": "string",
+      "enum": ["action", "party", "reference_number", "amount", "due_date"],
+      "description": "Field name to confirm"
+    },
+    "value": {
+      "description": "User-supplied value when editing the field; if absent, the extracted value is confirmed."
+    }
+  },
+  "required": ["field"],
+  "additionalProperties": false
+}

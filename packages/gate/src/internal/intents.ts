@@ -665,13 +665,31 @@ export function intentHistory(
 export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
   return db
     .prepare(
-      "SELECT id, kind, tier, origin, created_at, edited_from, rationale, injection_reasons_json FROM intents WHERE state = 'pending' ORDER BY created_at ASC, rowid ASC"
+      "SELECT id, kind, tier, origin, created_at, edited_from, rationale, injection_reasons_json, payload_json FROM intents WHERE state = 'pending' ORDER BY created_at ASC, rowid ASC"
     )
     .all()
     .map((row) => {
       const editedFrom = optionalText(row["edited_from"])
       const rationale = optionalText(row["rationale"])
       const injection = injectionOf(optionalText(row["injection_reasons_json"]))
+      let title: string | undefined
+      let subtitle: string | undefined
+      if (row["kind"] === "confirm.field" && typeof row["payload_json"] === "string") {
+        try {
+          const payload = JSON.parse(String(row["payload_json"]))
+          const args = payload?.args
+          if (args && typeof args === "object") {
+            const docTitle = args.documentTitle ? `${String(args.documentTitle)} ` : ""
+            const fieldLabel = String(args.field ?? "").replace(/_/g, " ")
+            const rawVal = args.value && typeof args.value === "object" ? String(args.value.raw ?? "") : ""
+            title = `Confirm ${docTitle}${fieldLabel}: ${rawVal}`
+            const docSource = args.documentSource ? String(args.documentSource) : "a scan"
+            subtitle = `Extracted from ${docSource} · confidence ${args.confidence}`
+          }
+        } catch {
+          // Ignore unparseable payload for display title
+        }
+      }
       const summary: PendingIntentSummary = {
         id: String(row["id"]),
         kind: String(row["kind"]),
@@ -685,6 +703,8 @@ export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
         ...(editedFrom === null ? {} : { editedFrom }),
         ...(rationale === null ? {} : { rationale }),
         ...(injection === null ? {} : { injection }),
+        ...(title === undefined ? {} : { title }),
+        ...(subtitle === undefined ? {} : { subtitle }),
       }
     })
 }

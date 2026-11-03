@@ -53,6 +53,9 @@
     },
     {
       "$ref": "intent-file-delete.schema.json"
+    },
+    {
+      "$ref": "intent-confirm-field.schema.json"
     }
   ]
 }
