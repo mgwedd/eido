@@ -8,7 +8,11 @@ import type { InferenceQueue } from "../inference/queue"
 import type { ProposalLimiter } from "../propose/limiter"
 import { proposeIntents } from "../propose/propose"
 import type { ProposalResult, ProposedIntent } from "../propose/propose"
-import { draftStateIsLive, liveDraftStatus } from "./reply-draft-live"
+import {
+  draftStateIsLive,
+  liveDraftStatus,
+  storedDraftIntentIds,
+} from "./reply-draft-live"
 
 // POST /replies/draft (#540): draft one reply for the thread of an open owed-reply obligation.
 // The model is offered email.draft and nothing else, at most one intent is kept, and the intent
@@ -94,26 +98,13 @@ export function activityHref(intentId: string): string {
   return `/activity?intent=${encodeURIComponent(intentId)}`
 }
 
-function storedIntentId(db: DatabaseSync, threadKey: string): string | null {
-  const table = db
-    .prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'reply_drafts'"
-    )
-    .get()
-  if (table === undefined) return null
-  const row = db
-    .prepare("SELECT intent_id FROM reply_drafts WHERE thread_key = ?")
-    .get(threadKey)
-  return row === undefined ? null : String(row["intent_id"])
-}
-
 /** The stored draft intent for the thread while the gate still holds it live, else null. */
 async function liveDraft(
   deps: ReplyDraftDeps,
   threadKey: string
 ): Promise<CoreApiReplyDraftResponse | null> {
-  const id = storedIntentId(deps.db, threadKey)
-  if (id === null) return null
+  const id = storedDraftIntentIds(deps.db, [threadKey]).get(threadKey)
+  if (id === undefined) return null
   const status = await liveDraftStatus(deps.gate, id)
   if (status === null) return null
   return {

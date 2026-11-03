@@ -1057,6 +1057,7 @@ export async function serveDataPlane(
     ...(ask === undefined ? {} : { ask }),
     ...(draftReply === undefined ? {} : { draftReply }),
     propose: plane.gate.propose,
+    intentStatus: plane.gate.status,
     documents: { db: plane.db, accessAudit: plane.accessAudit },
     ...(plane.conversation === undefined
       ? {}

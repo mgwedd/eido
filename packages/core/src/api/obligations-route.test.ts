@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite"
-import { GateUnavailableError } from "@eido/gate"
+import { GateRequestError, GateUnavailableError } from "@eido/gate"
+import type { IntentStatus } from "@eido/gate"
 import type { CoreApiError, CoreApiObligationList } from "@eido/schemas"
 import { validateCoreApiObligationList } from "@eido/schemas"
 import { beforeEach, describe, expect, test } from "vitest"
@@ -282,6 +283,125 @@ describe("GET /obligations", () => {
       },
     })
     expect(typeof found?.updatedAt).toBe("string")
+  })
+
+  describe("hasDraftIntent (#548)", () => {
+    type Answer = Partial<IntentStatus> | Error
+    let answers: Map<string, Answer>
+    let asked: string[]
+
+    const status = (intentId: string): Promise<IntentStatus> => {
+      asked.push(intentId)
+      const answer = answers.get(intentId) ?? new Error("unexpected id")
+      return answer instanceof Error
+        ? Promise.reject(answer)
+        : Promise.resolve({
+            id: intentId,
+            kind: "email.draft",
+            tier: "auto",
+            state: "executed",
+            edited_from: null,
+            discarded: false,
+            ...answer,
+          })
+    }
+
+    const withDrafts = (): ApiHandler =>
+      createApiHandler({
+        profile,
+        allowedHosts: ["core.test"],
+        documents: { db },
+        intentStatus: status,
+      })
+
+    function storeDraft(threadKey: string, intentId: string): void {
+      db.exec(
+        "CREATE TABLE IF NOT EXISTS reply_drafts (thread_key TEXT PRIMARY KEY, obligation_id INTEGER NOT NULL, intent_id TEXT NOT NULL, created_at TEXT NOT NULL)"
+      )
+      db.prepare(
+        "INSERT INTO reply_drafts (thread_key, obligation_id, intent_id, created_at) VALUES (?, 1, ?, '2026-01-01T00:00:00Z')"
+      ).run(threadKey, intentId)
+    }
+
+    const owed = (threadId: string): Promise<number> =>
+      insertObligation(db, {
+        entityId: propertyId,
+        action: `Reply on ${threadId}`,
+        party: "Tenant",
+        status: "open",
+        direction: "owed",
+        threadId,
+        docId: docA,
+        span: { start: 0, end: 5 },
+      })
+
+    async function flags(h: ApiHandler): Promise<Map<number, boolean>> {
+      const response = await h(new Request("http://core.test/obligations"))
+      expect(response.status).toBe(200)
+      const checked = validateCoreApiObligationList(await response.json())
+      if (!checked.ok) throw new Error(checked.errors.join("; "))
+      return new Map(
+        checked.value.obligations.map((o) => [o.id, o.hasDraftIntent])
+      )
+    }
+
+    beforeEach(() => {
+      answers = new Map()
+      asked = []
+    })
+
+    test("an owed reply whose thread has a live draft is true, others false", async () => {
+      const drafted = await owed("thread-a")
+      const undrafted = await owed("thread-b")
+      const waiting = await insertObligation(db, {
+        entityId: propertyId,
+        action: "Waiting on Tenant",
+        party: "Tenant",
+        status: "open",
+        direction: "waiting",
+        threadId: "thread-a",
+        docId: docA,
+        span: { start: 0, end: 5 },
+      })
+      storeDraft("thread-a", "int_1")
+      answers.set("int_1", { state: "pending" })
+      const got = await flags(withDrafts())
+      expect(got.get(drafted)).toBe(true)
+      expect(got.get(undrafted)).toBe(false)
+      expect(got.get(waiting)).toBe(false)
+    })
+
+    test("a database without reply_drafts lists false without asking the gate", async () => {
+      const row = await owed("thread-a")
+      expect((await flags(withDrafts())).get(row)).toBe(false)
+      expect(asked).toEqual([])
+    })
+
+    test.each([
+      ["rejected", { state: "rejected" }],
+      ["failed", { state: "failed" }],
+      ["discarded", { discarded: true }],
+      ["unknown to the gate", new GateRequestError(404, "not_found", "gone")],
+    ] as const)("a %s draft does not count", async (_, answer) => {
+      const row = await owed("thread-a")
+      storeDraft("thread-a", "int_1")
+      answers.set("int_1", answer)
+      expect((await flags(withDrafts())).get(row)).toBe(false)
+    })
+
+    test("a stored draft counts while the gate cannot answer", async () => {
+      const row = await owed("thread-a")
+      storeDraft("thread-a", "int_1")
+      answers.set("int_1", new GateUnavailableError("down"))
+      expect((await flags(withDrafts())).get(row)).toBe(true)
+    })
+
+    test("without the gate's status no row has a draft", async () => {
+      const row = await owed("thread-a")
+      storeDraft("thread-a", "int_1")
+      answers.set("int_1", { state: "pending" })
+      expect((await flags(listHandle)).get(row)).toBe(false)
+    })
   })
 
   test("filters by entity", async () => {
