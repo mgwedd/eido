@@ -10,7 +10,9 @@ import {
 } from "./internal/bridge/config"
 import type { BridgeConfig } from "./internal/bridge/config"
 import { BRIDGE_WRITERS, bridgeTransport } from "./internal/bridge/writers"
-import { gmailWriteTransport } from "./internal/gmail-transport"
+import { gmailProbe, gmailWriteTransport } from "./internal/gmail-transport"
+import { bridgeProbe } from "./internal/connector-connect"
+import type { ConnectorProbes } from "./internal/connector-connect"
 import { GMAIL_CONNECTOR, GMAIL_WRITERS } from "./internal/gmail-writers"
 import { openControlDb } from "./internal/control-db"
 import { createExecutor } from "./internal/executor"
@@ -106,7 +108,8 @@ export type VaultConfig =
   | { kind: "keychain"; path: string }
   | { kind: "file"; path: string; devFlag: boolean }
 
-function vaultConfig(
+/** The gate vault the environment selects; the `connect` command (#98) uses the same rule. */
+export function vaultConfig(
   env: Readonly<Record<string, string | undefined>>
 ): VaultConfig | undefined {
   const keychainPath = env["EIDO_GATE_KEYCHAIN_PATH"] ?? ""
@@ -136,7 +139,7 @@ function vaultConfig(
   return undefined
 }
 
-function createVault(config: VaultConfig): Vault {
+export function createVault(config: VaultConfig): Vault {
   return config.kind === "keychain"
     ? new KeychainVault({ path: config.path })
     : new FileVault({ path: config.path, devFlag: config.devFlag })
@@ -365,7 +368,39 @@ export async function runGate(
         : fileHelper(config.fileHelper)
     const fileReads =
       nativeFiles === undefined ? undefined : createFileReads(db, nativeFiles)
+    // FileVault refuses to open without the explicit development flag.
+    const mail =
+      config.bridge === undefined
+        ? undefined
+        : createProtonBridge({
+            config: config.bridge.config,
+            vault: vaultFactory(config.bridge.vault),
+          })
+    const gmailOptions =
+      config.gmail === undefined
+        ? undefined
+        : {
+            db,
+            vault: vaultFactory(config.gmail.vault),
+            clientId: config.gmail.clientId,
+          }
+    const gmail =
+      gmailOptions === undefined ? undefined : gmailWriteTransport(gmailOptions)
+    // The checks the control socket runs after the owner connects a connector (#98). Both Proton
+    // connectors sign in to Bridge with the one stored password.
+    const probes: ConnectorProbes = {
+      ...(gmailOptions === undefined
+        ? {}
+        : { [GMAIL_CONNECTOR]: gmailProbe(gmailOptions) }),
+      ...(mail === undefined
+        ? {}
+        : {
+            [PROTON_CONNECTOR]: bridgeProbe(mail),
+            [PROTON_CALENDAR_CONNECTOR]: bridgeProbe(mail),
+          }),
+    }
     const state = () => ({
+      probes,
       fileHelper: nativeFiles,
       files: fileReads,
       ...runningGate(),
@@ -387,28 +422,12 @@ export async function runGate(
             },
           }),
     })
-    // FileVault refuses to open without the explicit development flag.
-    const mail =
-      config.bridge === undefined
-        ? undefined
-        : createProtonBridge({
-            config: config.bridge.config,
-            vault: vaultFactory(config.bridge.vault),
-          })
     // Register only gate-owned adapters. A missing Bridge still takes a Proton intent through
     // the executor, where the attempted write is claimed and its failure is recorded.
     const protonTransport =
       mail === undefined
         ? () => Promise.reject(new Error("Bridge is not configured"))
         : bridgeTransport(mail)
-    const gmail =
-      config.gmail === undefined
-        ? undefined
-        : gmailWriteTransport({
-            db,
-            vault: vaultFactory(config.gmail.vault),
-            clientId: config.gmail.clientId,
-          })
     const executor = createExecutor(
       db,
       [...BRIDGE_WRITERS, ...GMAIL_WRITERS],

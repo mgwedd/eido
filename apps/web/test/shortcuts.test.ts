@@ -113,7 +113,9 @@ describe("the key map", () => {
     expect(goShortcuts()).toEqual([
       { key: "t", href: "/", label: "Today" },
       { key: "q", href: "/queue", label: "Queue" },
+      { key: "l", href: "/ledger", label: "Ledger" },
       { key: "a", href: "/activity", label: "Activity" },
+      { key: "d", href: "/documents", label: "Documents" },
       { key: "s", href: "/settings", label: "Settings" },
       { key: "p", href: "/profile", label: "Profile" },
     ])

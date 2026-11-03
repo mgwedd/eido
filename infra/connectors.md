@@ -1,0 +1,105 @@
+# Connecting and reconnecting connectors (#98)
+
+A connector is connected on the Mac, never through the web app. The credential goes straight into the gate vault. The running gate then checks it and reports the result on `/connectors`.
+
+```bash
+pnpm --filter @eido/gate connect gmail
+pnpm --filter @eido/gate connect proton-mail
+pnpm --filter @eido/gate connect proton-calendar
+```
+
+The same command connects a connector for the first time and reconnects one later. It exits 0 only when the gate reports the connector healthy.
+
+## Before you start
+
+- **Gate user and environment.** Run the command as the gate user, with the gate's own vault and socket variables:
+  - `EIDO_GATE_CONTROL_SOCKET`;
+  - `EIDO_GATE_KEYCHAIN_PATH` (see `infra/keychain-vault.md`), or `EIDO_DEV_VAULT=1` with `EIDO_GATE_VAULT_FILE` for development;
+  - `EIDO_GMAIL_CLIENT_ID` for Gmail.
+
+  The command writes the same vault the gate reads.
+
+- **The gate must be running.** The command asks the gate for connector health before it prompts for anything. If the gate is not reachable, or the connector is not pinned, it stops and nothing is stored.
+- **The connector must already be pinned.** Pin its reviewed manifest first; this command does not pin.
+
+## What the command does
+
+1. It checks that the gate is running and that the connector is pinned.
+2. It takes the credential:
+   - **Gmail:** a Google sign-in in the browser (below).
+   - **Proton:** the Bridge password at a prompt.
+3. It writes the credential to the gate vault. The credential is never printed, logged, passed in arguments or the environment, or written to a file.
+4. It asks the gate, over the control socket, to check the connector now:
+   - a connector disabled because its credential was refused is re-enabled for the check;
+   - a backoff is lifted, so the check runs at once.
+
+   The gate records the result in connector health. It writes one audit row, `connector.connected`, that holds only a hash of the outcome.
+
+5. It prints `<connector>: healthy`, or the health and its reason, for example `gmail: open (auth_failed)`.
+
+A connector disabled for manifest drift or a missing signed pin is not re-enabled. Fix the pin first, then connect again.
+
+## Gmail
+
+The Google OAuth client is a **Desktop app** client in Google Cloud. Its client id is the gate's `EIDO_GMAIL_CLIENT_ID`.
+
+The first connect asks for the client secret, which is not shown as you type. The secret is stored in the vault only once sign-in succeeds; later reconnects reuse the stored one.
+
+The sign-in follows OAuth for native apps (RFC 8252):
+
+1. The command opens a listener on `127.0.0.1`, on a port the system picks.
+   - It accepts one callback and then closes.
+   - It gives up after 5 minutes.
+2. It prints the Google address and opens it in the default browser.
+3. Sign in and grant the Gmail permission. Leave the Gmail box ticked on the consent screen; without it the command refuses the grant.
+4. Google redirects back to the listener. The command then:
+   - checks the request's `state`;
+   - exchanges the code with its PKCE verifier;
+   - stores the refresh token in the vault;
+   - drops any cached access token, so the gate's next call uses the new grant.
+
+A refused or mismatched answer, a Google error, a missing refresh token or a timeout stores nothing. Run the command again.
+
+### Signing in from another computer
+
+The listener is on the Mac's `127.0.0.1`, so the browser must reach that address.
+
+When you run the command over SSH, read the port from the printed address (`redirect_uri=http://127.0.0.1:<port>/…`). Then forward that port from the computer with the browser, and open the printed address there within the 5 minutes:
+
+```bash
+ssh -L <port>:127.0.0.1:<port> <mac>
+```
+
+### Reconnecting
+
+When Google revokes the grant, the gate disables Gmail and `/connectors` shows it with the reason `auth_failed`. Run `pnpm --filter @eido/gate connect gmail` again. The new refresh token replaces the old one, and Gmail is re-enabled once the check passes.
+
+## Proton Mail and Proton Calendar
+
+Both Proton connectors use the one Bridge password, read with `info` in `bridge --cli` (see "Proton Bridge LaunchAgent" in `infra/README.md`). The command asks for it without showing it as you type, and stores it in the gate vault.
+
+Each connector is checked separately. After a new Bridge password, run the command for both `proton-mail` and `proton-calendar`, so that each is checked and, if it was disabled, re-enabled.
+
+## Reading the result
+
+- The command's last line is the gate's verdict.
+- The same health shows on `/connectors` in the web app, which reads it from the gate. It shows healthy once the check passes.
+- When the check fails, the line gives the reason:
+  - `auth_failed`: the credential was refused; run connect again.
+  - `handshake_failed`, `timeout` or `unavailable`: the upstream could not be reached; the gate retries with backoff.
+
+## Not available yet
+
+- **Drive.** There is no gate Drive transport, so Drive has no connect step yet (#516).
+- **The Gmail read client.** The command connects the Gmail write client (`gmail.modify`). Read-client credentials, which the gate's read proxy would use, have no refresh path yet (#515).
+
+## Not verified by the tests
+
+The tests run the whole flow with a fake token endpoint, an in-memory vault and a gate on a test socket, with no network.
+
+These steps are the owner's, on the Mac:
+
+- a real Google consent;
+- a real Bridge password;
+- the SSH port forward;
+- seeing the result on `/connectors`.

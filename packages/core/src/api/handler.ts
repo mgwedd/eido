@@ -45,6 +45,10 @@ import {
   CONVERSATION_SEARCH_PATH,
   conversationSearchRoute,
 } from "./conversation-search-route"
+import {
+  CONVERSATION_GET_PATH,
+  conversationGetRoute,
+} from "./conversation-get-route"
 import { BRIEF_PATH, briefRoute } from "./brief-route"
 import { dueSoonRoute } from "./due-soon"
 import {
@@ -497,6 +501,26 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       if (result.ok) return json(result.body)
       const { code, message, fields } = result
       return failure(code, message, fields ? { fields } : {})
+    }
+
+    const conversationGetMatch = CONVERSATION_GET_PATH.exec(path)
+    if (
+      conversationGetMatch !== null &&
+      path !== CONVERSATION_SEARCH_PATH &&
+      deps.conversations !== undefined
+    ) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = conversationGetRoute(
+        deps.conversations,
+        conversationGetMatch[1]
+      )
+      if (result.ok) return json(result.body)
+      const { code, message } = result
+      return failure(
+        code,
+        message,
+        "fields" in result && result.fields ? { fields: result.fields } : {}
+      )
     }
 
     const blobMatch = DOCUMENT_BLOB_PATH.exec(path)
