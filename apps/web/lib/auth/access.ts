@@ -13,7 +13,7 @@ export type RouteRule = {
 
 /**
  * Today and Queue show and decide approvals; Unlock starts the passkey session that
- * signs them. All three are the owner's. The assistant workspace is issue 382.
+ * signs them, and Enroll creates the passkey. All four are the owner's. The assistant workspace is issue 382.
  */
 export const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/", roles: ["owner"] },
@@ -24,6 +24,7 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/settings", roles: ["owner"] },
   { path: "/profile", roles: ["owner"] },
   { path: "/unlock", roles: ["owner"] },
+  { path: "/enroll", roles: ["owner"] },
 ]
 
 /** Open to anyone signed in, with or without a role, so they can see why and sign out. */

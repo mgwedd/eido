@@ -1,12 +1,14 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Loader2, ScanFace } from "lucide-react"
 
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
-import { Button } from "@eido/ui/components/button"
+import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent } from "@eido/ui/components/card"
+import { enrolUrl } from "@/lib/enrol"
 import {
   checkEnvironment,
   loadCredentialStatus,
@@ -57,11 +59,13 @@ function alertMessage(state: UnlockState): string | null {
 function UnlockCard({
   state,
   host,
+  next = "/",
   onUnlock,
   onRetry,
 }: {
   state: UnlockState
   host: string | null
+  next?: string
   onUnlock: () => void
   onRetry: () => void
 }) {
@@ -132,6 +136,15 @@ function UnlockCard({
             >
               Try again
             </Button>
+          ) : null}
+
+          {state.status === "not-enrolled" ? (
+            <Link
+              href={enrolUrl(next)}
+              className={`${buttonVariants({ size: "lg" })} h-12 rounded-xl`}
+            >
+              Enrol this device
+            </Link>
           ) : null}
 
           {canUnlock || waiting ? (
@@ -228,6 +241,7 @@ function UnlockView({
     <UnlockCard
       state={shown}
       host={host}
+      next={next}
       onUnlock={() => void run()}
       onRetry={retry}
     />

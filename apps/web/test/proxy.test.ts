@@ -97,6 +97,21 @@ describe("proxy", () => {
     )
   })
 
+  it("sends a signed-out visit to /enroll to login and back, keeping next", async () => {
+    const response = await proxy(request("/enroll?next=%2Fqueue"))
+    const login = getRedirectUrl(response)
+    expect(login).toBe(
+      `${ORIGIN}/auth/login?returnTo=${encodeURIComponent("/enroll?next=%2Fqueue")}`
+    )
+  })
+
+  it("lets the owner open /enroll and refuses the assistant", async () => {
+    sdk.session = { user: owner }
+    expect(isRewrite(await proxy(request("/enroll")))).toBe(false)
+    sdk.session = { user: assistant }
+    expect(isRewrite(await proxy(request("/enroll")))).toBe(true)
+  })
+
   it("rethrows anything that is not an allow-list error", async () => {
     sdk.session = {
       user: {
@@ -116,6 +131,7 @@ describe("proxy matcher", () => {
     "/",
     "/queue",
     "/unlock?next=/queue",
+    "/enroll?next=%2Fqueue",
     "/forbidden",
     "/auth/login",
     "/auth/callback",
