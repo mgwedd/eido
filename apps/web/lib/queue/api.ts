@@ -8,7 +8,6 @@ import {
   type GateRejectReason,
 } from "@eido/schemas"
 import type { ApprovalResult } from "@/lib/approval/sign"
-import { sha256Hex } from "@/lib/queue/hash"
 import type { PendingIntent } from "@/lib/today"
 
 const APPROVALS_URL = "/api/gate/approvals"
@@ -111,12 +110,4 @@ export async function rejectIntent(
       error: { code: "network", message: "The gate could not be reached." },
     }
   }
-}
-
-/** True when the payload text hashes to the hash the gate sent with it. */
-export async function payloadMatchesHash(
-  payload: string,
-  payloadHash: string
-): Promise<boolean> {
-  return (await sha256Hex(payload)) === payloadHash
 }
