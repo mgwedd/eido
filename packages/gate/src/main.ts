@@ -465,7 +465,8 @@ export async function runGate(
         ? {}
         : Object.fromEntries(
             READ_CONNECTORS.filter(
-              ({ connector }) => egressOptions.clientIds[connector] !== undefined
+              ({ connector }) =>
+                egressOptions.clientIds[connector] !== undefined
             ).map(({ connector, probeUrl }) => [
               connector,
               egressProbe(egressOptions, connector, probeUrl),
@@ -599,7 +600,9 @@ export async function runGate(
   }
   return {
     ...(phone === undefined ? {} : { phone }),
-    ...(egressProxy === undefined ? {} : { egress: { port: egressProxy.port } }),
+    ...(egressProxy === undefined
+      ? {}
+      : { egress: { port: egressProxy.port } }),
     close: async () => {
       notifier?.close()
       await egressProxy?.close()

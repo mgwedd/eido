@@ -916,7 +916,9 @@ describe("gateConfig with read connectors", () => {
     expect(() =>
       gateConfig({ ...BASE, EIDO_DRIVE_CLIENT_ID: "drive-client" })
     ).toThrow("a read connector's client id needs EIDO_GATE_EGRESS_PORT")
-    expect(() => gateConfig({ ...BASE, EIDO_GATE_EGRESS_PORT: "8417" })).toThrow(
+    expect(() =>
+      gateConfig({ ...BASE, EIDO_GATE_EGRESS_PORT: "8417" })
+    ).toThrow(
       "EIDO_GATE_EGRESS_PORT needs a read client id: EIDO_GMAIL_READ_CLIENT_ID or EIDO_DRIVE_CLIENT_ID"
     )
     expect(() =>

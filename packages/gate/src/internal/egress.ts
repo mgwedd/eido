@@ -40,12 +40,14 @@ type Options = ReadOptions & {
 }
 
 type Route = NonNullable<ConnectorOperation["routes"]>[number]
+// Plain fields, not parameter properties: the gate runs under Node's type stripping.
 class Refusal extends Error {
-  constructor(
-    readonly status: number,
-    readonly reason: string
-  ) {
+  readonly status: number
+  readonly reason: string
+  constructor(status: number, reason: string) {
     super(reason)
+    this.status = status
+    this.reason = reason
   }
 }
 const fail = (status: number, reason: string): never => {
