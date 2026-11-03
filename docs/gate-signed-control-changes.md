@@ -20,7 +20,7 @@ When a connector's server reports a different tool list, the gate disables it an
      | EIDO_GATE_DATA_DIR=<gate data dir> pnpm --filter @eido/gate reviewed-manifest -
    ```
 
-   Connectors are `files`, `drive`, `gmail`, `proton-mail` (reads `EIDO_PROTON_USERNAME`), and `proton-calendar` (reads `EIDO_PROTON_CALENDAR_ASSISTANT_ADDRESS` and `EIDO_PROTON_CALENDAR_OWNER_ADDRESS`). `reviewed-manifest` also takes a path to a manifest JSON file instead of `-`.
+   Connectors are `files`, `drive`, `gmail`, `proton-mail` (reads `EIDO_PROTON_USERNAME`), `proton-calendar` (reads `EIDO_PROTON_CALENDAR_ASSISTANT_ADDRESS` and `EIDO_PROTON_CALENDAR_OWNER_ADDRESS`), and `simplefin` (reads `EIDO_SIMPLEFIN_REQUESTS_PER_DAY`). `reviewed-manifest` also takes a path to a manifest JSON file instead of `-`.
 
 3. On the phone, open Connectors and choose Review and re-pin, then sign with the passkey.
 

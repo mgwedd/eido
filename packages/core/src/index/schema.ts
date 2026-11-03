@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 11
+export const SCHEMA_VERSION = 12
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -191,6 +191,33 @@ CREATE TRIGGER document_pages_offsets_valid BEFORE INSERT ON document_pages
 WHEN (NEW.start_offset IS NULL) <> (NEW.end_offset IS NULL)
   OR NEW.end_offset <= NEW.start_offset
 BEGIN SELECT RAISE(ABORT, 'document page offsets must be a non-empty range'); END;
+`,
+  // v12: bank accounts and transactions (#51)
+  `
+CREATE TABLE accounts (
+  id TEXT PRIMARY KEY,
+  connector TEXT NOT NULL,
+  name TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  entity_id TEXT REFERENCES entities(id),
+  balance_cents INTEGER,
+  balance_at TEXT
+);
+CREATE TABLE transactions (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  entity_id TEXT NOT NULL REFERENCES entities(id),
+  posted_at TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  description TEXT NOT NULL,
+  category TEXT,
+  raw_json TEXT NOT NULL,
+  ingested_at TEXT NOT NULL
+);
+CREATE INDEX transactions_account ON transactions(account_id);
+CREATE INDEX transactions_entity ON transactions(entity_id);
+CREATE INDEX transactions_posted ON transactions(posted_at);
 `,
 ]
 

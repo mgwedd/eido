@@ -908,6 +908,31 @@ describe("gateConfig with read connectors", () => {
     ).toEqual({ drive: "drive-client" })
   })
 
+  it("runs the egress proxy for SimpleFIN alone, which needs no OAuth client", () => {
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_SIMPLEFIN: "1",
+        EIDO_GATE_EGRESS_PORT: "8417",
+      }).egress
+    ).toEqual({
+      vault: { kind: "file", path: "/vault/dev.json", devFlag: true },
+      port: 8417,
+      clientIds: {},
+      basicUrlConnectors: ["simplefin"],
+    })
+    expect(() => gateConfig({ ...BASE, EIDO_GATE_SIMPLEFIN: "1" })).toThrow(
+      "a read connector needs EIDO_GATE_EGRESS_PORT"
+    )
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_SIMPLEFIN: "yes",
+        EIDO_GATE_EGRESS_PORT: "8417",
+      })
+    ).toThrow("EIDO_GATE_SIMPLEFIN must be 1 or unset")
+  })
+
   it("runs no egress proxy without a read client", () => {
     expect(gateConfig(BASE).egress).toBeUndefined()
   })
@@ -915,11 +940,11 @@ describe("gateConfig with read connectors", () => {
   it("rejects a read client without a port, a port without a client, and a bad port", () => {
     expect(() =>
       gateConfig({ ...BASE, EIDO_DRIVE_CLIENT_ID: "drive-client" })
-    ).toThrow("a read connector's client id needs EIDO_GATE_EGRESS_PORT")
+    ).toThrow("a read connector needs EIDO_GATE_EGRESS_PORT")
     expect(() =>
       gateConfig({ ...BASE, EIDO_GATE_EGRESS_PORT: "8417" })
     ).toThrow(
-      "EIDO_GATE_EGRESS_PORT needs a read client id: EIDO_GMAIL_READ_CLIENT_ID or EIDO_DRIVE_CLIENT_ID"
+      "EIDO_GATE_EGRESS_PORT needs a read connector: EIDO_GMAIL_READ_CLIENT_ID or EIDO_DRIVE_CLIENT_ID or EIDO_GATE_SIMPLEFIN=1"
     )
     expect(() =>
       gateConfig({

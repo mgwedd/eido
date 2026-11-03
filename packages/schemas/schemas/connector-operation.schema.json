@@ -16,7 +16,7 @@
       "enum": ["reversible", "irreversible"]
     },
     "sensitivity": {
-      "enum": ["normal", "sensitive"]
+      "enum": ["normal", "sensitive", "high"]
     },
     "untrustedOutput": {
       "type": "boolean"
