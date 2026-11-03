@@ -9,6 +9,7 @@ import { Button } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { expiredUnlockUrl } from "@/lib/auth/unlock"
+import { repinConnector } from "@/lib/connector-repin"
 import {
   bridgeNotice,
   breakerLabel,
@@ -71,7 +72,71 @@ function Fact({
   )
 }
 
-function ConnectorCard({ connector }: { connector: Connector }) {
+type RepinState =
+  | { status: "idle" }
+  | { status: "signing" }
+  | { status: "failed"; message: string }
+
+function RepinAction({
+  connector,
+  drift,
+  onRepinned,
+}: {
+  connector: string
+  drift: { added: readonly string[]; removed: readonly string[] }
+  onRepinned: () => void
+}) {
+  const [state, setState] = React.useState<RepinState>({ status: "idle" })
+  const signing = state.status === "signing"
+
+  async function start() {
+    setState({ status: "signing" })
+    const outcome = await repinConnector(connector, drift)
+    if (outcome.ok) {
+      onRepinned()
+      return
+    }
+    if (outcome.expired) {
+      window.location.replace(
+        expiredUnlockUrl(window.location.pathname + window.location.search)
+      )
+      return
+    }
+    setState({ status: "failed", message: outcome.message })
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Button
+        variant="outline"
+        disabled={signing}
+        onClick={() => void start()}
+        className="min-h-11 self-start"
+      >
+        Review and re-pin
+      </Button>
+      {signing ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          Waiting for Face ID…
+        </p>
+      ) : null}
+      {state.status === "failed" ? (
+        <Alert variant="destructive">
+          <TriangleAlert aria-hidden />
+          <AlertDescription>{state.message}</AlertDescription>
+        </Alert>
+      ) : null}
+    </div>
+  )
+}
+
+function ConnectorCard({
+  connector,
+  onRepinned,
+}: {
+  connector: Connector
+  onRepinned: () => void
+}) {
   const open = connector.enabled && connector.health === "open"
   const headingId = `connector-${connector.name}`
   return (
@@ -163,6 +228,11 @@ function ConnectorCard({ connector }: { connector: Connector }) {
                 </li>
               ))}
             </ul>
+            <RepinAction
+              connector={connector.name}
+              drift={connector.drift}
+              onRepinned={onRepinned}
+            />
           </section>
         ) : null}
         {connector.scopes.length > 0 ? (
@@ -180,7 +250,13 @@ function ConnectorCard({ connector }: { connector: Connector }) {
   )
 }
 
-function ConnectorList({ connectors }: { connectors: readonly Connector[] }) {
+function ConnectorList({
+  connectors,
+  onRepinned,
+}: {
+  connectors: readonly Connector[]
+  onRepinned: () => void
+}) {
   const notice = bridgeNotice(connectors)
   return (
     <>
@@ -199,7 +275,11 @@ function ConnectorList({ connectors }: { connectors: readonly Connector[] }) {
       ) : null}
       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,380px),1fr))] items-start gap-4">
         {connectors.map((connector) => (
-          <ConnectorCard key={connector.name} connector={connector} />
+          <ConnectorCard
+            key={connector.name}
+            connector={connector}
+            onRepinned={onRepinned}
+          />
         ))}
       </div>
     </>
@@ -254,7 +334,7 @@ function ConnectorsBody({
         No connectors are configured.
       </p>
     )
-  return <ConnectorList connectors={state.connectors} />
+  return <ConnectorList connectors={state.connectors} onRepinned={onRetry} />
 }
 
 function ConnectorsView() {

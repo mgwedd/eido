@@ -9,6 +9,7 @@ import {
   validateGateEnrolRequest,
   validateGateLoginRequest,
   validateGatePushRegistration,
+  validateGateRepinRequest,
 } from "@eido/schemas"
 import type {
   GateAuditActor,
@@ -24,6 +25,7 @@ import type {
   GateSession,
   GatePasskeyList,
   GatePermissionList,
+  GateRepinResult,
   GateUndoResult,
 } from "@eido/schemas"
 import { issueNonce, reject, verifyApproval } from "./approvals"
@@ -52,6 +54,8 @@ import { readBackupStatus } from "./backup-status"
 import { checkEnrolmentCode } from "./enrolment"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
+import { applyRepin, prepareRepin } from "./repin"
+import type { RepinRefusal } from "./repin"
 import {
   checkedSubscription,
   preparePushRegistration,
@@ -88,6 +92,8 @@ export type PhoneState = {
   nudge?: { threshold: number; windowMs: number }
   push?: { publicKey: () => Promise<string>; notifyPending: () => void }
   backupStampPath?: string
+  /** The owner's re-reviewed manifest for a drifted connector (#97); undefined when none is placed. */
+  reviewedManifest?: (connector: string) => unknown
 }
 
 export type PhoneRoute = {
@@ -109,6 +115,12 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/audit/chain", session: true },
   { method: "GET", path: "/connector-settings", session: true },
   { method: "GET", path: "/backup/status", session: true },
+  { method: "POST", path: "/connector-settings/:id/repin", session: true },
+  {
+    method: "POST",
+    path: "/connector-settings/:id/repin/decision",
+    session: true,
+  },
   { method: "GET", path: "/passkeys", session: true },
   { method: "GET", path: "/permissions", session: true },
   { method: "GET", path: "/approvals/:id/history", session: true },
@@ -479,6 +491,88 @@ function backupStatusRoute(state: PhoneState, now: Clock): Reply {
   return { status: 200, body }
 }
 
+const REPIN_REFUSALS = {
+  not_found: [404, "not_found", "no such connector"],
+  not_drifted: [409, "unavailable", "the connector is not disabled for drift"],
+  no_reviewed_manifest: [
+    409,
+    "unavailable",
+    "no reviewed manifest is placed for this connector",
+  ],
+  invalid_manifest: [
+    422,
+    "invalid_request",
+    "the reviewed manifest cannot replace the pin",
+  ],
+  mismatch: [
+    409,
+    "unavailable",
+    "the reviewed manifest does not match the tools the server reports",
+  ],
+} as const satisfies Record<
+  RepinRefusal,
+  readonly [number, Parameters<typeof apiError>[1], string]
+>
+
+function reviewedManifest(state: PhoneState, connector: string): unknown {
+  try {
+    return state.reviewedManifest?.(connector)
+  } catch {
+    return undefined
+  }
+}
+
+async function repinPrepare(
+  state: PhoneState,
+  request: GateRequest,
+  connector: string
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  if (
+    typeof body.value !== "object" ||
+    body.value === null ||
+    Array.isArray(body.value) ||
+    Object.keys(body.value).length !== 0
+  )
+    return invalid("an empty re-pin request", ["expected an empty object"])
+  const result = prepareRepin(
+    state.db,
+    connector,
+    reviewedManifest(state, connector)
+  )
+  if (!result.ok) {
+    const [status, code, message] = REPIN_REFUSALS[result.code]
+    return apiError(status, code, message)
+  }
+  return { status: 200, body: result.prepared }
+}
+
+async function repinDecision(
+  state: PhoneState,
+  request: GateRequest,
+  connector: string
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateRepinRequest(body.value)
+  if (!checked.ok) return invalid("a re-pin request", checked.errors)
+  const result = applyRepin(
+    state.db,
+    connector,
+    reviewedManifest(state, connector),
+    { config: state.webAuthn, request: checked.value }
+  )
+  if (!result.ok) {
+    if (result.code === "refused")
+      return apiError(403, "verification_failed", "the re-pin was refused")
+    const [status, code, message] = REPIN_REFUSALS[result.code]
+    return apiError(status, code, message)
+  }
+  const done: GateRepinResult = { connector, manifestHash: result.manifestHash }
+  return { status: 200, body: done }
+}
+
 function passkeyList(
   state: PhoneState,
   request: GateRequest,
@@ -778,6 +872,10 @@ function route(
       return connectorSettings(state, now)
     case "/backup/status":
       return backupStatusRoute(state, now)
+    case "/connector-settings/:id/repin":
+      return repinPrepare(state, request, matched.id)
+    case "/connector-settings/:id/repin/decision":
+      return repinDecision(state, request, matched.id)
     case "/passkeys":
       return passkeyList(state, request, now)
     case "/permissions":

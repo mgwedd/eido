@@ -18,6 +18,8 @@ import {
   validateGateSession,
   validateGatePasskeyList,
   validateGatePermissionList,
+  validateGateRepinPrepared,
+  validateGateRepinResult,
   validateGateUndoResult,
 } from "@eido/schemas"
 import type { GateIntentInjection } from "@eido/schemas"
@@ -1803,5 +1805,261 @@ describe("phoneHandler: passkey enrolment with a code (#202)", () => {
       raw: { ok: true, text: "{" },
     })
     expect(rawOptions.status).toBe(400)
+  })
+})
+
+describe("phoneHandler: connector re-pin (#97)", () => {
+  // "files" pins create, rename, move and trash. The server now reports bulk_move instead of
+  // trash_file, so the gate disables it for drift.
+  const OBSERVED = ["create_file", "rename_file", "move_file", "bulk_move"]
+  const reviewed = (version = 2) =>
+    manifest(
+      "files",
+      [
+        ...FILE_OPS.filter((o) => o.name !== "trash_file"),
+        {
+          name: "bulk_move",
+          intentKind: "file.move",
+          reversibility: "reversible",
+          defaultTier: "approval",
+        },
+      ],
+      version
+    )
+  const REPIN = "/connector-settings/files/repin"
+  const DECIDE = `${REPIN}/decision`
+
+  function drift(): string {
+    checkDrift(s.db, "files", OBSERVED)
+    return manifestHash(manifest("files", FILE_OPS))
+  }
+
+  async function files() {
+    const cookie = await signIn()
+    const settings = await call("GET", "/connector-settings", { cookie })
+    const checked = validateGateConnectorSettings(settings.body)
+    if (!checked.ok) throw new Error("connector settings are invalid")
+    const row = checked.value.connectors.find((c) => c.name === "files")
+    if (row === undefined) throw new Error("no files connector")
+    return { cookie, row }
+  }
+
+  async function prepare(cookie: string) {
+    const reply = await call("POST", REPIN, { cookie, body: {} })
+    const checked = validateGateRepinPrepared(reply.body)
+    if (!checked.ok) throw new Error(`re-pin not prepared: ${reply.status}`)
+    return checked.value
+  }
+
+  // Built from the spec in docs/gate-signed-control-changes.md, not by the gate's own code.
+  const expectedChallenge = (p: {
+    id: string
+    payloadHash: string
+    nonce: string
+  }) =>
+    createHash("sha256")
+      .update(
+        JSON.stringify([
+          "eido.control.v1",
+          "manifest.pin",
+          "files",
+          p.id,
+          p.payloadHash,
+          p.nonce,
+        ])
+      )
+      .digest("base64url")
+
+  beforeEach(() => {
+    state.reviewedManifest = (name) =>
+      name === "files" ? reviewed() : undefined
+  })
+
+  it("prepares a challenge over the reviewed manifest and changes nothing until it is signed", async () => {
+    const pinnedHash = drift()
+    enrol(auth)
+    const { cookie } = await files()
+    const prepared = await prepare(cookie)
+    expect(prepared.payloadHash).toBe(manifestHash(reviewed()))
+    expect(prepared.challenge).toBe(expectedChallenge(prepared))
+    const { row } = await files()
+    expect(row).toMatchObject({ enabled: false, manifestHash: pinnedHash })
+    expect(row.drift).toEqual({ added: ["bulk_move"], removed: ["trash_file"] })
+  })
+
+  it("keeps the old pin and the connector disabled when the signature is over another challenge", async () => {
+    const pinnedHash = drift()
+    enrol(auth)
+    const { cookie } = await files()
+    const prepared = await prepare(cookie)
+    const refused = await call("POST", DECIDE, {
+      cookie,
+      body: {
+        id: prepared.id,
+        nonce: prepared.nonce,
+        assertion: assertion(auth, "A".repeat(43)),
+      },
+    })
+    expect([refused.status, code(refused)]).toEqual([
+      403,
+      "verification_failed",
+    ])
+    const { row } = await files()
+    expect(row).toMatchObject({ enabled: false, manifestHash: pinnedHash })
+    expect(row.drift).toBeDefined()
+  })
+
+  it("refuses a request with no assertion", async () => {
+    drift()
+    enrol(auth)
+    const { cookie } = await files()
+    const prepared = await prepare(cookie)
+    const reply = await call("POST", DECIDE, {
+      cookie,
+      body: { id: prepared.id, nonce: prepared.nonce },
+    })
+    expect(reply.status).toBe(400)
+    expect((await files()).row.enabled).toBe(false)
+  })
+
+  it("pins the reviewed manifest and enables the connector on a valid signature, once", async () => {
+    drift()
+    enrol(auth)
+    const { cookie } = await files()
+    const prepared = await prepare(cookie)
+    const body = {
+      id: prepared.id,
+      nonce: prepared.nonce,
+      assertion: assertion(auth, prepared.challenge),
+    }
+    const done = await call("POST", DECIDE, { cookie, body })
+    const result = validateGateRepinResult(done.body)
+    expect(result.ok && result.value).toEqual({
+      connector: "files",
+      manifestHash: manifestHash(reviewed()),
+    })
+    const { row } = await files()
+    expect(row).toMatchObject({
+      enabled: true,
+      manifestHash: manifestHash(reviewed()),
+    })
+    expect(row).not.toHaveProperty("drift")
+    const pinned = auditRows(s.db).filter(
+      (r) => r.action === "connector.pinned" && r.target === "files"
+    )
+    expect(pinned).toHaveLength(2)
+    expect(JSON.stringify(auditRows(s.db))).not.toContain("bulk_move")
+    const replay = await call("POST", DECIDE, { cookie, body })
+    expect(replay.status).toBe(409)
+  })
+
+  it("refuses a manifest that changed after the owner prepared it", async () => {
+    drift()
+    enrol(auth)
+    const { cookie } = await files()
+    const prepared = await prepare(cookie)
+    const changed = reviewed()
+    changed.description = "swapped after preparation"
+    state.reviewedManifest = () => changed
+    const reply = await call("POST", DECIDE, {
+      cookie,
+      body: {
+        id: prepared.id,
+        nonce: prepared.nonce,
+        assertion: assertion(auth, prepared.challenge),
+      },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect((await files()).row.enabled).toBe(false)
+  })
+
+  it.each([
+    ["no session", "POST", "/connector-settings/files/repin", 401],
+    [
+      "no session on decision",
+      "POST",
+      "/connector-settings/files/repin/decision",
+      401,
+    ],
+  ])("%s", async (_name, method, path, status) => {
+    drift()
+    expect((await call(method, path, { body: {} })).status).toBe(status)
+  })
+
+  it("refuses a connector that is not disabled for drift", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("POST", "/connector-settings/mail/repin", {
+      cookie,
+      body: {},
+    })
+    expect([reply.status, code(reply)]).toEqual([409, "unavailable"])
+  })
+
+  it("answers 404 for a connector that is not pinned", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("POST", "/connector-settings/nope/repin", {
+      cookie,
+      body: {},
+    })
+    expect(reply.status).toBe(404)
+  })
+
+  it("refuses when no reviewed manifest is placed", async () => {
+    drift()
+    enrol(auth)
+    const { cookie } = await files()
+    state.reviewedManifest = () => undefined
+    expect((await call("POST", REPIN, { cookie, body: {} })).status).toBe(409)
+  })
+
+  it("refuses a reviewed manifest whose tools differ from what the server reports", async () => {
+    drift()
+    enrol(auth)
+    const { cookie } = await files()
+    state.reviewedManifest = () => manifest("files", FILE_OPS, 2)
+    const reply = await call("POST", REPIN, { cookie, body: {} })
+    expect(reply.status).toBe(409)
+    expect(JSON.stringify(reply.body)).toContain("does not match")
+  })
+
+  it("refuses a reviewed manifest that does not raise the version", async () => {
+    drift()
+    enrol(auth)
+    const { cookie } = await files()
+    state.reviewedManifest = () => reviewed(1)
+    expect((await call("POST", REPIN, { cookie, body: {} })).status).toBe(422)
+  })
+
+  it("refuses a reviewed manifest that is not valid JSON or is for another connector", async () => {
+    drift()
+    enrol(auth)
+    const { cookie } = await files()
+    state.reviewedManifest = () => null
+    expect((await call("POST", REPIN, { cookie, body: {} })).status).toBe(422)
+    state.reviewedManifest = () => ({ ...reviewed(), name: "mail" })
+    expect((await call("POST", REPIN, { cookie, body: {} })).status).toBe(422)
+  })
+
+  it("treats a throwing manifest reader as no manifest", async () => {
+    drift()
+    enrol(auth)
+    const { cookie } = await files()
+    state.reviewedManifest = () => {
+      throw new Error("unreadable")
+    }
+    expect((await call("POST", REPIN, { cookie, body: {} })).status).toBe(409)
+  })
+
+  it("refuses a non-empty prepare body", async () => {
+    drift()
+    enrol(auth)
+    const { cookie } = await files()
+    const reply = await call("POST", REPIN, {
+      cookie,
+      body: { manifest: reviewed() },
+    })
+    expect(reply.status).toBe(400)
   })
 })
