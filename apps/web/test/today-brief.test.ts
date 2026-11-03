@@ -70,6 +70,23 @@ describe("filterRenderableBriefLines", () => {
     }
     expect(filterRenderableBriefLines([moreLine])).toHaveLength(1)
   })
+
+  test("drops deferred lines, which have no source link", () => {
+    const deferred: BriefLine = {
+      kind: "deferred",
+      text: "Deferred: lorem ipsum.",
+      ledger: { type: "obligation", id: "4" },
+    }
+    const due: BriefLine = {
+      kind: "due",
+      text: "Rent is due tomorrow.",
+      ledger: { type: "obligation", id: "5" },
+      source: { documentId: "c".repeat(64), span: { start: 0, end: 4 } },
+    }
+    expect(
+      filterRenderableBriefLines([deferred, due]).map((l) => l.text)
+    ).toEqual(["Rent is due tomorrow."])
+  })
 })
 
 describe("formatBriefTime and formatBriefDate", () => {

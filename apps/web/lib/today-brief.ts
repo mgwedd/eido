@@ -9,19 +9,23 @@ export type BriefMoreLine = Extract<BriefLine, { kind: "more" }>
 
 export const BRIEF_URL = "/api/core/brief/latest"
 
+export type RenderableBriefLine = BriefItemLine | BriefMoreLine
+
 export function isItemLine(line: BriefLine): line is BriefItemLine {
-  return line.kind !== "more"
+  return line.kind !== "more" && line.kind !== "deferred"
 }
 
 /**
  * Filter out lines that lack a valid source link.
  * Acceptance criterion: A brief line without a source link is not rendered.
+ * Deferred lines carry no source, so they are not rendered either.
  */
 export function filterRenderableBriefLines(
   lines: readonly BriefLine[]
-): BriefLine[] {
-  return lines.filter((line) => {
+): RenderableBriefLine[] {
+  return lines.filter((line): line is RenderableBriefLine => {
     if (line.kind === "more") return true
+    if (!isItemLine(line)) return false
     return (
       Boolean(line.source) &&
       typeof line.source.documentId === "string" &&
