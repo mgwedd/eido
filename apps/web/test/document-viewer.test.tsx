@@ -31,6 +31,12 @@ vi.mock("next/link", () => ({
 const SHA256 = "a".repeat(64)
 const RELATED_SHA256 = "b".repeat(64)
 
+function toUrlString(url: RequestInfo | URL): string {
+  if (typeof url === "string") return url
+  if (url instanceof URL) return url.href
+  return url.url
+}
+
 const SAMPLE_VIEW: CoreApiDocumentView = {
   document: {
     sha256: SHA256,
@@ -473,5 +479,146 @@ describe("DocumentViewer states", () => {
     expect(view.textContent).toContain("Text unavailable for this file")
     expect(view.textContent).toContain("Binary or unsupported format")
     expect(view.textContent).toContain("Invoice 1042.pdf")
+  })
+
+  test("Move to Eido Trash button is disabled for Drive/Gmail with reason", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: RequestInfo | URL) => {
+        const u = toUrlString(url)
+        if (u.includes("/api/gate/approvals")) {
+          return Promise.resolve(Response.json({ intents: [] }))
+        }
+        return Promise.resolve(
+          Response.json({
+            ...SAMPLE_VIEW,
+            document: {
+              ...SAMPLE_VIEW.document,
+              source: "drive",
+            },
+          })
+        )
+      })
+    )
+    const view = await renderViewer({ sha256: SHA256 })
+    const trashBtn = Array.from(view.querySelectorAll("button")).find(
+      (b) => b.textContent === "Move to Eido Trash"
+    )
+    expect(trashBtn).toBeDefined()
+    expect(trashBtn?.hasAttribute("disabled")).toBe(true)
+    expect(trashBtn?.getAttribute("title")).toBe(
+      "Only local files can be moved to Eido Trash"
+    )
+
+    // Invariant: assert no permanent-delete path exists in UI
+    expect(view.textContent?.toLowerCase()).not.toContain("delete permanently")
+    expect(view.textContent?.toLowerCase()).not.toContain("permanent delete")
+  })
+
+  test("Move to Eido Trash button creates pending intent for local file and updates state", async () => {
+    const fetchMock = vi.fn((url: RequestInfo | URL) => {
+      const u = toUrlString(url)
+      if (u.includes("/api/gate/approvals")) {
+        return Promise.resolve(Response.json({ intents: [] }))
+      }
+      if (u.includes("/api/core/intents")) {
+        return Promise.resolve(
+          Response.json({
+            id: "trash-intent-1",
+            tier: "approval",
+            state: "pending",
+          })
+        )
+      }
+      return Promise.resolve(
+        Response.json({
+          ...SAMPLE_VIEW,
+          document: {
+            ...SAMPLE_VIEW.document,
+            source: "files",
+            sourceRef: JSON.stringify(["docs", "Invoice 1042.pdf"]),
+          },
+        })
+      )
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const view = await renderViewer({ sha256: SHA256 })
+    const trashBtn = Array.from(view.querySelectorAll("button")).find(
+      (b) => b.textContent === "Move to Eido Trash"
+    )
+    expect(trashBtn).toBeDefined()
+    expect(trashBtn?.hasAttribute("disabled")).toBe(false)
+
+    // Click Move to Eido Trash
+    await act(async () => {
+      trashBtn?.click()
+      await new Promise((r) => setTimeout(r, 10))
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/core/intents",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          intent: {
+            kind: "file.delete",
+            args: { root: "docs", path: "Invoice 1042.pdf" },
+          },
+          origin: "reactive",
+        }),
+      })
+    )
+
+    expect(view.textContent).toContain(
+      "Waiting for approval to move to Eido Trash."
+    )
+  })
+
+  test("Move to Eido Trash displays Waiting for approval when already pending in queue", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: RequestInfo | URL) => {
+        const u = toUrlString(url)
+        if (u.includes("/api/gate/approvals")) {
+          return Promise.resolve(
+            Response.json({
+              intents: [
+                {
+                  id: "existing-trash-intent",
+                  kind: "file.delete",
+                  tier: "approval",
+                  state: "pending",
+                  origin: "reactive",
+                  createdAt: "2026-10-18T10:00:00Z",
+                  title: "Move to Eido Trash: Invoice 1042.pdf",
+                  subtitle: "docs/Invoice 1042.pdf",
+                },
+              ],
+            })
+          )
+        }
+        return Promise.resolve(
+          Response.json({
+            ...SAMPLE_VIEW,
+            document: {
+              ...SAMPLE_VIEW.document,
+              source: "files",
+              sourceRef: JSON.stringify(["docs", "Invoice 1042.pdf"]),
+            },
+          })
+        )
+      })
+    )
+
+    const view = await renderViewer({ sha256: SHA256 })
+    expect(view.textContent).toContain(
+      "Waiting for approval to move to Eido Trash."
+    )
+    // When pending, the button is replaced by status badge
+    const trashBtn = Array.from(view.querySelectorAll("button")).find(
+      (b) => b.textContent === "Move to Eido Trash"
+    )
+    expect(trashBtn).toBeUndefined()
   })
 })
