@@ -149,6 +149,7 @@ describe("GET /documents", () => {
       },
       ingestedAt: "2030-01-01T00:00:00.000Z",
       occurredAt: "2029-12-30T08:00:00.000Z",
+      keyFacts: [],
     })
     expect(body.documents[0]).toMatchObject({ name: null, occurredAt: null })
   })
@@ -285,6 +286,117 @@ describe("GET /documents", () => {
     )
     expect(response.status).toBe(405)
     expect(response.headers.get("allow")).toBe("GET")
+  })
+
+  test("computes keyFacts for documents with unconfirmed fields linking to queue", async () => {
+    const extId = await insertExtraction(db, {
+      docId: invoice,
+      schema: "invoice",
+      status: "extracted",
+      model: "test-model",
+      fields: {
+        action: { raw: "Pay bill", span: { start: 0, end: 8 } },
+        amount: {
+          raw: "CHF 120.00",
+          span: { start: 27, end: 37 },
+          status: "parsed",
+          value: { amount_minor: 12000, currency: "CHF" },
+        },
+      },
+      confidence: { action: 0.9, amount: 0.2 }, // amount below default threshold 0.5
+      createdAt: "2030-01-02T00:00:00.000Z",
+    })
+
+    // Put a triage event with intent_id
+    db.prepare(
+      `INSERT INTO events (id, source, kind, trigger_key, fire_id, ref, score, disposition, intent_id, received_at, decided_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      "evt-1",
+      "extraction",
+      "confirm-field",
+      "ext:1:confirm",
+      "fire-1",
+      `ext:${extId}`,
+      0.9,
+      "card",
+      "intent-abc-123",
+      "2030-01-02T00:00:00.000Z",
+      "2030-01-02T00:00:00.000Z"
+    )
+
+    const doc = (await list()).documents.find((d) => d.sha256 === invoice)
+    expect(doc?.keyFacts).toEqual([
+      {
+        text: "1 field to confirm",
+        href: "/queue?intent=intent-abc-123",
+        isConfirm: true,
+      },
+    ])
+  })
+
+  test("computes keyFacts for verified extractions: amount and due date", async () => {
+    await insertExtraction(db, {
+      docId: quote,
+      schema: "quote",
+      status: "extracted",
+      model: "test-model",
+      fields: {
+        action: { raw: "Pay quote", span: { start: 0, end: 9 } },
+        amount: {
+          raw: "$3,250.00",
+          span: { start: 0, end: 9 },
+          status: "parsed",
+          value: { amount_minor: 325000, currency: "USD" },
+        },
+        due_date: {
+          raw: "2026-11-03",
+          span: { start: 10, end: 20 },
+          status: "parsed",
+          value: "2026-11-03",
+        },
+      },
+      confidence: { action: 0.9, amount: 0.9, due_date: 0.95 },
+      createdAt: "2030-01-02T00:00:00.000Z",
+    })
+
+    const doc = (await list()).documents.find((d) => d.sha256 === quote)
+    expect(doc?.keyFacts).toEqual([
+      {
+        text: "Due Nov 3 · $3,250.00",
+        href: null,
+        isConfirm: false,
+      },
+    ])
+  })
+
+  test("computes keyFacts for total amount only", async () => {
+    await insertExtraction(db, {
+      docId: pdf,
+      schema: "receipt",
+      status: "extracted",
+      model: "test-model",
+      fields: {
+        action: { raw: "Pay receipt", span: { start: 0, end: 11 } },
+        amount: {
+          raw: "$50.00",
+          span: { start: 0, end: 6 },
+          status: "parsed",
+          value: { amount_minor: 5000, currency: "USD" },
+        },
+      },
+      confidence: { action: 0.9, amount: 0.9 },
+      createdAt: "2030-01-02T00:00:00.000Z",
+    })
+
+    const doc = (await list()).documents.find((d) => d.sha256 === pdf)
+    expect(doc?.keyFacts).toEqual([
+      {
+        text: "Total $50.00",
+        href: null,
+        isConfirm: false,
+      },
+    ])
   })
 })
 

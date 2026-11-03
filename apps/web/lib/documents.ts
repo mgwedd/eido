@@ -11,12 +11,52 @@ export const DEFAULT_DOCUMENTS_LIMIT = 50
 export const SOURCE_LABELS: Readonly<Record<string, string>> = {
   gmail: "Gmail",
   "proton-mail": "Proton Mail",
-  "google-drive": "Google Drive",
-  "local-folder": "Local folder",
+  "google-drive": "Drive",
+  "local-folder": "Files",
 }
 
 export function formatSourceLabel(source: string): string {
   return SOURCE_LABELS[source] ?? source
+}
+
+/** Formats a document date (occurred or ingested) as short month and day (e.g. "Oct 12"). */
+export function formatDocumentDate(isoString: string): string {
+  try {
+    const date = new Date(
+      isoString.includes("T") ? isoString : `${isoString}T00:00:00Z`
+    )
+    if (Number.isNaN(date.getTime())) return isoString
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    }).format(date)
+  } catch {
+    return isoString
+  }
+}
+
+/** Formats source with provenance distinguishing Files, Drive and Gmail attachment per design. */
+export function formatDocumentSource(
+  source: string,
+  entityName?: string,
+  mime?: string
+): string {
+  if (source === "local-folder" || source === "files") {
+    return entityName ? `Files/${entityName}` : "Files"
+  }
+  if (source === "gmail") {
+    return mime && mime !== "message/rfc822" ? "Gmail attachment" : "Gmail"
+  }
+  if (source === "proton-mail") {
+    return mime && mime !== "message/rfc822"
+      ? "Proton attachment"
+      : "Proton Mail"
+  }
+  if (source === "google-drive" || source === "drive") {
+    return "Drive"
+  }
+  return formatSourceLabel(source)
 }
 
 /** Formats an ingested date for the table or list view. */

@@ -90,6 +90,13 @@ const sampleDocuments: CoreApiDocumentList["documents"] = [
     },
     ingestedAt: "2026-10-18T08:30:00.000Z",
     occurredAt: "2026-10-17T12:00:00.000Z",
+    keyFacts: [
+      {
+        text: "Total $3,250.00",
+        href: null,
+        isConfirm: false,
+      },
+    ],
   },
   {
     sha256: SHA_2,
@@ -107,6 +114,13 @@ const sampleDocuments: CoreApiDocumentList["documents"] = [
     },
     ingestedAt: "2026-10-15T14:15:00.000Z",
     occurredAt: null,
+    keyFacts: [
+      {
+        text: "1 field to confirm",
+        href: "/queue?intent=intent-1",
+        isConfirm: true,
+      },
+    ],
   },
 ]
 
@@ -148,32 +162,41 @@ describe("DocumentsView", () => {
     const ths = Array.from(container.querySelectorAll("th"))
     expect(ths.map((th) => th.textContent?.trim())).toEqual([
       "Document",
-      "Source",
       "Entity",
       "Type",
-      "Ingested",
+      "Source",
+      "Date",
+      "Key facts",
     ])
     for (const th of ths) {
       expect(th.getAttribute("scope")).toBe("col")
     }
 
-    // Row 1: Document name, source label & ref, entity, type badge, formatted date
+    // Row 1: Document name, entity, type badge, source label & ref, formatted date, key facts
     expect(container.textContent).toContain("October Electric Bill.pdf")
-    expect(container.textContent).toContain("Gmail")
-    expect(container.textContent).toContain("msg-12345")
     expect(container.textContent).toContain("Property")
     expect(container.textContent).toContain("invoice")
-    expect(container.textContent).toContain("Oct 18, 2026")
+    expect(container.textContent).toContain("Gmail attachment")
+    expect(container.textContent).toContain("msg-12345")
+    expect(container.textContent).toContain("Oct 17")
+    expect(container.textContent).toContain("Total $3,250.00")
 
     // Row 1 viewer link
     const link1 = container.querySelector(`a[href*="/documents/${SHA_1}"]`)
     expect(link1).not.toBeNull()
     expect(link1?.getAttribute("href")).toContain("from=%2Fdocuments")
 
-    // Row 2: fallback name using source and short sha
+    // Row 2: fallback name using source and short sha, confirm link
     expect(container.textContent).toContain("Proton Mail (22222222)")
     expect(container.textContent).toContain("text/plain")
-    expect(container.textContent).toContain("Oct 15, 2026")
+    expect(container.textContent).toContain("Oct 15")
+    expect(container.textContent).toContain("1 field to confirm")
+
+    const confirmLink = container.querySelector(
+      'a[href="/queue?intent=intent-1"]'
+    )
+    expect(confirmLink).not.toBeNull()
+    expect(confirmLink?.textContent).toBe("1 field to confirm")
   })
 
   test("renders phone list with 44px min targets", async () => {
@@ -257,6 +280,13 @@ describe("DocumentsView", () => {
       )
     ).toBe(true)
 
+    // Deselect back to all
+    const allEntityBtn = Array.from(
+      entityGroup?.querySelectorAll("button") ?? []
+    ).find((b) => b.textContent?.trim() === "All")
+    await click(allEntityBtn)
+    expect(allEntityBtn?.getAttribute("aria-pressed")).toBe("true")
+
     // Source filter
     const sourceGroup = container.querySelector(
       '[role="group"][aria-label="Filter by source"]'
@@ -274,6 +304,13 @@ describe("DocumentsView", () => {
         toUrlString(c[0] as RequestInfo | URL).includes("source=gmail")
       )
     ).toBe(true)
+
+    // Deselect source back to all
+    const allSourceBtn = Array.from(
+      sourceGroup?.querySelectorAll("button") ?? []
+    ).find((b) => b.textContent?.trim() === "All")
+    await click(allSourceBtn)
+    expect(allSourceBtn?.getAttribute("aria-pressed")).toBe("true")
   })
 
   test("renders loading state with accessible announcement", async () => {

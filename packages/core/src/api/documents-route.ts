@@ -89,7 +89,13 @@ export function documentsRoute(
       message: "method not allowed",
     }
   }
-  if (view === null) return listDocuments(deps.db, params)
+  if (view === null) {
+    return listDocuments(
+      deps.db,
+      params,
+      deps.threshold ?? DEFAULT_CONFIDENCE_THRESHOLD
+    )
+  }
   return viewDocument(
     deps.db,
     view[1] ?? "",
@@ -126,7 +132,8 @@ function readCount(
 
 function listDocuments(
   db: DatabaseSync,
-  params: URLSearchParams
+  params: URLSearchParams,
+  threshold: number
 ): DocumentsResult {
   const errors: FieldError[] = []
   const limit = readCount(params, "limit", 1, MAX_LIMIT, DEFAULT_LIMIT, errors)
@@ -184,7 +191,7 @@ function listDocuments(
     .all(...values, limit + 1, offset)
   const more = rows.length > limit
   const body: CoreApiDocumentList = {
-    documents: rows.slice(0, limit).map(summary),
+    documents: rows.slice(0, limit).map((r) => summary(db, r, threshold)),
     nextOffset: more ? offset + limit : null,
   }
   return { ok: true, body }
@@ -223,9 +230,215 @@ function typeSource(
   throw new Error("stored document type source is unknown")
 }
 
-function summary(row: Record<string, unknown>): CoreApiDocumentSummary {
+function keyFactsFor(
+  db: DatabaseSync,
+  sha256: string,
+  threshold: number
+): CoreApiDocumentSummary["keyFacts"] {
+  // Check unconfirmed extractions first
+  const unconfirmedRows = db
+    .prepare(
+      `SELECT id, fields_json FROM extractions
+       WHERE doc_id = ? AND status = 'extracted' AND confirmed_at IS NULL
+       ORDER BY id`
+    )
+    .all(sha256) as Array<{ id: number; fields_json: string }>
+
+  let unconfirmedCount = 0
+  let unconfirmedExtractionId: number | null = null
+
+  const confQuery = db.prepare(
+    "SELECT field, confidence FROM extraction_field_confidence WHERE extraction_id = ?"
+  )
+
+  for (const ext of unconfirmedRows) {
+    let fields: Record<string, unknown>
+    try {
+      fields = JSON.parse(ext.fields_json) as Record<string, unknown>
+    } catch {
+      continue
+    }
+    const confRows = confQuery.all(ext.id) as Array<{
+      field: string
+      confidence: number
+    }>
+    const confMap = new Map(confRows.map((r) => [r.field, r.confidence]))
+
+    for (const [fName, fVal] of Object.entries(fields)) {
+      if (typeof fVal !== "object" || fVal === null) continue
+      const fieldEntry = fVal as { status?: string; confirmed_at?: string }
+      const conf = confMap.get(fName) ?? 0
+      const isFlagged = fieldEntry.status === "parse_failed" || conf < threshold
+      if (isFlagged && !fieldEntry.confirmed_at) {
+        unconfirmedCount++
+        if (unconfirmedExtractionId === null) {
+          unconfirmedExtractionId = ext.id
+        }
+      }
+    }
+  }
+
+  if (unconfirmedCount > 0) {
+    let href: string = "/queue"
+    try {
+      const eventRow = db
+        .prepare(
+          "SELECT intent_id FROM events WHERE ref = ? AND intent_id IS NOT NULL LIMIT 1"
+        )
+        .get(`ext:${unconfirmedExtractionId}`) as
+        { intent_id?: string } | undefined
+      if (eventRow?.intent_id) {
+        href = `/queue?intent=${eventRow.intent_id}`
+      }
+    } catch {
+      // events table might not exist
+    }
+    const factText =
+      unconfirmedCount === 1
+        ? "1 field to confirm"
+        : `${unconfirmedCount} fields to confirm`
+    return [{ text: factText, href, isConfirm: true }]
+  }
+
+  // Look at the latest extracted fields
+  const latestExt = db
+    .prepare(
+      `SELECT fields_json FROM extractions
+       WHERE doc_id = ? AND status = 'extracted'
+       ORDER BY id DESC LIMIT 1`
+    )
+    .get(sha256) as { fields_json: string } | undefined
+
+  if (latestExt) {
+    let fields: Record<string, unknown>
+    try {
+      fields = JSON.parse(latestExt.fields_json) as Record<string, unknown>
+    } catch {
+      return []
+    }
+    const amountField = fields["amount"] as
+      { value?: unknown; raw?: string } | undefined
+    const dueDateField = fields["due_date"] as
+      { status?: string; value?: unknown; raw?: string } | undefined
+    const actionField = fields["action"] as { raw?: string } | undefined
+
+    let formattedAmount: string | null = null
+    if (amountField) {
+      if (
+        amountField.value &&
+        typeof amountField.value === "object" &&
+        "amount_minor" in amountField.value &&
+        "currency" in amountField.value
+      ) {
+        const val = amountField.value as {
+          amount_minor: number
+          currency: string
+        }
+        try {
+          formattedAmount = new Intl.NumberFormat("en-US", {
+            style: "currency",
+            currency: val.currency,
+          }).format(val.amount_minor / 100)
+        } catch {
+          formattedAmount = `${val.currency} ${(val.amount_minor / 100).toFixed(2)}`
+        }
+      } else if (typeof amountField.raw === "string") {
+        formattedAmount = amountField.raw
+      }
+    }
+
+    let formattedDueDate: string | null = null
+    if (dueDateField) {
+      const dateVal =
+        dueDateField.status === "parsed" &&
+        typeof dueDateField.value === "string"
+          ? dueDateField.value
+          : typeof dueDateField.raw === "string"
+            ? dueDateField.raw
+            : null
+      if (dateVal) {
+        try {
+          const d = new Date(
+            dateVal.includes("T") ? dateVal : `${dateVal}T00:00:00Z`
+          )
+          if (!Number.isNaN(d.getTime())) {
+            formattedDueDate = new Intl.DateTimeFormat("en-US", {
+              month: "short",
+              day: "numeric",
+              timeZone: "UTC",
+            }).format(d)
+          } else {
+            formattedDueDate = dateVal
+          }
+        } catch {
+          formattedDueDate = dateVal
+        }
+      }
+    }
+
+    if (formattedDueDate && formattedAmount) {
+      return [
+        {
+          text: `Due ${formattedDueDate} · ${formattedAmount}`,
+          href: null,
+          isConfirm: false,
+        },
+      ]
+    }
+    if (formattedAmount) {
+      return [
+        { text: `Total ${formattedAmount}`, href: null, isConfirm: false },
+      ]
+    }
+    if (formattedDueDate) {
+      return [{ text: `Due ${formattedDueDate}`, href: null, isConfirm: false }]
+    }
+    if (
+      actionField &&
+      typeof actionField.raw === "string" &&
+      actionField.raw.trim().length > 0
+    ) {
+      return [{ text: actionField.raw.trim(), href: null, isConfirm: false }]
+    }
+  }
+
+  // Fallback: check obligations table
+  const obl = db
+    .prepare(
+      "SELECT action, due_at FROM obligations WHERE doc_id = ? ORDER BY id DESC LIMIT 1"
+    )
+    .get(sha256) as { action?: string; due_at?: string | null } | undefined
+
+  if (obl) {
+    if (obl.due_at) {
+      try {
+        const d = new Date(`${obl.due_at}T00:00:00Z`)
+        const formatted = new Intl.DateTimeFormat("en-US", {
+          month: "short",
+          day: "numeric",
+          timeZone: "UTC",
+        }).format(d)
+        return [{ text: `Due ${formatted}`, href: null, isConfirm: false }]
+      } catch {
+        return [{ text: `Due ${obl.due_at}`, href: null, isConfirm: false }]
+      }
+    }
+    if (obl.action) {
+      return [{ text: obl.action, href: null, isConfirm: false }]
+    }
+  }
+
+  return []
+}
+
+function summary(
+  db: DatabaseSync,
+  row: Record<string, unknown>,
+  threshold: number = DEFAULT_CONFIDENCE_THRESHOLD
+): CoreApiDocumentSummary {
+  const sha = text(row, "sha256")
   return {
-    sha256: text(row, "sha256"),
+    sha256: sha,
     name: nullableText(row, "title"),
     source: text(row, "source"),
     sourceRef: text(row, "source_ref"),
@@ -240,6 +453,7 @@ function summary(row: Record<string, unknown>): CoreApiDocumentSummary {
     },
     ingestedAt: text(row, "ingested_at"),
     occurredAt: nullableText(row, "occurred_at"),
+    keyFacts: keyFactsFor(db, sha, threshold),
   }
 }
 
@@ -313,7 +527,7 @@ function viewDocument(
   }
   const lines = splitLines(body)
   const view: CoreApiDocumentView = {
-    document: summary(row),
+    document: summary(db, row, threshold),
     lines,
     highlight:
       span === null

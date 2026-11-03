@@ -15,7 +15,8 @@ import {
 } from "@eido/ui/components/table"
 import { cn } from "@eido/ui/lib/utils"
 import {
-  formatIngestedDate,
+  formatDocumentDate,
+  formatDocumentSource,
   formatSourceLabel,
   loadDocumentsList,
   type DocumentItem,
@@ -327,16 +328,19 @@ export function DocumentsView({
                     Document
                   </TableHead>
                   <TableHead scope="col" className="px-4 py-3">
-                    Source
-                  </TableHead>
-                  <TableHead scope="col" className="px-4 py-3">
                     Entity
                   </TableHead>
                   <TableHead scope="col" className="px-4 py-3">
                     Type
                   </TableHead>
                   <TableHead scope="col" className="px-4 py-3">
-                    Ingested
+                    Source
+                  </TableHead>
+                  <TableHead scope="col" className="px-4 py-3">
+                    Date
+                  </TableHead>
+                  <TableHead scope="col" className="px-4 py-3">
+                    Key facts
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -362,14 +366,6 @@ export function DocumentsView({
                         </Link>
                       </TableCell>
                       <TableCell className="px-4 py-3 text-muted-foreground">
-                        <div className="flex flex-col">
-                          <span>{formatSourceLabel(doc.source)}</span>
-                          <span className="font-mono text-xs text-muted-foreground">
-                            {doc.sourceRef}
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="px-4 py-3 text-muted-foreground">
                         {doc.entity.name}
                       </TableCell>
                       <TableCell className="px-4 py-3">
@@ -378,7 +374,46 @@ export function DocumentsView({
                         </Badge>
                       </TableCell>
                       <TableCell className="px-4 py-3 text-sm text-muted-foreground">
-                        {formatIngestedDate(doc.ingestedAt)}
+                        <div className="flex flex-col">
+                          <span>
+                            {formatDocumentSource(
+                              doc.source,
+                              doc.entity.name,
+                              doc.mime
+                            )}
+                          </span>
+                          <span className="font-mono text-xs text-muted-foreground">
+                            {doc.sourceRef}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="px-4 py-3 text-sm text-muted-foreground">
+                        {formatDocumentDate(doc.occurredAt ?? doc.ingestedAt)}
+                      </TableCell>
+                      <TableCell className="px-4 py-3 text-sm">
+                        {doc.keyFacts && doc.keyFacts.length > 0 ? (
+                          <div className="flex flex-col gap-1">
+                            {doc.keyFacts.map((fact, i) =>
+                              fact.href ? (
+                                <Link
+                                  key={i}
+                                  href={fact.href}
+                                  className="font-medium text-primary underline underline-offset-4 hover:opacity-80"
+                                >
+                                  {fact.text}
+                                </Link>
+                              ) : (
+                                <span key={i} className="text-muted-foreground">
+                                  {fact.text}
+                                </span>
+                              )
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            —
+                          </span>
+                        )}
                       </TableCell>
                     </TableRow>
                   )
@@ -413,12 +448,17 @@ export function DocumentsView({
                         {displayName}
                       </Link>
                       <span className="shrink-0 text-xs text-muted-foreground">
-                        {formatIngestedDate(doc.ingestedAt)}
+                        {formatDocumentDate(doc.occurredAt ?? doc.ingestedAt)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                       <span>
-                        {doc.entity.name} · {formatSourceLabel(doc.source)}
+                        {doc.entity.name} ·{" "}
+                        {formatDocumentSource(
+                          doc.source,
+                          doc.entity.name,
+                          doc.mime
+                        )}
                       </span>
                       <Badge
                         variant="outline"
@@ -427,6 +467,25 @@ export function DocumentsView({
                         {doc.type || doc.mime}
                       </Badge>
                     </div>
+                    {doc.keyFacts && doc.keyFacts.length > 0 ? (
+                      <div className="flex flex-col gap-1 pt-0.5 text-xs">
+                        {doc.keyFacts.map((fact, i) =>
+                          fact.href ? (
+                            <Link
+                              key={i}
+                              href={fact.href}
+                              className="font-medium text-primary underline underline-offset-4"
+                            >
+                              {fact.text}
+                            </Link>
+                          ) : (
+                            <span key={i} className="text-muted-foreground">
+                              {fact.text}
+                            </span>
+                          )
+                        )}
+                      </div>
+                    ) : null}
                   </li>
                 )
               })}
