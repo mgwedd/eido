@@ -31,6 +31,7 @@ import {
   createIntentClient,
   createAuditClient,
   createProtonMailClient,
+  createConnectClient,
 } from "./internal/client"
 import { runningGate } from "./internal/runtime"
 import {
@@ -56,6 +57,7 @@ import {
   gateConfig,
   runGate as startGate,
 } from "./main"
+import type { ConnectorManifest } from "@eido/schemas"
 import type { GateConfig, RunningGate, VaultConfig } from "./main"
 
 let dir: string
@@ -870,6 +872,268 @@ describe("runGate with Gmail", () => {
     } finally {
       await gate.close()
     }
+  })
+})
+
+describe("gateConfig with read connectors", () => {
+  const BASE = {
+    EIDO_GATE_DATA_DIR: "/d",
+    EIDO_GATE_SOCKET: "/d/gate.sock",
+    EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+    EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+    EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+    EIDO_GATE_VAULT_FILE: "/vault/dev.json",
+    EIDO_DEV_VAULT: "1",
+  }
+
+  it("runs the egress proxy with each configured read client", () => {
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_GMAIL_READ_CLIENT_ID: "gmail-read-client",
+        EIDO_DRIVE_CLIENT_ID: "drive-client",
+        EIDO_GATE_EGRESS_PORT: "8417",
+      }).egress
+    ).toEqual({
+      vault: { kind: "file", path: "/vault/dev.json", devFlag: true },
+      port: 8417,
+      clientIds: { gmail: "gmail-read-client", drive: "drive-client" },
+    })
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_DRIVE_CLIENT_ID: "drive-client",
+        EIDO_GATE_EGRESS_PORT: "0",
+      }).egress?.clientIds
+    ).toEqual({ drive: "drive-client" })
+  })
+
+  it("runs no egress proxy without a read client", () => {
+    expect(gateConfig(BASE).egress).toBeUndefined()
+  })
+
+  it("rejects a read client without a port, a port without a client, and a bad port", () => {
+    expect(() =>
+      gateConfig({ ...BASE, EIDO_DRIVE_CLIENT_ID: "drive-client" })
+    ).toThrow("a read connector's client id needs EIDO_GATE_EGRESS_PORT")
+    expect(() => gateConfig({ ...BASE, EIDO_GATE_EGRESS_PORT: "8417" })).toThrow(
+      "EIDO_GATE_EGRESS_PORT needs a read client id: EIDO_GMAIL_READ_CLIENT_ID or EIDO_DRIVE_CLIENT_ID"
+    )
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_DRIVE_CLIENT_ID: "drive-client",
+        EIDO_GATE_EGRESS_PORT: "70000",
+      })
+    ).toThrow('EIDO_GATE_EGRESS_PORT must be a port number, not "70000"')
+  })
+
+  it("requires a vault for the egress proxy", () => {
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_VAULT_FILE: undefined,
+        EIDO_DEV_VAULT: undefined,
+        EIDO_DRIVE_CLIENT_ID: "drive-client",
+        EIDO_GATE_EGRESS_PORT: "8417",
+      })
+    ).toThrow("The read egress proxy needs EIDO_GATE_KEYCHAIN_PATH")
+  })
+})
+
+describe("runGate with a read connector", () => {
+  const EXPIRED = "synthetic-expired-read-token"
+  const FRESH = "synthetic-fresh-read-token"
+  const REFRESH = "synthetic-read-refresh-token"
+  const CLIENT_SECRET = "synthetic-read-client-secret"
+  const SECRETS = [EXPIRED, FRESH, REFRESH, CLIENT_SECRET]
+
+  function readManifest(
+    name: string,
+    host: string,
+    prefix: string,
+    patterns: readonly string[]
+  ): ConnectorManifest {
+    const pinned = manifest(name, [])
+    pinned.egress.hosts = [{ host, methods: ["GET"], pathPrefixes: [prefix] }]
+    pinned.operations = patterns.map((pathPattern, index) => ({
+      name: `read_${String(index)}`,
+      effect: "read",
+      reversibility: "reversible",
+      defaultTier: "auto",
+      sensitivity: "normal",
+      untrustedOutput: true,
+      authScopes: ["write"],
+      routes: [{ host, method: "GET", pathPattern }],
+    }))
+    return pinned
+  }
+
+  /** A fake Google: the token endpoint issues FRESH, and the APIs accept only `accepted`. */
+  function fakeGoogle(accepted: readonly string[]) {
+    const seen: string[] = []
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>((input, init) => {
+        const url = input instanceof Request ? input.url : input.toString()
+        seen.push(url)
+        if (url === "https://oauth2.googleapis.com/token")
+          return Promise.resolve(Response.json({ access_token: FRESH }))
+        const authorization = new Headers(init?.headers).get("authorization")
+        return Promise.resolve(
+          accepted.some((token) => authorization === `Bearer ${token}`)
+            ? Response.json({
+                emailAddress: "owner@example.invalid",
+                startPageToken: "42",
+              })
+            : new Response(null, { status: 401 })
+        )
+      })
+    )
+    return seen
+  }
+
+  async function readCredentials(
+    path: string,
+    connector: string,
+    access?: string
+  ): Promise<void> {
+    const vault = new FileVault({ path, devFlag: true })
+    const key = { connector, client: "read" } as const
+    await vault.set({ ...key, kind: "refresh_token" }, REFRESH)
+    await vault.set({ ...key, kind: "api_key" }, CLIENT_SECRET)
+    if (access !== undefined)
+      await vault.set({ ...key, kind: "access_token" }, access)
+  }
+
+  /** One request through the proxy over node:http, since `fetch` is the fake upstream. */
+  function throughProxy(
+    port: number,
+    connector: string,
+    target: string
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = request(
+        {
+          host: "127.0.0.1",
+          port,
+          agent: false,
+          method: "GET",
+          path: "/",
+          headers: { "x-eido-connector": connector, "x-eido-target": target },
+        },
+        (res) => {
+          const chunks: Buffer[] = []
+          res.on("data", (chunk: Buffer) => chunks.push(chunk))
+          res.on("end", () => {
+            resolve({
+              status: res.statusCode ?? 0,
+              body: Buffer.concat(chunks).toString("utf8"),
+            })
+          })
+        }
+      )
+      req.on("error", reject)
+      req.end()
+    })
+  }
+
+  it("starts no egress proxy without a read connector", async () => {
+    const gate = await runGate(config())
+    expect(gate.egress).toBeUndefined()
+  })
+
+  it("starts the proxy, refreshes an expired read token, and probes the connector", async () => {
+    const vaultPath = join(dir, "vault", "dev.json")
+    await readCredentials(vaultPath, "drive", EXPIRED)
+    const seen = fakeGoogle([FRESH])
+    const c: GateConfig = {
+      ...config(),
+      egress: {
+        vault: { kind: "file", path: vaultPath, devFlag: true },
+        port: 0,
+        clientIds: { drive: "synthetic-drive-client" },
+      },
+    }
+    const gate = await runGate(c)
+    signedPin(
+      runningGate().db,
+      readManifest("drive", "www.googleapis.com", "/drive/v3", [
+        "/drive/v3/files/{id}",
+        "/drive/v3/changes/startPageToken",
+      ])
+    )
+    const port = gate.egress?.port
+    if (port === undefined) throw new Error("the egress proxy did not start")
+    const read = await throughProxy(
+      port,
+      "drive",
+      "https://www.googleapis.com/drive/v3/files/file-1"
+    )
+    expect(read.status).toBe(200)
+    expect(JSON.parse(read.body)).toMatchObject({ startPageToken: "42" })
+    expect(seen).toEqual([
+      "https://www.googleapis.com/drive/v3/files/file-1",
+      "https://oauth2.googleapis.com/token",
+      "https://www.googleapis.com/drive/v3/files/file-1",
+    ])
+    const checked = await createConnectClient({
+      socketPath: c.controlSocketPath,
+    }).connected("drive")
+    expect(checked.connectors).toEqual([
+      { name: "drive", health: "healthy", consecutiveFailures: 0 },
+    ])
+    expect(seen.at(-1)).toBe(
+      "https://www.googleapis.com/drive/v3/changes/startPageToken"
+    )
+    const logged = [
+      read.body,
+      JSON.stringify(checked),
+      loggedText(runningGate().db),
+      readFileSync(join(c.dataDir, GATE_LOG_FILE), "utf8"),
+    ].join("\n")
+    expect(logged).toContain(`"egressPort":${String(port)}`)
+    for (const secret of SECRETS) expect(logged).not.toContain(secret)
+    await gate.close()
+    await expect(
+      throughProxy(port, "drive", "https://www.googleapis.com/drive/v3/files/x")
+    ).rejects.toThrow("ECONNREFUSED")
+  })
+
+  it("checks both Gmail clients when the compose and read clients are configured", async () => {
+    const vaultPath = join(dir, "vault", "dev.json")
+    await readCredentials(vaultPath, "gmail", FRESH)
+    await new FileVault({ path: vaultPath, devFlag: true }).set(
+      { connector: "gmail", kind: "access_token", client: "write" },
+      "synthetic-write-token"
+    )
+    fakeGoogle(["synthetic-write-token", FRESH])
+    const vault = { kind: "file" as const, path: vaultPath, devFlag: true }
+    const c: GateConfig = {
+      ...config(),
+      gmail: { vault, clientId: "synthetic-compose-client" },
+      egress: { vault, port: 0, clientIds: { gmail: "synthetic-read-client" } },
+    }
+    await runGate(c)
+    signedPin(
+      runningGate().db,
+      readManifest("gmail", "gmail.googleapis.com", "/gmail/v1/users/me", [
+        "/gmail/v1/users/me/profile",
+      ])
+    )
+    const client = createConnectClient({ socketPath: c.controlSocketPath })
+    expect((await client.connected("gmail")).connectors).toEqual([
+      { name: "gmail", health: "healthy", consecutiveFailures: 0 },
+    ])
+    // The compose client still works; a read client the token endpoint stops honouring fails the check.
+    fakeGoogle(["synthetic-write-token"])
+    await new FileVault({ path: vaultPath, devFlag: true }).delete({
+      connector: "gmail",
+      kind: "refresh_token",
+      client: "read",
+    })
+    const [failed] = (await client.connected("gmail")).connectors
+    expect(failed).toMatchObject({ name: "gmail", lastError: "auth_failed" })
   })
 })
 

@@ -43,7 +43,10 @@ export class ConnectorDisabledError extends Error {
 }
 
 export class UpstreamError extends Error {
-  constructor(connector: string, errorClass: string) {
+  constructor(
+    connector: string,
+    readonly errorClass: string
+  ) {
     super(`upstream call for connector ${connector} failed: ${errorClass}`)
     this.name = "UpstreamError"
   }

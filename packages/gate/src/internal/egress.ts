@@ -5,7 +5,15 @@ import type { ConnectorOperation } from "@eido/schemas"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
 import { egressAllowlist, getPinnedManifest } from "./connectors"
-import { markGrantRevoked } from "./vault/revocation"
+import { connectorRevocationDeps, refreshGoogleToken } from "./oauth-refresh"
+import type { ConnectorProbe, ProbeOutcome } from "./connector-connect"
+import { authorizedCall } from "./vault/authorized-call"
+import {
+  ConnectorDisabledError,
+  GrantRevokedError,
+  UpstreamError,
+  markGrantRevoked,
+} from "./vault/revocation"
 import type { Vault } from "./vault/vault"
 import {
   beginConnectorRead,
@@ -15,13 +23,18 @@ import {
 } from "./connector-health"
 import type { ReadAttempt } from "./connector-health"
 
-type Options = {
+type ReadOptions = {
   db: DatabaseSync
   vault: Vault
+  /** OAuth client id of each read connector's client, for the refresh-token exchange. */
+  clientIds?: Readonly<Record<string, string>>
+  fetch?: typeof fetch
+}
+
+type Options = ReadOptions & {
   port?: number
   maxBodyBytes?: number
   timeoutMs?: number
-  fetch?: typeof fetch
   now?: () => number
   random?: () => number
 }
@@ -214,11 +227,143 @@ function upstreamURL(route: Route, target: URL): string {
   return `https://${route.host}${path}${query ? `?${query}` : ""}`
 }
 
+type ReadInit = {
+  method: string
+  headers: Headers
+  body?: Uint8Array<ArrayBuffer>
+  signal: AbortSignal
+  /** Runs before each upstream attempt; it throws to stop the call. */
+  beforeCall: () => void
+}
+
+/**
+ * One upstream read with the connector's read-client credential. A missing or refused access
+ * token is refreshed once from the stored refresh token and the read retried once. A grant the
+ * token endpoint revokes (`invalid_grant`), or an access token refused with no way to refresh it,
+ * disables the connector with `auth_failed` and audits it with a hash of the error class.
+ */
+async function authorizedRead(
+  options: ReadOptions,
+  connector: string,
+  url: string,
+  init: ReadInit
+): Promise<{ upstream: Response; tokens: readonly string[] }> {
+  const deps = connectorRevocationDeps(options.db, options.vault, "system")
+  const tokens: string[] = []
+  let refused = false
+  const revoke = async (): Promise<never> => {
+    await markGrantRevoked(connector, "unauthorized", deps)
+    throw new GrantRevokedError(connector)
+  }
+  let upstream: Response
+  try {
+    upstream = await authorizedCall({
+      connector,
+      client: "read",
+      ...deps,
+      refresh: (refreshToken) =>
+        refreshGoogleToken(
+          {
+            vault: options.vault,
+            connector,
+            client: "read",
+            clientId: options.clientIds?.[connector],
+            signal: init.signal,
+            ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+          },
+          refreshToken
+        ),
+      call: async (accessToken) => {
+        init.beforeCall()
+        tokens.push(accessToken)
+        const headers = new Headers(init.headers)
+        headers.set("authorization", `Bearer ${accessToken}`)
+        const response = await (options.fetch ?? fetch)(url, {
+          method: init.method,
+          headers,
+          ...(init.body === undefined ? {} : { body: init.body }),
+          redirect: "manual",
+          signal: init.signal,
+        })
+        if (response.status === 401) {
+          refused = true
+          void response.body?.cancel().catch(() => undefined)
+        }
+        return response
+      },
+    })
+  } catch (error) {
+    if (
+      refused &&
+      error instanceof UpstreamError &&
+      error.errorClass === "no_refresh_token"
+    )
+      return revoke()
+    throw error
+  }
+  if (upstream.status === 401) return revoke()
+  return { upstream, tokens }
+}
+
+/**
+ * The refusal a failed read answers with; anything unexpected reveals nothing. A disabled
+ * connector never gets here: admission refuses it before the read starts.
+ */
+function refusalFor(error: unknown): unknown {
+  if (error instanceof GrantRevokedError)
+    return new Refusal(502, "grant_revoked")
+  if (error instanceof UpstreamError)
+    return error.errorClass === "no_refresh_token"
+      ? new Refusal(424, "credential_missing")
+      : new Refusal(502, "token_refresh_failed")
+  return error
+}
+
+/**
+ * A read connector's health probe for `POST /connectors/{name}/connected` (#98): one pinned read
+ * through the same route checks and credential path as the proxy, refreshing the access token
+ * when it has expired. It records no health itself; the connected route does.
+ */
+export function egressProbe(
+  options: ReadOptions & { timeoutMs?: number },
+  connector: string,
+  probeUrl: string
+): ConnectorProbe {
+  return async (): Promise<ProbeOutcome> => {
+    const signal = AbortSignal.timeout(options.timeoutMs ?? 30_000)
+    try {
+      const target = targetURL(probeUrl)
+      const check = () =>
+        selectedRoute(options.db, connector, target, "GET", true)
+      const { upstream } = await authorizedRead(
+        options,
+        connector,
+        upstreamURL(check(), target),
+        {
+          method: "GET",
+          headers: new Headers(),
+          signal,
+          beforeCall: () => void check(),
+        }
+      )
+      void upstream.body?.cancel().catch(() => undefined)
+      return upstream.ok ? "ok" : "unavailable"
+    } catch (error) {
+      if (
+        error instanceof GrantRevokedError ||
+        error instanceof ConnectorDisabledError
+      )
+        return "auth_failed"
+      return signal.aborted ? "timeout" : "unavailable"
+    }
+  }
+}
+
 /** Internal listener lifecycle. Only the address/request contract is consumed outside the gate. */
 export async function startEgressProxy(
   options: Options
-): Promise<{ baseUrl: string; close(): Promise<void> }> {
-  const { db, vault } = options
+): Promise<{ baseUrl: string; port: number; close(): Promise<void> }> {
+  const { db } = options
   const limit = options.maxBodyBytes ?? 8 * 1024 * 1024
   const timeout = options.timeoutMs ?? 30_000
   if (
@@ -255,6 +400,7 @@ export async function startEgressProxy(
     let attempt: ReadAttempt | undefined
     let upstreamReadStarted = false
     let probeOutcomeRecorded = false
+    let tokens: readonly string[] = []
     const work = async () => {
       const connectorHeader = req.headers["x-eido-connector"]
       connector = typeof connectorHeader === "string" ? connectorHeader : ""
@@ -275,8 +421,9 @@ export async function startEgressProxy(
           (options.now ?? Date.now)(),
           method
         )
-        if (!attempt.allowed) fail(503, attempt.reason ?? "connector_open")
-        selectedRoute(db, connector, target, method, attempt)
+        const admitted = attempt
+        if (!admitted.allowed) fail(503, admitted.reason ?? "connector_open")
+        selectedRoute(db, connector, target, method, admitted)
         summary = {
           method,
           host: target.hostname,
@@ -284,12 +431,6 @@ export async function startEgressProxy(
         }
         const body = await bounded(bytes(req, limit))
         if (method === "GET" && body.length) fail(400, "get_body_denied")
-        const token = await bounded(
-          vault.get({ connector, kind: "access_token", client: "read" })
-        )
-        if (!token) fail(424, "credential_missing")
-        // Recheck after vault IO: disabling a connector while awaiting a token stops the call.
-        selectedRoute(db, connector, target, method, attempt)
         const headers = new Headers()
         const connection = (req.headers.connection ?? "")
           .toLowerCase()
@@ -303,51 +444,23 @@ export async function startEgressProxy(
           )
             headers.set(name, value)
         }
-        if (controller.signal.aborted) fail(502, "upstream_timeout")
-        headers.set("authorization", `Bearer ${token}`)
-        upstreamReadStarted = true
-        const upstream = await bounded(
-          (options.fetch ?? fetch)(upstreamURL(route, target), {
+        const read = await bounded(
+          authorizedRead(options, connector, upstreamURL(route, target), {
             method,
             headers,
             ...(body.length ? { body: new Uint8Array(body) } : {}),
-            redirect: "manual",
             signal: controller.signal,
+            // Recheck after vault and token-endpoint IO: disabling a connector while awaiting a
+            // token stops the call.
+            beforeCall: () => {
+              selectedRoute(db, connector, target, method, admitted)
+              if (controller.signal.aborted) fail(502, "upstream_timeout")
+              upstreamReadStarted = true
+            },
           })
         )
-        if (upstream.status === 401) {
-          void upstream.body?.cancel().catch(() => undefined)
-          await markGrantRevoked(connector, "unauthorized", {
-            vault: {
-              get: vault.get.bind(vault),
-              set: vault.set.bind(vault),
-              delete: (key) => bounded(vault.delete(key)),
-            },
-            connectors: {
-              isEnabled: () => Promise.resolve(true),
-              disable: () => {
-                db.prepare(
-                  `UPDATE connectors SET enabled = 0, health = 'open',
-                     last_error = 'auth_failed', next_attempt_at = NULL,
-                     probe_started_at = NULL WHERE name = ?`
-                ).run(connector)
-                return Promise.resolve()
-              },
-            },
-            audit: {
-              append: (entry) => {
-                append(db, {
-                  actor: "system",
-                  action: entry.action,
-                  target: connector,
-                  detailHash: payloadHash({ reason: entry.errorClass }),
-                })
-                return Promise.resolve()
-              },
-            },
-          })
-          fail(502, "grant_revoked")
-        }
+        tokens = read.tokens
+        const upstream = read.upstream
         if (upstream.status >= 300 && upstream.status < 400) {
           void upstream.body?.cancel().catch(() => undefined)
           if (attempt.probe) {
@@ -371,11 +484,13 @@ export async function startEgressProxy(
             )
           : Buffer.alloc(0)
         if (
-          token &&
-          (responseBody.includes(Buffer.from(token)) ||
-            [...upstream.headers.values()].some((value) =>
-              value.includes(token)
-            ))
+          tokens.some(
+            (token) =>
+              responseBody.includes(Buffer.from(token)) ||
+              [...upstream.headers.values()].some((value) =>
+                value.includes(token)
+              )
+          )
         )
           fail(502, "credential_echo")
         if (controller.signal.aborted) fail(502, "upstream_timeout")
@@ -406,7 +521,8 @@ export async function startEgressProxy(
           "x-content-type-options": "nosniff",
         })
         res.end(responseBody)
-      } catch (error) {
+      } catch (caught) {
+        const error = refusalFor(caught)
         const refusal = timedOut
           ? new Refusal(502, "upstream_timeout")
           : error instanceof Refusal
@@ -494,6 +610,7 @@ export async function startEgressProxy(
     throw new Error("egress listener has no address")
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    port: address.port,
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()))

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest"
 import type { ConnectorManifest } from "@eido/schemas"
-import { startEgressProxy } from "./egress"
+import { egressProbe, startEgressProxy } from "./egress"
+import { GOOGLE_TOKEN_URL } from "./oauth-refresh"
 import { checkDrift } from "./connectors"
 import { openControlDb } from "./control-db"
 import { signedPin } from "./test-fixtures"
@@ -587,7 +588,11 @@ describe("read egress proxy", () => {
   test("deadline bounds revoked-grant vault cleanup", async () => {
     const { request, upstream, vault, db } = await setup({ timeoutMs: 30 })
     upstream.mockResolvedValue(new Response(null, { status: 401 }))
-    vi.spyOn(vault, "delete").mockImplementation(() => new Promise(() => {}))
+    // The refused access token is dropped; the revocation cleanup after it never finishes.
+    const remove = vault.delete.bind(vault)
+    vi.spyOn(vault, "delete")
+      .mockImplementationOnce(remove)
+      .mockImplementation(() => new Promise(() => {}))
     expect(await (await request()).json()).toEqual({
       reason: "upstream_timeout",
     })
@@ -597,5 +602,278 @@ describe("read egress proxy", () => {
       ]
     ).toBe(0)
     expect(audits(db)).toHaveLength(1)
+  })
+})
+
+const REFRESH = "synthetic-read-refresh-secret"
+const CLIENT_SECRET = "synthetic-read-client-secret"
+const FRESH = "synthetic-fresh-access-secret"
+const READ = { connector: "mail", client: "read" } as const
+
+const urlOf = (input: Parameters<typeof fetch>[0]): string =>
+  input instanceof Request ? input.url : input.toString()
+
+/** A fake Google token endpoint in front of a fake API that accepts only `accepted` tokens. */
+function fakeGoogle(
+  accepted: string,
+  token: () => Response = () => Response.json({ access_token: FRESH })
+) {
+  return vi.fn<typeof fetch>((input, init) => {
+    if (urlOf(input) === GOOGLE_TOKEN_URL) return Promise.resolve(token())
+    const authorization = new Headers(init?.headers).get("authorization")
+    return Promise.resolve(
+      authorization === `Bearer ${accepted}`
+        ? new Response("message-content", {
+            headers: { "content-type": "text/plain" },
+          })
+        : new Response(null, { status: 401 })
+    )
+  })
+}
+
+async function refreshable(
+  fake: ReturnType<typeof fakeGoogle>,
+  overrides: Partial<Parameters<typeof startEgressProxy>[0]> = {}
+) {
+  const context = await setup({
+    fetch: fake,
+    clientIds: { mail: "synthetic-client-id" },
+    ...overrides,
+  })
+  await context.vault.set({ ...READ, kind: "refresh_token" }, REFRESH)
+  await context.vault.set({ ...READ, kind: "api_key" }, CLIENT_SECRET)
+  return context
+}
+
+const tokenCalls = (fake: ReturnType<typeof fakeGoogle>) =>
+  fake.mock.calls.filter(([input]) => urlOf(input) === GOOGLE_TOKEN_URL)
+
+function auditText(db: ReturnType<typeof openControlDb>): string {
+  return JSON.stringify(db.prepare("SELECT * FROM audit_log").all())
+}
+
+describe("read-client token refresh", () => {
+  test("an expired access token is refreshed once and the read retried", async () => {
+    const fake = fakeGoogle(FRESH)
+    const { request, vault, db } = await refreshable(fake)
+    const response = await request()
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("message-content")
+    const calls = tokenCalls(fake)
+    expect(calls).toHaveLength(1)
+    expect(
+      Object.fromEntries(
+        calls[0]?.[1]?.body instanceof URLSearchParams ? calls[0][1].body : []
+      )
+    ).toEqual({
+      client_id: "synthetic-client-id",
+      client_secret: CLIENT_SECRET,
+      refresh_token: REFRESH,
+      grant_type: "refresh_token",
+    })
+    const reads = fake.mock.calls
+      .filter(([input]) => urlOf(input) !== GOOGLE_TOKEN_URL)
+      .map(([, init]) => new Headers(init?.headers).get("authorization"))
+    expect(reads).toEqual([`Bearer ${TOKEN}`, `Bearer ${FRESH}`])
+    expect(await vault.get({ ...READ, kind: "access_token" })).toBe(FRESH)
+    expect(
+      db
+        .prepare("SELECT enabled, health FROM connectors WHERE name = 'mail'")
+        .get()
+    ).toEqual({ enabled: 1, health: "healthy" })
+  })
+
+  test("a missing access token is fetched from the refresh token before the read", async () => {
+    const fake = fakeGoogle(FRESH)
+    const { request, vault } = await refreshable(fake)
+    await vault.delete({ ...READ, kind: "access_token" })
+    expect((await request()).status).toBe(200)
+    expect(tokenCalls(fake)).toHaveLength(1)
+    expect(fake).toHaveBeenCalledTimes(2)
+  })
+
+  test("invalid_grant disables the connector with auth_failed and audits a hash only", async () => {
+    const fake = fakeGoogle(FRESH, () =>
+      Response.json({ error: "invalid_grant" }, { status: 400 })
+    )
+    const { request, vault, db } = await refreshable(fake)
+    const response = await request()
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({ reason: "grant_revoked" })
+    expect(tokenCalls(fake)).toHaveLength(1)
+    expect(fake).toHaveBeenCalledTimes(2)
+    expect(
+      db
+        .prepare(
+          "SELECT enabled, health, last_error FROM connectors WHERE name = 'mail'"
+        )
+        .get()
+    ).toEqual({ enabled: 0, health: "open", last_error: "auth_failed" })
+    expect(
+      db
+        .prepare(
+          "SELECT actor, target, detail_hash FROM audit_log WHERE action = 'grant_revoked'"
+        )
+        .all()
+    ).toEqual([
+      {
+        actor: "system",
+        target: "mail",
+        detail_hash: payloadHash({ errorClass: "invalid_grant" }),
+      },
+    ])
+    expect(await vault.get({ ...READ, kind: "access_token" })).toBeUndefined()
+    // Re-authorization replaces the refresh token; revocation leaves it in place.
+    expect(await vault.get({ ...READ, kind: "refresh_token" })).toBe(REFRESH)
+    expect((await request()).status).toBe(423)
+    expect(fake).toHaveBeenCalledTimes(2)
+  })
+
+  test("an access token refused again after a refresh revokes the grant", async () => {
+    const fake = fakeGoogle("synthetic-never-accepted")
+    const { request, db } = await refreshable(fake)
+    expect(await (await request()).json()).toEqual({ reason: "grant_revoked" })
+    expect(tokenCalls(fake)).toHaveLength(1)
+    expect(fake).toHaveBeenCalledTimes(3)
+    expect(
+      db
+        .prepare(
+          "SELECT detail_hash FROM audit_log WHERE action = 'grant_revoked'"
+        )
+        .get()?.["detail_hash"]
+    ).toBe(payloadHash({ errorClass: "unauthorized" }))
+  })
+
+  test.each([
+    ["the token endpoint fails", () => new Response("down", { status: 503 })],
+    ["the answer has no access token", () => Response.json({})],
+  ])(
+    "a temporary refresh failure when %s keeps the connector enabled",
+    async (_, token) => {
+      const fake = fakeGoogle(FRESH, token)
+      const { request, db } = await refreshable(fake)
+      expect(await (await request()).json()).toEqual({
+        reason: "token_refresh_failed",
+      })
+      expect(
+        db
+          .prepare("SELECT enabled FROM connectors WHERE name = 'mail'")
+          .get()?.["enabled"]
+      ).toBe(1)
+    }
+  )
+
+  test("a connector without a configured client id is not refreshed", async () => {
+    const fake = fakeGoogle(FRESH)
+    const { request } = await refreshable(fake, { clientIds: {} })
+    expect(await (await request()).json()).toEqual({
+      reason: "token_refresh_failed",
+    })
+    expect(tokenCalls(fake)).toHaveLength(0)
+  })
+
+  test("no token or client secret reaches the audit log or an error body", async () => {
+    const secrets = [TOKEN, REFRESH, CLIENT_SECRET, FRESH]
+    const bodies: string[] = []
+    const ok = await refreshable(fakeGoogle(FRESH))
+    bodies.push(await (await ok.request()).text())
+    const revoked = await refreshable(
+      fakeGoogle(FRESH, () =>
+        Response.json({ error: "invalid_grant" }, { status: 400 })
+      )
+    )
+    bodies.push(
+      await (await revoked.request()).text(),
+      await (await revoked.request()).text()
+    )
+    const failing = await refreshable(
+      fakeGoogle(
+        FRESH,
+        () => new Response(`echo ${REFRESH} ${CLIENT_SECRET}`, { status: 500 })
+      )
+    )
+    bodies.push(await (await failing.request()).text())
+    const text = [
+      ...bodies,
+      auditText(ok.db),
+      auditText(revoked.db),
+      auditText(failing.db),
+    ].join("\n")
+    expect(bodies).toEqual([
+      "message-content",
+      JSON.stringify({ reason: "grant_revoked" }),
+      JSON.stringify({ reason: "connector_disabled" }),
+      JSON.stringify({ reason: "token_refresh_failed" }),
+    ])
+    for (const secret of secrets) expect(text).not.toContain(secret)
+  })
+})
+
+describe("read connector health probe", () => {
+  async function probeFor(
+    fake: ReturnType<typeof fakeGoogle>,
+    url = "https://api.example.com/v1/messages/probe"
+  ) {
+    const context = await refreshable(fake)
+    return {
+      ...context,
+      probe: egressProbe(
+        {
+          db: context.db,
+          vault: context.vault,
+          fetch: fake,
+          clientIds: { mail: "synthetic-client-id" },
+        },
+        "mail",
+        url
+      ),
+    }
+  }
+
+  test("reports ok after refreshing an expired token", async () => {
+    const fake = fakeGoogle(FRESH)
+    const { probe, vault } = await probeFor(fake)
+    expect(await probe()).toBe("ok")
+    expect(tokenCalls(fake)).toHaveLength(1)
+    expect(await vault.get({ ...READ, kind: "access_token" })).toBe(FRESH)
+  })
+
+  test("reports auth_failed for a revoked grant", async () => {
+    const { probe } = await probeFor(
+      fakeGoogle(FRESH, () =>
+        Response.json({ error: "invalid_grant" }, { status: 400 })
+      )
+    )
+    expect(await probe()).toBe("auth_failed")
+  })
+
+  test("reports unavailable for an upstream error and for an unpinned route", async () => {
+    const failing = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 503 }))
+    const { probe } = await probeFor(failing)
+    expect(await probe()).toBe("unavailable")
+    const unpinned = fakeGoogle(TOKEN)
+    const other = await probeFor(unpinned, "https://api.example.com/v1/secrets")
+    expect(await other.probe()).toBe("unavailable")
+    expect(unpinned).not.toHaveBeenCalled()
+  })
+
+  test("reports timeout when the read outlasts its deadline", async () => {
+    const context = await refreshable(fakeGoogle(TOKEN))
+    const hanging = vi.fn<typeof fetch>(
+      (_, init) =>
+        new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new Error("aborted"))
+          )
+        })
+    )
+    const probe = egressProbe(
+      { db: context.db, vault: context.vault, fetch: hanging, timeoutMs: 20 },
+      "mail",
+      "https://api.example.com/v1/messages/probe"
+    )
+    expect(await probe()).toBe("timeout")
   })
 })

@@ -12,7 +12,11 @@ import type { BridgeConfig } from "./internal/bridge/config"
 import { BRIDGE_WRITERS, bridgeTransport } from "./internal/bridge/writers"
 import { gmailProbe, gmailWriteTransport } from "./internal/gmail-transport"
 import { bridgeProbe } from "./internal/connector-connect"
-import type { ConnectorProbes } from "./internal/connector-connect"
+import type {
+  ConnectorProbe,
+  ConnectorProbes,
+} from "./internal/connector-connect"
+import { egressProbe, startEgressProxy } from "./internal/egress"
 import { GMAIL_CONNECTOR, GMAIL_WRITERS } from "./internal/gmail-writers"
 import { openControlDb } from "./internal/control-db"
 import { createExecutor } from "./internal/executor"
@@ -55,7 +59,10 @@ import type { ProfileAudit } from "./internal/profile-audit"
 // listens on two local sockets: the data-plane socket, the only path the data plane is given,
 // and the control socket, which stays outside the data plane's configuration. When
 // EIDO_GATE_PHONE_PORT is set it also listens on one loopback TCP port, the phone listener
-// (#85) that `tailscale serve` forwards /api/gate to. Start it with
+// (#85) that `tailscale serve` forwards /api/gate to. When a read connector's OAuth client is
+// configured it also runs the read egress proxy (#14, #515) on its own loopback TCP port,
+// EIDO_GATE_EGRESS_PORT: core's connectors send their reads there, and the gate adds the read
+// client's token, refreshing it when it has expired. Start it with
 // `pnpm --filter @eido/gate start`.
 
 export const CONTROL_DB_FILE = "eido-control.db"
@@ -65,6 +72,32 @@ export const GATE_LOG_FILE = "gate.log"
 // control socket is the gate user's alone.
 const DATA_PLANE_SOCKET_MODE = 0o660
 const CONTROL_SOCKET_MODE = 0o600
+
+/**
+ * The read connectors whose OAuth client the gate refreshes in the egress proxy: the variable
+ * naming each client's id, and the pinned read its health probe makes.
+ */
+export const READ_CONNECTORS = [
+  {
+    connector: GMAIL_CONNECTOR,
+    clientIdEnv: "EIDO_GMAIL_READ_CLIENT_ID",
+    probeUrl: "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+  },
+  {
+    connector: "drive",
+    clientIdEnv: "EIDO_DRIVE_CLIENT_ID",
+    probeUrl: "https://www.googleapis.com/drive/v3/changes/startPageToken",
+  },
+] as const
+export const EGRESS_PORT_ENV = "EIDO_GATE_EGRESS_PORT"
+
+export type EgressProxyConfig = {
+  vault: VaultConfig
+  /** 0 picks a free port. */
+  port: number
+  /** Each configured read connector's OAuth client id; at least one. */
+  clientIds: Readonly<Record<string, string>>
+}
 
 export type PhoneListenerConfig = {
   host: LoopbackHost
@@ -86,6 +119,8 @@ export type GateConfig = {
   bridge?: BridgeListenerConfig
   /** Gmail compose client: refresh/access tokens and the OAuth client secret live in this vault. */
   gmail?: { vault: VaultConfig; clientId: string }
+  /** Absent when no read connector's client id is set: the gate then runs no egress proxy. */
+  egress?: EgressProxyConfig
   profileAudit?: { vault: VaultConfig; epoch: string }
   push?: {
     vault: VaultConfig
@@ -206,6 +241,20 @@ export function gateConfig(
       )
     return vault
   }
+  const readClientIds = Object.fromEntries(
+    READ_CONNECTORS.flatMap(({ connector, clientIdEnv }) => {
+      const id = env[clientIdEnv] ?? ""
+      return id === "" ? [] : [[connector, id]]
+    })
+  )
+  const egressPort = env[EGRESS_PORT_ENV] ?? ""
+  const hasReadClient = Object.keys(readClientIds).length > 0
+  if (egressPort !== "" && !hasReadClient)
+    throw new Error(
+      `${EGRESS_PORT_ENV} needs a read client id: ${READ_CONNECTORS.map((read) => read.clientIdEnv).join(" or ")}`
+    )
+  if (hasReadClient && egressPort === "")
+    throw new Error(`a read connector's client id needs ${EGRESS_PORT_ENV}`)
   const positive = (name: string, fallback: number): number => {
     const value = env[name]
     if (value === undefined || value === "") return fallback
@@ -230,6 +279,15 @@ export function gateConfig(
             clientId: gmailClientId,
           },
         }),
+    ...(hasReadClient
+      ? {
+          egress: {
+            vault: requireVault("The read egress proxy"),
+            port: portNumber(EGRESS_PORT_ENV, egressPort),
+            clientIds: readClientIds,
+          },
+        }
+      : {}),
     ...(pushSubject === ""
       ? {}
       : {
@@ -256,16 +314,21 @@ function bridgeVault(
   return { config, vault }
 }
 
+function portNumber(name: string, port: string): number {
+  if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) {
+    throw new Error(
+      `${name} must be a port number, not ${JSON.stringify(port)}`
+    )
+  }
+  return Number(port)
+}
+
 // The production host, base path and allowed hosts wait on the serve measurements (#178).
 function phoneConfig(
   env: Readonly<Record<string, string | undefined>>,
   port: string
 ): PhoneListenerConfig {
-  if (!/^\d{1,5}$/.test(port) || Number(port) > 65535) {
-    throw new Error(
-      `EIDO_GATE_PHONE_PORT must be a port number, not ${JSON.stringify(port)}`
-    )
-  }
+  portNumber("EIDO_GATE_PHONE_PORT", port)
   const allowed = env["EIDO_GATE_PHONE_ALLOWED_HOSTS"] ?? ""
   return {
     host: loopbackHost(env["EIDO_GATE_PHONE_HOST"] ?? "127.0.0.1"),
@@ -281,6 +344,8 @@ function phoneConfig(
 export type RunningGate = {
   /** The phone listener's port and the Host headers it answers, when it runs. */
   phone?: { port: number; allowedHosts: readonly string[] }
+  /** The read egress proxy's loopback port, when it runs. */
+  egress?: { port: number }
   close: () => Promise<void>
 }
 
@@ -299,6 +364,7 @@ export async function runGate(
   const servers: Server[] = []
   let notifier: ReturnType<typeof createPushNotifier> | undefined
   let phone: RunningGate["phone"]
+  let egressProxy: Awaited<ReturnType<typeof startEgressProxy>> | undefined
   try {
     // Owner addresses and allowed roots come from the gate-owned owner-config.json (#167).
     // No stored-attendee reader
@@ -386,12 +452,39 @@ export async function runGate(
           }
     const gmail =
       gmailOptions === undefined ? undefined : gmailWriteTransport(gmailOptions)
-    // The checks the control socket runs after the owner connects a connector (#98). Both Proton
-    // connectors sign in to Bridge with the one stored password.
-    const probes: ConnectorProbes = {
-      ...(gmailOptions === undefined
+    const egressOptions =
+      config.egress === undefined
+        ? undefined
+        : {
+            db,
+            vault: vaultFactory(config.egress.vault),
+            clientIds: config.egress.clientIds,
+          }
+    const readProbes: Record<string, ConnectorProbe> =
+      egressOptions === undefined
         ? {}
-        : { [GMAIL_CONNECTOR]: gmailProbe(gmailOptions) }),
+        : Object.fromEntries(
+            READ_CONNECTORS.filter(
+              ({ connector }) => egressOptions.clientIds[connector] !== undefined
+            ).map(({ connector, probeUrl }) => [
+              connector,
+              egressProbe(egressOptions, connector, probeUrl),
+            ])
+          )
+    const gmailProbes = [
+      ...(gmailOptions === undefined ? [] : [gmailProbe(gmailOptions)]),
+      ...(readProbes[GMAIL_CONNECTOR] === undefined
+        ? []
+        : [readProbes[GMAIL_CONNECTOR]]),
+    ]
+    // The checks the control socket runs after the owner connects a connector (#98). Both Proton
+    // connectors sign in to Bridge with the one stored password. Gmail is healthy only when each
+    // of its configured clients (compose and read) can make its read.
+    const probes: ConnectorProbes = {
+      ...readProbes,
+      ...(gmailProbes.length === 0
+        ? {}
+        : { [GMAIL_CONNECTOR]: allProbes(gmailProbes) }),
       ...(mail === undefined
         ? {}
         : {
@@ -481,15 +574,24 @@ export async function runGate(
       handler = handlerFor(allowedHosts)
       phone = { port, allowedHosts }
     }
+    if (egressOptions !== undefined && config.egress !== undefined) {
+      egressProxy = await startEgressProxy({
+        ...egressOptions,
+        port: config.egress.port,
+        now: () => now().getTime(),
+      })
+    }
     log("started", {
       socket: config.socketPath,
       controlSocket: config.controlSocketPath,
       phonePort: phone?.port ?? "off",
+      egressPort: egressProxy?.port ?? "off",
       mail: mail === undefined ? "off" : "bridge",
       overlayErrors: overlayErrors.length,
     })
   } catch (error) {
     notifier?.close()
+    await egressProxy?.close()
     await Promise.all(servers.filter((s) => s.listening).map(close))
     stopGate()
     db.close()
@@ -497,13 +599,26 @@ export async function runGate(
   }
   return {
     ...(phone === undefined ? {} : { phone }),
+    ...(egressProxy === undefined ? {} : { egress: { port: egressProxy.port } }),
     close: async () => {
       notifier?.close()
+      await egressProxy?.close()
       await Promise.all(servers.map(close))
       stopGate()
       db.close()
       log("stopped")
     },
+  }
+}
+
+/** One probe over several clients: the first outcome that is not ok, or ok. */
+function allProbes(probes: readonly ConnectorProbe[]): ConnectorProbe {
+  return async () => {
+    for (const probe of probes) {
+      const outcome = await probe()
+      if (outcome !== "ok") return outcome
+    }
+    return "ok"
   }
 }
 

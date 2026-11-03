@@ -74,6 +74,23 @@ ssh -L <port>:127.0.0.1:<port> <mac>
 
 When Google revokes the grant, the gate disables Gmail and `/connectors` shows it with the reason `auth_failed`. Run `pnpm --filter @eido/gate connect gmail` again. The new refresh token replaces the old one, and Gmail is re-enabled once the check passes.
 
+## The read proxy
+
+Core's connectors read through the gate's egress proxy, which adds the read client's token to each pinned read. The gate starts the proxy when a read client is configured:
+
+- `EIDO_GMAIL_READ_CLIENT_ID` for Gmail reads, `EIDO_DRIVE_CLIENT_ID` for Drive;
+- `EIDO_GATE_EGRESS_PORT`, the proxy's port on `127.0.0.1`. It is required with a read client and refused without one;
+- the same vault variables as above.
+
+Point core at it with `EIDO_GMAIL_PROXY_URL=http://127.0.0.1:<EIDO_GATE_EGRESS_PORT>`.
+
+When an access token is missing or refused, the proxy refreshes it once from the stored refresh token and retries the read once. When Google answers `invalid_grant`, or refuses a fresh token, the gate disables the connector with `auth_failed`. It audits that with a hash of the error class only. A refresh that fails for another reason answers `token_refresh_failed` and leaves the connector enabled.
+
+With a read client configured, `connected` checks the connector with one pinned read through the proxy:
+
+- Drive reads `changes/startPageToken`.
+- Gmail reads the profile. With both the compose and the read client configured, Gmail is healthy only when both work.
+
 ## Proton Mail and Proton Calendar
 
 Both Proton connectors use the one Bridge password, read with `info` in `bridge --cli` (see "Proton Bridge LaunchAgent" in `infra/README.md`). The command asks for it without showing it as you type, and stores it in the gate vault.
@@ -90,8 +107,8 @@ Each connector is checked separately. After a new Bridge password, run the comma
 
 ## Not available yet
 
-- **Drive.** There is no gate Drive transport, so Drive has no connect step yet (#516).
-- **The Gmail read client.** The command connects the Gmail write client (`gmail.modify`). Read-client credentials, which the gate's read proxy would use, have no refresh path yet (#515).
+- **Drive.** The proxy refreshes Drive read tokens and the gate can check Drive, but the command has no `connect drive` step to store a Drive grant yet (#516).
+- **The Gmail read client.** The command connects the Gmail write client (`gmail.modify`) only. Nothing stores the read client's refresh token yet, so reads through the proxy answer `credential_missing` (#529).
 
 ## Not verified by the tests
 
