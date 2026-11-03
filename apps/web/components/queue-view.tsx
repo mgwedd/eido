@@ -47,6 +47,7 @@ import {
 import { isInteractiveTarget, isShortcutEvent } from "@/lib/shortcuts"
 import { formatWaiting } from "@/lib/relative-time"
 import { describeKind, type PendingIntent } from "@/lib/today"
+import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
 
 type ListState =
   | { status: "loading" }
@@ -257,6 +258,7 @@ function ApprovalCard({
   onReplaced?: (newIntentId: string, message: string) => void
   onSkip?: () => void
 }) {
+  const copy = authenticatorCopy(useAuthenticatorLabel())
   const [card, setCard] = React.useState<CardState>({ status: "loading" })
   const [history, setHistory] = React.useState<HistoryState>({
     status: "loading",
@@ -350,7 +352,7 @@ function ApprovalCard({
       status: "error",
       message:
         result.error.code === "cancelled"
-          ? "Face ID did not complete. Nothing was approved."
+          ? `${copy.subject} did not complete. Nothing was approved.`
           : result.error.code === "verification_failed"
             ? "What you saw and what is stored differ. The intent was rejected and an alert was logged."
             : result.error.message,
@@ -388,7 +390,7 @@ function ApprovalCard({
     onReplaced?.(
       result.value.intentId,
       signed.error.code === "cancelled"
-        ? "Edit saved. Face ID did not complete, so the edited intent is waiting in the queue."
+        ? `Edit saved. ${copy.subject} did not complete, so the edited intent is waiting in the queue.`
         : signed.error.message
     )
   }
@@ -733,7 +735,7 @@ function ApprovalCard({
       </Card>
       {action.status === "signing" ? (
         <p role="status" className="text-sm">
-          {isConfirm ? "Confirming…" : "Waiting for Face ID"}
+          {isConfirm ? "Confirming…" : `Waiting for ${copy.waitingFor}`}
         </p>
       ) : null}
       {action.status === "error" ? (

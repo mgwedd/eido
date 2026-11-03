@@ -10,6 +10,10 @@ import {
   type GatePushSubscription,
 } from "@eido/schemas"
 import { fromBase64url, toBase64url } from "@/lib/approval/challenge"
+import {
+  authenticatorCopy,
+  currentAuthenticatorLabel,
+} from "@/lib/authenticator"
 import { toAssertion } from "@/lib/approval/sign"
 
 const PUSH_URL = "/api/gate/push"
@@ -92,12 +96,14 @@ export type PushResult<T> = { ok: true; value: T } | PushFailure
 
 const fail = (message: string): PushFailure => ({ ok: false, message })
 
+const cancelledMessage = () =>
+  `${authenticatorCopy(currentAuthenticatorLabel()).subject} did not complete.`
+
 const MESSAGES = {
   network: "The gate could not be reached.",
   unavailable: "Push is not set up on the gate.",
   refused: "The gate refused the push registration.",
   unreadable: "The gate sent an unreadable answer.",
-  cancelled: "Face ID did not complete.",
   notAllowed: "Notifications were not allowed.",
   browser: "This browser could not create a push subscription.",
   storage: "This browser could not save the push registration.",
@@ -299,13 +305,13 @@ async function register(
       },
     })
   } catch {
-    return fail(MESSAGES.cancelled)
+    return fail(cancelledMessage())
   }
   const assertion =
     credential instanceof PublicKeyCredential
       ? toAssertion(credential)
       : undefined
-  if (assertion === undefined) return fail(MESSAGES.cancelled)
+  if (assertion === undefined) return fail(cancelledMessage())
 
   const body: GatePushRegistration = {
     subscription,

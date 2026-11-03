@@ -153,7 +153,7 @@ describe("enrol", () => {
     })
   })
 
-  it("shows the gate's refusal of the code and never reaches Face ID", async () => {
+  it("shows the gate's refusal of the code and never reaches the passkey prompt", async () => {
     const { create } = setup({
       routes: {
         "/api/gate/passkey/enroll/options": () =>
@@ -171,7 +171,7 @@ describe("enrol", () => {
     expect(create).not.toHaveBeenCalled()
   })
 
-  it("reports a cancelled Face ID and posts nothing", async () => {
+  it("reports a cancelled passkey prompt and posts nothing", async () => {
     const { fetchStub } = setup({
       create: async () => {
         throw new DOMException("cancelled", "NotAllowedError")
