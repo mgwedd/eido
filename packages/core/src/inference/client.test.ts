@@ -599,11 +599,23 @@ describe("template markers in material (#536)", () => {
     ["<|im_start|>", true],
     ["[INST]", true],
     ["<s>", true],
+    ['<|"|>', true],
     ["user", false],
     ["\n", false],
     ["<", false],
     ["|", false],
     [" >", false],
+    [" <", false],
+    ["<|", false],
+    ["|>", false],
+    ["||", false],
+    ["<|>", false],
+    ["->", false],
+    ['">', false],
+    [" [", false],
+    ["[]", false],
+    ["[...]", false],
+    ["[*]", false],
   ])("isMarkerPiece(%j) is %s", (piece, marker) => {
     expect(isMarkerPiece(piece)).toBe(marker)
   })
