@@ -3,8 +3,6 @@ import { createHash } from "node:crypto"
 import MailComposer from "nodemailer/lib/mail-composer"
 import { simpleParser } from "mailparser"
 import { validateIntent } from "@eido/schemas"
-import { append } from "./audit"
-import { payloadHash } from "./canonical"
 import {
   GMAIL_CONNECTOR,
   GMAIL_HOST,
@@ -15,7 +13,7 @@ import type { ConnectorProbe } from "./connector-connect"
 import { getPinnedManifest } from "./connectors"
 import type { UpstreamResult, WriteRequest, WriteTransport } from "./executor"
 import { authorizedCall } from "./vault/authorized-call"
-import type { RefreshResult } from "./vault/authorized-call"
+import { connectorRevocationDeps, refreshGoogleToken } from "./oauth-refresh"
 import { ConnectorDisabledError, GrantRevokedError } from "./vault/revocation"
 import type { Vault } from "./vault/vault"
 
@@ -110,37 +108,18 @@ async function call(
   const response = await authorizedCall({
     connector,
     client: "write",
-    vault: options.vault,
-    connectors: {
-      isEnabled: (name) =>
-        Promise.resolve(
-          options.db
-            .prepare("SELECT enabled FROM connectors WHERE name=?")
-            .get(name)?.["enabled"] === 1
-        ),
-      disable: (name) => {
-        options.db
-          .prepare(
-            `UPDATE connectors SET enabled=0, health='open', last_error='auth_failed',
-               next_attempt_at=NULL, probe_started_at=NULL, probe_lease_id=NULL,
-               health_generation=health_generation + 1 WHERE name=?`
-          )
-          .run(name)
-        return Promise.resolve()
-      },
-    },
-    audit: {
-      append: (entry) => {
-        append(options.db, {
-          actor: "gate",
-          action: entry.action,
-          target: entry.target,
-          detailHash: payloadHash({ errorClass: entry.errorClass }),
-        })
-        return Promise.resolve()
-      },
-    },
-    refresh: (refreshToken) => refresh(options, connector, refreshToken),
+    ...connectorRevocationDeps(options.db, options.vault, "gate"),
+    refresh: (refreshToken) =>
+      refreshGoogleToken(
+        {
+          vault: options.vault,
+          connector,
+          client: "write",
+          clientId: options.clientId,
+          ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+        },
+        refreshToken
+      ),
     call: async (token) => {
       const upstream = await send(url, {
         method: init.method,
@@ -163,48 +142,6 @@ async function call(
     throw new Error(`gmail ${init.method} failed with ${response.status}`)
   }
   return response
-}
-
-async function refresh(
-  options: Options,
-  connector: string,
-  refreshToken: string
-): Promise<RefreshResult> {
-  const clientSecret = await options.vault.get({
-    connector,
-    kind: "api_key",
-    client: "write",
-  })
-  if (!options.clientId || !clientSecret)
-    return { ok: false, error: "temporarily_unavailable" }
-  const response = await (options.fetch ?? fetch)(
-    "https://oauth2.googleapis.com/token",
-    {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: options.clientId,
-        client_secret: clientSecret,
-        refresh_token: refreshToken,
-        grant_type: "refresh_token",
-      }),
-      redirect: "manual",
-    }
-  )
-  const value: unknown = await response.json().catch(() => undefined)
-  if (
-    response.status === 400 &&
-    isRecord(value) &&
-    value["error"] === "invalid_grant"
-  )
-    return { ok: false, error: "invalid_grant" }
-  if (
-    !response.ok ||
-    !isRecord(value) ||
-    typeof value["access_token"] !== "string"
-  )
-    return { ok: false, error: "temporarily_unavailable" }
-  return { ok: true, accessToken: value["access_token"] }
 }
 
 /** Each message's labels before the write, read through the pinned messages.get route. */
