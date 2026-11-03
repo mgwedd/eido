@@ -1,5 +1,6 @@
 import { BRIEF_SCHEMA_SQL } from "../brief/schema"
 import { CONVERSATION_SCHEMA_SQL } from "../conversation/schema"
+import { TRIAGE_SCHEMA_SQL } from "../triage/schema"
 
 /**
  * Ledger schema of eido-data.db, applied by `openDataDb` on top of the index schema (`openIndex`).
@@ -16,8 +17,8 @@ import { CONVERSATION_SCHEMA_SQL } from "../conversation/schema"
  *     column CHECK cannot be changed in place; they apply to writes from now on and leave rows
  *     stored under v1 as they are.
  * v3 adds injection provenance to obligations; v4 adds conversation storage and search; v5 adds
- *     resumable digest section and final digest caches; the last migration adds the `briefs`
- *     table (#53).
+ *     resumable digest section and final digest caches; the `briefs` table (#53) comes next, then obligation
+ *     `updated_at` (#481), and the last migration adds the `events` table of proactive triage (#52).
  */
 export const LEDGER_MIGRATIONS: readonly string[] = [
   `
@@ -236,6 +237,7 @@ BEGIN
 END;
 CREATE INDEX obligations_updated_at ON obligations(updated_at);
 `,
+  TRIAGE_SCHEMA_SQL,
 ]
 
 export const LEDGER_SCHEMA_VERSION = LEDGER_MIGRATIONS.length

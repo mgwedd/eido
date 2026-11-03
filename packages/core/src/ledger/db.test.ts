@@ -8,7 +8,7 @@ import { MIGRATIONS, openIndex } from "../index/schema"
 import { createProfileStore } from "../profile/store"
 import { LedgerError, openDataDb } from "./index"
 import { addDocs, ledgerFixture, sha, testDoc } from "./ledger.test-support"
-import { LEDGER_MIGRATIONS } from "./migration"
+import { LEDGER_MIGRATIONS, LEDGER_SCHEMA_VERSION } from "./migration"
 
 const tempPath = (): string =>
   join(mkdtempSync(join(tmpdir(), "eido-ledger-")), "data.db")
@@ -77,7 +77,7 @@ describe("migrations", () => {
     const defaultEntityId = await createDefaultEntity(path)
     const upgraded = openDataDb(path, { defaultEntityId })
     expect(schemaOf(upgraded)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(upgraded)).toBe(9)
+    expect(ledgerVersion(upgraded)).toBe(LEDGER_SCHEMA_VERSION)
     expect(
       upgraded
         .prepare(
@@ -92,7 +92,7 @@ describe("migrations", () => {
 
     const again = openDataDb(path)
     expect(schemaOf(again)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(again)).toBe(9)
+    expect(ledgerVersion(again)).toBe(LEDGER_SCHEMA_VERSION)
     expect(
       again.prepare("SELECT * FROM documents ORDER BY sha256").all()
     ).toEqual(documentsBefore)
@@ -148,7 +148,9 @@ describe("migrations", () => {
   test("a database from a newer ledger version is refused", () => {
     const path = tempPath()
     const db = openDataDb(path)
-    db.exec("UPDATE ledger_schema SET version = 10")
+    db.exec(
+      `UPDATE ledger_schema SET version = ${String(LEDGER_SCHEMA_VERSION + 1)}`
+    )
     db.close()
     expect(codeOf(() => openDataDb(path))).toBe("newer_schema")
   })
@@ -180,7 +182,7 @@ describe("migrations", () => {
     old.close()
 
     const db = openDataDb(path)
-    expect(ledgerVersion(db)).toBe(9)
+    expect(ledgerVersion(db)).toBe(LEDGER_SCHEMA_VERSION)
     expect(
       db
         .prepare(

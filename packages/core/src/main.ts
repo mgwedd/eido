@@ -72,6 +72,13 @@ import {
 import type { ProtonMailSource } from "./connectors/proton/index"
 import { syncReplyObligations } from "./obligations/replies"
 import { writeQueueFor } from "./db/write-queue"
+import {
+  parseTriageOverrides,
+  scanLedgerEvents,
+  triageConfigFrom,
+  triageTick,
+} from "./triage/index"
+import type { TriageOverrides } from "./triage/index"
 import type { RepliesConfig } from "./obligations/replies"
 
 // The data-plane process (ADR 0003). It owns eido-data.db, serves core's API on loopback, and
@@ -99,6 +106,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
   "EIDO_DIGEST_SECTION_TOKENS",
   "EIDO_REPLIES_CONFIG",
+  "EIDO_TRIAGE_CONFIG",
   "EIDO_PROTON_USERNAME",
   "EIDO_FILES_SYNC",
 ] as const
@@ -124,6 +132,8 @@ export const ASK_REPLY_TOKENS = 512
 export const GMAIL_SYNC_INTERVAL_MS = 5 * 60_000
 export const PROTON_SYNC_INTERVAL_MS = 5 * 60_000
 export const CONVERSATION_DIGEST_SWEEP_INTERVAL_MS = 60_000
+/** How often triage looks at the ledger, so a date that passes raises its due event. */
+export const TRIAGE_TICK_INTERVAL_MS = 15 * 60_000
 
 type Env = Readonly<Record<string, string | undefined>>
 
@@ -182,6 +192,8 @@ export type CoreApiConfig = {
   conversationDigestIdleTtlMinutes: number
   digest: { sectionTokens: number }
   replies?: Omit<RepliesConfig, "db">
+  /** Overrides of the proactive card budget (`EIDO_TRIAGE_CONFIG`). */
+  triage?: TriageOverrides
 }
 
 export type DataPlaneConfig = {
@@ -269,6 +281,11 @@ export function coreApiConfig(env: Env): CoreApiConfig {
         "EIDO_DIGEST_SECTION_TOKENS"
       ),
     },
+    triage:
+      env["EIDO_TRIAGE_CONFIG"] === undefined ||
+      env["EIDO_TRIAGE_CONFIG"] === ""
+        ? {}
+        : parseTriageOverrides(env["EIDO_TRIAGE_CONFIG"]),
     ...(env["EIDO_REPLIES_CONFIG"] === undefined ||
     env["EIDO_REPLIES_CONFIG"] === ""
       ? {}
@@ -716,6 +733,47 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       }
     })
   }
+  // Cards are proposed through the gate's intent API; no event kind has a card builder yet, so
+  // every event that passes the score floor goes to the digest (#52).
+  let triageScheduling = Promise.resolve()
+  // A file still at the index schema (`ledger_pending`) has no events table to read or write.
+  const hasEvents =
+    db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'events'"
+      )
+      .get() !== undefined
+  const scheduleTriage = (): void => {
+    if (!hasEvents) return
+    const afterReplies = replyScheduling
+    triageScheduling = triageScheduling.then(async () => {
+      await afterReplies
+      try {
+        const cfg = triageConfigFrom(
+          config.api.triage ?? {},
+          (await profile.getProfile())?.timezone ?? "Etc/UTC"
+        )
+        const now = new Date()
+        const { emitted } = await scanLedgerEvents(db, now, cfg)
+        const result = await triageTick({ db, gate, cards: {} }, now, cfg)
+        if (emitted > 0 || result.cards + result.digest + result.ledger > 0)
+          log("triage_ticked", {
+            emitted: String(emitted),
+            cards: String(result.cards),
+            digest: String(result.digest),
+            ledger: String(result.ledger),
+          })
+      } catch (error) {
+        log("triage_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        })
+      }
+    })
+  }
+  const onBatchCommitted = (): void => {
+    scheduleReplies()
+    scheduleTriage()
+  }
   const onIngested = (documents: readonly IndexedDocument[]): void => {
     digestScheduling = digestScheduling.then(async () => {
       try {
@@ -744,7 +802,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       ),
       parser,
       onIngested,
-      onBatchCommitted: scheduleReplies,
+      onBatchCommitted,
       onAccount: (accountRef) =>
         accounts.add({
           connector: GMAIL_CONNECTOR,
@@ -770,7 +828,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       profile,
       source: createProtonMailClient({ socketPath: config.gateSocket }),
       username: config.api.protonUsername,
-      onBatchCommitted: scheduleReplies,
+      onBatchCommitted,
       log,
     })
     protonTimer = startSyncTimer(sync, PROTON_SYNC_INTERVAL_MS)
@@ -797,6 +855,9 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   const stopGmailSync = (): void => gmailTimer?.stop()
   const stopProtonSync = (): void => protonTimer?.stop()
   scheduleReplies()
+  scheduleTriage()
+  const triageTimer = setInterval(scheduleTriage, TRIAGE_TICK_INTERVAL_MS)
+  triageTimer.unref()
   const brief = scheduleBrief(
     db,
     async () => ({
@@ -832,18 +893,20 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     getDigestService,
     getModelContextTokens: model.getContextTokens,
     scheduleIngestedDocuments: onIngested,
-    scheduleReplyObligations: scheduleReplies,
+    scheduleReplyObligations: onBatchCommitted,
     close: async () => {
       fileTimer?.stop()
       await fileTimer?.inFlight()
       stopGmailSync()
       stopProtonSync()
+      clearInterval(triageTimer)
       brief.stop()
       await brief.whenIdle()
       await gmailTimer?.inFlight()
       await protonTimer?.inFlight()
       await digestScheduling
       await replyScheduling
+      await triageScheduling
       await digestService?.whenIdle()
       await profile.drain()
       await obligations.drain()
