@@ -1,10 +1,11 @@
-//! The subset of JSON the protocol uses: objects whose values are strings or
-//! objects. Anything else (numbers, arrays, literals, duplicate keys) is
-//! refused, so a request cannot carry a shape the helper does not check.
+//! The request subset: objects, strings and nonnegative integer limits.
+//! Arrays, literals, fractional/negative numbers and duplicate keys are refused;
+//! operation-specific parsing checks every key and the range of every limit.
 
 #[derive(Debug, PartialEq)]
 pub enum Value {
     Str(String),
+    Num(usize),
     Obj(Vec<(String, Value)>),
 }
 
@@ -12,21 +13,29 @@ impl Value {
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Obj(fields) => fields.iter().find(|(k, _)| k == key).map(|(_, v)| v),
-            Value::Str(_) => None,
+            Value::Str(_) | Value::Num(_) => None,
         }
     }
 
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::Str(s) => Some(s),
-            Value::Obj(_) => None,
+            Value::Obj(_) | Value::Num(_) => None,
+        }
+    }
+
+    pub fn as_usize(&self) -> Option<usize> {
+        if let Value::Num(n) = self {
+            Some(*n)
+        } else {
+            None
         }
     }
 
     pub fn keys(&self) -> Vec<&str> {
         match self {
             Value::Obj(fields) => fields.iter().map(|(k, _)| k.as_str()).collect(),
-            Value::Str(_) => Vec::new(),
+            Value::Str(_) | Value::Num(_) => Vec::new(),
         }
     }
 }
@@ -67,6 +76,20 @@ impl Parser<'_> {
         match self.peek() {
             Some(b'"') => Ok(Value::Str(self.string()?)),
             Some(b'{') => self.object(depth),
+            Some(b'0'..=b'9') => {
+                let start = self.i;
+                while matches!(self.peek(), Some(b'0'..=b'9')) {
+                    self.i += 1;
+                }
+                if self.i - start > 1 && self.b[start] == b'0' {
+                    return Err("invalid number");
+                }
+                let value = std::str::from_utf8(&self.b[start..self.i])
+                    .map_err(|_| "invalid number")?
+                    .parse::<usize>()
+                    .map_err(|_| "invalid number")?;
+                Ok(Value::Num(value))
+            }
             Some(_) => Err("unsupported value"),
             None => Err("unexpected end"),
         }

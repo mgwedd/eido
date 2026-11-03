@@ -37,6 +37,13 @@ const ingest = (documents: IndexedDocument[], nextCursor = "c1") =>
     connector: "gmail",
     stream: "inbox",
     documents,
+    heads: documents
+      .filter((document) => document.source === "files")
+      .map((document) => ({
+        source: document.source,
+        sourceRef: document.sourceRef,
+        sha256: document.sha256,
+      })),
     nextCursor,
   })
 

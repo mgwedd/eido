@@ -6,8 +6,14 @@
     {
       "type": "object",
       "properties": {
-        "op": { "const": "identify" },
-        "path": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        "op": {
+          "const": "identify"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
       },
       "required": ["op", "path"],
       "additionalProperties": false
@@ -15,10 +21,21 @@
     {
       "type": "object",
       "properties": {
-        "op": { "const": "create" },
-        "root": { "$ref": "gate-file-root.schema.json" },
-        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "contentBase64": { "type": "string", "maxLength": 4000000 }
+        "op": {
+          "const": "create"
+        },
+        "root": {
+          "$ref": "gate-file-root.schema.json"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "contentBase64": {
+          "type": "string",
+          "maxLength": 4000000
+        }
       },
       "required": ["op", "root", "path", "contentBase64"],
       "additionalProperties": false
@@ -26,10 +43,22 @@
     {
       "type": "object",
       "properties": {
-        "op": { "const": "move" },
-        "root": { "$ref": "gate-file-root.schema.json" },
-        "from": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "to": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        "op": {
+          "const": "move"
+        },
+        "root": {
+          "$ref": "gate-file-root.schema.json"
+        },
+        "from": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
       },
       "required": ["op", "root", "from", "to"],
       "additionalProperties": false
@@ -37,10 +66,22 @@
     {
       "type": "object",
       "properties": {
-        "op": { "const": "trash" },
-        "root": { "$ref": "gate-file-root.schema.json" },
-        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "trashName": { "type": "string", "minLength": 1, "maxLength": 255 }
+        "op": {
+          "const": "trash"
+        },
+        "root": {
+          "$ref": "gate-file-root.schema.json"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "trashName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
       },
       "required": ["op", "root", "path", "trashName"],
       "additionalProperties": false
@@ -48,12 +89,64 @@
     {
       "type": "object",
       "properties": {
-        "op": { "const": "restore" },
-        "root": { "$ref": "gate-file-root.schema.json" },
-        "trashName": { "type": "string", "minLength": 1, "maxLength": 255 },
-        "path": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        "op": {
+          "const": "restore"
+        },
+        "root": {
+          "$ref": "gate-file-root.schema.json"
+        },
+        "trashName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
       },
       "required": ["op", "root", "trashName", "path"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "read"
+        },
+        "root": {
+          "$ref": "gate-file-root.schema.json"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        }
+      },
+      "required": ["op", "root", "path", "maxBytes"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "list"
+        },
+        "root": {
+          "$ref": "gate-file-root.schema.json"
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": ["op", "root", "path"],
       "additionalProperties": false
     }
   ]

@@ -117,3 +117,62 @@ test.each(["spawn", "stdin", "exit", "overflow", "invalid-stream"])(
     await expect(reply).rejects.toThrow(/^file helper failed$/)
   }
 )
+
+const root = { path: "/srv/example/docs", dev: "2a", ino: "1", trashDir: ".t" }
+const listRequest = { op: "list", root, path: "" } as const
+const readRequest = {
+  op: "read",
+  root,
+  path: "a.txt",
+  maxBytes: 1024,
+} as const
+
+test("a list reply over 512 KiB is cut off, while an identify-sized limit is not applied to it", async () => {
+  const reply = fileHelper({ path: binary, sha256 })(listRequest)
+  await spawned()
+  child.stdout.emit("data", Buffer.alloc(512 * 1024 + 1))
+  expect(child.kill).toHaveBeenCalledOnce()
+  child.emit("close", 0)
+  await expect(reply).rejects.toThrow(/^file helper failed$/)
+})
+
+test("a list reply between 64 KiB and 512 KiB is accepted and parsed", async () => {
+  const reply = fileHelper({ path: binary, sha256 })(listRequest)
+  await spawned()
+  const name = "n".repeat(200)
+  const entries = Array.from({ length: 400 }, () => ({ name, kind: "file" }))
+  child.stdout.emit(
+    "data",
+    Buffer.from(
+      JSON.stringify({ ok: true, op: "list", entries, truncated: false })
+    )
+  )
+  child.emit("close", 0)
+  expect(await reply).toMatchObject({ ok: true, op: "list" })
+})
+
+test("a read reply over 12 MiB is cut off but one just over the default limit is parsed", async () => {
+  const over = fileHelper({ path: binary, sha256 })(readRequest)
+  await spawned()
+  child.stdout.emit("data", Buffer.alloc(12 * 1024 * 1024 + 1))
+  expect(child.kill).toHaveBeenCalledOnce()
+  child.emit("close", 0)
+  await expect(over).rejects.toThrow(/^file helper failed$/)
+
+  child = new Child()
+  mocked.spawn.mockReset().mockReturnValue(child)
+  const ok = fileHelper({ path: binary, sha256 })(readRequest)
+  await spawned()
+  child.stdout.emit(
+    "data",
+    Buffer.from(
+      JSON.stringify({
+        ok: true,
+        op: "read",
+        contentBase64: "A".repeat(100 * 1024),
+      })
+    )
+  )
+  child.emit("close", 0)
+  expect(await ok).toMatchObject({ ok: true, op: "read" })
+})

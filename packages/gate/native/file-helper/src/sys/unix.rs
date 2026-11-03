@@ -4,7 +4,7 @@
 
 use std::ffi::{c_char, c_int, c_uint, CString};
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::MetadataExt;
 
@@ -16,6 +16,7 @@ mod consts {
     pub type ModeT = u32;
     pub const AT_FDCWD: c_int = -100;
     pub const O_WRONLY: c_int = 0o1;
+    pub const O_NONBLOCK: c_int = 0o4000;
     pub const O_CREAT: c_int = 0o100;
     pub const O_EXCL: c_int = 0o200;
     pub const O_CLOEXEC: c_int = 0o2000000;
@@ -53,6 +54,7 @@ mod consts {
     pub type ModeT = u16;
     pub const AT_FDCWD: c_int = -2;
     pub const O_WRONLY: c_int = 0x1;
+    pub const O_NONBLOCK: c_int = 0x4;
     pub const O_NOFOLLOW: c_int = 0x100;
     pub const O_CREAT: c_int = 0x200;
     pub const O_EXCL: c_int = 0x800;
@@ -224,4 +226,140 @@ pub fn rename_no_replace(from_dir: &Dir, from: &str, to_dir: &Dir, to: &str) -> 
         return Err(error(&io::Error::last_os_error()));
     }
     Ok(())
+}
+
+/// Opens the final component relative to its already anchored parent without following links.
+pub fn read_file(parent: &Dir, name: &str, max_bytes: usize) -> Result<Vec<u8>, Error> {
+    let file = open_at(parent.0.as_raw_fd(), name, O_NOFOLLOW | O_NONBLOCK, 0)?;
+    if !file.metadata().map_err(|e| error(&e))?.is_file() {
+        return Err(Error {
+            code: Code::Io,
+            message: "read target is not a regular file",
+        });
+    }
+    let mut bytes = Vec::new();
+    file.take((max_bytes + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| error(&e))?;
+    if bytes.len() > max_bytes {
+        return Err(Error {
+            code: Code::Io,
+            message: "file exceeds read limit",
+        });
+    }
+    Ok(bytes)
+}
+
+extern "C" {
+    fn fdopendir(fd: c_int) -> *mut std::ffi::c_void;
+    #[cfg_attr(target_os = "linux", link_name = "readdir64")]
+    fn readdir(dir: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn closedir(dir: *mut std::ffi::c_void) -> c_int;
+    #[cfg(target_os = "macos")]
+    fn __error() -> *mut c_int;
+    #[cfg(target_os = "linux")]
+    fn __errno_location() -> *mut c_int;
+}
+
+struct DirectoryStream(*mut std::ffi::c_void);
+impl Drop for DirectoryStream {
+    fn drop(&mut self) {
+        // SAFETY: fdopendir gave this wrapper sole ownership of the live DIR stream.
+        unsafe {
+            closedir(self.0);
+        }
+    }
+}
+
+/// Enumerates through a DIR stream owning a fresh descriptor to the anchored directory.
+pub fn list_dir(dir: &Dir) -> Result<(Vec<crate::Entry>, bool), Error> {
+    use std::os::fd::IntoRawFd;
+    let copy = open_at(dir.0.as_raw_fd(), ".", O_DIRECTORY | O_NOFOLLOW, 0)?;
+    let fd = copy.into_raw_fd();
+    // SAFETY: fd is an owned readable directory descriptor. fdopendir takes ownership on success.
+    let stream = unsafe { fdopendir(fd) };
+    if stream.is_null() {
+        // SAFETY: fdopendir failed and did not take fd, which remains ours.
+        drop(unsafe { File::from_raw_fd(fd) });
+        return Err(error(&io::Error::last_os_error()));
+    }
+    let stream = DirectoryStream(stream);
+    let mut entries = Vec::new();
+    let mut examined = 0;
+    loop {
+        // SAFETY: these platform libc functions return this thread's errno pointer.
+        #[cfg(target_os = "macos")]
+        let errno = unsafe { __error() };
+        #[cfg(target_os = "linux")]
+        let errno = unsafe { __errno_location() };
+        // SAFETY: errno points to the thread-local integer, stream is live and exclusively used.
+        let raw = unsafe {
+            *errno = 0;
+            readdir(stream.0)
+        };
+        if raw.is_null() {
+            // SAFETY: errno remains live in this thread.
+            if unsafe { *errno } != 0 {
+                return Err(error(&io::Error::last_os_error()));
+            }
+            return Ok((entries, false));
+        }
+        // libc dirent layout: ino64, offset64, record length16; macOS additionally
+        // stores name length16 and type8, Linux type8. Only read bytes within d_reclen.
+        #[cfg(target_os = "macos")]
+        let name_offset = 21;
+        #[cfg(target_os = "linux")]
+        let name_offset = 19;
+        // SAFETY: readdir returns a complete dirent; d_reclen is at byte16 on supported ABIs.
+        let record_len =
+            unsafe { raw.cast::<u8>().add(16).cast::<u16>().read_unaligned() } as usize;
+        if record_len <= name_offset || record_len > 65535 {
+            return Err(Error {
+                code: Code::Io,
+                message: "directory entry is invalid",
+            });
+        }
+        // SAFETY: the name lies within the record length returned by libc.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(raw.cast::<u8>().add(name_offset), record_len - name_offset)
+        };
+        let end = bytes.iter().position(|b| *b == 0).ok_or(Error {
+            code: Code::Io,
+            message: "directory entry is invalid",
+        })?;
+        let name = match std::str::from_utf8(&bytes[..end]) {
+            Ok(name) => name,
+            Err(_) => continue,
+        };
+        if name == "." || name == ".." {
+            continue;
+        }
+        if examined == 1000 {
+            return Ok((entries, true));
+        }
+        examined += 1;
+        if crate::names::component(name).is_err() {
+            continue;
+        }
+        // Open relative to the same handle. A concurrently replaced link cannot be followed.
+        let file = match open_at(dir.0.as_raw_fd(), name, O_NOFOLLOW | O_NONBLOCK, 0) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+        let meta = match file.metadata() {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        let kind = if meta.is_dir() {
+            "directory"
+        } else if meta.is_file() {
+            "file"
+        } else {
+            continue;
+        };
+        entries.push(crate::Entry {
+            name: name.to_owned(),
+            kind,
+        });
+    }
 }

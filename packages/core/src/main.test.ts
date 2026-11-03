@@ -116,6 +116,22 @@ describe("DEFAULT_CORE_PORT", () => {
 })
 
 describe("dataPlaneConfig", () => {
+  it("opts in to local file indexing with a scrubbed nonsecret flag", () => {
+    const base = { EIDO_DATA_DIR: "/d", EIDO_GATE_SOCKET: "/s/gate.sock" }
+    expect(dataPlaneConfig({ ...base, EIDO_FILES_SYNC: "1" }).filesSync).toBe(
+      true
+    )
+    expect(
+      dataPlaneConfig({ ...base, EIDO_FILES_SYNC: "0" }).filesSync
+    ).toBeUndefined()
+    expect(
+      dataPlaneEnv({ ...base, EIDO_FILES_SYNC: "1" })["EIDO_FILES_SYNC"]
+    ).toBe("1")
+    expect(() => dataPlaneConfig({ ...base, EIDO_FILES_SYNC: "yes" })).toThrow(
+      "EIDO_FILES_SYNC must be 0 or 1"
+    )
+  })
+
   it("puts eido-data.db and the log in the data dir", () => {
     expect(
       dataPlaneConfig({ EIDO_DATA_DIR: "/d", EIDO_GATE_SOCKET: "/s/gate.sock" })
@@ -313,6 +329,53 @@ describe("coreApiConfig", () => {
 })
 
 describe("runDataPlane", () => {
+  it.each([200, 503])(
+    "runs the optional file sync against the gate and handles status %i",
+    async (status) => {
+      const requests: string[] = []
+      let arrived: (() => void) | undefined
+      const requested = new Promise<void>((resolve) => {
+        arrived = resolve
+      })
+      const gate = createHttpServer((request, response) => {
+        requests.push(request.url ?? "")
+        response.writeHead(status, { "content-type": "application/json" })
+        response.end(
+          JSON.stringify(
+            status === 200
+              ? { roots: [] }
+              : { code: "unavailable", message: "synthetic-private-error" }
+          )
+        )
+        arrived?.()
+      })
+      const socketPath = join(dir, "files-gate.sock")
+      await new Promise<void>((resolve) => gate.listen(socketPath, resolve))
+      const env = {
+        EIDO_DATA_DIR: join(dir, "data"),
+        EIDO_GATE_SOCKET: socketPath,
+        EIDO_FILES_SYNC: "1",
+      }
+      const plane = runDataPlane(dataPlaneConfig(env), env)
+      try {
+        await requested
+        await plane.close()
+        expect(requests).toEqual(["/file-roots"])
+        const log = readFileSync(
+          join(env.EIDO_DATA_DIR, DATA_PLANE_LOG_FILE),
+          "utf8"
+        )
+        if (status === 503) expect(log).toContain("files_sync_failed")
+        else expect(log).not.toContain("files_sync_failed")
+        expect(log).not.toContain("synthetic-private-error")
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          gate.close((error) => (error ? reject(error) : resolve()))
+        )
+      }
+    }
+  )
+
   it("wires POST /intents through the real gate client", async () => {
     let received: unknown
     const gate = createHttpServer((request, response) => {
