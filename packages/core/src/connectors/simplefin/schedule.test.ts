@@ -65,9 +65,9 @@ describe("syncDue", () => {
 
   it("without a time, is due once the interval has passed", () => {
     const last = local(2, 0)
-    expect(syncDue(last + SIMPLEFIN_SYNC_INTERVAL_MS - 1, last, undefined)).toBe(
-      false
-    )
+    expect(
+      syncDue(last + SIMPLEFIN_SYNC_INTERVAL_MS - 1, last, undefined)
+    ).toBe(false)
     expect(syncDue(last + SIMPLEFIN_SYNC_INTERVAL_MS, last, undefined)).toBe(
       true
     )

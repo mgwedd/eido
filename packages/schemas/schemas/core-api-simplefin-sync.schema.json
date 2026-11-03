@@ -5,7 +5,9 @@
   "type": "object",
   "properties": {
     "status": { "enum": ["synced", "refused"] },
-    "reason": { "enum": ["daily_limit", "connector_unavailable", "sync_failed"] },
+    "reason": {
+      "enum": ["daily_limit", "connector_unavailable", "sync_failed"]
+    },
     "nextSyncAt": {
       "type": "string",
       "format": "date-time",

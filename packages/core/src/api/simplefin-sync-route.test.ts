@@ -25,9 +25,7 @@ function handlerFor(
 }
 
 const post = (handle: ApiHandler, method = "POST"): Promise<Response> =>
-  handle(
-    new Request("http://core.test/connectors/simplefin/sync", { method })
-  )
+  handle(new Request("http://core.test/connectors/simplefin/sync", { method }))
 
 describe("POST /connectors/simplefin/sync", () => {
   test("a sync that ran answers 200 with the next scheduled sync", async () => {
