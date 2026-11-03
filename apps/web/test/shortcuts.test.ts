@@ -121,13 +121,14 @@ describe("the key map", () => {
     ])
   })
 
-  test("the legend lists the queue keys that are built, and no edit key", () => {
+  test("the legend lists the queue keys that are built, edit included", () => {
     const queue = legendGroups().find((group) => group.title === "Queue")
     expect(queue?.items.map((item) => item.keys.join(" "))).toEqual([
       "j",
       "k",
       "Enter",
       "a",
+      "e",
       "r",
       "Esc",
     ])
