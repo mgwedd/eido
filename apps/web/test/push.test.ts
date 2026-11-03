@@ -24,6 +24,7 @@ import {
   storeRegistration,
   stubWebAuthnGlobals,
 } from "./push-device"
+import { stubIphone } from "./platform"
 
 const subscription = { endpoint, p256dh, auth }
 const bytes = (base64url: string) => [...Buffer.from(base64url, "base64url")]
@@ -471,8 +472,24 @@ describe("subscribePush", () => {
     expect(browser.current()).toBeNull()
   })
 
-  it("undoes the browser subscription when Face ID is cancelled", async () => {
+  it("undoes the browser subscription when the passkey prompt is cancelled", async () => {
     const calls = gate(happyRoutes)
+    const browser = fakeBrowser({
+      credential: () =>
+        Promise.reject(new DOMException("no", "NotAllowedError")),
+    })
+    expect(await subscribePush(browser.device)).toEqual({
+      ok: false,
+      message: "The passkey prompt did not complete.",
+    })
+    expect(browser.current()).toBeNull()
+    expect(calls).toHaveLength(2)
+    expect(storedPushRegistration()).toBeNull()
+  })
+
+  it("names Face ID when the prompt is cancelled on an iPhone", async () => {
+    gate(happyRoutes)
+    stubIphone()
     const browser = fakeBrowser({
       credential: () =>
         Promise.reject(new DOMException("no", "NotAllowedError")),
@@ -481,9 +498,6 @@ describe("subscribePush", () => {
       ok: false,
       message: "Face ID did not complete.",
     })
-    expect(browser.current()).toBeNull()
-    expect(calls).toHaveLength(2)
-    expect(storedPushRegistration()).toBeNull()
   })
 
   it("treats a prompt that returns no credential as cancelled", async () => {
@@ -491,7 +505,7 @@ describe("subscribePush", () => {
     const browser = fakeBrowser({ credential: () => Promise.resolve(null) })
     expect(await subscribePush(browser.device)).toEqual({
       ok: false,
-      message: "Face ID did not complete.",
+      message: "The passkey prompt did not complete.",
     })
   })
 

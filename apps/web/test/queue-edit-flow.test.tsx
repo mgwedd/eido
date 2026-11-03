@@ -312,7 +312,7 @@ describe("Edit and approve", () => {
     await type("Subject", "Re: new")
     await submit()
     expect(document.querySelector('[role="status"]')?.textContent).toBe(
-      "Edit saved. Face ID did not complete, so the edited intent is waiting in the queue."
+      "Edit saved. The passkey prompt did not complete, so the edited intent is waiting in the queue."
     )
     expect(document.querySelector("h2")?.id).toBe("card-intent-b")
   })

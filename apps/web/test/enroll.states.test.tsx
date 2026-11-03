@@ -2,6 +2,7 @@
 import { vi } from "vitest"
 
 import { EnrollCard, type EnrollState } from "@/components/enroll-view"
+import { stubIphone } from "./platform"
 import { describeStates } from "./render-states"
 
 vi.mock("next/link", () => ({
@@ -35,6 +36,13 @@ function card(state: EnrollState) {
   )
 }
 
+function iphone(state: EnrollState) {
+  return () => {
+    stubIphone()
+    return card(state)()
+  }
+}
+
 describeStates("Enrol states", [
   {
     state: "checking",
@@ -49,8 +57,14 @@ describeStates("Enrol states", [
     message: null,
   },
   {
-    state: "waiting for Face ID",
+    state: "waiting for the passkey",
     render: card({ status: "enrolling" }),
+    role: "status",
+    message: "Waiting for your passkey…",
+  },
+  {
+    state: "waiting for Face ID on an iPhone",
+    render: iphone({ status: "enrolling" }),
     role: "status",
     message: "Waiting for Face ID…",
   },
@@ -61,8 +75,15 @@ describeStates("Enrol states", [
     message: "This phone can now approve actions.",
   },
   {
-    state: "Face ID cancelled",
+    state: "passkey prompt cancelled",
     render: card({ status: "cancelled" }),
+    role: "alert",
+    message:
+      "The passkey prompt was cancelled. Nothing was saved. You can try again.",
+  },
+  {
+    state: "Face ID cancelled on an iPhone",
+    render: iphone({ status: "cancelled" }),
     role: "alert",
     message: "Face ID was cancelled. Nothing was saved. You can try again.",
   },

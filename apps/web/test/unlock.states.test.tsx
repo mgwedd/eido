@@ -2,6 +2,7 @@
 import { vi } from "vitest"
 
 import { UnlockCard, type UnlockState } from "@/components/unlock-view"
+import { stubIphone } from "./platform"
 import { describeStates } from "./render-states"
 
 const noop = vi.fn()
@@ -15,6 +16,13 @@ function card(state: UnlockState) {
       onRetry={noop}
     />
   )
+}
+
+function iphone(state: UnlockState) {
+  return () => {
+    stubIphone()
+    return card(state)()
+  }
 }
 
 describeStates("Unlock states", [
@@ -37,8 +45,14 @@ describeStates("Unlock states", [
     message: "Your session expired. Unlock to continue.",
   },
   {
-    state: "waiting for Face ID",
+    state: "waiting for the passkey",
     render: card({ status: "waiting" }),
+    role: "status",
+    message: "Waiting for your passkey…",
+  },
+  {
+    state: "waiting for Face ID on an iPhone",
+    render: iphone({ status: "waiting" }),
     role: "status",
     message: "Waiting for Face ID…",
   },
@@ -49,8 +63,14 @@ describeStates("Unlock states", [
     message: "This device has no passkey yet.",
   },
   {
-    state: "Face ID cancelled",
+    state: "passkey prompt cancelled",
     render: card({ status: "cancelled" }),
+    role: "alert",
+    message: "The passkey prompt was cancelled. Eido is still locked.",
+  },
+  {
+    state: "Face ID cancelled on an iPhone",
+    render: iphone({ status: "cancelled" }),
     role: "alert",
     message: "Face ID was cancelled. Eido is still locked.",
   },

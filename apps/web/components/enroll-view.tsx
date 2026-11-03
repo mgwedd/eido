@@ -11,6 +11,7 @@ import { Card, CardContent } from "@eido/ui/components/card"
 import { Input } from "@eido/ui/components/input"
 import { Label } from "@eido/ui/components/label"
 import { enrol, loadPasskeyCreatedAt } from "@/lib/enrol"
+import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
 import { checkEnvironment, loadCredentialStatus } from "@/lib/auth/unlock"
 import type { Environment } from "@/lib/auth/unlock"
 
@@ -27,7 +28,6 @@ type EnrollState =
   | { status: "unsupported" }
 
 const MESSAGES = {
-  cancelled: "Face ID was cancelled. Nothing was saved. You can try again.",
   offline: "Enrolment needs a connection to the Mac.",
   "wrong-origin":
     "Open Eido from its Tailscale address to enrol. Passkeys are bound to that address.",
@@ -35,9 +35,13 @@ const MESSAGES = {
     "This browser cannot create passkeys. Use Safari on iOS 17+ or a current desktop browser.",
 } as const
 
-function alertMessage(state: EnrollState): string | null {
+function alertMessage(
+  state: EnrollState,
+  copy: ReturnType<typeof authenticatorCopy>
+): string | null {
   switch (state.status) {
     case "cancelled":
+      return `${copy.subject} was cancelled. Nothing was saved. You can try again.`
     case "offline":
     case "wrong-origin":
     case "unsupported":
@@ -53,12 +57,15 @@ function alertMessage(state: EnrollState): string | null {
   }
 }
 
-function progressMessage(state: EnrollState): string {
+function progressMessage(
+  state: EnrollState,
+  copy: ReturnType<typeof authenticatorCopy>
+): string {
   switch (state.status) {
     case "checking":
       return "Checking this device…"
     case "enrolling":
-      return "Waiting for Face ID…"
+      return `Waiting for ${copy.waitingFor}…`
     case "enrolled":
       return "This phone can now approve actions."
     default:
@@ -66,11 +73,12 @@ function progressMessage(state: EnrollState): string {
   }
 }
 
-const STEPS = [
-  "On the Mac, generate a one-time enrolment code",
-  "Enter it here",
-  "Create a passkey with Face ID",
-] as const
+const steps = (copy: ReturnType<typeof authenticatorCopy>) =>
+  [
+    "On the Mac, generate a one-time enrolment code",
+    "Enter it here",
+    copy.createPasskey,
+  ] as const
 
 function EnrollCard({
   state,
@@ -89,8 +97,9 @@ function EnrollCard({
   onEnrol: () => void
   onRetry: () => void
 }) {
-  const error = alertMessage(state)
-  const progress = progressMessage(state)
+  const copy = authenticatorCopy(useAuthenticatorLabel())
+  const error = alertMessage(state, copy)
+  const progress = progressMessage(state, copy)
   const enrolling = state.status === "enrolling"
   const showForm =
     state.status === "ready" ||
@@ -113,7 +122,7 @@ function EnrollCard({
             </h1>
             <p className="text-sm text-muted-foreground">
               Eido has no passwords. This phone will approve actions by signing
-              them with Face ID.
+              them with {copy.signWith}.
             </p>
           </header>
 
@@ -169,7 +178,7 @@ function EnrollCard({
                 }
                 className={buttonVariants({ size: "lg" }) + " h-12 rounded-xl"}
               >
-                {state.signedIn ? "Continue" : "Unlock with Face ID"}
+                {state.signedIn ? "Continue" : copy.unlockWith}
               </Link>
             </>
           ) : null}
@@ -189,7 +198,7 @@ function EnrollCard({
               }}
             >
               <ol className="flex flex-col gap-2 text-sm">
-                {STEPS.map((step, index) => (
+                {steps(copy).map((step, index) => (
                   <li key={step} className="flex items-center gap-3">
                     <span
                       aria-hidden

@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 /* eslint-disable @typescript-eslint/require-await -- fetch and navigator.credentials.get return promises, so their stubs are async functions with nothing to await */
+import { IPHONE_UA } from "./platform"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { GatePrepareApproval } from "@eido/schemas"
 import {
@@ -35,11 +36,15 @@ class FakeCredential {
   response: unknown = new FakeAssertionResponse()
 }
 
-function stubWebAuthn(get: () => Promise<unknown>) {
+function stubWebAuthn(get: () => Promise<unknown>, userAgent = "") {
   vi.stubGlobal("AuthenticatorAssertionResponse", FakeAssertionResponse)
   vi.stubGlobal("PublicKeyCredential", FakeCredential)
   const spy = vi.fn(get)
-  vi.stubGlobal("navigator", { credentials: { get: spy } })
+  vi.stubGlobal("navigator", {
+    userAgent,
+    maxTouchPoints: 0,
+    credentials: { get: spy },
+  })
   return spy
 }
 
@@ -222,7 +227,7 @@ describe("signApproval", () => {
     expect(call[1].headers).toEqual({ "content-type": "application/json" })
   })
 
-  it("sends nothing when Face ID is cancelled", async () => {
+  it("sends nothing when the passkey prompt is cancelled", async () => {
     stubWebAuthn(async () => {
       throw new DOMException("cancelled", "NotAllowedError")
     })
@@ -230,6 +235,20 @@ describe("signApproval", () => {
     vi.stubGlobal("fetch", fetchMock)
     expect(failureCode(await signApproval(prepared))).toBe("cancelled")
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("says Face ID did not complete on an iPhone and the passkey prompt elsewhere", async () => {
+    stubWebAuthn(async () => null, IPHONE_UA)
+    vi.stubGlobal("fetch", vi.fn())
+    const onIphone = await signApproval(prepared)
+    expect(onIphone.ok === false && onIphone.error.message).toBe(
+      "Face ID did not complete."
+    )
+    stubWebAuthn(async () => null)
+    const elsewhere = await signApproval(prepared)
+    expect(elsewhere.ok === false && elsewhere.error.message).toBe(
+      "The passkey prompt did not complete."
+    )
   })
 
   it("sends nothing when the device returns no assertion", async () => {

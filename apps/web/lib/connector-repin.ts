@@ -6,6 +6,10 @@ import {
   type GateRepinRequest,
 } from "@eido/schemas"
 import { fromBase64url, toBase64url } from "@/lib/approval/challenge"
+import {
+  authenticatorCopy,
+  currentAuthenticatorLabel,
+} from "@/lib/authenticator"
 import { hashPayloadText } from "@/lib/approval/canonical"
 import { toAssertion } from "@/lib/approval/sign"
 
@@ -20,7 +24,6 @@ const MESSAGES = {
   unreadable: "The gate sent an unreadable answer. Nothing was changed.",
   mismatch:
     "The manifest the gate prepared does not match the drift shown. Nothing was signed.",
-  cancelled: "Face ID did not complete. The connector stays disabled.",
   refused: "The gate refused the signature. The old pin is unchanged.",
   unavailable: "The gate cannot re-pin this connector right now.",
 } as const
@@ -28,6 +31,9 @@ const MESSAGES = {
 const encoder = new TextEncoder()
 
 const fail = (message: string): RepinOutcome => ({ ok: false, message })
+
+const cancelledMessage = () =>
+  `${authenticatorCopy(currentAuthenticatorLabel()).subject} did not complete. The connector stays disabled.`
 
 const repinUrl = (connector: string) =>
   `/api/gate/connector-settings/${encodeURIComponent(connector)}/repin`
@@ -177,13 +183,13 @@ export async function repinConnector(
       signal,
     })
   } catch {
-    return fail(MESSAGES.cancelled)
+    return fail(cancelledMessage())
   }
   const assertion =
     credential instanceof PublicKeyCredential
       ? toAssertion(credential)
       : undefined
-  if (assertion === undefined) return fail(MESSAGES.cancelled)
+  if (assertion === undefined) return fail(cancelledMessage())
 
   const request: GateRepinRequest = {
     id: prepared.value.id,
