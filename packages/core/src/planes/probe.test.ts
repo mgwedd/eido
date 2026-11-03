@@ -47,6 +47,7 @@ describe("runProbe", () => {
           allowedHosts: [],
           conversationDigestIdleTtlMinutes: 60,
           digest: { sectionTokens: 2000 },
+          triage: {},
         },
       },
     })

@@ -131,6 +131,7 @@ describe("dataPlaneConfig", () => {
         allowedHosts: [],
         conversationDigestIdleTtlMinutes: 60,
         digest: { sectionTokens: 2000 },
+        triage: {},
       },
     })
   })
@@ -175,6 +176,7 @@ describe("coreApiConfig", () => {
       allowedHosts: ["eido.example.invalid", "127.0.0.1:9000"],
       conversationDigestIdleTtlMinutes: 60,
       digest: { sectionTokens: 2000 },
+      triage: {},
     })
   })
 
@@ -273,6 +275,18 @@ describe("coreApiConfig", () => {
         }),
       })
     ).toThrow("invalid regular expression")
+  })
+
+  test("reads the triage budget overrides and refuses malformed ones", () => {
+    expect(coreApiConfig({}).triage).toEqual({})
+    expect(
+      coreApiConfig({
+        EIDO_TRIAGE_CONFIG: '{"perDay":3,"ledgerOnlyBelow":0.4}',
+      }).triage
+    ).toEqual({ perDay: 3, ledgerOnlyBelow: 0.4 })
+    expect(() =>
+      coreApiConfig({ EIDO_TRIAGE_CONFIG: '{"perDay":-1}' })
+    ).toThrow("EIDO_TRIAGE_CONFIG")
   })
 
   test("requires a paired loopback model host and valid port", () => {
@@ -1467,6 +1481,65 @@ describe("starting the data plane", () => {
       plane.scheduleReplyObligations()
       await new Promise<void>((resolve) => setTimeout(resolve, 25))
       expect(listObligations(plane.db, { entityId: owner.id })).toHaveLength(2)
+    } finally {
+      await plane.close()
+    }
+  })
+
+  it("triages the reply obligations it creates at startup, with the card budget from configuration", async () => {
+    const env = servedEnv({
+      EIDO_REPLIES_CONFIG: JSON.stringify({ me: ["owner@example.com"] }),
+      EIDO_TRIAGE_CONFIG: JSON.stringify({ perDay: 0 }),
+    })
+    mkdirSync(env.EIDO_DATA_DIR, { recursive: true })
+    const seed = openDataDb(join(env.EIDO_DATA_DIR, DATA_DB_FILE))
+    const seedProfile = createProfileStore(seed, {
+      audit: () => Promise.resolve(),
+    })
+    const owner = await seedProfile.createEntity({
+      kind: "personal",
+      name: "Owner",
+      tag: "ME",
+    })
+    await seedProfile.setDefaultEntityId(owner.id)
+    ingestBatch(seed, {
+      connector: "gmail",
+      stream: "seed",
+      nextCursor: "1",
+      documents: [
+        {
+          sha256: "e".repeat(64),
+          source: "gmail",
+          sourceRef: "triage-message",
+          mime: "message/rfc822",
+          entityId: owner.id,
+          title: "Triage",
+          body: "Please reply to me.",
+          occurredAt: "2026-01-01T00:00:00.000Z",
+          headers: {
+            messageId: "<triage@example.invalid>",
+            threadId: "triage",
+          },
+          addresses: [
+            { role: "from", address: "partner@example.invalid" },
+            { role: "to", address: "owner@example.com" },
+          ],
+          mailFacts: { listUnsubscribe: false },
+        },
+      ],
+    })
+    await seedProfile.drain()
+    seed.close()
+    const plane = runDataPlane(dataPlaneConfig(env), env)
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
+      const events = plane.db
+        .prepare("SELECT kind, disposition, reason FROM events")
+        .all()
+      // Budget 0 from the environment: the reply event is recorded and goes to the digest.
+      expect(events).toEqual([
+        { kind: "reply-owed", disposition: "digest", reason: "budget" },
+      ])
     } finally {
       await plane.close()
     }
