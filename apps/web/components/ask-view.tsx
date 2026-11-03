@@ -21,6 +21,7 @@ import {
 } from "@eido/ui/components/input-group"
 import { Separator } from "@eido/ui/components/separator"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import { ASK_INPUT_ID, consumeAskFocus } from "@/lib/shortcuts"
 import {
   actionableFollowUps,
   answerParts,
@@ -315,12 +316,12 @@ export function AskScreen({
       >
         <FieldGroup>
           <Field data-disabled={busy}>
-            <FieldLabel className="sr-only" htmlFor="ask-question">
+            <FieldLabel className="sr-only" htmlFor={ASK_INPUT_ID}>
               Ask Eido
             </FieldLabel>
             <InputGroup className="h-auto min-h-14">
               <InputGroupInput
-                id="ask-question"
+                id={ASK_INPUT_ID}
                 ref={inputRef}
                 value={input}
                 maxLength={2000}
@@ -328,6 +329,15 @@ export function AskScreen({
                 placeholder="Ask about mail, calendar, files…"
                 className="min-h-14 text-base"
                 onChange={(event) => onInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    (event.metaKey || event.ctrlKey)
+                  ) {
+                    event.preventDefault()
+                    event.currentTarget.form?.requestSubmit()
+                  }
+                }}
                 onFocus={(event) =>
                   event.currentTarget.scrollIntoView({ block: "nearest" })
                 }
@@ -384,6 +394,9 @@ export function AskView() {
     return () => {
       for (const controller of pending) controller.abort()
     }
+  }, [])
+  React.useEffect(() => {
+    if (consumeAskFocus()) inputRef.current?.focus()
   }, [])
   React.useEffect(() => {
     if (state.status === "ready" || state.status === "error")

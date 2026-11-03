@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LogOut } from "lucide-react"
+import { Keyboard, LogOut } from "lucide-react"
 
 import {
   Sidebar,
@@ -15,7 +15,9 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@eido/ui/components/sidebar"
+import { ShortcutKeys, useOpenLegend } from "@/components/shortcuts-provider"
 import { isActive, NAV_ITEMS } from "@/lib/nav"
+import { keysOf } from "@/lib/shortcuts"
 
 function BrandBlock() {
   return (
@@ -33,6 +35,7 @@ function BrandBlock() {
 
 function AppSidebar() {
   const pathname = usePathname()
+  const openLegend = useOpenLegend()
 
   return (
     <Sidebar
@@ -47,7 +50,7 @@ function AppSidebar() {
           <SidebarGroupContent>
             <nav aria-label="Primary">
               <SidebarMenu>
-                {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+                {NAV_ITEMS.map(({ href, label, icon: Icon, shortcut }) => {
                   const active = isActive(pathname, href)
                   return (
                     <SidebarMenuItem key={href}>
@@ -63,6 +66,11 @@ function AppSidebar() {
                       >
                         <Icon aria-hidden />
                         <span>{label}</span>
+                        {shortcut ? (
+                          <span className="ml-auto">
+                            <ShortcutKeys keys={keysOf(shortcut)} />
+                          </span>
+                        ) : null}
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   )
@@ -74,6 +82,15 @@ function AppSidebar() {
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton className="min-h-10" onClick={openLegend}>
+              <Keyboard aria-hidden />
+              <span>Keyboard shortcuts</span>
+              <span className="ml-auto">
+                <ShortcutKeys keys={["?"]} />
+              </span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             {/* A plain link: sign-out must be a full navigation, never a prefetch. */}
             <SidebarMenuButton

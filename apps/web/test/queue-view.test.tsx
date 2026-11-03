@@ -78,8 +78,8 @@ describe("Queue states", () => {
     expect(view.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not load the payload."
     )
-    const approve = [...view.querySelectorAll("button")].find(
-      (b) => b.textContent === "Approve"
+    const approve = [...view.querySelectorAll("button")].find((b) =>
+      b.textContent?.startsWith("Approve")
     )
     expect(approve?.disabled).toBe(true)
   })

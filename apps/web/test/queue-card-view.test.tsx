@@ -150,7 +150,9 @@ async function render(): Promise<HTMLElement> {
 }
 
 const button = (label: string) =>
-  [...document.querySelectorAll("button")].find((b) => b.textContent === label)
+  [...document.querySelectorAll("button")].find((b) =>
+    b.textContent?.startsWith(label)
+  )
 
 async function click(label: string) {
   act(() => {

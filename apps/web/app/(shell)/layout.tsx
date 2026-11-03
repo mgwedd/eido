@@ -2,6 +2,7 @@ import { SidebarProvider } from "@eido/ui/components/sidebar"
 import { AppSidebar } from "@/components/app-sidebar"
 import { ConnectionBanner } from "@/components/connection-banner"
 import { PhoneTabBar } from "@/components/phone-tab-bar"
+import { ShortcutsProvider } from "@/components/shortcuts-provider"
 
 export default function ShellLayout({
   children,
@@ -19,18 +20,20 @@ export default function ShellLayout({
       >
         Skip to content
       </a>
-      <AppSidebar />
-      <PhoneTabBar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <ConnectionBanner />
-        <main
-          id="main"
-          tabIndex={-1}
-          className="flex flex-1 flex-col gap-5 p-4 pb-[calc(52px+env(safe-area-inset-bottom)+1rem)] outline-none md:px-8 md:pt-6 md:pb-12"
-        >
-          {children}
-        </main>
-      </div>
+      <ShortcutsProvider>
+        <AppSidebar />
+        <PhoneTabBar />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <ConnectionBanner />
+          <main
+            id="main"
+            tabIndex={-1}
+            className="flex flex-1 flex-col gap-5 p-4 pb-[calc(52px+env(safe-area-inset-bottom)+1rem)] outline-none md:px-8 md:pt-6 md:pb-12"
+          >
+            {children}
+          </main>
+        </div>
+      </ShortcutsProvider>
     </SidebarProvider>
   )
 }
