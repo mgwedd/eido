@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Connector } from "@/lib/connectors"
 import type { ObligationItem } from "@/lib/ledger"
 import {
-  DRAFT_REPLY_URL,
   getPartialCoverageNotice,
   getRepliesUrl,
   getReplySubject,
@@ -180,145 +179,113 @@ describe("lib/replies", () => {
       vi.unstubAllGlobals()
     })
 
-    it("POSTs to /api/ask with threadId and returns intentId", async () => {
-      let calledUrl = ""
-      let calledBody: unknown = null
-      let calledMethod = ""
+    const DRAFT_BODY = {
+      intentId: "intent-9",
+      tier: "auto",
+      state: "approved",
+      activityHref: "/activity?intent=intent-9",
+    }
 
-      vi.stubGlobal(
-        "fetch",
-        vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-          calledUrl = String(input)
-          calledMethod = init?.method ?? ""
-          calledBody = JSON.parse(String(init?.body))
-          return Promise.resolve(
-            new Response(JSON.stringify({ intentId: "intent-123" }), {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            })
-          )
-        })
+    function stubDraftFetch(status: number, body: unknown) {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          new Response(typeof body === "string" ? body : JSON.stringify(body), {
+            status,
+            headers: { "content-type": "application/json" },
+          })
+        )
       )
+      vi.stubGlobal("fetch", fetchMock)
+      return fetchMock
+    }
 
-      const result = await requestDraftReply({ threadId: "thread-xyz" })
-      expect(calledUrl).toBe(DRAFT_REPLY_URL)
-      expect(calledMethod).toBe("POST")
-      expect(calledBody).toEqual({
-        threadId: "thread-xyz",
-        thread_id: "thread-xyz",
+    it("POSTs the obligation id to core's draft route through the proxy", async () => {
+      const fetchMock = stubDraftFetch(201, { ...DRAFT_BODY, created: true })
+
+      await requestDraftReply(7)
+
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [
+        string,
+        RequestInit,
+      ]
+      expect(url).toBe("/api/core/replies/draft")
+      expect(init.method).toBe("POST")
+      expect(
+        JSON.parse(typeof init.body === "string" ? init.body : "")
+      ).toEqual({ obligationId: 7 })
+    })
+
+    it("201 is a new saved draft linking to its Activity entry", async () => {
+      stubDraftFetch(201, { ...DRAFT_BODY, created: true })
+      expect(await requestDraftReply(7)).toEqual({
+        status: "saved",
+        activityHref: "/activity?intent=intent-9",
+        created: true,
       })
-      expect(result).toEqual({ ok: true, intentId: "intent-123" })
     })
 
-    it("handles id from response data.id or data.intent.id", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(() =>
-          Promise.resolve(
-            new Response(
-              JSON.stringify({
-                id: "gate-intent-456",
-                tier: "auto",
-                state: "approved",
-              }),
-              {
-                status: 200,
-                headers: { "content-type": "application/json" },
-              }
-            )
-          )
-        )
-      )
-
-      const res1 = await requestDraftReply({ threadId: "t-1" })
-      expect(res1).toEqual({ ok: true, intentId: "gate-intent-456" })
-
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(() =>
-          Promise.resolve(
-            new Response(
-              JSON.stringify({
-                intent: { id: "nested-789", kind: "email.draft" },
-              }),
-              {
-                status: 200,
-                headers: { "content-type": "application/json" },
-              }
-            )
-          )
-        )
-      )
-
-      const res2 = await requestDraftReply({ threadId: "t-2" })
-      expect(res2).toEqual({ ok: true, intentId: "nested-789" })
-    })
-
-    it("handles custom url override", async () => {
-      let calledUrl = ""
-      vi.stubGlobal(
-        "fetch",
-        vi.fn((input: RequestInfo | URL) => {
-          calledUrl = String(input)
-          return Promise.resolve(
-            new Response(JSON.stringify({ intentId: "i-custom" }), {
-              status: 200,
-            })
-          )
-        })
-      )
-
-      const res = await requestDraftReply({
-        threadId: "t-custom",
-        url: "/api/core/ask",
+    it("200 is the thread's existing draft, not a second one", async () => {
+      stubDraftFetch(200, { ...DRAFT_BODY, created: false })
+      expect(await requestDraftReply(7)).toEqual({
+        status: "saved",
+        activityHref: "/activity?intent=intent-9",
+        created: false,
       })
-      expect(calledUrl).toBe("/api/core/ask")
-      expect(res.ok).toBe(true)
     })
 
-    it("returns ok: false on HTTP error status", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(() =>
-          Promise.resolve(
-            new Response(JSON.stringify({ error: "Server down" }), {
-              status: 503,
-            })
-          )
-        )
-      )
+    it.each([
+      [404, "not_found"],
+      [422, "invalid"],
+      [409, "invalid_transition"],
+      [409, "connector_paused"],
+      [422, "no_draft"],
+      [503, "busy"],
+      [503, "gate_unavailable"],
+    ] as const)(
+      "%i %s is a failure carrying core's code",
+      async (status, code) => {
+        stubDraftFetch(status, { error: { code, message: "core's words" } })
+        expect(await requestDraftReply(7)).toEqual({
+          status: "failed",
+          reason: code,
+        })
+      }
+    )
 
-      const result = await requestDraftReply({ threadId: "thread-xyz" })
-      expect(result.ok).toBe(false)
-      expect(result.error).toContain("503")
+    it("401 is unauthenticated", async () => {
+      stubDraftFetch(401, { error: "Unauthorized" })
+      expect(await requestDraftReply(7)).toEqual({
+        status: "failed",
+        reason: "unauthenticated",
+      })
     })
 
-    it("returns ok: false on network rejection", async () => {
+    it("a network failure is not a saved draft", async () => {
       vi.stubGlobal(
         "fetch",
-        vi.fn(() => Promise.reject(new Error("Connection refused")))
+        vi.fn(() => Promise.reject(new TypeError("network")))
       )
-
-      const result = await requestDraftReply({ threadId: "thread-xyz" })
-      expect(result.ok).toBe(false)
-      expect(result.error).toBe("Connection refused")
+      expect(await requestDraftReply(7)).toEqual({
+        status: "failed",
+        reason: "network",
+      })
     })
 
-    it("handles abort signal cleanly", async () => {
-      const controller = new AbortController()
-      controller.abort()
+    it("a 2xx body that is not a reply-draft response is not a saved draft", async () => {
+      stubDraftFetch(201, { id: "intent-9" })
+      expect(await requestDraftReply(7)).toEqual({
+        status: "failed",
+        reason: "unreadable",
+      })
+    })
 
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(() => Promise.reject(new DOMException("Aborted", "AbortError")))
-      )
-
-      const result = await requestDraftReply(
-        { threadId: "thread-xyz" },
-        controller.signal
-      )
-      expect(result.ok).toBe(false)
-      expect(result.error).toBe("Aborted")
+    it("an error status with an unreadable body is a failure", async () => {
+      stubDraftFetch(502, "<html>bad gateway</html>")
+      expect(await requestDraftReply(7)).toEqual({
+        status: "failed",
+        reason: "unreadable",
+      })
     })
   })
 

@@ -1,3 +1,9 @@
+import {
+  validateCoreApiError,
+  validateCoreApiReplyDraftResponse,
+  type CoreApiError,
+  type CoreApiReplyDraftRequest,
+} from "@eido/schemas"
 import type { Connector } from "@/lib/connectors"
 import type { ObligationItem } from "@/lib/ledger"
 
@@ -100,68 +106,108 @@ export function getRepliesUrl(entity?: string): string {
   return "/ledger/replies"
 }
 
-export const DRAFT_REPLY_URL = "/api/ask"
+/** Core's draft-reply route, reached through the web's core proxy. */
+export const DRAFT_REPLY_URL = "/api/core/replies/draft"
 
-export interface DraftReplyRequest {
-  threadId: string
-  url?: string
-}
-
-export interface DraftReplyResult {
-  ok: boolean
-  intentId?: string
-  error?: string
-}
+export type DraftReplyErrorCode = CoreApiError["error"]["code"]
 
 /**
- * Asks Eido for a draft reply through the ask pipeline.
- * Creates an email draft intent (draft tier, never sent).
+ * What the row shows for one draft request. `saved` comes only from a 200 or 201 whose body is a
+ * CoreApiReplyDraftResponse; every other answer is `failed` and the row stays retryable.
+ */
+export type DraftReplyOutcome =
+  | { status: "saved"; activityHref: string; created: boolean }
+  | {
+      status: "failed"
+      reason: DraftReplyErrorCode | "unauthenticated" | "network" | "unreadable"
+    }
+
+/** One row's draft state in the view. A row with no entry is idle. */
+export type DraftReplyState =
+  | { status: "pending" }
+  | { status: "saved"; activityHref: string }
+  | { status: "failed"; reason: DraftReplyFailure }
+
+export type DraftReplyFailure = Extract<
+  DraftReplyOutcome,
+  { status: "failed" }
+>["reason"]
+
+/** Where "Draft saved" leads when the list says a draft exists but not which one. */
+export const ACTIVITY_URL = "/activity"
+
+/** Where a paused connector is resumed. */
+export const CONNECTORS_URL = "/connectors"
+
+/**
+ * Asks core to draft a reply for an owed-reply obligation. Core proposes one `email.draft`
+ * intent (draft tier, never sent, no approval) and answers 201, or 200 with the existing one when
+ * the thread already has a live draft.
  */
 export async function requestDraftReply(
-  request: DraftReplyRequest,
-  signal?: AbortSignal
-): Promise<DraftReplyResult> {
-  const url = request.url ?? DRAFT_REPLY_URL
+  obligationId: number
+): Promise<DraftReplyOutcome> {
+  let response: Response
   try {
-    const response = await fetch(url, {
+    response = await fetch(DRAFT_REPLY_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
       cache: "no-store",
-      body: JSON.stringify({
-        threadId: request.threadId,
-        thread_id: request.threadId,
-      }),
-      signal,
+      body: JSON.stringify({ obligationId } satisfies CoreApiReplyDraftRequest),
     })
+  } catch {
+    return { status: "failed", reason: "network" }
+  }
 
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: `Request failed with status ${response.status}`,
-      }
-    }
+  if (response.status === 401) {
+    return { status: "failed", reason: "unauthenticated" }
+  }
 
-    const data = (await response.json()) as Record<string, unknown>
-    const intentId =
-      typeof data["intentId"] === "string"
-        ? data["intentId"]
-        : typeof data["id"] === "string"
-          ? data["id"]
-          : typeof (data["intent"] as Record<string, unknown> | undefined)?.[
-                "id"
-              ] === "string"
-            ? String((data["intent"] as Record<string, unknown>)["id"])
-            : undefined
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    return { status: "failed", reason: "unreadable" }
+  }
 
-    return { ok: true, intentId }
-  } catch (err) {
-    if (signal?.aborted) {
-      return { ok: false, error: "Aborted" }
-    }
+  if (response.status === 200 || response.status === 201) {
+    const parsed = validateCoreApiReplyDraftResponse(body)
+    if (!parsed.ok) return { status: "failed", reason: "unreadable" }
     return {
-      ok: false,
-      error: err instanceof Error ? err.message : "Network error",
+      status: "saved",
+      activityHref: parsed.value.activityHref,
+      created: parsed.value.created,
     }
+  }
+
+  const error = validateCoreApiError(body)
+  if (!error.ok) return { status: "failed", reason: "unreadable" }
+  return { status: "failed", reason: error.value.error.code }
+}
+
+/** The row's message for a failed draft. Core's own message is not shown: it is for logs. */
+export function draftFailureMessage(reason: DraftReplyFailure): string {
+  switch (reason) {
+    case "connector_paused":
+      return "Mail connector paused. Nothing was drafted."
+    case "no_draft":
+      return "Eido could not write a draft for this thread. Try again."
+    case "busy":
+      return "Too many drafts this hour. Try again later."
+    case "gate_unavailable":
+      return "Gate unreachable. Nothing was saved. Try again."
+    case "invalid_transition":
+      return "This reply is no longer open. Reload the page."
+    case "invalid":
+      return "This thread cannot be drafted from here."
+    case "not_found":
+      return "Cannot draft this reply: it may be gone, or no local model is set up."
+    case "unauthenticated":
+      return "Sign in again to draft a reply."
+    case "network":
+      return "Connection lost. Nothing was saved. Try again."
+    default:
+      return "Draft failed. Nothing was saved. Try again."
   }
 }
 
@@ -181,4 +227,3 @@ export function getPartialCoverageNotice(
   }
   return null
 }
-

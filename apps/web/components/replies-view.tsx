@@ -21,7 +21,7 @@ import {
   TableRow,
 } from "@eido/ui/components/table"
 import { cn } from "@eido/ui/lib/utils"
-import { intentHref } from "@/lib/activity"
+import { DraftReplyAction } from "@/components/draft-reply-action"
 import { loadConnectors, type Connector } from "@/lib/connectors"
 import { loadLedgerObligations, type ObligationItem } from "@/lib/ledger"
 import {
@@ -31,6 +31,7 @@ import {
   partitionReplies,
   requestDraftReply,
   sortReplies,
+  type DraftReplyState,
 } from "@/lib/replies"
 import {
   formatDueText,
@@ -110,6 +111,15 @@ function EntityBadge({ entity }: { entity: ObligationItem["entity"] }) {
   )
 }
 
+function subscribeOnline(onChange: () => void): () => void {
+  window.addEventListener("online", onChange)
+  window.addEventListener("offline", onChange)
+  return () => {
+    window.removeEventListener("online", onChange)
+    window.removeEventListener("offline", onChange)
+  }
+}
+
 export function RepliesView({
   initialEntity = "all",
   now = new Date(),
@@ -126,45 +136,18 @@ export function RepliesView({
   const [error, setError] = React.useState<string | null>(null)
   const [reloadToken, setReloadToken] = React.useState<number>(0)
 
-  const [isOffline, setIsOffline] = React.useState<boolean>(() => {
-    if (initialIsOffline !== undefined) return initialIsOffline
-    if (
-      typeof navigator !== "undefined" &&
-      typeof navigator.onLine === "boolean"
-    ) {
-      return !navigator.onLine
-    }
-    return false
-  })
+  const browserOffline = React.useSyncExternalStore(
+    subscribeOnline,
+    () => !navigator.onLine,
+    () => false
+  )
+  const isOffline = initialIsOffline ?? browserOffline
 
-  const [draftingIds, setDraftingIds] = React.useState<Record<number, boolean>>(
+  const [drafts, setDrafts] = React.useState<Record<number, DraftReplyState>>(
     {}
   )
-  const [savedDrafts, setSavedDrafts] = React.useState<
-    Record<number, { intentId?: string }>
-  >({})
-
-  // Offline detection
-  React.useEffect(() => {
-    if (initialIsOffline !== undefined) {
-      setIsOffline(initialIsOffline)
-      return
-    }
-    const updateOnline = () => {
-      if (
-        typeof navigator !== "undefined" &&
-        typeof navigator.onLine === "boolean"
-      ) {
-        setIsOffline(!navigator.onLine)
-      }
-    }
-    window.addEventListener("online", updateOnline)
-    window.addEventListener("offline", updateOnline)
-    return () => {
-      window.removeEventListener("online", updateOnline)
-      window.removeEventListener("offline", updateOnline)
-    }
-  }, [initialIsOffline])
+  // Rows with a request in flight. A ref, so a second click in the same tick finds it.
+  const inFlight = React.useRef<Set<number>>(new Set())
 
   // Load connectors
   React.useEffect(() => {
@@ -234,34 +217,22 @@ export function RepliesView({
 
   const handleDraftReply = React.useCallback(
     async (row: ObligationItem) => {
-      if (
-        isOffline ||
-        draftingIds[row.id] ||
-        row.hasDraftIntent ||
-        savedDrafts[row.id]
-      ) {
+      if (isOffline || row.hasDraftIntent || inFlight.current.has(row.id)) {
         return
       }
-      setDraftingIds((prev) => ({ ...prev, [row.id]: true }))
-      const threadId =
-        (row as { threadId?: string }).threadId ?? row.source.documentId
-
-      const result = await requestDraftReply({ threadId })
-
-      setDraftingIds((prev) => {
-        const next = { ...prev }
-        delete next[row.id]
-        return next
-      })
-
-      if (result.ok) {
-        setSavedDrafts((prev) => ({
-          ...prev,
-          [row.id]: { intentId: result.intentId },
-        }))
-      }
+      inFlight.current.add(row.id)
+      setDrafts((prev) => ({ ...prev, [row.id]: { status: "pending" } }))
+      const outcome = await requestDraftReply(row.id)
+      inFlight.current.delete(row.id)
+      setDrafts((prev) => ({
+        ...prev,
+        [row.id]:
+          outcome.status === "saved"
+            ? { status: "saved", activityHref: outcome.activityHref }
+            : { status: "failed", reason: outcome.reason },
+      }))
     },
-    [isOffline, draftingIds, savedDrafts]
+    [isOffline]
   )
 
   const partialCoverageNotice = React.useMemo(() => {
@@ -468,7 +439,7 @@ export function RepliesView({
                           </TableHead>
                           <TableHead
                             scope="col"
-                            className="px-4 py-2.5 text-xs text-right"
+                            className="px-4 py-2.5 text-right text-xs"
                           >
                             <span className="sr-only">Action</span>
                           </TableHead>
@@ -485,12 +456,6 @@ export function RepliesView({
                             row.source.span,
                             currentRepliesUrl
                           )
-                          const isDrafting = Boolean(draftingIds[row.id])
-                          const saved = savedDrafts[row.id]
-                          const hasDraft = row.hasDraftIntent || Boolean(saved)
-                          const draftHref = saved?.intentId
-                            ? intentHref(saved.intentId)
-                            : "/activity"
 
                           return (
                             <TableRow key={row.id}>
@@ -519,35 +484,13 @@ export function RepliesView({
                                 {dueInfo.text}
                               </TableCell>
                               <TableCell className="px-4 py-3 text-right">
-                                {hasDraft ? (
-                                  <Link
-                                    href={draftHref}
-                                    className="inline-flex min-h-[36px] items-center text-xs font-medium text-primary underline underline-offset-4 hover:opacity-80"
-                                  >
-                                    Draft saved
-                                  </Link>
-                                ) : (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={isOffline || isDrafting}
-                                    title={
-                                      isOffline
-                                        ? "Unavailable offline"
-                                        : undefined
-                                    }
-                                    onClick={() => void handleDraftReply(row)}
-                                    className="min-h-[36px]"
-                                  >
-                                    {isDrafting ? "Drafting…" : "Draft reply"}
-                                    {isOffline ? (
-                                      <span className="sr-only">
-                                        {" "}
-                                        (unavailable offline)
-                                      </span>
-                                    ) : null}
-                                  </Button>
-                                )}
+                                <DraftReplyAction
+                                  state={drafts[row.id]}
+                                  hasDraftIntent={row.hasDraftIntent === true}
+                                  isOffline={isOffline}
+                                  size="desktop"
+                                  onDraft={() => void handleDraftReply(row)}
+                                />
                               </TableCell>
                             </TableRow>
                           )
@@ -571,12 +514,6 @@ export function RepliesView({
                         row.source.span,
                         currentRepliesUrl
                       )
-                      const isDrafting = Boolean(draftingIds[row.id])
-                      const saved = savedDrafts[row.id]
-                      const hasDraft = row.hasDraftIntent || Boolean(saved)
-                      const draftHref = saved?.intentId
-                        ? intentHref(saved.intentId)
-                        : "/activity"
 
                       return (
                         <li key={row.id} className="min-h-[44px] px-4 py-3">
@@ -606,35 +543,13 @@ export function RepliesView({
                               </div>
                             </Link>
                             <div className="flex shrink-0 items-center">
-                              {hasDraft ? (
-                                <Link
-                                  href={draftHref}
-                                  className="inline-flex min-h-[44px] items-center text-xs font-medium text-primary underline underline-offset-4 hover:opacity-80"
-                                >
-                                  Draft saved
-                                </Link>
-                              ) : (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  disabled={isOffline || isDrafting}
-                                  title={
-                                    isOffline
-                                      ? "Unavailable offline"
-                                      : undefined
-                                  }
-                                  onClick={() => void handleDraftReply(row)}
-                                  className="min-h-[44px] px-3 font-medium"
-                                >
-                                  {isDrafting ? "Drafting…" : "Draft reply"}
-                                  {isOffline ? (
-                                    <span className="sr-only">
-                                      {" "}
-                                      (unavailable offline)
-                                    </span>
-                                  ) : null}
-                                </Button>
-                              )}
+                              <DraftReplyAction
+                                state={drafts[row.id]}
+                                hasDraftIntent={row.hasDraftIntent === true}
+                                isOffline={isOffline}
+                                size="phone"
+                                onDraft={() => void handleDraftReply(row)}
+                              />
                             </div>
                           </div>
                         </li>
@@ -796,12 +711,6 @@ export function RepliesView({
               )}
             </Card>
           </div>
-
-          {/* Footer note */}
-          <p className="text-xs text-muted-foreground">
-            Draft reply asks Eido for a draft. It lands in the queue; nothing is
-            sent until you approve it.
-          </p>
         </div>
       )}
     </div>
