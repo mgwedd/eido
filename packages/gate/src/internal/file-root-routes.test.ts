@@ -2,7 +2,7 @@ import type { GateFileRoot, GateFileRoots } from "@eido/schemas"
 import { describe, expect, it } from "vitest"
 import { openControlDb } from "./control-db"
 import { prepareControlApproval } from "./control-approvals"
-import { fileRootControlRoute } from "./file-root-routes"
+import { fileRootRoute } from "./file-root-routes"
 import type { GateRequest } from "./http"
 import { controlAuthorization, WEBAUTHN } from "./test-fixtures"
 import { approvedFileRoot, prepareFileRoots } from "./files/file-roots"
@@ -40,7 +40,7 @@ function request(method: string, path: string, value?: unknown): GateRequest {
 describe("file root control routes", () => {
   it("returns helper canonical paths and identities in the signed challenge", async () => {
     const db = openControlDb(":memory:")
-    const reply = await fileRootControlRoute(
+    const reply = await fileRootRoute(
       request("POST", "/file-roots/prepare", REQUEST),
       { db, fileHelper: helper }
     )
@@ -62,7 +62,7 @@ describe("file root control routes", () => {
 
   it("refuses a root the helper cannot identify", async () => {
     const db = openControlDb(":memory:")
-    const reply = await fileRootControlRoute(
+    const reply = await fileRootRoute(
       request("POST", "/file-roots/prepare", REQUEST),
       {
         db,
@@ -86,7 +86,7 @@ describe("file root control routes", () => {
   it("treats response-shaped JSON as invalid request data", async () => {
     const db = openControlDb(":memory:")
     const crafted = { status: 200, body: { accepted: true } }
-    const reply = await fileRootControlRoute(
+    const reply = await fileRootRoute(
       request("POST", "/file-roots/prepare", crafted),
       { db, fileHelper: helper }
     )
@@ -111,7 +111,7 @@ describe("file root control routes", () => {
     )
     const crossTargetAuth = controlAuthorization(db, otherTarget)
     const complete = (roots: unknown, authorization: unknown) =>
-      fileRootControlRoute(
+      fileRootRoute(
         request("POST", "/file-roots/complete", { roots, authorization }),
         { db, webAuthn: WEBAUTHN }
       )
@@ -138,17 +138,13 @@ describe("file root control routes", () => {
       body: () => Promise.resolve({ ok: false }),
     }
     const state = { db, fileHelper: helper }
-    expect((await fileRootControlRoute(body("{not json"), state))?.status).toBe(
-      400
-    )
-    expect((await fileRootControlRoute(oversize, state))?.status).toBe(413)
+    expect((await fileRootRoute(body("{not json"), state))?.status).toBe(400)
+    expect((await fileRootRoute(oversize, state))?.status).toBe(413)
     const oversizeComplete: GateRequest = {
       ...request("POST", "/file-roots/complete"),
       body: () => Promise.resolve({ ok: false }),
     }
-    expect((await fileRootControlRoute(oversizeComplete, state))?.status).toBe(
-      413
-    )
+    expect((await fileRootRoute(oversizeComplete, state))?.status).toBe(413)
     db.close()
   })
 
@@ -156,23 +152,21 @@ describe("file root control routes", () => {
     const db = openControlDb(":memory:")
     expect(
       (
-        await fileRootControlRoute(
-          request("POST", "/file-roots/prepare", REQUEST),
-          { db }
-        )
+        await fileRootRoute(request("POST", "/file-roots/prepare", REQUEST), {
+          db,
+        })
       )?.status
     ).toBe(503)
     const complete = { roots: ROOTS, authorization: {} }
     expect(
       (
-        await fileRootControlRoute(
-          request("POST", "/file-roots/complete", complete),
-          { db }
-        )
+        await fileRootRoute(request("POST", "/file-roots/complete", complete), {
+          db,
+        })
       )?.status
     ).toBe(503)
     expect(
-      await fileRootControlRoute(request("GET", "/file-roots/prepare"), { db })
+      await fileRootRoute(request("GET", "/file-roots/prepare"), { db })
     ).toBeUndefined()
     db.close()
   })
@@ -180,7 +174,7 @@ describe("file root control routes", () => {
   it("rejects a completion without roots, authorization or valid roots", async () => {
     const db = openControlDb(":memory:")
     const post = (value: unknown) =>
-      fileRootControlRoute(request("POST", "/file-roots/complete", value), {
+      fileRootRoute(request("POST", "/file-roots/complete", value), {
         db,
         webAuthn: WEBAUTHN,
       })

@@ -78,6 +78,7 @@ describe("classifyRequest", () => {
     expect(classify("/api/gate/passkey/enroll", { method: "GET" })).toBe(
       "network-only"
     )
+    expect(classify("/api/gate/file-roots")).toBe("network-only")
   })
 
   test("writes, cross-origin, probes and the worker itself bypass the cache", () => {

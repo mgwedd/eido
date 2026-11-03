@@ -38,6 +38,7 @@ import {
 } from "./connector-health"
 import { checkDrift, manifestHash } from "./connectors"
 import { payloadHash } from "./canonical"
+import { prepareControlApproval } from "./control-approvals"
 import { loadPolicy, SHIPPED_DEFAULT_PATH } from "./policy"
 import { propose } from "./intents"
 import { revokeCredential } from "./credentials"
@@ -912,6 +913,8 @@ describe("phoneHandler: listener rules", () => {
     ["POST", "/audit"],
     ["POST", "/intents"],
     ["GET", "/intents"],
+    // File reads stay on the data plane; only the allowed-folder ceremony and list are here.
+    ["POST", "/files"],
   ]
 
   it.each(foreign)("404s %s %s without a session", async (method, path) => {
@@ -992,6 +995,9 @@ describe("phoneHandler: session", () => {
     ["POST", "/approvals/x/decision"],
     ["POST", "/approvals/x/edit"],
     ["POST", "/executions/x/undo"],
+    ["GET", "/file-roots"],
+    ["POST", "/file-roots/prepare"],
+    ["POST", "/file-roots/complete"],
   ]
 
   it.each(gated)(
@@ -2169,5 +2175,325 @@ describe("phoneHandler: connector re-pin (#97)", () => {
       body: { manifest: reviewed() },
     })
     expect(reply.status).toBe(400)
+  })
+})
+
+describe("phoneHandler: allowed folders (#574)", () => {
+  const CANONICAL = {
+    path: "/srv/owner/notes",
+    dev: "16777230",
+    ino: "4242",
+    trashDir: ".eido-trash",
+  }
+  const OTHER = {
+    path: "/srv/owner/scans",
+    dev: "16777230",
+    ino: "4343",
+    trashDir: ".eido-trash",
+  }
+  // The phone names a folder as the owner typed it; the gate's helper resolves it.
+  const REQUESTED = {
+    roots: [
+      { id: "notes", path: "/srv/owner/./notes/", trashDir: ".eido-trash" },
+    ],
+  }
+  const STORED = { roots: [{ id: "notes", root: CANONICAL }] }
+
+  type Prepared = {
+    id: string
+    purpose: string
+    target: string
+    payloadHash: string
+    nonce: string
+    challenge: string
+    roots: unknown
+  }
+
+  function isPrepared(value: unknown): value is Prepared {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      ["id", "purpose", "target", "payloadHash", "nonce", "challenge"].every(
+        (key) => typeof Reflect.get(value, key) === "string"
+      ) &&
+      "roots" in value
+    )
+  }
+
+  // Built from the spec in docs/gate-signed-control-changes.md, not by the gate's own code.
+  const challengeFor = (
+    target: string,
+    p: Omit<Prepared, "roots" | "challenge" | "purpose" | "target">
+  ) =>
+    createHash("sha256")
+      .update(
+        JSON.stringify([
+          "eido.control.v1",
+          "policy.set",
+          target,
+          p.id,
+          p.payloadHash,
+          p.nonce,
+        ])
+      )
+      .digest("base64url")
+
+  const identified: string[] = []
+
+  beforeEach(() => {
+    identified.length = 0
+    state.fileHelper = (request) => {
+      if (request.op !== "identify")
+        return Promise.resolve({
+          ok: false,
+          code: "invalid_path",
+          message: "only identify is expected",
+        })
+      identified.push(request.path)
+      const root = request.path.includes("scans") ? OTHER : CANONICAL
+      return Promise.resolve({
+        ok: true,
+        op: "identify",
+        canonicalPath: root.path,
+        dev: root.dev,
+        ino: root.ino,
+      })
+    }
+  })
+
+  async function prepare(cookie: string, body: unknown = REQUESTED) {
+    const reply = await call("POST", "/file-roots/prepare", { cookie, body })
+    if (reply.status !== 200 || !isPrepared(reply.body))
+      throw new Error(`file roots not prepared: ${reply.status}`)
+    return reply.body
+  }
+
+  function signed(prepared: Prepared, target = "file-roots") {
+    return {
+      id: prepared.id,
+      nonce: prepared.nonce,
+      assertion: assertion(auth, challengeFor(target, prepared)),
+    }
+  }
+
+  async function stored(cookie: string): Promise<unknown> {
+    const reply = await call("GET", "/file-roots", { cookie })
+    expect(reply.status).toBe(200)
+    return reply.body
+  }
+
+  function rootChanges(): number {
+    return auditRows(s.db).filter((r) => r.action === "files.roots.changed")
+      .length
+  }
+
+  // The no-cookie and forged-cookie cases run with the other gated routes above.
+  it("401s an expired session before the helper is asked anything", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    at = new Date(START.getTime() + 13 * HOUR)
+    const reply = await call("POST", "/file-roots/prepare", {
+      cookie,
+      body: REQUESTED,
+    })
+    expect(reply.status).toBe(401)
+    expect(identified).toEqual([])
+  })
+
+  it("returns no roots before any are approved", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    expect(await stored(cookie)).toEqual({ roots: [] })
+  })
+
+  it("prepares over the helper's canonical path and identity, not the path the phone sent", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const prepared = await prepare(cookie)
+    expect(identified).toEqual(["/srv/owner/./notes/"])
+    expect(prepared).toMatchObject({
+      purpose: "policy.set",
+      target: "file-roots",
+      roots: STORED,
+    })
+    expect(prepared.challenge).toBe(challengeFor("file-roots", prepared))
+    expect(JSON.stringify(prepared)).not.toContain("/./notes/")
+    expect(await stored(cookie)).toEqual({ roots: [] })
+  })
+
+  it("answers 503 when the gate has no file helper, and prepares nothing", async () => {
+    delete state.fileHelper
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("POST", "/file-roots/prepare", {
+      cookie,
+      body: REQUESTED,
+    })
+    expect([reply.status, code(reply)]).toEqual([503, "unavailable"])
+    expect(
+      s.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM control_approvals WHERE target = 'file-roots'"
+        )
+        .get()?.["n"]
+    ).toBe(0)
+  })
+
+  it("refuses a prepare body with fields beyond id, path and trashDir", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("POST", "/file-roots/prepare", {
+      cookie,
+      body: {
+        roots: [{ ...REQUESTED.roots[0], dev: "1", ino: "2" }],
+      },
+    })
+    expect(reply.status).toBe(400)
+    expect(identified).toEqual([])
+  })
+
+  it("stores the roots and audits the change on a valid owner signature", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const prepared = await prepare(cookie)
+    const done = await call("POST", "/file-roots/complete", {
+      cookie,
+      body: { roots: prepared.roots, authorization: signed(prepared) },
+    })
+    expect([done.status, done.body]).toEqual([200, { saved: true }])
+    expect(await stored(cookie)).toEqual(STORED)
+    const changed = auditRows(s.db).filter(
+      (r) => r.action === "files.roots.changed"
+    )
+    expect(changed).toMatchObject([{ actor: "approver", target: "file-roots" }])
+    expect(JSON.stringify(auditRows(s.db))).not.toContain(CANONICAL.path)
+  })
+
+  it("stores nothing for an unsigned completion", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const prepared = await prepare(cookie)
+    for (const authorization of [
+      {},
+      { id: prepared.id, nonce: prepared.nonce },
+    ]) {
+      const reply = await call("POST", "/file-roots/complete", {
+        cookie,
+        body: { roots: prepared.roots, authorization },
+      })
+      expect(reply.status).toBe(409)
+    }
+    expect(await stored(cookie)).toEqual({ roots: [] })
+    expect(rootChanges()).toBe(0)
+  })
+
+  it("stores nothing for a signature over another challenge or other roots", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const prepared = await prepare(cookie)
+    const overOther = await call("POST", "/file-roots/complete", {
+      cookie,
+      body: {
+        roots: prepared.roots,
+        authorization: {
+          id: prepared.id,
+          nonce: prepared.nonce,
+          assertion: assertion(auth, "A".repeat(43)),
+        },
+      },
+    })
+    const changedRoots = await call("POST", "/file-roots/complete", {
+      cookie,
+      body: {
+        roots: { roots: [{ id: "notes", root: OTHER }] },
+        authorization: signed(prepared),
+      },
+    })
+    expect([overOther.status, changedRoots.status]).toEqual([409, 409])
+    expect(await stored(cookie)).toEqual({ roots: [] })
+    expect(rootChanges()).toBe(0)
+  })
+
+  it("stores nothing for an authorization of another policy target", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    await prepare(cookie)
+    const permissions = prepareControlApproval(
+      s.db,
+      "policy.set",
+      "permissions",
+      STORED
+    )
+    const reply = await call("POST", "/file-roots/complete", {
+      cookie,
+      body: {
+        roots: STORED,
+        authorization: {
+          id: permissions.id,
+          nonce: permissions.nonce,
+          assertion: assertion(auth, challengeFor("permissions", permissions)),
+        },
+      },
+    })
+    expect(reply.status).toBe(409)
+    expect(await stored(cookie)).toEqual({ roots: [] })
+    expect(rootChanges()).toBe(0)
+  })
+
+  it("stores nothing for a challenge a newer prepare superseded", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const stale = await prepare(cookie)
+    await prepare(cookie)
+    const reply = await call("POST", "/file-roots/complete", {
+      cookie,
+      body: { roots: stale.roots, authorization: signed(stale) },
+    })
+    expect(reply.status).toBe(409)
+    expect(await stored(cookie)).toEqual({ roots: [] })
+  })
+
+  it("refuses a replayed completion and keeps the roots approved since", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const first = await prepare(cookie)
+    const firstBody = { roots: first.roots, authorization: signed(first) }
+    expect(
+      (await call("POST", "/file-roots/complete", { cookie, body: firstBody }))
+        .status
+    ).toBe(200)
+    const scans = {
+      roots: [
+        { id: "scans", path: "/srv/owner/scans", trashDir: ".eido-trash" },
+      ],
+    }
+    const second = await prepare(cookie, scans)
+    expect(
+      (
+        await call("POST", "/file-roots/complete", {
+          cookie,
+          body: { roots: second.roots, authorization: signed(second) },
+        })
+      ).status
+    ).toBe(200)
+    const replay = await call("POST", "/file-roots/complete", {
+      cookie,
+      body: firstBody,
+    })
+    expect(replay.status).toBe(409)
+    expect(await stored(cookie)).toEqual({
+      roots: [{ id: "scans", root: OTHER }],
+    })
+    expect(rootChanges()).toBe(2)
+  })
+
+  it("serves the routes below the /api/gate base path the web app uses", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("GET", "/api/gate/file-roots", {
+      cookie,
+      basePath: "/api/gate",
+    })
+    expect([reply.status, reply.body]).toEqual([200, { roots: [] }])
   })
 })
