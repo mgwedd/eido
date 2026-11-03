@@ -5,13 +5,17 @@
   "properties": {
     "hits": {
       "type": "array",
+      "maxItems": 100,
       "items": {
         "type": "object",
         "properties": {
           "conversationId": { "type": "string" },
           "turnId": { "type": "string" },
           "kind": { "type": "string", "enum": ["raw", "digest"] },
-          "snippet": { "type": "string" },
+          "snippet": {
+            "type": "string",
+            "description": "Excerpt of the matched text. Each match is wrapped in U+E000 (start) and U+E001 (end), private-use characters that do not occur in turn text, so a client splits on them and never confuses them with literal brackets."
+          },
           "score": { "type": "number" }
         },
         "required": ["conversationId", "kind", "snippet", "score"],

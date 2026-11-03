@@ -104,6 +104,16 @@ describe("Core API Conversation search schema", () => {
     expect(validateCoreApiConversationSearch(valid).ok).toBe(true)
   })
 
+  test("rejects more than 100 hits", () => {
+    const hit = { conversationId: "c1", kind: "raw", snippet: "s", score: 1 }
+    expect(
+      validateCoreApiConversationSearch({ hits: Array(100).fill(hit) }).ok
+    ).toBe(true)
+    expect(
+      validateCoreApiConversationSearch({ hits: Array(101).fill(hit) }).ok
+    ).toBe(false)
+  })
+
   test("rejects invalid hits", () => {
     expect(validateCoreApiConversationSearch({ hits: "not-an-array" }).ok).toBe(
       false

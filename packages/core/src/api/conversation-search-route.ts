@@ -6,6 +6,7 @@ import type { SearchKind } from "../conversation/types"
 export const CONVERSATION_SEARCH_PATH = "/conversations/search"
 export const DEFAULT_SEARCH_LIMIT = 20
 export const MAX_SEARCH_LIMIT = 100
+export const MAX_QUERY_LENGTH = 256
 
 type FieldError = { field: string; message: string }
 
@@ -72,6 +73,14 @@ export function conversationSearchRoute(
     }
   }
 
+  const q = params.get("q")?.trim() ?? ""
+  if (q.length > MAX_QUERY_LENGTH) {
+    errors.push({
+      field: "q",
+      message: `must be at most ${String(MAX_QUERY_LENGTH)} characters`,
+    })
+  }
+
   if (errors.length > 0) {
     return {
       ok: false,
@@ -81,7 +90,6 @@ export function conversationSearchRoute(
     }
   }
 
-  const q = params.get("q")?.trim() ?? ""
   if (q === "") {
     return {
       ok: true,

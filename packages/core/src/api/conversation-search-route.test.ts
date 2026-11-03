@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { CoreApiConversationSearch } from "@eido/schemas"
+import { validateCoreApiConversationSearch } from "@eido/schemas"
 import { openIndex } from "../index/schema"
 import { createProfileStore } from "../profile/index"
 import { createApiHandler } from "./handler"
@@ -59,6 +60,17 @@ afterEach(() => {
   fixture.cleanup()
 })
 
+async function search(
+  path: string,
+  h: ApiHandler = handle
+): Promise<CoreApiConversationSearch> {
+  const response = await get(path, h)
+  expect(response.status).toBe(200)
+  const result = validateCoreApiConversationSearch(await response.json())
+  if (!result.ok) throw new Error("response does not match the schema")
+  return result.value
+}
+
 function get(path: string, h: ApiHandler = handle): Promise<Response> {
   return h(
     new Request(`http://core.test${path}`, {
@@ -99,10 +111,7 @@ describe("GET /conversations/search", () => {
       "/conversations/search?q=   ",
       '/conversations/search?q=  "" * ',
     ]) {
-      const response = await get(url)
-      expect(response.status).toBe(200)
-      const data = (await response.json()) as CoreApiConversationSearch
-      expect(data.hits).toEqual([])
+      expect((await search(url)).hits).toEqual([])
     }
   })
 
@@ -127,66 +136,92 @@ describe("GET /conversations/search", () => {
   })
 
   it("matches raw turns and returns snippets with turnId and kind raw", async () => {
-    const response = await get("/conversations/search?q=zebrafish")
-    expect(response.status).toBe(200)
-    const data = (await response.json()) as CoreApiConversationSearch
+    const data = await search("/conversations/search?q=zebrafish")
     expect(data.hits).toHaveLength(1)
     const hit = data.hits[0]
     expect(hit?.conversationId).toBe("c1")
     expect(hit?.turnId).toBe("t1")
     expect(hit?.kind).toBe("raw")
-    expect(hit?.snippet).toContain("[zebrafish]")
+    expect(hit?.snippet).toContain("\uE000zebrafish\uE001")
     expect(typeof hit?.score).toBe("number")
   })
 
   it("matches digests and returns snippet with kind digest without turnId", async () => {
-    const response = await get("/conversations/search?q=pangolin")
-    expect(response.status).toBe(200)
-    const data = (await response.json()) as CoreApiConversationSearch
+    const data = await search("/conversations/search?q=pangolin")
     expect(data.hits).toHaveLength(1)
     const hit = data.hits[0]
     expect(hit?.conversationId).toBe("c4")
     expect(hit?.turnId).toBeUndefined()
     expect(hit?.kind).toBe("digest")
-    expect(hit?.snippet).toContain("[pangolin]")
+    expect(hit?.snippet).toContain("\uE000pangolin\uE001")
     expect(typeof hit?.score).toBe("number")
   })
 
   it("respects limit parameter", async () => {
-    const responseAll = await get("/conversations/search?q=lease")
-    const dataAll = (await responseAll.json()) as CoreApiConversationSearch
-    expect(dataAll.hits.length).toBeGreaterThan(1)
+    const dataAll = await search("/conversations/search?q=lease")
+    expect(dataAll.hits).toHaveLength(3)
 
-    const responseLimited = await get("/conversations/search?q=lease&limit=1")
-    const dataLimited =
-      (await responseLimited.json()) as CoreApiConversationSearch
-    expect(dataLimited.hits).toHaveLength(1)
-    expect(dataLimited.hits[0]?.conversationId).toBe(
-      dataAll.hits[0]?.conversationId
+    const dataLimited = await search("/conversations/search?q=lease&limit=2")
+    expect(dataLimited.hits).toHaveLength(2)
+    expect(dataLimited.hits.map((h) => h.conversationId)).toEqual(
+      dataAll.hits.slice(0, 2).map((h) => h.conversationId)
     )
   })
 
   it("filters by kind", async () => {
     // "lease" matches raw turns in c1, c3 and digest in c4
-    const responseRaw = await get("/conversations/search?q=lease&kind=raw")
-    const dataRaw = (await responseRaw.json()) as CoreApiConversationSearch
-    expect(dataRaw.hits.length).toBeGreaterThanOrEqual(1)
-    expect(dataRaw.hits.every((h) => h.kind === "raw")).toBe(true)
+    const dataRaw = await search("/conversations/search?q=lease&kind=raw")
+    expect(dataRaw.hits.map((h) => [h.kind, h.conversationId])).toEqual([
+      ["raw", "c3"],
+      ["raw", "c1"],
+    ])
 
-    const responseDigest = await get(
-      "/conversations/search?q=lease&kind=digest"
-    )
-    const dataDigest =
-      (await responseDigest.json()) as CoreApiConversationSearch
+    const dataDigest = await search("/conversations/search?q=lease&kind=digest")
     expect(dataDigest.hits).toHaveLength(1)
     expect(dataDigest.hits[0]?.kind).toBe("digest")
     expect(dataDigest.hits[0]?.conversationId).toBe("c4")
 
-    const responseAny = await get("/conversations/search?q=lease&kind=any")
-    const dataAny = (await responseAny.json()) as CoreApiConversationSearch
-    const kinds = new Set(dataAny.hits.map((h) => h.kind))
-    expect(kinds.has("raw")).toBe(true)
-    expect(kinds.has("digest")).toBe(true)
+    const dataAny = await search("/conversations/search?q=lease&kind=any")
+    expect(dataAny.hits.map((h) => h.kind).sort()).toEqual([
+      "digest",
+      "raw",
+      "raw",
+    ])
+  })
+
+  it.each(["foo AND", "NEAR(", '"unbalanced', "a-b", "(", "col:x", "*"])(
+    "answers 200 for the hostile FTS string %s",
+    async (q) => {
+      const data = await search(
+        `/conversations/search?q=${encodeURIComponent(q)}`
+      )
+      expect(Array.isArray(data.hits)).toBe(true)
+    }
+  )
+
+  it("rejects a query longer than 256 characters with 422 and the q field", async () => {
+    const atCap = await get(`/conversations/search?q=${"a".repeat(256)}`)
+    expect(atCap.status).toBe(200)
+
+    const response = await get(`/conversations/search?q=${"a".repeat(257)}`)
+    expect(response.status).toBe(422)
+    const body = (await response.json()) as {
+      error: { fields: { field: string; message: string }[] }
+    }
+    expect(body.error.fields).toEqual([
+      { field: "q", message: "must be at most 256 characters" },
+    ])
+  })
+
+  it("keeps literal brackets in turn text distinct from match markers", async () => {
+    await fixture.store.appendTurn(
+      "c5",
+      rawTurn(6, "See item [1] about the quokka enclosure.")
+    )
+    const data = await search("/conversations/search?q=quokka")
+    expect(data.hits[0]?.snippet).toBe(
+      "See item [1] about the \uE000quokka\uE001 enclosure."
+    )
   })
 
   it("returns internal error if search hit fails validation", async () => {
