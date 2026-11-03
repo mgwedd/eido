@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "serve-routes": "node --disable-warning=ExperimentalWarning tailscale/bin.ts",
+    "bridge": "node --disable-warning=ExperimentalWarning bridge/bin.ts",
     "lint": "eslint",
     "typecheck": "tsc -p . --noEmit",
     "test": "vitest run --coverage",
