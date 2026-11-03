@@ -73,6 +73,8 @@ export const GATE_LOG_FILE = "gate.log"
 const DATA_PLANE_SOCKET_MODE = 0o660
 const CONTROL_SOCKET_MODE = 0o600
 
+export const DRIVE_CONNECTOR = "drive"
+export const DRIVE_CLIENT_ID_ENV = "EIDO_DRIVE_CLIENT_ID"
 /**
  * The read connectors whose OAuth client the gate refreshes in the egress proxy: the variable
  * naming each client's id, and the pinned read its health probe makes.
@@ -84,8 +86,8 @@ export const READ_CONNECTORS = [
     probeUrl: "https://gmail.googleapis.com/gmail/v1/users/me/profile",
   },
   {
-    connector: "drive",
-    clientIdEnv: "EIDO_DRIVE_CLIENT_ID",
+    connector: DRIVE_CONNECTOR,
+    clientIdEnv: DRIVE_CLIENT_ID_ENV,
     probeUrl: "https://www.googleapis.com/drive/v3/changes/startPageToken",
   },
 ] as const

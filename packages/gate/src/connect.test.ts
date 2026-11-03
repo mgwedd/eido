@@ -5,11 +5,13 @@ import type { Server } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { ConnectorManifest } from "@eido/schemas"
 import { connect, GMAIL_CLIENT_ID_ENV, openInBrowser } from "./connect"
 import type { ConnectIo } from "./connect"
 import { CONTROL_SOCKET_ENV } from "./enrol-code"
 import { BRIDGE_PASSWORD_KEY } from "./internal/bridge/bridge"
 import type { ConnectorProbe } from "./internal/connector-connect"
+import { egressProbe } from "./internal/egress"
 import { close, createGateServer, listen } from "./internal/http"
 import { controlHandler } from "./internal/routes"
 import {
@@ -23,6 +25,7 @@ import type { Setup } from "./internal/test-fixtures"
 import { FileVault } from "./internal/vault/file-vault"
 import { InMemoryVault } from "./internal/vault/vault"
 import type { VaultKey } from "./internal/vault/vault"
+import { DRIVE_CLIENT_ID_ENV, READ_CONNECTORS } from "./main"
 
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 const GMAIL_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
@@ -31,6 +34,13 @@ const CLIENT_SECRET = "test-client-secret-7f3a"
 const REFRESH_TOKEN = "test-refresh-token-91c2"
 const AUTH_CODE = "test-auth-code-55d0"
 const BRIDGE_PASSWORD = "test-bridge-password-0b8e"
+const DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly"
+const DRIVE_CLIENT_ID = "test-drive-client.apps.example.invalid"
+const DRIVE_SECRET = "test-drive-client-secret-2e6b"
+const DRIVE_REFRESH = "test-drive-refresh-token-c4a8"
+const DRIVE_ACCESS = "test-drive-access-token-19f7"
+const DRIVE_START_PAGE_TOKEN =
+  "https://www.googleapis.com/drive/v3/changes/startPageToken"
 
 const key = (kind: VaultKey["kind"]): VaultKey => ({
   connector: "gmail",
@@ -128,11 +138,107 @@ const visible = () => [...out, ...err, loggedText(s.db)].join("\n")
 const gmailProbe: ConnectorProbe = async () =>
   (await vault.get(REFRESH_KEY)) === REFRESH_TOKEN ? "ok" : "auth_failed"
 
+/** A pinned Drive manifest whose one read is the gate's health probe route. */
+function driveManifest(): ConnectorManifest {
+  const host = "www.googleapis.com"
+  const pinned = manifest("drive", [])
+  pinned.egress.hosts = [
+    { host, methods: ["GET"], pathPrefixes: ["/drive/v3"] },
+  ]
+  pinned.operations = [
+    {
+      name: "start_page_token",
+      effect: "read",
+      reversibility: "reversible",
+      defaultTier: "auto",
+      sensitivity: "normal",
+      untrustedOutput: true,
+      authScopes: ["write"],
+      routes: [
+        {
+          host,
+          method: "GET",
+          pathPattern: "/drive/v3/changes/startPageToken",
+        },
+      ],
+    },
+  ]
+  return pinned
+}
+
+/**
+ * A fake Google for Drive: the token endpoint grants DRIVE_REFRESH for AUTH_CODE and, on a
+ * refresh of DRIVE_REFRESH, issues DRIVE_ACCESS, or answers `invalid_grant` once the grant is
+ * revoked. The Drive API accepts DRIVE_ACCESS only. `seen` records each request as the gate sent
+ * it, in order.
+ */
+function fakeDriveGoogle(
+  options: { revoked?: boolean; grant?: Record<string, unknown> } = {}
+) {
+  const seen: Array<{ url: string; form?: Record<string, string> }> = []
+  const send = vi.fn<typeof fetch>((input, init) => {
+    const url = input instanceof Request ? input.url : input.toString()
+    if (url === TOKEN_ENDPOINT) {
+      const body = init?.body
+      if (!(body instanceof URLSearchParams))
+        throw new Error("the token request is not form-encoded")
+      const form = Object.fromEntries(body)
+      seen.push({ url, form })
+      if (form["grant_type"] === "authorization_code")
+        return Promise.resolve(
+          Response.json(
+            options.grant ?? {
+              access_token: "test-drive-exchange-access-token",
+              refresh_token: DRIVE_REFRESH,
+              scope: DRIVE_READONLY,
+            }
+          )
+        )
+      if (options.revoked === true)
+        return Promise.resolve(
+          Response.json({ error: "invalid_grant" }, { status: 400 })
+        )
+      return Promise.resolve(
+        form["refresh_token"] === DRIVE_REFRESH &&
+          form["client_secret"] === DRIVE_SECRET
+          ? Response.json({ access_token: DRIVE_ACCESS })
+          : Response.json({ error: "invalid_client" }, { status: 401 })
+      )
+    }
+    seen.push({ url })
+    const authorization = new Headers(init?.headers).get("authorization")
+    return Promise.resolve(
+      authorization === `Bearer ${DRIVE_ACCESS}`
+        ? Response.json({ startPageToken: "42" })
+        : new Response(null, { status: 401 })
+    )
+  })
+  return { send, seen }
+}
+
+/** The gate's real Drive probe, as runGate registers it, over the test vault and fake Google. */
+function driveProbe(send: typeof fetch): ConnectorProbe {
+  const probeUrl =
+    READ_CONNECTORS.find((read) => read.connector === "drive")?.probeUrl ?? ""
+  return egressProbe(
+    { db: s.db, vault, clientIds: { drive: DRIVE_CLIENT_ID }, fetch: send },
+    "drive",
+    probeUrl
+  )
+}
+
+const driveKey = (kind: VaultKey["kind"]): VaultKey => ({
+  connector: "drive",
+  kind,
+  client: "read",
+})
+
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "eido-connect-"))
   socket = socketAddress(dir, "control.sock")
   s = setup([
     manifest("gmail", MAIL_OPS),
+    driveManifest(),
     manifest("proton-mail", MAIL_OPS),
     manifest("proton-calendar", MAIL_OPS),
   ])
@@ -343,6 +449,195 @@ describe("connect gmail", () => {
   })
 })
 
+describe("connect drive", () => {
+  const driveEnv = () => env({ [DRIVE_CLIENT_ID_ENV]: DRIVE_CLIENT_ID })
+
+  it("signs in for drive.readonly, stores the read grant, and the gate's probe finds it healthy", async () => {
+    answers = [DRIVE_SECRET]
+    const google = fakeDriveGoogle()
+    probes = { drive: driveProbe(google.send) }
+    let auth = new URLSearchParams()
+    const status = await connect(
+      ["drive"],
+      driveEnv(),
+      io((url) => {
+        auth = new URL(url).searchParams
+        signIn((state) => ({ state, code: AUTH_CODE }))(url)
+      }),
+      { vault, fetch: google.send }
+    )
+    expect(status).toBe(0)
+    expect(auth.get("scope")).toBe(DRIVE_READONLY)
+    expect(auth.get("client_id")).toBe(DRIVE_CLIENT_ID)
+    expect(await vault.get(driveKey("refresh_token"))).toBe(DRIVE_REFRESH)
+    expect(await vault.get(driveKey("api_key"))).toBe(DRIVE_SECRET)
+    expect(
+      await vault.get({
+        connector: "drive",
+        kind: "refresh_token",
+        client: "write",
+      })
+    ).toBeUndefined()
+    const [exchange, refresh, read] = google.seen
+    expect(exchange?.form).toMatchObject({
+      grant_type: "authorization_code",
+      code: AUTH_CODE,
+      client_id: DRIVE_CLIENT_ID,
+      client_secret: DRIVE_SECRET,
+    })
+    const verifier = exchange?.form?.["code_verifier"] ?? ""
+    expect(createHash("sha256").update(verifier).digest("base64url")).toBe(
+      auth.get("code_challenge")
+    )
+    // The probe refreshed from the stored grant, then made its one pinned read.
+    expect(refresh?.form).toMatchObject({
+      grant_type: "refresh_token",
+      refresh_token: DRIVE_REFRESH,
+      client_id: DRIVE_CLIENT_ID,
+    })
+    expect(read).toEqual({ url: DRIVE_START_PAGE_TOKEN })
+    expect(google.seen).toHaveLength(3)
+    expect(out.slice(-2)).toEqual([
+      "Stored the Drive credential in the gate vault.",
+      "drive: healthy",
+    ])
+    for (const secret of [
+      DRIVE_SECRET,
+      DRIVE_REFRESH,
+      DRIVE_ACCESS,
+      AUTH_CODE,
+      verifier,
+    ])
+      expect(visible()).not.toContain(secret)
+  })
+
+  it("reports auth_failed and disables Drive when Google has revoked the new grant", async () => {
+    answers = [DRIVE_SECRET]
+    const google = fakeDriveGoogle({ revoked: true })
+    probes = { drive: driveProbe(google.send) }
+    const status = await connect(
+      ["drive"],
+      driveEnv(),
+      io(signIn((state) => ({ state, code: AUTH_CODE }))),
+      { vault, fetch: google.send }
+    )
+    expect(status).toBe(1)
+    expect(out.slice(-2)).toEqual([
+      "drive: open (auth_failed)",
+      "The credential was refused. Run connect again.",
+    ])
+    expect(
+      s.db
+        .prepare(
+          "SELECT enabled, last_error FROM connectors WHERE name = 'drive'"
+        )
+        .get()
+    ).toEqual({ enabled: 0, last_error: "auth_failed" })
+    // No Drive read went out: the refresh was refused first.
+    expect(google.seen.map((entry) => entry.url)).toEqual([
+      TOKEN_ENDPOINT,
+      TOKEN_ENDPOINT,
+    ])
+    for (const secret of [DRIVE_SECRET, DRIVE_REFRESH, AUTH_CODE])
+      expect(visible()).not.toContain(secret)
+  })
+
+  it("reconnects a disabled Drive over the old grant and drops the cached access token", async () => {
+    await vault.set(driveKey("api_key"), DRIVE_SECRET)
+    await vault.set(driveKey("refresh_token"), "test-revoked-drive-refresh")
+    await vault.set(driveKey("access_token"), "test-stale-drive-access")
+    s.db
+      .prepare(
+        "UPDATE connectors SET enabled = 0, health = 'open', last_error = 'auth_failed' WHERE name = 'drive'"
+      )
+      .run()
+    const google = fakeDriveGoogle()
+    probes = { drive: driveProbe(google.send) }
+    const status = await connect(
+      ["drive"],
+      driveEnv(),
+      io(signIn((state) => ({ state, code: AUTH_CODE }))),
+      { vault, fetch: google.send }
+    )
+    expect(status).toBe(0)
+    expect(questions).toEqual([])
+    expect(await vault.get(driveKey("refresh_token"))).toBe(DRIVE_REFRESH)
+    // The probe's fresh token replaced the stale one, which no read used.
+    expect(await vault.get(driveKey("access_token"))).toBe(DRIVE_ACCESS)
+    expect(google.seen.map((entry) => entry.url)).toEqual([
+      TOKEN_ENDPOINT,
+      TOKEN_ENDPOINT,
+      DRIVE_START_PAGE_TOKEN,
+    ])
+  })
+
+  it("refuses a callback with another state and stores nothing", async () => {
+    answers = [DRIVE_SECRET]
+    const google = fakeDriveGoogle()
+    const status = await connect(
+      ["drive"],
+      driveEnv(),
+      io(signIn(() => ({ state: "forged-state", code: AUTH_CODE }))),
+      { vault, fetch: google.send }
+    )
+    expect(status).toBe(1)
+    expect(err).toEqual([
+      "The sign-in answer did not match this request, so it was refused. Nothing was stored.",
+    ])
+    expect(google.send).not.toHaveBeenCalled()
+    expect(await vault.get(driveKey("refresh_token"))).toBeUndefined()
+    expect(await vault.get(driveKey("api_key"))).toBeUndefined()
+  })
+
+  it("stores nothing when Google refuses the authorization code", async () => {
+    answers = [DRIVE_SECRET]
+    const refuse = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        Response.json({ error: "invalid_grant" }, { status: 400 })
+      )
+    )
+    const status = await connect(
+      ["drive"],
+      driveEnv(),
+      io(signIn((state) => ({ state, code: AUTH_CODE }))),
+      { vault, fetch: refuse }
+    )
+    expect(status).toBe(1)
+    expect(refuse).toHaveBeenCalledTimes(1)
+    expect(err).toEqual([
+      "Google refused the authorization code (invalid_grant). Nothing was stored.",
+    ])
+    expect(await vault.get(driveKey("refresh_token"))).toBeUndefined()
+    expect(await vault.get(driveKey("api_key"))).toBeUndefined()
+  })
+
+  it("stores nothing when the Drive scope was not granted", async () => {
+    answers = [DRIVE_SECRET]
+    const google = fakeDriveGoogle({
+      grant: { refresh_token: DRIVE_REFRESH, scope: GMAIL_MODIFY },
+    })
+    const status = await connect(
+      ["drive"],
+      driveEnv(),
+      io(signIn((state) => ({ state, code: AUTH_CODE }))),
+      { vault, fetch: google.send }
+    )
+    expect(status).toBe(1)
+    expect(err).toEqual([
+      "The Drive permission was not granted; tick it on the consent screen. Nothing was stored.",
+    ])
+    expect(await vault.get(driveKey("refresh_token"))).toBeUndefined()
+  })
+
+  it("needs the gate's Drive client id", async () => {
+    const status = await connect(["drive"], env(), io(), { vault })
+    expect(status).toBe(2)
+    expect(err).toEqual([
+      "EIDO_DRIVE_CLIENT_ID is not set; use the gate's Drive client id",
+    ])
+  })
+})
+
 describe("connect proton", () => {
   it("stores the Bridge password and ends healthy", async () => {
     answers = [BRIDGE_PASSWORD]
@@ -421,12 +716,12 @@ describe("connect proton", () => {
 })
 
 describe("connect refusals", () => {
-  it.each([[[]], [["drive"]], [["gmail", "extra"]]])(
+  it.each([[[]], [["dropbox"]], [["gmail", "extra"]]])(
     "prints usage for %j",
     async (args) => {
       expect(await connect(args, env(), io(), { vault })).toBe(2)
       expect(err).toEqual([
-        "usage: pnpm --filter @eido/gate connect <gmail|proton-mail|proton-calendar>",
+        "usage: pnpm --filter @eido/gate connect <gmail|drive|proton-mail|proton-calendar>",
       ])
     }
   )
