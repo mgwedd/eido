@@ -162,6 +162,13 @@ describe("gateConfig", () => {
         EIDO_FILE_HELPER_SHA256: "a".repeat(64),
       })
     ).toThrow("must be an absolute path")
+    expect(() =>
+      gateConfig({
+        ...base,
+        EIDO_FILE_HELPER_PATH: "/opt/eido-file",
+        EIDO_FILE_HELPER_SHA256: "A".repeat(64),
+      })
+    ).toThrow("lowercase SHA-256")
     expect(
       gateConfig({
         ...base,

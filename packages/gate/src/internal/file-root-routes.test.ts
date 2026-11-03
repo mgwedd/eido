@@ -142,6 +142,13 @@ describe("file root control routes", () => {
       400
     )
     expect((await fileRootControlRoute(oversize, state))?.status).toBe(413)
+    const oversizeComplete: GateRequest = {
+      ...request("POST", "/file-roots/complete"),
+      body: () => Promise.resolve({ ok: false }),
+    }
+    expect((await fileRootControlRoute(oversizeComplete, state))?.status).toBe(
+      413
+    )
     db.close()
   })
 

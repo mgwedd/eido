@@ -313,4 +313,59 @@ describe("native file executor lifecycle", () => {
     expect(f.helper).toHaveBeenCalledTimes(1)
     expect(loggedText(f.db)).not.toContain("private failure payload")
   })
+  it("refuses to execute a delete that was never approved and to undo one that never ran", async () => {
+    const f = await fixture()
+    const p = f.proposal({
+      kind: "file.delete",
+      args: { root: "docs", path: "a.txt" },
+    })
+    expect((await f.executor.execute(p.intentId)).ok).toBe(false)
+    expect((await f.executor.undo(p.intentId)).ok).toBe(false)
+    expect(f.helper).not.toHaveBeenCalled()
+    expect(f.disk).toEqual(new Map([["a.txt", content]]))
+  })
+
+  it("refuses file work while the files connector is unhealthy", async () => {
+    const f = await fixture()
+    const p = f.proposal(automatic[0])
+    f.db.prepare("UPDATE connectors SET health='open' WHERE name='files'").run()
+    expect(await f.executor.execute(p.intentId)).toEqual({
+      ok: false,
+      code: "connector_unavailable",
+    })
+    expect(f.helper).not.toHaveBeenCalled()
+  })
+
+  it("reports a missing source on execute and a missing moved file on Undo without inventing a result", async () => {
+    const f = await fixture()
+    const missing = f.proposal({
+      kind: "file.move",
+      args: { root: "docs", path: "absent.txt", toPath: "x/absent.txt" },
+    })
+    expect(await f.executor.execute(missing.intentId)).toEqual({
+      ok: false,
+      code: "file_not_found",
+    })
+    const moved = f.proposal(automatic[2])
+    expect((await f.executor.execute(moved.intentId)).ok).toBe(true)
+    f.disk.delete("archive/a.txt")
+    expect(await f.executor.undo(moved.intentId)).toEqual({
+      ok: false,
+      code: "file_not_found",
+    })
+  })
+
+  it("never turns a rename into a path: a separator in the new name is not executed", async () => {
+    const f = await fixture()
+    const result = propose(f.db, f.policy, {
+      intent: {
+        kind: "file.rename",
+        args: { root: "docs", path: "a.txt", newName: "sub/b.txt" },
+      },
+      origin: "reactive",
+    })
+    if (!result.ok) throw new Error(result.code)
+    expect((await f.executor.execute(result.intentId)).ok).toBe(false)
+    expect(f.disk).toEqual(new Map([["a.txt", content]]))
+  })
 })
