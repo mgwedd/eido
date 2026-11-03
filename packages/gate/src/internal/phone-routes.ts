@@ -48,6 +48,7 @@ import {
   enrolWithCode,
   listPasskeys,
 } from "./credentials"
+import { readBackupStatus } from "./backup-status"
 import { checkEnrolmentCode } from "./enrolment"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
@@ -86,6 +87,7 @@ export type PhoneState = {
   webAuthn: WebAuthnConfig
   nudge?: { threshold: number; windowMs: number }
   push?: { publicKey: () => Promise<string>; notifyPending: () => void }
+  backupStampPath?: string
 }
 
 export type PhoneRoute = {
@@ -106,6 +108,7 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/audit", session: true },
   { method: "GET", path: "/audit/chain", session: true },
   { method: "GET", path: "/connector-settings", session: true },
+  { method: "GET", path: "/backup/status", session: true },
   { method: "GET", path: "/passkeys", session: true },
   { method: "GET", path: "/permissions", session: true },
   { method: "GET", path: "/approvals/:id/history", session: true },
@@ -471,6 +474,11 @@ function connectorSettings(state: PhoneState, now: Clock): Reply {
   return { status: 200, body }
 }
 
+function backupStatusRoute(state: PhoneState, now: Clock): Reply {
+  const body = readBackupStatus(state.backupStampPath, now)
+  return { status: 200, body }
+}
+
 function passkeyList(
   state: PhoneState,
   request: GateRequest,
@@ -768,6 +776,8 @@ function route(
       return { status: 200, body: verifyChain(state.db) }
     case "/connector-settings":
       return connectorSettings(state, now)
+    case "/backup/status":
+      return backupStatusRoute(state, now)
     case "/passkeys":
       return passkeyList(state, request, now)
     case "/permissions":

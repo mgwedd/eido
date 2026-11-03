@@ -1,9 +1,12 @@
 import { createECDH, createHash, randomBytes } from "node:crypto"
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   validateGateAuditChainStatus,
   validateGateAuditPage,
+  validateGateBackupStatus,
   validateGateConnectorSettings,
   validateGateCredentialStatus,
   validateGateDecisionResult,
@@ -435,6 +438,7 @@ describe("phoneHandler: authenticated settings reads", () => {
       "/audit",
       "/audit/chain",
       "/connector-settings",
+      "/backup/status",
       "/passkeys",
       "/permissions",
     ]) {
@@ -527,6 +531,78 @@ describe("phoneHandler: authenticated settings reads", () => {
     expect(checkedAudit.value.entries).toContainEqual(
       expect.objectContaining({ actor: "gate", displayActor: "gate" })
     )
+  })
+
+  describe("GET /backup/status", () => {
+    let backupDir: string
+
+    beforeEach(() => {
+      backupDir = join(
+        tmpdir(),
+        `eido-phone-backup-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      )
+      mkdirSync(backupDir, { recursive: true })
+    })
+
+    afterEach(() => {
+      rmSync(backupDir, { recursive: true, force: true })
+    })
+
+    it("requires a session cookie", async () => {
+      const reply = await call("GET", "/backup/status")
+      expect(reply.status).toBe(401)
+    })
+
+    it("returns never_run when the stamp file does not exist", async () => {
+      enrol(auth)
+      const cookie = await signIn()
+      state = { ...state, backupStampPath: join(backupDir, "nonexistent") }
+
+      const reply = await call("GET", "/backup/status", { cookie })
+      expect(reply.status).toBe(200)
+      expect(validateGateBackupStatus(reply.body)).toEqual({
+        ok: true,
+        value: { status: "never_run", lastSuccess: null },
+      })
+    })
+
+    it("returns fresh when the snapshot is within 36 hours", async () => {
+      enrol(auth)
+      const cookie = await signIn()
+      const stampPath = join(backupDir, "stamp")
+      const stampTime = new Date(at.getTime() - 4 * 3600 * 1000)
+      writeFileSync(stampPath, `${stampTime.toISOString()}\n`)
+      state = { ...state, backupStampPath: stampPath }
+
+      const reply = await call("GET", "/backup/status", { cookie })
+      expect(reply.status).toBe(200)
+      expect(validateGateBackupStatus(reply.body)).toEqual({
+        ok: true,
+        value: {
+          status: "fresh",
+          lastSuccess: stampTime.toISOString(),
+        },
+      })
+    })
+
+    it("returns stale when the snapshot is older than 36 hours", async () => {
+      enrol(auth)
+      const cookie = await signIn()
+      const stampPath = join(backupDir, "stamp")
+      const stampTime = new Date(at.getTime() - 40 * 3600 * 1000)
+      writeFileSync(stampPath, `${stampTime.toISOString()}\n`)
+      state = { ...state, backupStampPath: stampPath }
+
+      const reply = await call("GET", "/backup/status", { cookie })
+      expect(reply.status).toBe(200)
+      expect(validateGateBackupStatus(reply.body)).toEqual({
+        ok: true,
+        value: {
+          status: "stale",
+          lastSuccess: stampTime.toISOString(),
+        },
+      })
+    })
   })
 
   it("labels executor rows only for matching approved signatures already valid at that row", async () => {

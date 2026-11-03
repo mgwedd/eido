@@ -20,6 +20,7 @@ export {
   validateGateAuditPageRequest,
   validateGateAuditRecordRequest,
   validateGateAuditRecordResult,
+  validateGateBackupStatus,
   validateGateConnectorHealth,
   validateGateConnectorSettings,
   validateGateCredentialStatus,

@@ -3,7 +3,11 @@ import type { Server } from "node:http"
 import { isAbsolute, join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { createProtonBridge } from "./internal/bridge/bridge"
-import { PROTON_CONNECTOR, bridgeConfig } from "./internal/bridge/config"
+import {
+  PROTON_CALENDAR_CONNECTOR,
+  PROTON_CONNECTOR,
+  bridgeConfig,
+} from "./internal/bridge/config"
 import type { BridgeConfig } from "./internal/bridge/config"
 import { BRIDGE_WRITERS, bridgeTransport } from "./internal/bridge/writers"
 import { gmailWriteTransport } from "./internal/gmail-transport"
@@ -21,6 +25,7 @@ import {
 } from "./internal/http"
 import type { Handler, LoopbackHost } from "./internal/http"
 import { fileLog } from "./internal/log"
+import { defaultBackupStampPath } from "./internal/backup-status"
 import { phoneHandler } from "./internal/phone-routes"
 import { createPushNotifier } from "./internal/push-notify"
 import {
@@ -82,6 +87,7 @@ export type GateConfig = {
     nudgeThreshold: number
     nudgeWindowMs: number
   }
+  backupStampPath?: string
 }
 
 export type BridgeListenerConfig = {
@@ -148,11 +154,18 @@ export function gateConfig(
     throw new Error(`the gate needs ${missing.join(", ")}`)
   }
   const read = (name: string) => env[name] ?? ""
+  const backupOverride =
+    env["EIDO_BACKUP_STAMP_FILE"] ?? env["EIDO_BACKUP_LOG_DIR"]
+  const backupStampPath =
+    backupOverride !== undefined && backupOverride !== ""
+      ? defaultBackupStampPath(env)
+      : undefined
   const config: GateConfig = {
     dataDir: read(REQUIRED.dataDir),
     socketPath: read(REQUIRED.socketPath),
     controlSocketPath: read(REQUIRED.controlSocketPath),
     webAuthn: { rpId: read(REQUIRED.rpId), origin: read(REQUIRED.origin) },
+    ...(backupStampPath === undefined ? {} : { backupStampPath }),
   }
   const port = env["EIDO_GATE_PHONE_PORT"] ?? ""
   const bridge = bridgeConfig(env)
@@ -327,6 +340,7 @@ export async function runGate(
     const state = () => ({
       ...runningGate(),
       profileAudit,
+      backupStampPath: config.backupStampPath ?? defaultBackupStampPath(),
       notifyPending: notifier?.notifyPending,
       ...(config.push === undefined
         ? {}
@@ -371,7 +385,8 @@ export async function runGate(
           ? gmail === undefined
             ? Promise.reject(new Error("Gmail is not configured"))
             : gmail(request)
-          : request.connector === PROTON_CONNECTOR
+          : request.connector === PROTON_CONNECTOR ||
+              request.connector === PROTON_CALENDAR_CONNECTOR
             ? protonTransport(request)
             : Promise.reject(new Error("no write transport for connector"))
     )
