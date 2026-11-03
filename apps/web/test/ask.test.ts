@@ -5,6 +5,8 @@ import {
   answerParts,
   computedFigures,
   loadAnswer,
+  searchConversations,
+  snippetParts,
   submitFollowUp,
 } from "../lib/ask"
 import { answered, noMatch, refused } from "./fixtures/ask"
@@ -153,4 +155,86 @@ test("non-answer states suppress even schema-valid stale suggestions", () => {
     actionableFollowUps({ ...refused, followUps: answered.followUps })
   ).toEqual([])
   expect(actionableFollowUps(answered)).toEqual(answered.followUps)
+})
+
+describe("searchConversations", () => {
+  const sampleHits = [
+    {
+      conversationId: "c1",
+      turnId: "t1",
+      kind: "raw" as const,
+      snippet: "review the [zebrafish] lease",
+      score: -0.1,
+    },
+    {
+      conversationId: "c2",
+      kind: "digest" as const,
+      snippet: "summary of [zebrafish] discussion",
+      score: -0.5,
+    },
+  ]
+
+  test("returns empty hits without fetch for empty query", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+    vi.stubGlobal("fetch", fetcher)
+    expect(await searchConversations("   ")).toEqual({
+      status: "ready",
+      hits: [],
+    })
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  test("fetches search results and passes limit and kind parameters", async () => {
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(Response.json({ hits: sampleHits }))
+    )
+    vi.stubGlobal("fetch", fetcher)
+    const result = await searchConversations("zebrafish", {
+      limit: 10,
+      kind: "raw",
+      signal: signal(),
+    })
+    expect(result).toEqual({ status: "ready", hits: sampleHits })
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      "/api/core/conversations/search?q=zebrafish&limit=10&kind=raw"
+    )
+  })
+
+  test("omits kind when kind is any", async () => {
+    const fetcher = vi.fn<typeof fetch>(() =>
+      Promise.resolve(Response.json({ hits: sampleHits }))
+    )
+    vi.stubGlobal("fetch", fetcher)
+    await searchConversations("zebrafish", { kind: "any" })
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      "/api/core/conversations/search?q=zebrafish"
+    )
+  })
+
+  test.each([
+    () => Promise.resolve(new Response(null, { status: 500 })),
+    () => Promise.resolve(Response.json({ hits: "not-an-array" })),
+    () => Promise.reject(new TypeError("network")),
+  ])("returns error on network or validation failures", async (fetcher) => {
+    vi.stubGlobal("fetch", fetcher)
+    expect(await searchConversations("zebrafish")).toEqual({ status: "error" })
+  })
+})
+
+describe("snippetParts", () => {
+  test("splits highlighted terms inside brackets from surrounding text", () => {
+    expect(
+      snippetParts("Please review the [zebrafish] lease renewal.")
+    ).toEqual([
+      { text: "Please review the ", highlighted: false },
+      { text: "zebrafish", highlighted: true },
+      { text: " lease renewal.", highlighted: false },
+    ])
+  })
+
+  test("handles text without highlights", () => {
+    expect(snippetParts("Plain text without highlights.")).toEqual([
+      { text: "Plain text without highlights.", highlighted: false },
+    ])
+  })
 })

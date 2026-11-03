@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiConversationSearch",
+  "type": "object",
+  "properties": {
+    "hits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "conversationId": { "type": "string" },
+          "turnId": { "type": "string" },
+          "kind": { "type": "string", "enum": ["raw", "digest"] },
+          "snippet": { "type": "string" },
+          "score": { "type": "number" }
+        },
+        "required": ["conversationId", "kind", "snippet", "score"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["hits"],
+  "additionalProperties": false
+}

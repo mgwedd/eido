@@ -384,6 +384,7 @@ function main(): void {
       file === "core-api-send-from.schema.json" ||
       file === "core-api-error.schema.json" ||
       file.startsWith("core-api-document-") ||
+      file.startsWith("core-api-conversation-") ||
       file.startsWith("core-api-today-") ||
       file === "core-api-brief.schema.json" ||
       file === "ask-coverage.schema.json" ||

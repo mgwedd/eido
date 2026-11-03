@@ -20,6 +20,7 @@ import {
   validateIntent,
   validateIntentResult,
   validateCoreApiAskResponse,
+  validateCoreApiConversationSearch,
   validateDocumentTypeClassification,
 } from "./index"
 import type { JsonSchema } from "./index"
@@ -75,6 +76,42 @@ describe("Core API Ask response metadata", () => {
             label: "Archive email",
             intent: { kind: "email.archive", args: { messageIds: [] } },
           },
+        ],
+      }).ok
+    ).toBe(false)
+  })
+})
+
+describe("Core API Conversation search schema", () => {
+  test("validates valid search results", () => {
+    const valid = {
+      hits: [
+        {
+          conversationId: "c1",
+          turnId: "t1",
+          kind: "raw",
+          snippet: "hello [world]",
+          score: -0.5,
+        },
+        {
+          conversationId: "c2",
+          kind: "digest",
+          snippet: "digest snippet",
+          score: -1.2,
+        },
+      ],
+    }
+    expect(validateCoreApiConversationSearch(valid).ok).toBe(true)
+  })
+
+  test("rejects invalid hits", () => {
+    expect(validateCoreApiConversationSearch({ hits: "not-an-array" }).ok).toBe(
+      false
+    )
+    expect(
+      validateCoreApiConversationSearch({
+        hits: [
+          { conversationId: "c1", kind: "unknown", snippet: "s", score: 1 },
         ],
       }).ok
     ).toBe(false)
