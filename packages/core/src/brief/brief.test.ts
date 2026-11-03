@@ -645,3 +645,45 @@ describe("scheduleBrief", () => {
     expect(typeof s.stop).toBe("function")
   })
 })
+
+describe("generateBrief changed lines (#481)", () => {
+  const setUpdatedAt = (id: number, at: string): void => {
+    db.prepare("UPDATE obligations SET updated_at = ? WHERE id = ?").run(at, id)
+  }
+
+  test("an obligation whose change time is in the window is listed as updated", async () => {
+    const doc = putDoc(db, f.entityId, "d", BEFORE_WINDOW)
+    const id = await putObligation(db, f.entityId, doc, { action: "Call back" })
+    setUpdatedAt(id, IN_WINDOW)
+    const lines = (await generateBrief(db, NOW, CONFIG)).lines
+    expect(lines.map((line) => [line.kind, line.text])).toEqual([
+      ["changed", "Updated: Call back"],
+    ])
+  })
+
+  test("a source ingested in the window does not make an unchanged obligation changed", async () => {
+    const doc = putDoc(db, f.entityId, "d", IN_WINDOW)
+    const id = await putObligation(db, f.entityId, doc, { action: "Call back" })
+    setUpdatedAt(id, BEFORE_WINDOW)
+    expect((await generateBrief(db, NOW, CONFIG)).lines).toEqual([])
+  })
+
+  test("a change time outside the window is not listed", async () => {
+    const doc = putDoc(db, f.entityId, "d", BEFORE_WINDOW)
+    const id = await putObligation(db, f.entityId, doc, { action: "Call back" })
+    setUpdatedAt(id, "2026-11-02T12:00:00.001Z")
+    expect((await generateBrief(db, NOW, CONFIG)).lines).toEqual([])
+  })
+
+  test("a reopened obligation shows up as changed", async () => {
+    const doc = putDoc(db, f.entityId, "d", BEFORE_WINDOW)
+    const id = await putObligation(db, f.entityId, doc, {
+      action: "Call back",
+      status: "done",
+    })
+    db.prepare(
+      "UPDATE obligations SET status = 'open', updated_at = ? WHERE id = ?"
+    ).run(IN_WINDOW, id)
+    expect((await generateBrief(db, NOW, CONFIG)).lines).toHaveLength(1)
+  })
+})

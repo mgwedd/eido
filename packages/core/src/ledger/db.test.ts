@@ -77,7 +77,7 @@ describe("migrations", () => {
     const defaultEntityId = await createDefaultEntity(path)
     const upgraded = openDataDb(path, { defaultEntityId })
     expect(schemaOf(upgraded)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(upgraded)).toBe(8)
+    expect(ledgerVersion(upgraded)).toBe(9)
     expect(
       upgraded
         .prepare(
@@ -92,7 +92,7 @@ describe("migrations", () => {
 
     const again = openDataDb(path)
     expect(schemaOf(again)).toEqual(schemaOf(fresh))
-    expect(ledgerVersion(again)).toBe(8)
+    expect(ledgerVersion(again)).toBe(9)
     expect(
       again.prepare("SELECT * FROM documents ORDER BY sha256").all()
     ).toEqual(documentsBefore)
@@ -148,7 +148,7 @@ describe("migrations", () => {
   test("a database from a newer ledger version is refused", () => {
     const path = tempPath()
     const db = openDataDb(path)
-    db.exec("UPDATE ledger_schema SET version = 9")
+    db.exec("UPDATE ledger_schema SET version = 10")
     db.close()
     expect(codeOf(() => openDataDb(path))).toBe("newer_schema")
   })
@@ -180,7 +180,7 @@ describe("migrations", () => {
     old.close()
 
     const db = openDataDb(path)
-    expect(ledgerVersion(db)).toBe(8)
+    expect(ledgerVersion(db)).toBe(9)
     expect(
       db
         .prepare(
@@ -220,6 +220,19 @@ describe("migrations", () => {
       [a.id, "2030-02-30"],
       [b.id, "2030-02-28"],
     ])
+    // Rows stored before the change time existed take their document's ingest time (#481).
+    expect(
+      db
+        .prepare(
+          `SELECT o.updated_at AS updated_at, d.ingested_at AS ingested_at
+           FROM obligations o JOIN documents d ON d.sha256 = o.doc_id ORDER BY o.id`
+        )
+        .all()
+        .map((r) => [r["updated_at"], r["ingested_at"]])
+        .every(
+          ([updated, ingested]) => updated === ingested && ingested !== null
+        )
+    ).toBe(true)
     // A stored row can still change status, and gets no new check on columns it leaves alone.
     db.prepare("UPDATE obligations SET status = 'done' WHERE id = 1").run()
     expect(() =>
