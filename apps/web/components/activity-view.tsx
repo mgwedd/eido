@@ -20,6 +20,7 @@ import {
   ACTOR_LABEL,
   ROW_KIND_LABEL,
   chainBrokenMessage,
+  formatAction,
   formatTime,
   formatTimestamp,
   groupByDay,
@@ -241,7 +242,9 @@ function ActivityRow({
               {label}
             </span>
           ) : null}
-          <span className="font-mono break-all">{entry.action}</span>
+          <span className="font-mono break-all">
+            {formatAction(entry.action)}
+          </span>
         </span>
         <span className="min-w-0 break-all text-muted-foreground md:order-4 md:text-foreground">
           {intentId ? (

@@ -445,6 +445,47 @@ describe("POST /audit", () => {
     expect(JSON.parse(chain.text)).toMatchObject({ ok: true })
   })
 
+  it("records sensitive reads and local AI uses as keyed audit.access rows (#322)", async () => {
+    for (const action of [
+      "access.document_open",
+      "access.inference_use",
+      "access.content_copy",
+      "access.instruction_change",
+    ] as const) {
+      await audit.record({
+        action,
+        subjectHash: SUBJECT,
+        beforeHash: null,
+        afterHash: null,
+      })
+    }
+    expect(actions()).toEqual([
+      "audit.access.document_open",
+      "audit.access.inference_use",
+      "audit.access.content_copy",
+      "audit.access.instruction_change",
+    ])
+    const rows = auditRows(s.db)
+    const last = rows.at(-1)
+    expect(last?.actor).toBe("data-plane")
+    expect(last?.action).toBe("audit.access.instruction_change")
+    expect(last?.target).toMatch(/^hmac:v1:1:[a-f0-9]{64}:[a-f0-9]{64}$/)
+    if (profileAudit === undefined) throw new Error("missing profile audit")
+    const tags = await profileAudit.tag({
+      action: "access.instruction_change",
+      subjectHash: SUBJECT,
+      beforeHash: null,
+      afterHash: null,
+    })
+    expect(last?.detail_hash).toBe(
+      payloadHash({ action: "access.instruction_change", ...tags })
+    )
+    const stored = JSON.stringify(rows)
+    expect(stored).not.toContain(SUBJECT)
+    const chain = await raw(controlSocket, "GET", "/audit/chain")
+    expect(JSON.parse(chain.text)).toMatchObject({ ok: true })
+  })
+
   it("refuses a clear-text field with 400 naming only the path, and audits the refusal", async () => {
     const refused = audit.record({
       ...created,
@@ -508,9 +549,29 @@ describe("POST /audit", () => {
       "$.afterHash: must be a hash",
     ],
     [
+      "an access event with a before side",
+      {
+        ...created,
+        action: "access.document_open",
+        beforeHash: BEFORE,
+        afterHash: null,
+      },
+      "$.beforeHash: must be null",
+    ],
+    [
+      "an access event with an after side",
+      {
+        ...created,
+        action: "access.inference_use",
+        beforeHash: null,
+        afterHash: AFTER,
+      },
+      "$.afterHash: must be null",
+    ],
+    [
       "an intent kind as the action",
       { ...created, action: "email.send" },
-      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen", "defaultEntity"',
+      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen", "defaultEntity", "access.document_open", "access.inference_use", "access.content_copy", "access.instruction_change"',
     ],
   ])(
     "refuses %s with 400 and writes no profile row",
