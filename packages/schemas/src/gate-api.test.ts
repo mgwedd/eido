@@ -6,6 +6,7 @@ import {
   validateGateAuditPageRequest,
   validateGateAuditRecordRequest,
   validateGateAuditRecordResult,
+  validateGateBackupStatus,
   validateGateConnectorHealth,
   validateGateCredentialStatus,
   validateGateDecisionRequest,
@@ -1013,5 +1014,49 @@ describe("Proton mail read routes", () => {
     for (const code of ["handshake_failed", "auth_failed"]) {
       expect(validateGateApiError({ code, message: "Bridge" }).ok).toBe(true)
     }
+  })
+
+  test("GateBackupStatus validates never_run, fresh, and stale statuses", () => {
+    expect(
+      validateGateBackupStatus({
+        status: "never_run",
+        lastSuccess: null,
+      }).ok
+    ).toBe(true)
+
+    expect(
+      validateGateBackupStatus({
+        status: "fresh",
+        lastSuccess: AT,
+      }).ok
+    ).toBe(true)
+
+    expect(
+      validateGateBackupStatus({
+        status: "stale",
+        lastSuccess: AT,
+      }).ok
+    ).toBe(true)
+
+    expect(
+      validateGateBackupStatus({
+        status: "never_run",
+        lastSuccess: AT,
+      }).ok
+    ).toBe(false)
+
+    expect(
+      validateGateBackupStatus({
+        status: "fresh",
+        lastSuccess: null,
+      }).ok
+    ).toBe(false)
+
+    expect(
+      validateGateBackupStatus({
+        status: "unknown",
+        lastSuccess: AT,
+      }).ok
+    ).toBe(false)
   })
 })

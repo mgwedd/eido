@@ -428,6 +428,15 @@ export interface GateAuditRecordResult {
   seq: number
 }
 
+/** Authenticated phone view of the backup status for Settings (#414). Reports whether a backup has run, the last successful snapshot timestamp, and whether the snapshot is fresh or stale (older than 36 hours). */
+export type GateBackupStatus = {
+  status: "never_run"
+  lastSuccess: null
+} | {
+  status: "fresh" | "stale"
+  lastSuccess: string
+}
+
 /** Response of connector health (#24 getConnectorHealth), used by the Today page. It has no fields for credentials or payload bodies. */
 export interface GateConnectorHealth {
   connectors: Array<{
