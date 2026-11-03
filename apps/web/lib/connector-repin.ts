@@ -85,14 +85,16 @@ function operationNames(payload: string, connector: string) {
     if (Reflect.get(manifest, "name") !== connector) return undefined
     const operations: unknown = Reflect.get(manifest, "operations")
     if (!Array.isArray(operations)) return undefined
-    const names = operations.map((op: unknown) =>
-      typeof op === "object" && op !== null
-        ? (Reflect.get(op, "name") as unknown)
-        : undefined
-    )
-    return names.every((name) => typeof name === "string")
-      ? new Set(names as string[])
-      : undefined
+    const names = new Set<string>()
+    for (const op of operations as unknown[]) {
+      const name: unknown =
+        typeof op === "object" && op !== null
+          ? Reflect.get(op, "name")
+          : undefined
+      if (typeof name !== "string") return undefined
+      names.add(name)
+    }
+    return names
   } catch {
     return undefined
   }

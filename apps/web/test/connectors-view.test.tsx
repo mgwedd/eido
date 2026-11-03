@@ -265,7 +265,7 @@ test("a connector that is not drift-disabled has no re-pin action", async () => 
 test("Review and re-pin signs, then reloads the connectors so the card shows enabled", async () => {
   let reads = 0
   const fetchMock = vi.fn<typeof fetch>((input) => {
-    const url = String(input)
+    const url = input instanceof Request ? input.url : input.toString()
     if (url.endsWith("/repin")) return Promise.resolve(Response.json({}))
     reads += 1
     return Promise.resolve(
