@@ -167,9 +167,7 @@ describe("linkPayments", () => {
     const id = await addBill()
     addTransaction("acc:1", -12000)
     expect(await linkPayments(db)).toBe(1)
-    expect(linksFor(db, `obl:${id}`)).toEqual([
-      paid("txn:acc:1", `obl:${id}`),
-    ])
+    expect(linksFor(db, `obl:${id}`)).toEqual([paid("txn:acc:1", `obl:${id}`)])
   })
 
   test("a second run leaves a linked pair alone and does not link it again elsewhere", async () => {
@@ -187,9 +185,7 @@ describe("linkPayments", () => {
     expect(await linkPayments(db)).toBe(0)
     const id = await addBill()
     expect(await linkPayments(db)).toBe(1)
-    expect(linksFor(db, "txn:acc:1")).toEqual([
-      paid("txn:acc:1", `obl:${id}`),
-    ])
+    expect(linksFor(db, "txn:acc:1")).toEqual([paid("txn:acc:1", `obl:${id}`)])
   })
 
   test("reads the amount from the document's latest extraction", async () => {
@@ -218,9 +214,7 @@ describe("linkPayments", () => {
     addTransaction("acc:1", -12000)
     addTransaction("acc:2", -9500)
     expect(await linkPayments(db)).toBe(1)
-    expect(linksFor(db, "txn:acc:2")).toEqual([
-      paid("txn:acc:2", `obl:${id}`),
-    ])
+    expect(linksFor(db, "txn:acc:2")).toEqual([paid("txn:acc:2", `obl:${id}`)])
   })
 
   test.each([
