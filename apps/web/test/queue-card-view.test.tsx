@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client"
 import { afterEach, describe, expect, test, vi } from "vitest"
 import { QueueView } from "../components/queue-view"
 import { queued } from "./fixtures/queue"
+import { stubIphone } from "./platform"
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -290,8 +291,23 @@ describe("Queue card", () => {
     expect(view.textContent).toContain("Approved")
   })
 
-  test("a cancelled Face ID shows its own message and keeps the card", async () => {
+  test("a cancelled passkey prompt shows its own message and keeps the card", async () => {
     routed()
+    signApproval.mockResolvedValue({
+      ok: false,
+      error: { code: "cancelled", message: "x" },
+    })
+    const view = await render()
+    await click("Approve")
+    expect(view.textContent).toContain(
+      "The passkey prompt did not complete. Nothing was approved."
+    )
+    expect(button("Approve")?.disabled).toBe(false)
+  })
+
+  test("on an iPhone the cancelled message names Face ID", async () => {
+    routed()
+    stubIphone()
     signApproval.mockResolvedValue({
       ok: false,
       error: { code: "cancelled", message: "x" },
@@ -301,7 +317,6 @@ describe("Queue card", () => {
     expect(view.textContent).toContain(
       "Face ID did not complete. Nothing was approved."
     )
-    expect(button("Approve")?.disabled).toBe(false)
   })
 
   test("a refused signature explains what happened", async () => {

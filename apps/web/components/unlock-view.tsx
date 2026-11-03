@@ -9,6 +9,7 @@ import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent } from "@eido/ui/components/card"
 import { enrolUrl } from "@/lib/enrol"
+import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
 import {
   checkEnvironment,
   loadCredentialStatus,
@@ -31,16 +32,19 @@ type UnlockState =
 
 const MESSAGES = {
   "not-enrolled": "This device has no passkey yet.",
-  cancelled: "Face ID was cancelled. Eido is still locked.",
   offline: "Can't reach Eido. Check that Tailscale is connected.",
   "wrong-origin": "Open Eido from its Tailscale address to unlock.",
   unsupported: "This browser can't use passkeys.",
 } as const
 
-function alertMessage(state: UnlockState): string | null {
+function alertMessage(
+  state: UnlockState,
+  copy: ReturnType<typeof authenticatorCopy>
+): string | null {
   switch (state.status) {
-    case "not-enrolled":
     case "cancelled":
+      return `${copy.subject} was cancelled. Eido is still locked.`
+    case "not-enrolled":
     case "offline":
     case "wrong-origin":
     case "unsupported":
@@ -69,7 +73,8 @@ function UnlockCard({
   onUnlock: () => void
   onRetry: () => void
 }) {
-  const error = alertMessage(state)
+  const copy = authenticatorCopy(useAuthenticatorLabel())
+  const error = alertMessage(state, copy)
   const canUnlock =
     state.status === "ready" ||
     state.status === "expired" ||
@@ -81,7 +86,7 @@ function UnlockCard({
     state.status === "checking"
       ? "Checking this device…"
       : waiting
-        ? "Waiting for Face ID…"
+        ? `Waiting for ${copy.waitingFor}…`
         : state.status === "expired"
           ? "Your session expired. Unlock to continue."
           : ""
@@ -155,7 +160,7 @@ function UnlockCard({
               className="h-12 rounded-xl"
             >
               <ScanFace aria-hidden />
-              Unlock with Face ID
+              {copy.unlockWith}
             </Button>
           ) : null}
         </CardContent>

@@ -115,7 +115,7 @@ async function refusal(response: Response): Promise<EnrolResult> {
 
 /**
  * Enrols this device: asks the gate for a challenge (this consumes nothing), creates the
- * passkey with Face ID, and posts the registration with the code. Nothing is retried. The
+ * passkey, and posts the registration with the code. Nothing is retried. The
  * code, challenge and registration are only held in this call: not logged, not stored. The
  * session is the HttpOnly cookie the gate sets.
  */

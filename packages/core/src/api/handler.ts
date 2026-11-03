@@ -19,6 +19,7 @@ import {
   validateCoreApiAskRequest,
   validateCoreApiConfirmExtractionRequest,
   validateCoreApiDefaultEntityRequest,
+  validateCoreApiReplyDraftRequest,
   validateGateIntentProposal,
   validateIntent,
 } from "@eido/schemas"
@@ -51,6 +52,8 @@ import {
 } from "./conversation-get-route"
 import { BRIEF_PATH, briefRoute } from "./brief-route"
 import { dueSoonRoute } from "./due-soon"
+import { REPLY_DRAFT_PATH } from "./reply-draft-route"
+import type { ReplyDraftResult, ReplyDrafter } from "./reply-draft-route"
 import {
   OBLIGATION_CHANGE_PATH,
   changeObligation,
@@ -82,6 +85,11 @@ export interface ApiDeps {
    * served.
    */
   ask?: (question: string) => Promise<AskResult>
+  /**
+   * Drafts one reply for an owed-reply obligation (`createReplyDrafter`). When absent (no model
+   * configured), `/replies/draft` is not served.
+   */
+  draftReply?: ReplyDrafter
   /** Proposes a validated intent through the gate; absent when the gate client is unavailable. */
   propose?: IntentClient["propose"]
   /** Local obligation state changes (#104). When absent, `/obligations/...` is not served. */
@@ -112,6 +120,8 @@ const STATUS: Record<ErrorCode, number> = {
   misdirected_request: 421,
   busy: 503,
   gate_unavailable: 503,
+  connector_paused: 409,
+  no_draft: 422,
   internal: 500,
 }
 
@@ -369,6 +379,28 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       }
       const body: CoreApiAskResponse = result
       return json(body)
+    }
+
+    if (path === REPLY_DRAFT_PATH && deps.draftReply !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const validation = validateCoreApiReplyDraftRequest(
+        await readJson(request)
+      )
+      if (!validation.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(validation.errors),
+        })
+      }
+      let result: ReplyDraftResult
+      try {
+        result = await deps.draftReply(validation.value.obligationId)
+      } catch (error) {
+        if (error instanceof GateUnavailableError) throw error
+        return failure("busy", "drafting is temporarily unavailable")
+      }
+      if (result.ok) return json(result.body, result.status)
+      const { code, message, fields } = result
+      return failure(code, message, fields ? { fields } : {})
     }
 
     if (path === "/intents" && deps.propose !== undefined) {

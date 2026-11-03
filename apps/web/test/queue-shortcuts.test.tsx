@@ -161,7 +161,7 @@ describe("Queue shortcuts", () => {
     })
     expect(
       document.querySelector('[role="alert"], [data-slot="alert"]')?.textContent
-    ).toContain("Face ID did not complete. Nothing was approved.")
+    ).toContain("The passkey prompt did not complete. Nothing was approved.")
   })
 
   test("a does not sign while the payload has not loaded", async () => {

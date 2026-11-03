@@ -15,6 +15,7 @@ import {
 } from "@eido/ui/components/sheet"
 import { Textarea } from "@eido/ui/components/textarea"
 import { editableFields, hasEdits } from "@/lib/queue/edit"
+import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
 
 function EditForm({
   intentId,
@@ -29,6 +30,7 @@ function EditForm({
   error: string | null
   onSubmit: (values: Record<string, string>) => void
 }) {
+  const copy = authenticatorCopy(useAuthenticatorLabel())
   const fields = React.useMemo(() => editableFields(payload), [payload])
   const [values, setValues] = React.useState<Record<string, string>>(() =>
     Object.fromEntries(fields.map((field) => [field.key, field.initial]))
@@ -79,7 +81,7 @@ function EditForm({
         ) : null}
         {busy ? (
           <p role="status" className="text-sm">
-            Waiting for Face ID
+            Waiting for {copy.waitingFor}
           </p>
         ) : null}
       </div>
