@@ -28,6 +28,7 @@ export const groceries = {
   currency: "USD",
   account: ACCOUNT_CARD,
   entity: ENTITY_PERSONAL,
+  linkedObligation: null,
 } satisfies CoreApiTransactionList["transactions"][number]
 
 export const rent = {
@@ -38,6 +39,7 @@ export const rent = {
   currency: "USD",
   account: ACCOUNT_CHECKING,
   entity: ENTITY_PROPERTY,
+  linkedObligation: null,
 } satisfies CoreApiTransactionList["transactions"][number]
 
 export const lastYear = {
@@ -48,6 +50,19 @@ export const lastYear = {
   currency: "USD",
   account: ACCOUNT_CHECKING,
   entity: ENTITY_PROPERTY,
+  linkedObligation: null,
+} satisfies CoreApiTransactionList["transactions"][number]
+
+/** A debit core matched to the obligation it paid (#576); the action text is generated, so lorem. */
+export const paidBill = {
+  id: "txn-4",
+  postedAt: "2026-10-12T00:00:00.000Z",
+  description: "Water utility (example.invalid)",
+  amountCents: -6250,
+  currency: "USD",
+  account: ACCOUNT_CHECKING,
+  entity: ENTITY_PROPERTY,
+  linkedObligation: { id: 7, action: "Lorem ipsum dolor" },
 } satisfies CoreApiTransactionList["transactions"][number]
 
 export const page = (

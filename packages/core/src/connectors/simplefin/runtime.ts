@@ -107,6 +107,7 @@ export function createSimpleFinRuntime(
       options.log("simplefin_synced", {
         windows: String(result.result.windows),
         transactions: String(result.result.transactionsStored),
+        linked: String(result.result.paymentsLinked),
         rejected: String(result.result.rejectedTransactions),
         unassigned: String(result.result.unassignedAccounts),
       })
