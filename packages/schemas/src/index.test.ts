@@ -23,6 +23,7 @@ import {
   validateCoreApiObligationList,
   validateCoreApiReplyDraftRequest,
   validateCoreApiReplyDraftResponse,
+  validateCoreApiSimpleFinSync,
   validateCoreApiError,
   validateCoreApiConversationSearch,
   validateCoreApiConversationGet,
@@ -834,5 +835,32 @@ describe("validate keywords no verb uses today", () => {
     expect(validate(both, "abc")).toEqual(["$: matches more than one variant"])
     expect(validate(both, "abcdefgh")).toEqual([])
     expect(validate(both, 1)).toEqual(["$: expected string, got number"])
+  })
+})
+
+describe("core API SimpleFIN sync schema", () => {
+  test("a synced response carries the next scheduled sync", () => {
+    expect(
+      validateCoreApiSimpleFinSync({
+        status: "synced",
+        nextSyncAt: "2026-07-02T06:30:00.000Z",
+      }).ok
+    ).toBe(true)
+  })
+
+  test("a refusal names one of the three reasons", () => {
+    expect(
+      validateCoreApiSimpleFinSync({
+        status: "refused",
+        reason: "daily_limit",
+        nextSyncAt: "2026-07-02T00:00:00.000Z",
+      }).ok
+    ).toBe(true)
+    expect(
+      validateCoreApiSimpleFinSync({ status: "refused", reason: "other" }).ok
+    ).toBe(false)
+    expect(validateCoreApiSimpleFinSync({ reason: "sync_failed" }).ok).toBe(
+      false
+    )
   })
 })

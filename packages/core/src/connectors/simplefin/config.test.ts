@@ -56,6 +56,27 @@ describe("simplefinPlaneConfig", () => {
     })
   })
 
+  it("reads the local sync time", () => {
+    const proxy = "http://127.0.0.1:7801"
+    expect(
+      simplefinPlaneConfig(
+        { EIDO_SIMPLEFIN_PROXY_URL: proxy, EIDO_SIMPLEFIN_SYNC_TIME: "06:30" },
+        "/d"
+      )?.syncTime
+    ).toEqual({ hour: 6, minute: 30 })
+    expect(
+      simplefinPlaneConfig({ EIDO_SIMPLEFIN_PROXY_URL: proxy }, "/d")
+    ).not.toHaveProperty("syncTime")
+    for (const bad of ["25:00", "6.30", "noon"]) {
+      expect(() =>
+        simplefinPlaneConfig(
+          { EIDO_SIMPLEFIN_PROXY_URL: proxy, EIDO_SIMPLEFIN_SYNC_TIME: bad },
+          "/d"
+        )
+      ).toThrow("EIDO_SIMPLEFIN_SYNC_TIME must be a 24-hour time, HH:MM")
+    }
+  })
+
   it("refuses a remote proxy and a bad range", () => {
     expect(() =>
       simplefinPlaneConfig(

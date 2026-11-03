@@ -18,6 +18,21 @@ export const SIMPLEFIN_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000
  */
 export const SIMPLEFIN_TICK_INTERVAL_MS = 15 * 60 * 1000
 
+export interface SyncTime {
+  hour: number
+  minute: number
+}
+
+const TIME = /^([01]?\d|2[0-3]):([0-5]\d)$/
+
+/** `HH:MM` on a 24-hour clock ("6:30", "06:30", "18:05"), or undefined when it is anything else. */
+export function parseSyncTime(value: string): SyncTime | undefined {
+  const match = TIME.exec(value.trim())
+  return match === null
+    ? undefined
+    : { hour: Number(match[1]), minute: Number(match[2]) }
+}
+
 export interface SimpleFinConfig {
   dailyRequestLimit: number
   maxDateRangeDays: number
@@ -63,6 +78,8 @@ export interface SimpleFinPlaneConfig {
   proxyUrl: string
   accountsFile: string
   config: Partial<SimpleFinConfig>
+  /** The local time of day to sync at (`EIDO_SIMPLEFIN_SYNC_TIME`); absent: every sync interval. */
+  syncTime?: SyncTime
 }
 
 type Env = Readonly<Record<string, string | undefined>>
@@ -95,8 +112,14 @@ export function simplefinPlaneConfig(
       "EIDO_SIMPLEFIN_MAX_RANGE_DAYS must be an integer from 1 to 3650"
     )
   }
+  const time = env["EIDO_SIMPLEFIN_SYNC_TIME"] ?? ""
+  const syncTime = time === "" ? undefined : parseSyncTime(time)
+  if (time !== "" && syncTime === undefined) {
+    throw new Error("EIDO_SIMPLEFIN_SYNC_TIME must be a 24-hour time, HH:MM")
+  }
   return {
     proxyUrl,
+    ...(syncTime === undefined ? {} : { syncTime }),
     accountsFile:
       env["EIDO_SIMPLEFIN_ACCOUNTS_FILE"] ||
       join(dataDir, SIMPLEFIN_ACCOUNTS_FILE),
