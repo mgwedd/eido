@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
 import { Button, buttonVariants } from "@eido/ui/components/button"
@@ -22,17 +23,20 @@ import {
 } from "@eido/ui/components/table"
 import { cn } from "@eido/ui/lib/utils"
 import { DraftReplyAction } from "@/components/draft-reply-action"
+import { useKeydown } from "@/hooks/use-keydown"
 import { loadConnectors, type Connector } from "@/lib/connectors"
 import { loadLedgerObligations, type ObligationItem } from "@/lib/ledger"
 import {
   getPartialCoverageNotice,
   getRepliesUrl,
   getReplySubject,
+  moveRowFocus,
   partitionReplies,
   requestDraftReply,
   sortReplies,
   type DraftReplyState,
 } from "@/lib/replies"
+import { isInteractiveTarget, isShortcutEvent } from "@/lib/shortcuts"
 import {
   formatDueText,
   loadEntities,
@@ -146,6 +150,8 @@ export function RepliesView({
   const [drafts, setDrafts] = React.useState<Record<number, DraftReplyState>>(
     {}
   )
+  const router = useRouter()
+  const [focusedId, setFocusedId] = React.useState<number | null>(null)
   // Rows with a request in flight. A ref, so a second click in the same tick finds it.
   const inFlight = React.useRef<Set<number>>(new Set())
 
@@ -217,7 +223,12 @@ export function RepliesView({
 
   const handleDraftReply = React.useCallback(
     async (row: ObligationItem) => {
-      if (isOffline || row.hasDraftIntent || inFlight.current.has(row.id)) {
+      if (
+        isOffline ||
+        row.hasDraftIntent ||
+        drafts[row.id]?.status === "saved" ||
+        inFlight.current.has(row.id)
+      ) {
         return
       }
       inFlight.current.add(row.id)
@@ -232,7 +243,7 @@ export function RepliesView({
             : { status: "failed", reason: outcome.reason },
       }))
     },
-    [isOffline]
+    [isOffline, drafts]
   )
 
   const partialCoverageNotice = React.useMemo(() => {
@@ -250,6 +261,48 @@ export function RepliesView({
       waiting: sortReplies(partitioned.waiting, now),
     }
   }, [obligations, now])
+
+  // The focused row only counts while it is still listed (the entity filter can remove it).
+  const focusedRow = owed.find((row) => row.id === focusedId) ?? null
+
+  useKeydown((event) => {
+    if (loading || error !== null || !isShortcutEvent(event)) return
+    if (event.key === "j" || event.key === "k") {
+      event.preventDefault()
+      setFocusedId(
+        moveRowFocus(
+          owed.map((row) => row.id),
+          focusedRow?.id ?? null,
+          event.key === "j" ? "next" : "previous"
+        )
+      )
+    } else if (event.repeat || focusedRow === null) {
+      return
+    } else if (event.key === "d") {
+      event.preventDefault()
+      void handleDraftReply(focusedRow)
+    } else if (event.key === "Enter" && !isInteractiveTarget(event.target)) {
+      event.preventDefault()
+      router.push(
+        buildViewerUrl(
+          focusedRow.source.documentId,
+          focusedRow.source.span,
+          currentRepliesUrl
+        )
+      )
+    }
+  })
+
+  // Keep the focused row on screen. Both the table and phone list rows carry the id; the
+  // hidden one is a no-op.
+  React.useEffect(() => {
+    if (focusedId === null) return
+    for (const el of document.querySelectorAll(
+      `[data-owed-row="${focusedId}"]`
+    )) {
+      el.scrollIntoView?.({ block: "nearest" })
+    }
+  }, [focusedId])
 
   return (
     <div className="flex flex-col gap-6">
@@ -458,7 +511,17 @@ export function RepliesView({
                           )
 
                           return (
-                            <TableRow key={row.id}>
+                            <TableRow
+                              key={row.id}
+                              data-owed-row={row.id}
+                              aria-current={
+                                row.id === focusedRow?.id ? "true" : undefined
+                              }
+                              className={cn(
+                                row.id === focusedRow?.id &&
+                                  "bg-muted/60 ring-2 ring-ring ring-inset"
+                              )}
+                            >
                               <TableCell className="px-4 py-3 text-sm font-medium text-foreground">
                                 {row.party ?? "Unknown"}
                               </TableCell>
@@ -516,7 +579,18 @@ export function RepliesView({
                       )
 
                       return (
-                        <li key={row.id} className="min-h-[44px] px-4 py-3">
+                        <li
+                          key={row.id}
+                          data-owed-row={row.id}
+                          aria-current={
+                            row.id === focusedRow?.id ? "true" : undefined
+                          }
+                          className={cn(
+                            "min-h-[44px] px-4 py-3",
+                            row.id === focusedRow?.id &&
+                              "bg-muted/60 ring-2 ring-ring ring-inset"
+                          )}
+                        >
                           <div className="flex items-center justify-between gap-3">
                             <Link
                               href={sourceViewerUrl}

@@ -97,6 +97,23 @@ export function partitionReplies(
 }
 
 /**
+ * The row id the `j` (next) or `k` (previous) key moves focus to. With nothing focused either key
+ * lands on the first row; at either end focus stays put. No rows, no focus.
+ */
+export function moveRowFocus(
+  ids: readonly number[],
+  current: number | null,
+  direction: "next" | "previous"
+): number | null {
+  const first = ids[0]
+  if (first === undefined) return null
+  const index = current === null ? -1 : ids.indexOf(current)
+  if (index === -1) return first
+  const target = direction === "next" ? index + 1 : index - 1
+  return ids[Math.min(Math.max(target, 0), ids.length - 1)] ?? first
+}
+
+/**
  * Returns the URL for /ledger/replies with entity query parameter.
  */
 export function getRepliesUrl(entity?: string): string {
