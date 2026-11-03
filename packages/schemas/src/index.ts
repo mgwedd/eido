@@ -95,6 +95,7 @@ export {
   validateCoreApiTodayDueSoon,
   validateCoreApiBrief,
   validateCoreApiConversationSearch,
+  validateCoreApiConversationGet,
   validateCoreApiConfirmExtractionRequest,
   validateCoreApiConfirmExtractionResponse,
   validateCoreApiObligationList,
