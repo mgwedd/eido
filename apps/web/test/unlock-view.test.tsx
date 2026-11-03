@@ -152,6 +152,14 @@ describe("UnlockView", () => {
     expect(button()).toBeNull()
   })
 
+  it("links the not-enrolled state to enrolment, keeping the page to return to", async () => {
+    setup({ status: { enrolled: false, sessionExpiresAt: null } })
+    await render("/queue")
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(
+      "/enroll?next=%2Fqueue"
+    )
+  })
+
   it("stays locked and lets the user try again after Face ID is cancelled", async () => {
     setup({
       get: async () => {

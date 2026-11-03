@@ -24,12 +24,12 @@ describe("matchesPath", () => {
 
 describe("canAccess", () => {
   it("lets the owner open everything, mapped or not", () => {
-    for (const path of ["/", "/queue", "/unlock", "/not-yet-built"])
+    for (const path of ["/", "/queue", "/unlock", "/enroll", "/not-yet-built"])
       expect(canAccess("owner", path)).toBe(true)
   })
 
   it("keeps every page owner-only for now, so the assistant is refused", () => {
-    for (const path of ["/", "/queue", "/queue/abc", "/unlock"])
+    for (const path of ["/", "/queue", "/queue/abc", "/unlock", "/enroll"])
       expect(canAccess("assistant", path)).toBe(false)
   })
 
