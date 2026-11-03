@@ -18,7 +18,10 @@ import {
   formatDocumentDate,
   formatDocumentSource,
   formatSourceLabel,
+  isLocalFile,
   loadDocumentsList,
+  loadPendingTrashKeys,
+  parseFileLocation,
   type DocumentItem,
 } from "@/lib/documents"
 import { loadEntities, type FilterEntity } from "@/lib/today-due-soon"
@@ -151,6 +154,9 @@ export function DocumentsView({
   const [activeSource, setActiveSource] = React.useState<string>(initialSource)
   const [entities, setEntities] = React.useState<FilterEntity[]>([])
   const [documents, setDocuments] = React.useState<DocumentItem[]>([])
+  const [pendingTrashKeys, setPendingTrashKeys] = React.useState<Set<string>>(
+    () => new Set()
+  )
   const [knownSources, setKnownSources] = React.useState<string[]>([])
   const [nextOffset, setNextOffset] = React.useState<number | null>(null)
   const [loading, setLoading] = React.useState<boolean>(true)
@@ -177,6 +183,9 @@ export function DocumentsView({
     void (async () => {
       setLoading(true)
       setError(null)
+      void loadPendingTrashKeys(controller.signal).then((keys) => {
+        setPendingTrashKeys(keys)
+      })
       const res = await loadDocumentsList(controller.signal, {
         entity: activeEntity,
         source: activeSource,
@@ -355,15 +364,35 @@ export function DocumentsView({
                     doc.name ||
                     `${formatSourceLabel(doc.source)} (${doc.sha256.slice(0, 8)})`
 
+                  const isPendingTrash = (() => {
+                    if (!isLocalFile(doc.source)) return false
+                    const loc = parseFileLocation(doc.source, doc.sourceRef)
+                    if (!loc) return false
+                    return (
+                      pendingTrashKeys.has(loc.path) ||
+                      pendingTrashKeys.has(`${loc.root}/${loc.path}`)
+                    )
+                  })()
+
                   return (
                     <TableRow key={doc.sha256}>
                       <TableCell className="px-4 py-3 font-medium text-foreground">
-                        <Link
-                          href={viewerUrl}
-                          className="font-medium text-primary underline underline-offset-4 hover:opacity-80"
-                        >
-                          {displayName}
-                        </Link>
+                        <div className="flex flex-col gap-0.5">
+                          <Link
+                            href={viewerUrl}
+                            className="font-medium text-primary underline underline-offset-4 hover:opacity-80"
+                          >
+                            {displayName}
+                          </Link>
+                          {isPendingTrash ? (
+                            <span
+                              role="status"
+                              className="text-xs font-normal text-amber-600 dark:text-amber-400"
+                            >
+                              Waiting for approval to move to Eido Trash.
+                            </span>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell className="px-4 py-3 text-muted-foreground">
                         {doc.entity.name}
@@ -391,7 +420,14 @@ export function DocumentsView({
                         {formatDocumentDate(doc.occurredAt ?? doc.ingestedAt)}
                       </TableCell>
                       <TableCell className="px-4 py-3 text-sm">
-                        {doc.keyFacts && doc.keyFacts.length > 0 ? (
+                        {isPendingTrash ? (
+                          <span
+                            role="status"
+                            className="text-xs font-medium text-amber-600 dark:text-amber-400"
+                          >
+                            Waiting for approval to move to Eido Trash.
+                          </span>
+                        ) : doc.keyFacts && doc.keyFacts.length > 0 ? (
                           <div className="flex flex-col gap-1">
                             {doc.keyFacts.map((fact, i) =>
                               fact.href ? (
@@ -435,6 +471,16 @@ export function DocumentsView({
                   doc.name ||
                   `${formatSourceLabel(doc.source)} (${doc.sha256.slice(0, 8)})`
 
+                const isPendingTrash = (() => {
+                  if (!isLocalFile(doc.source)) return false
+                  const loc = parseFileLocation(doc.source, doc.sourceRef)
+                  if (!loc) return false
+                  return (
+                    pendingTrashKeys.has(loc.path) ||
+                    pendingTrashKeys.has(`${loc.root}/${loc.path}`)
+                  )
+                })()
+
                 return (
                   <li
                     key={doc.sha256}
@@ -467,7 +513,14 @@ export function DocumentsView({
                         {doc.type || doc.mime}
                       </Badge>
                     </div>
-                    {doc.keyFacts && doc.keyFacts.length > 0 ? (
+                    {isPendingTrash ? (
+                      <span
+                        role="status"
+                        className="text-xs font-medium text-amber-600 dark:text-amber-400"
+                      >
+                        Waiting for approval to move to Eido Trash.
+                      </span>
+                    ) : doc.keyFacts && doc.keyFacts.length > 0 ? (
                       <div className="flex flex-col gap-1 pt-0.5 text-xs">
                         {doc.keyFacts.map((fact, i) =>
                           fact.href ? (

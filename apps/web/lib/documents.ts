@@ -1,5 +1,7 @@
 import {
   validateCoreApiDocumentList,
+  validateGatePendingIntentList,
+  validateGateProposeResult,
   type CoreApiDocumentList,
 } from "@eido/schemas"
 
@@ -154,4 +156,114 @@ export async function loadDocumentsList(
       message: error instanceof Error ? error.message : "Network error",
     }
   }
+}
+
+/** Returns whether the source represents a local file. */
+export function isLocalFile(source: string): boolean {
+  return source === "local-folder" || source === "files"
+}
+
+/** Parses root and relative path from a local file document. */
+export function parseFileLocation(
+  source: string,
+  sourceRef: string
+): { root: string; path: string } | null {
+  if (!isLocalFile(source)) return null
+  try {
+    const parsed: unknown = JSON.parse(sourceRef)
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === 2 &&
+      typeof parsed[0] === "string" &&
+      typeof parsed[1] === "string" &&
+      parsed[0].length > 0 &&
+      parsed[1].length > 0
+    ) {
+      return { root: parsed[0], path: parsed[1] }
+    }
+  } catch {
+    const slash = sourceRef.indexOf("/")
+    if (slash > 0) {
+      return {
+        root: sourceRef.slice(0, slash),
+        path: sourceRef.slice(slash + 1),
+      }
+    }
+  }
+  return null
+}
+
+export type ProposeTrashResult =
+  { ok: true; intentId: string } | { ok: false; message: string }
+
+/** Proposes moving a local file to Eido Trash (file.delete intent). */
+export async function proposeMoveToTrash(
+  root: string,
+  path: string,
+  signal?: AbortSignal
+): Promise<ProposeTrashResult> {
+  try {
+    const response = await fetch("/api/core/intents", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        intent: {
+          kind: "file.delete",
+          args: { root, path },
+        },
+        origin: "reactive",
+      }),
+      signal,
+    })
+    if (!response.ok) {
+      return { ok: false, message: `Core answered HTTP ${response.status}` }
+    }
+    const parsed = validateGateProposeResult(await response.json())
+    if (!parsed.ok || parsed.value.tier === "forbidden") {
+      return { ok: false, message: "Intent was rejected or forbidden" }
+    }
+    return { ok: true, intentId: parsed.value.id }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error
+    }
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Network error",
+    }
+  }
+}
+
+/** Loads currently pending file.delete intents from gate queue to match pending files. */
+export async function loadPendingTrashKeys(
+  signal?: AbortSignal
+): Promise<Set<string>> {
+  const keys = new Set<string>()
+  try {
+    const response = await fetch("/api/gate/approvals", {
+      cache: "no-store",
+      signal,
+    })
+    if (!response.ok) return keys
+    const parsed = validateGatePendingIntentList(await response.json())
+    if (!parsed.ok) return keys
+    for (const item of parsed.value.intents) {
+      if (item.kind === "file.delete") {
+        if (item.subtitle) {
+          keys.add(item.subtitle)
+          const slash = item.subtitle.indexOf("/")
+          if (slash !== -1) {
+            keys.add(item.subtitle.slice(slash + 1))
+          }
+        }
+        if (item.title && item.title.startsWith("Move to Eido Trash: ")) {
+          keys.add(item.title.replace("Move to Eido Trash: ", ""))
+        }
+      }
+    }
+  } catch {
+    // Ignore network error on pending check
+  }
+  return keys
 }

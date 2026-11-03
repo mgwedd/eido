@@ -5,7 +5,7 @@ import * as React from "react"
 import type { CoreApiDocumentView } from "@eido/schemas"
 import { validateCoreApiDocumentView } from "@eido/schemas"
 import { Badge } from "@eido/ui/components/badge"
-import { buttonVariants } from "@eido/ui/components/button"
+import { Button, buttonVariants } from "@eido/ui/components/button"
 import {
   Card,
   CardContent,
@@ -14,6 +14,12 @@ import {
 } from "@eido/ui/components/card"
 import { Separator } from "@eido/ui/components/separator"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import {
+  isLocalFile,
+  loadPendingTrashKeys,
+  parseFileLocation,
+  proposeMoveToTrash,
+} from "@/lib/documents"
 
 export function validateFromParam(from: string | undefined): string {
   if (!from) return "/documents"
@@ -118,8 +124,42 @@ export function DocumentViewer({
   from,
 }: DocumentViewerProps) {
   const [state, setState] = React.useState<ViewerState>({ status: "loading" })
+  const [pendingTrash, setPendingTrash] = React.useState(false)
+  const [submittingTrash, setSubmittingTrash] = React.useState(false)
+  const [trashError, setTrashError] = React.useState<string | null>(null)
   const highlightRef = React.useRef<HTMLElement | null>(null)
   const backHref = validateFromParam(from)
+
+  React.useEffect(() => {
+    if (state.status !== "ready") return
+    const doc = state.view.document
+    if (!isLocalFile(doc.source)) return
+    const loc = parseFileLocation(doc.source, doc.sourceRef)
+    if (!loc) return
+    const controller = new AbortController()
+    void loadPendingTrashKeys(controller.signal).then((keys) => {
+      if (keys.has(loc.path) || keys.has(`${loc.root}/${loc.path}`)) {
+        setPendingTrash(true)
+      }
+    })
+    return () => controller.abort()
+  }, [state])
+
+  const handleMoveToTrash = React.useCallback(async () => {
+    if (state.status !== "ready") return
+    const doc = state.view.document
+    const loc = parseFileLocation(doc.source, doc.sourceRef)
+    if (!loc) return
+    setSubmittingTrash(true)
+    setTrashError(null)
+    const res = await proposeMoveToTrash(loc.root, loc.path)
+    setSubmittingTrash(false)
+    if (res.ok) {
+      setPendingTrash(true)
+    } else {
+      setTrashError(res.message)
+    }
+  }, [state])
 
   React.useEffect(() => {
     const controller = new AbortController()
@@ -267,21 +307,63 @@ export function DocumentViewer({
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-4">
       {/* Top navigation & provenance header */}
       <header className="flex flex-col gap-4 border-b pb-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <Link
             href={backHref}
             className={buttonVariants({ variant: "outline", size: "sm" })}
           >
             ← Back
           </Link>
-          <a
-            href={`/api/core/documents/${doc.sha256}/blob`}
-            download
-            className="text-xs font-medium text-primary hover:underline"
-          >
-            Download original
-          </a>
+          <div className="flex flex-wrap items-center gap-3">
+            <a
+              href={`/api/core/documents/${doc.sha256}/blob`}
+              download
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              Download original
+            </a>
+            {pendingTrash ? (
+              <Badge
+                variant="outline"
+                role="status"
+                className="border-amber-500/30 bg-amber-500/10 text-xs font-medium text-amber-600 dark:text-amber-400"
+              >
+                Waiting for approval to move to Eido Trash.
+              </Badge>
+            ) : isLocalFile(doc.source) ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  void handleMoveToTrash()
+                }}
+                disabled={submittingTrash}
+              >
+                {submittingTrash ? "Moving…" : "Move to Eido Trash"}
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled
+                title="Only local files can be moved to Eido Trash"
+                aria-label="Move to Eido Trash (Only local files can be moved to Eido Trash)"
+                className="cursor-not-allowed opacity-50"
+              >
+                Move to Eido Trash
+              </Button>
+            )}
+          </div>
         </div>
+
+        {trashError ? (
+          <div
+            role="alert"
+            className="rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          >
+            {trashError}
+          </div>
+        ) : null}
 
         <div className="flex flex-col gap-2">
           <h1 className="text-xl font-semibold tracking-tight">{docTitle}</h1>

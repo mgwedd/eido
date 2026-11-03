@@ -715,6 +715,8 @@ describe("the pending list", () => {
         state: "pending",
         origin: "proactive",
         createdAt: anyString,
+        title: "Move to Eido Trash: a.txt",
+        subtitle: "notes/a.txt",
       },
     ])
     expect(JSON.stringify(list)).not.toContain(BODY_MARKER)
