@@ -16,6 +16,7 @@ import type { AskFigure } from "@eido/schemas"
 import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
 import { openIndex } from "./index/schema"
+import { DEFAULT_BRIEF_CONFIG, scheduleBrief } from "./brief/index"
 import { openDataDb } from "./ledger/db"
 import {
   connectModelClient,
@@ -754,6 +755,19 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   const stopGmailSync = (): void => gmailTimer?.stop()
   const stopProtonSync = (): void => protonTimer?.stop()
   scheduleReplies()
+  const brief = scheduleBrief(
+    db,
+    async () => ({
+      ...DEFAULT_BRIEF_CONFIG,
+      timezone: (await profile.getProfile())?.timezone ?? "Etc/UTC",
+    }),
+    {
+      onError: (error) =>
+        log("brief_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        }),
+    }
+  )
   log("started", {
     dataDir: config.dataDir,
     db: config.dbPath,
@@ -778,6 +792,8 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     close: async () => {
       stopGmailSync()
       stopProtonSync()
+      brief.stop()
+      await brief.whenIdle()
       await gmailTimer?.inFlight()
       await protonTimer?.inFlight()
       await digestScheduling
