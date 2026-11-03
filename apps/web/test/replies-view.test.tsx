@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import type { CoreApiEntityList, CoreApiObligationList } from "@eido/schemas"
 import { RepliesView, type RepliesViewProps } from "../components/replies-view"
 
+const router = vi.hoisted(() => ({ push: vi.fn() }))
+vi.mock("next/navigation", () => ({ useRouter: () => router }))
+
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
@@ -38,6 +41,7 @@ async function click(btn: HTMLElement | null | undefined) {
 }
 
 beforeEach(() => {
+  router.push.mockClear()
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -637,6 +641,220 @@ describe("RepliesView", () => {
           el.textContent?.trim()
         )
       ).toContain("Gmail paused: its threads are not included.")
+    })
+  })
+
+  describe("keyboard shortcuts", () => {
+    const DRAFT_ROUTE = "/api/core/replies/draft"
+    const draftResponse = () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            intentId: "intent-9",
+            tier: "auto",
+            state: "approved",
+            activityHref: "/activity?intent=intent-9",
+            created: true,
+          }),
+          { status: 201, headers: { "content-type": "application/json" } }
+        )
+      )
+    const requestBody = (init: RequestInit | undefined): string =>
+      typeof init?.body === "string" ? init.body : ""
+    const draftCalls = (fetchMock: ReturnType<typeof stubFetch>) =>
+      fetchMock.mock.calls.filter(([url]) =>
+        toUrlString(url).includes(DRAFT_ROUTE)
+      )
+
+    async function press(key: string, target: EventTarget = document.body) {
+      await act(async () => {
+        target.dispatchEvent(
+          new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
+        )
+        await flush()
+      })
+    }
+    /** The party names of the rows marked as focused, one per desktop and phone render. */
+    const focusedParties = () =>
+      Array.from(container.querySelectorAll('[aria-current="true"]')).map(
+        (row) => row.textContent ?? ""
+      )
+
+    test("j and k move a visible focus between owed rows and stop at the ends", async () => {
+      stubFetch()
+      await renderReplies()
+      expect(focusedParties()).toEqual([])
+
+      await press("j")
+      expect(focusedParties().every((t) => t.includes("Tenant, Unit 2"))).toBe(
+        true
+      )
+      expect(focusedParties()).toHaveLength(2)
+
+      await press("j")
+      expect(focusedParties().every((t) => t.includes("Accountant"))).toBe(true)
+
+      // Past the last owed row: the Waiting on row is not part of the walk.
+      await press("j")
+      expect(focusedParties().every((t) => t.includes("Accountant"))).toBe(true)
+
+      await press("k")
+      expect(focusedParties().every((t) => t.includes("Tenant, Unit 2"))).toBe(
+        true
+      )
+    })
+
+    test("focus is dropped when the focused row leaves the list", async () => {
+      stubFetch()
+      await renderReplies()
+      await press("j")
+      await press("j")
+      expect(focusedParties()).toHaveLength(2)
+
+      // Filtering to the entity that has only the first owed row removes the second.
+      stubFetch({
+        obligations: {
+          obligations: sampleObligations.slice(0, 1),
+          nextOffset: null,
+        },
+      })
+      await click(
+        Array.from(container.querySelectorAll("button")).find(
+          (b) => b.textContent?.trim() === "Rental"
+        )
+      )
+      expect(focusedParties()).toEqual([])
+    })
+
+    test("Enter opens the focused row's source in the viewer, and does nothing with no focus", async () => {
+      stubFetch()
+      await renderReplies()
+
+      await press("Enter")
+      expect(router.push).not.toHaveBeenCalled()
+
+      await press("j")
+      await press("Enter")
+      expect(router.push).toHaveBeenCalledTimes(1)
+      const url = new URL(String(router.push.mock.calls[0]?.[0]), "http://x")
+      expect(url.pathname).toBe(`/documents/${"a".repeat(64)}`)
+      expect(url.searchParams.get("start")).toBe("10")
+      expect(url.searchParams.get("end")).toBe("50")
+      expect(url.searchParams.get("from")).toBe("/ledger/replies")
+    })
+
+    test("Enter on a focused link keeps the link's own behaviour", async () => {
+      stubFetch()
+      await renderReplies()
+      await press("j")
+      const link = container.querySelector("a[href*='/documents/']")
+      await press("Enter", link ?? document.body)
+      expect(router.push).not.toHaveBeenCalled()
+    })
+
+    test("d drafts the focused row with one POST, shows Draft saved, and a second d adds none", async () => {
+      const fetchMock = stubFetch({ draft: draftResponse })
+      await renderReplies()
+
+      await press("d")
+      expect(draftCalls(fetchMock)).toHaveLength(0)
+
+      await press("j")
+      await press("j")
+      await press("d")
+      await press("d")
+
+      const calls = draftCalls(fetchMock)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.[1]?.method).toBe("POST")
+      expect(JSON.parse(requestBody(calls[0]?.[1]))).toEqual({
+        obligationId: 2,
+      })
+      expect(
+        Array.from(container.querySelectorAll("a"))
+          .filter((a) => a.textContent?.trim() === "Draft saved")
+          .map((a) => a.getAttribute("href"))
+      ).toEqual(["/activity?intent=intent-9", "/activity?intent=intent-9"])
+    })
+
+    test("d while a draft is pending makes no second request", async () => {
+      let resolve: (r: Response) => void = () => undefined
+      const fetchMock = stubFetch({
+        draft: () =>
+          new Promise<Response>((r) => {
+            resolve = r
+          }),
+      })
+      await renderReplies()
+      await press("j")
+      await press("d")
+      await press("d")
+      expect(draftCalls(fetchMock)).toHaveLength(1)
+      await act(async () => {
+        resolve(await draftResponse())
+        await flush()
+      })
+    })
+
+    test("d shows the same failure as the button and can retry", async () => {
+      let answer: () => Promise<Response> = () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { code: "busy", message: "limit" } }),
+            { status: 429, headers: { "content-type": "application/json" } }
+          )
+        )
+      const fetchMock = stubFetch({ draft: () => answer() })
+      await renderReplies()
+      await press("j")
+      await press("d")
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+        "Too many drafts this hour. Try again later."
+      )
+
+      answer = draftResponse
+      await press("d")
+      expect(draftCalls(fetchMock)).toHaveLength(2)
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+    })
+
+    test("d is inert offline", async () => {
+      const fetchMock = stubFetch({ draft: draftResponse })
+      await renderReplies({ isOffline: true })
+      await press("j")
+      await press("d")
+      expect(draftCalls(fetchMock)).toHaveLength(0)
+    })
+
+    test.each(["j", "k", "d", "Enter"])(
+      "%s does nothing while typing in a field",
+      async (key) => {
+        const fetchMock = stubFetch({ draft: draftResponse })
+        await renderReplies()
+        await press("j")
+        const before = focusedParties()
+        const input = document.createElement("input")
+        document.body.append(input)
+        input.focus()
+
+        await press(key, input)
+        input.remove()
+
+        expect(focusedParties()).toEqual(before)
+        expect(draftCalls(fetchMock)).toHaveLength(0)
+        expect(router.push).not.toHaveBeenCalled()
+      }
+    )
+
+    test("the keys do nothing while the list is loading or failed", async () => {
+      const fetchMock = stubFetch({
+        obligationsStatus: 500,
+        draft: draftResponse,
+      })
+      await renderReplies()
+      await press("j")
+      await press("d")
+      expect(draftCalls(fetchMock)).toHaveLength(0)
     })
   })
 })

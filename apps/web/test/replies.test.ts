@@ -5,6 +5,7 @@ import {
   getPartialCoverageNotice,
   getRepliesUrl,
   getReplySubject,
+  moveRowFocus,
   partitionReplies,
   requestDraftReply,
   sortReplies,
@@ -345,6 +346,30 @@ describe("lib/replies", () => {
           makeConnector({ name: "drive", health: "open" }),
         ])
       ).toBeNull()
+    })
+  })
+
+  describe("moveRowFocus", () => {
+    const ids = [4, 7, 9]
+
+    it("lands on the first row from nothing, whichever key", () => {
+      expect(moveRowFocus(ids, null, "next")).toBe(4)
+      expect(moveRowFocus(ids, null, "previous")).toBe(4)
+    })
+
+    it("steps and stops at both ends", () => {
+      expect(moveRowFocus(ids, 4, "next")).toBe(7)
+      expect(moveRowFocus(ids, 9, "next")).toBe(9)
+      expect(moveRowFocus(ids, 9, "previous")).toBe(7)
+      expect(moveRowFocus(ids, 4, "previous")).toBe(4)
+    })
+
+    it("restarts at the first row when the focused id is gone", () => {
+      expect(moveRowFocus(ids, 5, "next")).toBe(4)
+    })
+
+    it("has no focus without rows", () => {
+      expect(moveRowFocus([], null, "next")).toBeNull()
     })
   })
 })
