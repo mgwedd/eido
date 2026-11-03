@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import type { Connector } from "@/lib/connectors"
 import type { ObligationItem } from "@/lib/ledger"
 import {
+  DRAFT_REPLY_URL,
+  getPartialCoverageNotice,
   getRepliesUrl,
   getReplySubject,
   partitionReplies,
+  requestDraftReply,
   sortReplies,
 } from "@/lib/replies"
 
@@ -168,6 +172,212 @@ describe("lib/replies", () => {
 
     it("returns /ledger/replies?entity=... with entity", () => {
       expect(getRepliesUrl("ent-prop")).toBe("/ledger/replies?entity=ent-prop")
+    })
+  })
+
+  describe("requestDraftReply", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    it("POSTs to /api/ask with threadId and returns intentId", async () => {
+      let calledUrl = ""
+      let calledBody: unknown = null
+      let calledMethod = ""
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+          calledUrl = String(input)
+          calledMethod = init?.method ?? ""
+          calledBody = JSON.parse(String(init?.body))
+          return Promise.resolve(
+            new Response(JSON.stringify({ intentId: "intent-123" }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          )
+        })
+      )
+
+      const result = await requestDraftReply({ threadId: "thread-xyz" })
+      expect(calledUrl).toBe(DRAFT_REPLY_URL)
+      expect(calledMethod).toBe("POST")
+      expect(calledBody).toEqual({
+        threadId: "thread-xyz",
+        thread_id: "thread-xyz",
+      })
+      expect(result).toEqual({ ok: true, intentId: "intent-123" })
+    })
+
+    it("handles id from response data.id or data.intent.id", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({
+                id: "gate-intent-456",
+                tier: "auto",
+                state: "approved",
+              }),
+              {
+                status: 200,
+                headers: { "content-type": "application/json" },
+              }
+            )
+          )
+        )
+      )
+
+      const res1 = await requestDraftReply({ threadId: "t-1" })
+      expect(res1).toEqual({ ok: true, intentId: "gate-intent-456" })
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({
+                intent: { id: "nested-789", kind: "email.draft" },
+              }),
+              {
+                status: 200,
+                headers: { "content-type": "application/json" },
+              }
+            )
+          )
+        )
+      )
+
+      const res2 = await requestDraftReply({ threadId: "t-2" })
+      expect(res2).toEqual({ ok: true, intentId: "nested-789" })
+    })
+
+    it("handles custom url override", async () => {
+      let calledUrl = ""
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: RequestInfo | URL) => {
+          calledUrl = String(input)
+          return Promise.resolve(
+            new Response(JSON.stringify({ intentId: "i-custom" }), {
+              status: 200,
+            })
+          )
+        })
+      )
+
+      const res = await requestDraftReply({
+        threadId: "t-custom",
+        url: "/api/core/ask",
+      })
+      expect(calledUrl).toBe("/api/core/ask")
+      expect(res.ok).toBe(true)
+    })
+
+    it("returns ok: false on HTTP error status", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() =>
+          Promise.resolve(
+            new Response(JSON.stringify({ error: "Server down" }), {
+              status: 503,
+            })
+          )
+        )
+      )
+
+      const result = await requestDraftReply({ threadId: "thread-xyz" })
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain("503")
+    })
+
+    it("returns ok: false on network rejection", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => Promise.reject(new Error("Connection refused")))
+      )
+
+      const result = await requestDraftReply({ threadId: "thread-xyz" })
+      expect(result.ok).toBe(false)
+      expect(result.error).toBe("Connection refused")
+    })
+
+    it("handles abort signal cleanly", async () => {
+      const controller = new AbortController()
+      controller.abort()
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => Promise.reject(new DOMException("Aborted", "AbortError")))
+      )
+
+      const result = await requestDraftReply(
+        { threadId: "thread-xyz" },
+        controller.signal
+      )
+      expect(result.ok).toBe(false)
+      expect(result.error).toBe("Aborted")
+    })
+  })
+
+  describe("getPartialCoverageNotice", () => {
+    const makeConnector = (partial: Partial<Connector>): Connector => ({
+      name: "proton-mail",
+      enabled: true,
+      pinnedAt: "2026-01-01T00:00:00Z",
+      scopes: [],
+      health: "healthy",
+      consecutiveFailures: 0,
+      manifestHash: "abc",
+      ...partial,
+    })
+
+    it("returns null when no connectors or all healthy", () => {
+      expect(getPartialCoverageNotice([])).toBeNull()
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "proton-mail", health: "healthy" }),
+          makeConnector({ name: "gmail", health: "healthy" }),
+        ])
+      ).toBeNull()
+    })
+
+    it("returns notice when proton-mail is paused or unhealthy", () => {
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "proton-mail", health: "open" }),
+        ])
+      ).toBe("Proton Mail paused: its threads are not included.")
+
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "proton-mail", health: "degraded" }),
+        ])
+      ).toBe("Proton Mail paused: its threads are not included.")
+
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "proton-mail", enabled: false }),
+        ])
+      ).toBe("Proton Mail paused: its threads are not included.")
+    })
+
+    it("returns notice when gmail is paused or disabled", () => {
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "gmail", health: "open" }),
+        ])
+      ).toBe("Gmail paused: its threads are not included.")
+    })
+
+    it("ignores non-mail connectors", () => {
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "drive", health: "open" }),
+        ])
+      ).toBeNull()
     })
   })
 })

@@ -1,3 +1,4 @@
+import type { Connector } from "@/lib/connectors"
 import type { ObligationItem } from "@/lib/ledger"
 
 export interface PartitionedReplies {
@@ -98,3 +99,86 @@ export function getRepliesUrl(entity?: string): string {
   }
   return "/ledger/replies"
 }
+
+export const DRAFT_REPLY_URL = "/api/ask"
+
+export interface DraftReplyRequest {
+  threadId: string
+  url?: string
+}
+
+export interface DraftReplyResult {
+  ok: boolean
+  intentId?: string
+  error?: string
+}
+
+/**
+ * Asks Eido for a draft reply through the ask pipeline.
+ * Creates an email draft intent (draft tier, never sent).
+ */
+export async function requestDraftReply(
+  request: DraftReplyRequest,
+  signal?: AbortSignal
+): Promise<DraftReplyResult> {
+  const url = request.url ?? DRAFT_REPLY_URL
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        threadId: request.threadId,
+        thread_id: request.threadId,
+      }),
+      signal,
+    })
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: `Request failed with status ${response.status}`,
+      }
+    }
+
+    const data = (await response.json()) as Record<string, unknown>
+    const intentId =
+      typeof data["intentId"] === "string"
+        ? data["intentId"]
+        : typeof data["id"] === "string"
+          ? data["id"]
+          : typeof (data["intent"] as Record<string, unknown> | undefined)?.[
+                "id"
+              ] === "string"
+            ? String((data["intent"] as Record<string, unknown>)["id"])
+            : undefined
+
+    return { ok: true, intentId }
+  } catch (err) {
+    if (signal?.aborted) {
+      return { ok: false, error: "Aborted" }
+    }
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Network error",
+    }
+  }
+}
+
+/**
+ * Returns a partial coverage notice if a relevant mail connector is paused/unhealthy/disabled.
+ */
+export function getPartialCoverageNotice(
+  connectors: readonly Connector[]
+): string | null {
+  for (const c of connectors) {
+    if (c.name === "proton-mail" && (c.health !== "healthy" || !c.enabled)) {
+      return "Proton Mail paused: its threads are not included."
+    }
+    if (c.name === "gmail" && (c.health !== "healthy" || !c.enabled)) {
+      return "Gmail paused: its threads are not included."
+    }
+  }
+  return null
+}
+
