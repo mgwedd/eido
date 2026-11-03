@@ -1152,7 +1152,7 @@ describe("connect simplefin", () => {
     [
       "an access URL for another host",
       SETUP_TOKEN,
-      `https://u:p@bank.example.invalid/simplefin`,
+      `https://user:pass@bank.example.invalid/simplefin`,
       "SimpleFIN Bridge did not answer with an access URL",
     ],
     [

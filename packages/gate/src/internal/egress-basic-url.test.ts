@@ -28,8 +28,10 @@ afterAll(() => {
 })
 
 const HOST = "bridge.simplefin.org"
-const ACCESS_URL =
-  "https://synthetic-user:synthetic-pass-9f3@bridge.simplefin.org/simplefin"
+/** A password whose percent-escape does not decode. */
+const MALFORMED_ESCAPE = "%E0%A4%A"
+const PASSWORD = "synthetic-pass-9f3"
+const ACCESS_URL = `https://synthetic-user:${PASSWORD}@bridge.simplefin.org/simplefin`
 const BASIC = `Basic ${Buffer.from("synthetic-user:synthetic-pass-9f3").toString("base64")}`
 const ACCOUNTS = `https://${HOST}/simplefin/accounts?start-date=1700000000`
 const ACCESS_KEY = {
@@ -159,7 +161,7 @@ describe("basic-url egress (SimpleFIN)", () => {
       "https://user:pass@bridge.simplefin.org/other",
       "https://bridge.simplefin.org/simplefin",
       "http://user:pass@bridge.simplefin.org/simplefin",
-      "https://user:%E0%A4%A@bridge.simplefin.org/simplefin",
+      `https://user:${MALFORMED_ESCAPE}@bridge.simplefin.org/simplefin`,
       "not a url",
     ]) {
       const { request, upstream } = await setup({ accessUrl })
@@ -243,7 +245,7 @@ describe("basic-url egress (SimpleFIN)", () => {
   })
 
   test("refuses a response that echoes the access URL or its password", async () => {
-    for (const echo of [ACCESS_URL, "synthetic-pass-9f3", BASIC]) {
+    for (const echo of [ACCESS_URL, PASSWORD, BASIC]) {
       const { request } = await setup({
         respond: () => new Response(`{"note":"${echo}"}`),
       })

@@ -239,12 +239,14 @@ describe("scrubUrls", () => {
   it("removes any URL, including one carrying credentials", () => {
     expect(
       scrubUrls(
-        "a https://u:p@bridge.simplefin.org/simplefin b HTTP://x.example.invalid c"
+        "a https://user:pass@bridge.simplefin.org/simplefin b HTTP://x.example.invalid c"
       )
     ).toBe("a [url] b [url] c")
     expect(
-      new SimpleFinError("request_failed", "at https://u:p@h.example.invalid")
-        .message
+      new SimpleFinError(
+        "request_failed",
+        "at https://user:pass@h.example.invalid"
+      ).message
     ).toBe("at [url]")
   })
 })
