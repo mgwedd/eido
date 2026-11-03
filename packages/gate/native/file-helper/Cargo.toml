@@ -1,0 +1,16 @@
+# The gate's confined file helper. See docs/adr/0006-native-file-helper.md.
+# No dependencies, by design: the helper uses std and hand-declared OS calls only.
+[package]
+name = "eido-file-helper"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+publish = false
+license-file = "../../../../LICENSE"
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true

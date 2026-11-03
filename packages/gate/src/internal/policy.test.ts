@@ -26,6 +26,7 @@ import {
   manifest,
   sample,
   setup,
+  signedFileRoots,
   signedPolicy,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
@@ -274,6 +275,29 @@ describe("the overlay", () => {
     expect(kindTier(s.db, policy, "email.trash")).toEqual({ tier: "auto" })
     // Untouched kinds keep the shipped tier.
     expect(kindTier(s.db, policy, "email.label")).toEqual({ tier: "auto" })
+  })
+
+  it("still loads after other signed policy.set targets are approved", async () => {
+    const s = fresh()
+    const overlay = { version: 1, tiers: { "email.draft": "approval" } }
+    s.writeOverlay(overlay)
+    signedPolicy(s.db, overlay)
+    await signedFileRoots(s.db, {
+      roots: [
+        {
+          id: "docs",
+          root: {
+            path: "/srv/example/docs",
+            dev: "2a",
+            ino: "1001",
+            trashDir: "trash",
+          },
+        },
+      ],
+    })
+    const { policy, errors } = loadPolicy(s.db, s.options, s.policy)
+    expect(errors).toEqual([])
+    expect(kindTier(s.db, policy, "email.draft")).toEqual({ tier: "approval" })
   })
 
   it("is applied on first load too", () => {
