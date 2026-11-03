@@ -7,7 +7,7 @@ import type { ConnectorManifest, Intent } from "@eido/schemas"
 import { PROTON_CONNECTOR } from "./bridge/config"
 import { createExecutor } from "./executor"
 import type { WriteTransport } from "./executor"
-import { gmailWriteTransport } from "./gmail-transport"
+import { gmailProbe, gmailWriteTransport } from "./gmail-transport"
 import { BRIDGE_WRITERS } from "./bridge/writers"
 import {
   GMAIL_BATCH_MODIFY_PATH,
@@ -1837,5 +1837,106 @@ describe("Gmail draft discard through the phone approval flow", () => {
     expect(
       f.db.prepare("SELECT id FROM intents WHERE kind='email.trash'").all()
     ).toEqual([])
+  })
+})
+
+describe("gmailProbe", () => {
+  const url = (input: string | URL | Request) =>
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url
+
+  async function reconnectedVault(): Promise<InMemoryVault> {
+    const vault = new InMemoryVault()
+    await vault.set(
+      { connector: "gmail", kind: "refresh_token", client: "write" },
+      "test-refresh-token"
+    )
+    await vault.set(
+      { connector: "gmail", kind: "api_key", client: "write" },
+      "test-client-secret"
+    )
+    return vault
+  }
+
+  it("is ok when the profile reads with the stored write token", async () => {
+    const setUp = pinnedGmail(true)
+    const gmail = fakeGmailApi({})
+    const probe = gmailProbe({
+      db: setUp.db,
+      vault: await vaultWithToken(),
+      fetch: gmail.send,
+    })
+    expect(await probe()).toBe("ok")
+    expect(gmail.calls).toEqual([
+      {
+        method: "GET",
+        url: "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+        authorization: `Bearer ${TOKEN}`,
+      },
+    ])
+  })
+
+  it("refreshes from a new refresh token when no access token is cached", async () => {
+    const setUp = pinnedGmail(true)
+    const gmail = fakeGmailApi({})
+    const vault = await reconnectedVault()
+    const send = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      if (url(input) === "https://oauth2.googleapis.com/token")
+        return Promise.resolve(
+          Response.json({ access_token: "test-new-token" })
+        )
+      const authorization = new Headers(init?.headers).get("authorization")
+      if (authorization !== "Bearer test-new-token")
+        return Promise.resolve(new Response(null, { status: 401 }))
+      return gmail.send(input, init)
+    })
+    const probe = gmailProbe({
+      db: setUp.db,
+      vault,
+      fetch: send,
+      clientId: "test-client-id",
+    })
+    expect(await probe()).toBe("ok")
+    expect(
+      await vault.get({
+        connector: "gmail",
+        kind: "access_token",
+        client: "write",
+      })
+    ).toBe("test-new-token")
+  })
+
+  it("reports a refused grant as auth_failed", async () => {
+    const setUp = pinnedGmail(true)
+    const send = vi.fn((input: string | URL | Request) =>
+      Promise.resolve(
+        url(input) === "https://oauth2.googleapis.com/token"
+          ? Response.json({ error: "invalid_grant" }, { status: 400 })
+          : new Response(null, { status: 401 })
+      )
+    )
+    const probe = gmailProbe({
+      db: setUp.db,
+      vault: await reconnectedVault(),
+      fetch: send,
+      clientId: "test-client-id",
+    })
+    expect(await probe()).toBe("auth_failed")
+  })
+
+  it("reports a failing Gmail as unavailable", async () => {
+    const setUp = pinnedGmail(true)
+    const send = vi.fn(() =>
+      Promise.resolve(new Response("{}", { status: 500 }))
+    )
+    const probe = gmailProbe({
+      db: setUp.db,
+      vault: await vaultWithToken(),
+      fetch: send,
+    })
+    expect(await probe()).toBe("unavailable")
   })
 })

@@ -5,11 +5,18 @@ import { simpleParser } from "mailparser"
 import { validateIntent } from "@eido/schemas"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
-import { GMAIL_HOST, GMAIL_SEND_PATH, GMAIL_WRITERS } from "./gmail-writers"
+import {
+  GMAIL_CONNECTOR,
+  GMAIL_HOST,
+  GMAIL_SEND_PATH,
+  GMAIL_WRITERS,
+} from "./gmail-writers"
+import type { ConnectorProbe } from "./connector-connect"
 import { getPinnedManifest } from "./connectors"
 import type { UpstreamResult, WriteRequest, WriteTransport } from "./executor"
 import { authorizedCall } from "./vault/authorized-call"
 import type { RefreshResult } from "./vault/authorized-call"
+import { ConnectorDisabledError, GrantRevokedError } from "./vault/revocation"
 import type { Vault } from "./vault/vault"
 
 // The gate's Gmail write transport. It sends the executor's already-validated writes with the
@@ -553,6 +560,24 @@ async function sendReplyOrForward(
   if (!isRecord(result) || typeof result["id"] !== "string")
     throw new Error("Gmail response has no message id")
   return { upstreamRef: result["id"], result: { id: result["id"] } }
+}
+
+/**
+ * The Gmail health probe run after a connect (#98): the pinned profile read with the compose
+ * client's credential, refreshed from the stored refresh token. A refused grant is auth_failed.
+ */
+export function gmailProbe(options: Options): ConnectorProbe {
+  return async () => {
+    try {
+      await authenticatedSender(options, GMAIL_CONNECTOR)
+      return "ok"
+    } catch (error) {
+      return error instanceof GrantRevokedError ||
+        error instanceof ConnectorDisabledError
+        ? "auth_failed"
+        : "unavailable"
+    }
+  }
 }
 
 export function gmailWriteTransport(options: Options): WriteTransport {
