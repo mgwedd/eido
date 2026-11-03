@@ -330,6 +330,13 @@ describe("DocumentsView", () => {
             json: () => Promise.resolve({ entities: [] }),
           })
         }
+        if (url.includes("/api/gate/approvals")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ intents: [] }),
+          })
+        }
         return slowPromise
       })
     )
@@ -362,6 +369,13 @@ describe("DocumentsView", () => {
             ok: true,
             status: 200,
             json: () => Promise.resolve({ entities: [] }),
+          })
+        }
+        if (url.includes("/api/gate/approvals")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ intents: [] }),
           })
         }
         return Promise.resolve({
@@ -398,6 +412,13 @@ describe("DocumentsView", () => {
             ok: true,
             status: 200,
             json: () => Promise.resolve({ entities: [] }),
+          })
+        }
+        if (url.includes("/api/gate/approvals")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ intents: [] }),
           })
         }
         callCount++
@@ -444,6 +465,13 @@ describe("DocumentsView", () => {
             json: () => Promise.resolve({ entities: [] }),
           })
         }
+        if (url.includes("/api/gate/approvals")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ intents: [] }),
+          })
+        }
         return Promise.resolve({
           ok: false,
           status: 401,
@@ -472,6 +500,13 @@ describe("DocumentsView", () => {
             ok: true,
             status: 200,
             json: () => Promise.resolve({ entities: [] }),
+          })
+        }
+        if (url.includes("/api/gate/approvals")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ intents: [] }),
           })
         }
         if (url.includes("offset=1")) {
@@ -503,5 +538,75 @@ describe("DocumentsView", () => {
 
     expect(container.textContent).toContain("October Electric Bill.pdf")
     expect(container.textContent).toContain("Proton Mail (22222222)")
+  })
+
+  test("row shows Waiting for approval to move to Eido Trash when pending in queue", async () => {
+    const fileDoc = {
+      sha256:
+        "3333333333333333333333333333333333333333333333333333333333333333",
+      name: "Lease.pdf",
+      source: "files",
+      sourceRef: JSON.stringify(["docs", "Lease.pdf"]),
+      mime: "application/pdf",
+      type: "contract",
+      typeSource: "model",
+      entity: {
+        id: UUID_PROP,
+        name: "Property",
+        kind: "property",
+        tag: "property",
+      },
+      ingestedAt: "2026-10-18T08:30:00.000Z",
+      occurredAt: "2026-10-17T12:00:00.000Z",
+      keyFacts: [],
+    }
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: RequestInfo | URL) => {
+        const u = toUrlString(url)
+        if (u.includes("/api/core/entities")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve({ entities: sampleEntities }),
+          })
+        }
+        if (u.includes("/api/gate/approvals")) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({
+                intents: [
+                  {
+                    id: "trash-1",
+                    kind: "file.delete",
+                    tier: "approval",
+                    state: "pending",
+                    origin: "reactive",
+                    createdAt: "2026-10-18T10:00:00Z",
+                    title: "Move to Eido Trash: Lease.pdf",
+                    subtitle: "docs/Lease.pdf",
+                  },
+                ],
+              }),
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({ documents: [fileDoc], nextOffset: null }),
+        })
+      })
+    )
+
+    await renderDocuments()
+
+    expect(container.textContent).toContain("Lease.pdf")
+    expect(container.textContent).toContain(
+      "Waiting for approval to move to Eido Trash."
+    )
   })
 })
