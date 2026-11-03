@@ -7,7 +7,7 @@
 
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::ptr::null_mut;
@@ -380,4 +380,139 @@ pub fn rename_no_replace(from_dir: &Dir, from: &str, to_dir: &Dir, to: &str) -> 
         return Err(status_error(status));
     }
     Ok(())
+}
+
+pub fn read_file(parent: &Dir, name: &str, max_bytes: usize) -> Result<Vec<u8>, Error> {
+    let file = nt_open(
+        parent,
+        name,
+        0x0012_0089,
+        0,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+    )?;
+    let meta = file.metadata().map_err(|e| io_error(&e))?;
+    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(Error {
+            code: Code::Symlink,
+            message: "read target is a reparse point",
+        });
+    }
+    if !meta.is_file() {
+        return Err(Error {
+            code: Code::Io,
+            message: "read target is not a regular file",
+        });
+    }
+    let mut bytes = Vec::new();
+    file.take((max_bytes + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| io_error(&e))?;
+    if bytes.len() > max_bytes {
+        return Err(Error {
+            code: Code::Io,
+            message: "file exceeds read limit",
+        });
+    }
+    Ok(bytes)
+}
+
+/// FILE_ID_BOTH_DIR_INFO is requested directly on the opened directory handle.
+pub fn list_dir(dir: &Dir) -> Result<(Vec<crate::Entry>, bool), Error> {
+    let mut buffer = vec![0u64; 8192];
+    let mut restart = true;
+    let mut examined = 0;
+    let mut entries = Vec::new();
+    loop {
+        // FileIdBothDirectoryRestartInfo (11) resets enumeration; subsequent calls use
+        // FileIdBothDirectoryInfo (10). Both return FILE_ID_BOTH_DIR_INFO records.
+        let class = if restart { 11 } else { 10 };
+        restart = false;
+        // SAFETY: buffer is aligned and writable for its full declared size; directory is live.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                dir.0.as_raw_handle(),
+                class,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * 8) as u32,
+            )
+        };
+        if ok == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(18) {
+                return Ok((entries, false));
+            }
+            return Err(io_error(&error));
+        }
+        let mut offset = 0;
+        loop {
+            const NAME_OFFSET: usize = 104;
+            let capacity = buffer.len() * 8;
+            if offset + NAME_OFFSET > capacity {
+                return Err(Error {
+                    code: Code::Io,
+                    message: "directory entry is invalid",
+                });
+            }
+            // SAFETY: records and fixed fields are inside the aligned buffer. Reads are
+            // unaligned because the next-record offset is supplied by the OS.
+            let record = unsafe { buffer.as_ptr().cast::<u8>().add(offset) };
+            let next = unsafe { record.cast::<u32>().read_unaligned() } as usize;
+            let name_bytes = unsafe { record.add(60).cast::<u32>().read_unaligned() } as usize;
+            let length = if next == 0 { capacity - offset } else { next };
+            if length < NAME_OFFSET
+                || offset + length > capacity
+                || name_bytes % 2 != 0
+                || NAME_OFFSET + name_bytes > length
+            {
+                return Err(Error {
+                    code: Code::Io,
+                    message: "directory entry is invalid",
+                });
+            }
+            // SAFETY: all filename bytes were bounds-checked above; WCHAR alignment is 2.
+            let raw_name = unsafe {
+                std::slice::from_raw_parts(record.add(NAME_OFFSET).cast::<u16>(), name_bytes / 2)
+            };
+            if let Ok(name) = String::from_utf16(raw_name) {
+                if name != "." && name != ".." {
+                    if examined == 1000 {
+                        return Ok((entries, true));
+                    }
+                    examined += 1;
+                    if crate::names::component(&name).is_ok() {
+                        // Re-open through the same directory handle and inspect the actual
+                        // object: enumeration attributes can become stale during a swap.
+                        if let Ok(file) = nt_open(
+                            dir,
+                            &name,
+                            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                            0,
+                            FILE_OPEN,
+                            0,
+                        ) {
+                            if let Ok(meta) = file.metadata() {
+                                if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+                                    let kind = if meta.is_dir() {
+                                        Some("directory")
+                                    } else if meta.is_file() {
+                                        Some("file")
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(kind) = kind {
+                                        entries.push(crate::Entry { name, kind });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if next == 0 {
+                break;
+            }
+            offset += next;
+        }
+    }
 }

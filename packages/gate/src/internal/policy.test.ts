@@ -28,12 +28,29 @@ import {
   setup,
   signedFileRoots,
   signedPolicy,
+  signedPin,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
 let current: Setup | undefined
 
 describe("owner-only config metadata", () => {
+  it("never lowers file Trash to auto or lifts a forbidden manifest", () => {
+    const s = fresh()
+    s.policy.shipped.tiers["file.delete"] = "auto"
+    expect(kindTier(s.db, s.policy, "file.delete")).toEqual({
+      tier: "approval",
+    })
+    const files = manifest("files", FILE_OPS)
+    files.version = 2
+    const trash = files.operations.find(
+      (operation) => operation.intentKind === "file.delete"
+    )
+    if (trash === undefined) throw new Error("missing trash operation")
+    trash.defaultTier = "forbidden"
+    signedPin(s.db, files)
+    expect(kindTier(s.db, s.policy, "file.delete").tier).toBe("forbidden")
+  })
   it("checks POSIX access bits and ownership independently of the host platform", () => {
     expect(ownerConfigOwnershipError(0o600, 42, "linux", 42)).toBeUndefined()
     expect(ownerConfigOwnershipError(0o640, 42, "linux", 42)).toContain(
@@ -100,8 +117,21 @@ describe("the default tier table", () => {
     ["file.move", "auto"],
     ["file.delete", "approval"],
   ]
-  it.each(rows)("%s is %s", (kind, tier) => {
+  it.each(rows)("%s is %s", async (kind, tier) => {
     const { db, policy } = fresh()
+    await signedFileRoots(db, {
+      roots: [
+        {
+          id: "notes",
+          root: {
+            path: "/srv/example/notes",
+            dev: "2a",
+            ino: "1001",
+            trashDir: "trash",
+          },
+        },
+      ],
+    })
     expect(intentTier(db, policy, sample(kind))).toEqual({ tier })
   })
 

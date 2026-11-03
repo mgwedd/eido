@@ -24,6 +24,7 @@ import {
   manifest,
   sample,
   setup,
+  signedFileRoots,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
@@ -388,8 +389,21 @@ describe("editing", () => {
     expect(intentCount(s)).toBe(1)
   })
 
-  it("invariant: a forbidden edit is refused and leaves the original pending", () => {
+  it("invariant: a forbidden edit is refused and leaves the original pending", async () => {
     const s = fresh()
+    await signedFileRoots(s.db, {
+      roots: [
+        {
+          id: "notes",
+          root: {
+            path: "/synthetic/notes",
+            dev: "1",
+            ino: "2",
+            trashDir: "trash",
+          },
+        },
+      ],
+    })
     const { intentId } = ok(proposeKind(s, sample("file.delete")))
     const result = editIntent(
       s.db,
@@ -563,8 +577,21 @@ describe("history", () => {
 })
 
 describe("the pending list", () => {
-  it("returns exactly the pending intents, oldest first, with no payload", () => {
+  it("returns exactly the pending intents, oldest first, with no payload", async () => {
     const s = fresh()
+    await signedFileRoots(s.db, {
+      roots: [
+        {
+          id: "notes",
+          root: {
+            path: "/synthetic/notes",
+            dev: "1",
+            ino: "2",
+            trashDir: "trash",
+          },
+        },
+      ],
+    })
     const first = ok(proposeKind(s, sample("email.send"))).intentId
     ok(proposeKind(s, sample("email.archive")))
     const second = ok(

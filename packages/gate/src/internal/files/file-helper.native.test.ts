@@ -56,6 +56,20 @@ describe.skipIf(binary === undefined)("the native file helper", () => {
       })
     ).toEqual({ ok: false, code: "exists" })
     expect(readFileSync(join(rootPath, "a.txt"), "utf8")).toBe("lorem ipsum")
+    const approved = approvedFileRoot(db, "docs")
+    if (approved === undefined) throw new Error("missing approved root")
+    expect(
+      await run({ op: "read", root: approved, path: "a.txt", maxBytes: 100 })
+    ).toEqual({ ok: true, op: "read", contentBase64: "bG9yZW0gaXBzdW0=" })
+    expect(
+      await run({ op: "read", root: approved, path: "a.txt", maxBytes: 2 })
+    ).toMatchObject({ ok: false, code: "io" })
+    expect(await run({ op: "list", root: approved, path: "" })).toEqual({
+      ok: true,
+      op: "list",
+      entries: [{ name: "a.txt", kind: "file" }],
+      truncated: false,
+    })
 
     writeFileSync(join(rootPath, "b.txt"), "kept")
     expect(

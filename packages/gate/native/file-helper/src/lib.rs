@@ -72,7 +72,21 @@ struct Root {
     trash_dir: String,
 }
 
+pub struct Entry {
+    pub name: String,
+    pub kind: &'static str,
+}
+
 enum Request {
+    Read {
+        root: Root,
+        path: String,
+        max_bytes: usize,
+    },
+    List {
+        root: Root,
+        path: String,
+    },
     Identify {
         path: String,
     },
@@ -99,6 +113,11 @@ enum Request {
 }
 
 enum Response {
+    Read(Vec<u8>),
+    List {
+        entries: Vec<Entry>,
+        truncated: bool,
+    },
     Identify {
         canonical_path: String,
         identity: Identity,
@@ -162,6 +181,26 @@ fn parse_request(input: &str) -> Result<Request, Error> {
         .and_then(json::Value::as_str)
         .ok_or(bad("missing op"))?;
     match op {
+        "read" => {
+            exact_keys(&v, &["op", "root", "path", "maxBytes"])?;
+            let max_bytes = v
+                .get("maxBytes")
+                .and_then(json::Value::as_usize)
+                .filter(|n| *n > 0 && *n <= 8 * 1024 * 1024)
+                .ok_or(bad("invalid read limit"))?;
+            Ok(Request::Read {
+                root: root(&v)?,
+                path: string(&v, "path")?,
+                max_bytes,
+            })
+        }
+        "list" => {
+            exact_keys(&v, &["op", "root", "path"])?;
+            Ok(Request::List {
+                root: root(&v)?,
+                path: string(&v, "path")?,
+            })
+        }
         "identify" => {
             exact_keys(&v, &["op", "path"])?;
             Ok(Request::Identify {
@@ -306,6 +345,49 @@ fn trash_identity(trash: Option<&Dir>) -> Result<Option<Identity>, Error> {
 
 fn execute(request: Request) -> Result<Response, Error> {
     match request {
+        Request::Read {
+            root,
+            path,
+            max_bytes,
+        } => {
+            let comps = names::relative(&path)?;
+            let root_dir = verified_root(&root)?;
+            let trash = existing_trash(&root_dir, &root)?;
+            guard_user_path(
+                &root_dir,
+                &root,
+                trash_identity(trash.as_ref())?.as_ref(),
+                &comps,
+            )?;
+            let parent = walk_parent(&root_dir, &comps)?;
+            before_mutation();
+            let bytes = sys::read_file(
+                parent.as_ref().unwrap_or(&root_dir),
+                last(&comps),
+                max_bytes,
+            )?;
+            Ok(Response::Read(bytes))
+        }
+        Request::List { root, path } => {
+            let root_dir = verified_root(&root)?;
+            let trash = existing_trash(&root_dir, &root)?;
+            let trash_id = trash_identity(trash.as_ref())?;
+            let mut current = None;
+            if !path.is_empty() {
+                let comps = names::relative(&path)?;
+                guard_user_path(&root_dir, &root, trash_id.as_ref(), &comps)?;
+                for name in comps {
+                    current = Some(sys::open_dir(current.as_ref().unwrap_or(&root_dir), name)?);
+                }
+            }
+            before_mutation();
+            let (mut entries, truncated) = sys::list_dir(current.as_ref().unwrap_or(&root_dir))?;
+            if path.is_empty() {
+                entries.retain(|e| !e.name.eq_ignore_ascii_case(&root.trash_dir));
+            }
+            entries.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(Response::List { entries, truncated })
+        }
         Request::Identify { path } => {
             let canonical_path = sys::canonical_root(&path)?;
             let dir = sys::open_root(&canonical_path)?;
@@ -400,6 +482,27 @@ fn execute(request: Request) -> Result<Response, Error> {
 
 fn render(result: Result<Response, Error>) -> String {
     match result {
+        Ok(Response::Read(bytes)) => format!(
+            "{{\"ok\":true,\"op\":\"read\",\"contentBase64\":{}}}",
+            json::quote(&base64::encode(&bytes))
+        ),
+        Ok(Response::List { entries, truncated }) => {
+            let entries = entries
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{{\"name\":{},\"kind\":{}}}",
+                        json::quote(&e.name),
+                        json::quote(e.kind)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"ok\":true,\"op\":\"list\",\"entries\":[{}],\"truncated\":{}}}",
+                entries, truncated
+            )
+        }
         Ok(Response::Identify {
             canonical_path,
             identity,

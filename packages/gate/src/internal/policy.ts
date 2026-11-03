@@ -17,6 +17,7 @@ import type {
 } from "@eido/schemas"
 import { append } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
+import { approvedFileRoot } from "./files/file-roots"
 import {
   approvedControlValue,
   prepareControlApproval,
@@ -186,6 +187,8 @@ export function kindTier(
     policy.overlay?.tiers[kind] ??
     policy.shipped.tiers[kind] ??
     operation.defaultTier
+  // Moving a file to Trash always needs approval; a forbidden manifest was refused above.
+  if (kind === "file.delete") return { tier: "approval" }
   if (configured === "auto" && operation.reversibility !== "reversible") {
     return { tier: "approval" }
   }
@@ -248,7 +251,7 @@ export function intentTier(
     case "file.rename":
     case "file.move":
     case "file.delete":
-      return policy.allowedRoots.includes(intent.args.root)
+      return approvedFileRoot(db, intent.args.root) !== undefined
         ? decision
         : forbidden("root_not_allowed")
     case "calendar.create":

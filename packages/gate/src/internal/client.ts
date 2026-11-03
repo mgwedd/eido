@@ -1,6 +1,13 @@
+import type {
+  GateFileRoots,
+  GateLocalFileRequest,
+  GateFileHelperResponse,
+} from "@eido/schemas"
 import { request as httpRequest } from "node:http"
 import {
   validateGateApiError,
+  validateGateFileRoots,
+  validateGateFileHelperResponse,
   validateGateAuditRecordResult,
   validateGateConnectorHealth,
   validateGateEnrolmentCode,
@@ -386,6 +393,34 @@ export function createPasskeyAdminClient(options: IntentClientOptions): {
         [200],
         validateGatePasskeyList,
         "GatePasskeyList"
+      ),
+  }
+}
+
+export type FileClient = {
+  roots(): Promise<GateFileRoots>
+  perform(request: GateLocalFileRequest): Promise<GateFileHelperResponse>
+}
+
+export function createFileClient(options: IntentClientOptions): FileClient {
+  const resolved = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? 30_000,
+  }
+  return {
+    roots: async () =>
+      expect(
+        await call(resolved, "GET", "/file-roots"),
+        [200],
+        validateGateFileRoots,
+        "GateFileRoots"
+      ),
+    perform: async (request) =>
+      expect(
+        await call(resolved, "POST", "/files", request),
+        [200],
+        validateGateFileHelperResponse,
+        "GateFileHelperResponse"
       ),
   }
 }

@@ -87,7 +87,7 @@ describe("the running gate", () => {
     })
   })
 
-  it("reloads allowed roots from the gate-owned config and audits before and after hashes", () => {
+  it("reloads owner config but does not grant file authority from allowedRoots", () => {
     const s = setup()
     current = s
     const path = join(s.dataDir, "owner-config.json")
@@ -120,7 +120,7 @@ describe("the running gate", () => {
         runningGate().policy,
         sample("file.create", { root: "work" })
       )
-    ).toEqual({ tier: "auto" })
+    ).toEqual({ tier: "forbidden", reason: "root_not_allowed" })
     expect(
       intentTier(
         s.db,
