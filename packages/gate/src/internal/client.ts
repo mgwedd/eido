@@ -94,7 +94,7 @@ export type IntentClient = {
 
 export type AuditClient = {
   /**
-   * Appends one hash-only audit.profile.* (#181) or audit.ledger.* (#104) row to the gate's
+   * Appends one hash-only audit.profile.* (#181), audit.ledger.* (#104) or audit.access.* (#322) row to the gate's
    * audit log. Resolves once the row is written; rejects with GateRequestError when the gate refuses the entry and with
    * GateUnavailableError when the gate cannot be reached, so the caller can roll back.
    */

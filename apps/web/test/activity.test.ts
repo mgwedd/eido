@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test, vi } from "vitest"
 import {
+  ACCESS_AUDIT_LABELS,
   chainBrokenMessage,
+  formatAction,
   groupByDay,
   intentHref,
   intentIdOf,
@@ -51,7 +53,27 @@ describe("row view-model", () => {
     ["intent.request_refused.invalid", "refused"],
     ["email.markRead", "normal"],
     ["intent.transition", "normal"],
+    ["audit.access.document_open", "normal"],
+    ["audit.access.inference_use", "normal"],
   ])("%s is %s", (action, kind) => expect(rowKind(action)).toBe(kind))
+
+  test("formatAction maps audit.access.* actions to readable labels and passes others through", () => {
+    expect(ACCESS_AUDIT_LABELS["audit.access.document_open"]).toBe(
+      "Viewed document"
+    )
+    expect(formatAction("audit.access.document_open")).toBe("Viewed document")
+    expect(formatAction("audit.access.inference_use")).toBe(
+      "Local inference used"
+    )
+    expect(formatAction("audit.access.content_copy")).toBe("Copied text")
+    expect(formatAction("audit.access.instruction_change")).toBe(
+      "Updated assistant instructions"
+    )
+    expect(formatAction("audit.profile.entity.create")).toBe(
+      "audit.profile.entity.create"
+    )
+    expect(formatAction("email.send")).toBe("email.send")
+  })
 
   test("groups by local day, newest first, with Today and Yesterday labels", () => {
     const now = new Date(intentRow.ts)
