@@ -52,6 +52,8 @@ import {
 } from "./conversation-get-route"
 import { BRIEF_PATH, briefRoute } from "./brief-route"
 import { dueSoonRoute } from "./due-soon"
+import { SIMPLEFIN_SYNC_PATH, simplefinSyncRoute } from "./simplefin-sync-route"
+import type { SimpleFinSyncer } from "./simplefin-sync-route"
 import { REPLY_DRAFT_PATH } from "./reply-draft-route"
 import type { ReplyDraftResult, ReplyDrafter } from "./reply-draft-route"
 import {
@@ -64,6 +66,8 @@ export interface ApiDeps {
   profile: ProfileStore
   /** Read-only projection from the gate; no connector credentials or mail payloads. */
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
+  /** A SimpleFIN sync on request (#546). When absent (SimpleFIN is not configured), the route is not served. */
+  syncSimpleFin?: SimpleFinSyncer
   /** Accounts the configured connectors have reported. Absent: none are configured. */
   connectorAccounts?: () => readonly KnownAccount[]
   /** The Proton account the assistant sends from. Absent: Proton is not configured. */
@@ -301,6 +305,12 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         connectors: await deps.connectorHealth(),
       }
       return json(body)
+    }
+
+    if (path === SIMPLEFIN_SYNC_PATH && deps.syncSimpleFin !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const { status, body } = await simplefinSyncRoute(deps.syncSimpleFin)
+      return json(body, status)
     }
 
     if (path === "/connectors/accounts") {

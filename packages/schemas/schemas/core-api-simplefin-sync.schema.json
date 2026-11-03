@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiSimpleFinSync",
+  "description": "Response of POST /connectors/simplefin/sync (#546), a SimpleFIN sync on request. 200 with status synced: the sync ran once and counted against the daily request budget. 409 with status refused: nothing was synced. reason daily_limit: the daily request budget is spent, and nextSyncAt is when it resets (the next local midnight). connector_unavailable: the gate holds the connector open or paused. sync_failed: the read failed; the connector's health carries the message. nextSyncAt on a synced response is the next scheduled sync.",
+  "type": "object",
+  "properties": {
+    "status": { "enum": ["synced", "refused"] },
+    "reason": {
+      "enum": ["daily_limit", "connector_unavailable", "sync_failed"]
+    },
+    "nextSyncAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
+    }
+  },
+  "required": ["status"],
+  "additionalProperties": false
+}
