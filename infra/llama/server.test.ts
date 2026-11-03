@@ -27,7 +27,7 @@ describe("serverArgs", () => {
     expect(args).not.toContain("0.0.0.0")
   })
 
-  it("passes the model and port, and the flags measured in #69", () => {
+  it("passes the model and port, and the flags measured in #69, with thinking off", () => {
     expect(args).toEqual([
       "-m",
       "/m/model.gguf",
@@ -52,6 +52,8 @@ describe("serverArgs", () => {
       "2048",
       "-t",
       "8",
+      "--reasoning",
+      "off",
     ])
   })
 })

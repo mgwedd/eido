@@ -86,7 +86,7 @@ pnpm --filter @eido/infra llama status          # launchd's view, who listens on
 `launch` does these steps in order:
 
 1. Verifies the binary and the model; on a mismatch it exits 1 and does not start the server.
-2. Starts `llama-server -m <model> --jinja --host 127.0.0.1 --port <port> -c 8192 -fa on --cache-type-k q8_0 --cache-type-v q8_0 -ngl 99 -b 2048 -ub 2048 -t 8`. These are the flags measured in #69, plus the fixed loopback bind.
+2. Starts `llama-server -m <model> --jinja --host 127.0.0.1 --port <port> -c 8192 -fa on --cache-type-k q8_0 --cache-type-v q8_0 -ngl 99 -b 2048 -ub 2048 -t 8 --reasoning off`. These are the flags measured in #69, plus the fixed loopback bind. `--reasoning off` keeps Gemma 4 out of thinking mode: with the default (`auto`) the template injects `<|think|>` into the system turn and a schema-constrained completion comes back with empty content.
 3. Waits up to 180 s for `/health`.
 4. Checks that `/props` reports a chat template containing the lock's `chat_template_marker`. If not, it stops the server and exits 1.
 5. Stays in the foreground. It exits non-zero if the server dies, and on SIGTERM it stops the server and exits 0.
@@ -104,7 +104,19 @@ launchd restarts the launcher whenever it exits, and every restart re-verifies t
 
 Install it only after `llama verify` passes; `install` refuses when the binary or model file is missing. The node path written into the plist is the one that ran `install`, so after upgrading node, run `llama install` again.
 
-### Recorded results (2026-11-02, development Mac: M3 Max, 36 GB)
+### Recorded results (2026-11-03, Gemma 4 26B-A4B QAT Q4_0, same Mac)
+
+Launcher on port 18092, outside launchd.
+
+- `llama launch` reported `b11149 (d2e54583c)` and matched the SHA-256; node hashed the 14.4 GB model in 12.6 s on the first run and 17.1 s on the second.
+- `/health` answered 2.3 s after start (11.1 s on the first, cold load), and `/props` had `<|turn>model`.
+- `llama status`: `port 18092 listens on loopback only`, `/health 200`.
+- `llama check-template` printed `ok: chat template`, `ok: rendered prompt`, `ok: JSON-schema request` and `ok: template check passed on b11149 with gemma-4-26B_q4_0-it.gguf`.
+- Without `--reasoning off` the same check failed: the rendered prompt had `<|think|>` after `<|turn>system`, and the JSON-schema completion was empty.
+
+The altered-copy, server-killed and launchd runs below were recorded on the Llama pin; the launcher code they exercise is unchanged.
+
+### Recorded results (2026-11-02, Llama 3.1 8B pin, development Mac: M3 Max, 36 GB)
 
 These runs used the launcher on port 18091, outside launchd.
 
