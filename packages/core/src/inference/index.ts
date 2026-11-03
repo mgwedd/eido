@@ -15,6 +15,7 @@ export {
 } from "./client"
 export {
   InferenceError,
+  MaterialMarkerError,
   PromptTooLargeError,
   UnsupportedModelServerError,
 } from "./errors"
