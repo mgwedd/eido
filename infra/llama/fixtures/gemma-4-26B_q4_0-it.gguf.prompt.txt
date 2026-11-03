@@ -1,0 +1,11 @@
+<|turn>system
+You are a test assistant. Answer briefly.<turn|>
+<|turn>user
+What is the weather in Testville?<turn|>
+<|turn>model
+<|tool_call>call:get_weather{city:<|"|>Testville<|"|>}<tool_call|><|tool_response>response:get_weather{value:<|"|>{"forecast":"sunny"}<|"|>}<tool_response|>It is sunny in Testville.<turn|>
+<|turn>user
+Thanks.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>

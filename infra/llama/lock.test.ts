@@ -26,22 +26,22 @@ const replace = (key: string, line: string) =>
   valid.replace(new RegExp(`^${key}: .*$`, "m"), line)
 
 describe("the committed infra/model.lock", () => {
-  it("pins the model and build measured in #69", () => {
+  it("pins Gemma 4 26B-A4B QAT Q4_0 on build b11149", () => {
     expect(parseLock(committed)).toEqual({
-      model: "Meta-Llama-3.1-8B-Instruct",
-      quantization: "Q4_0",
-      file: "meta-llama-3.1-8b-instruct-q4_0.gguf",
+      model: "gemma-4-26B-A4B-it",
+      quantization: "Q4_0 (QAT)",
+      file: "gemma-4-26B_q4_0-it.gguf",
       source:
-        "https://huggingface.co/ggml-org/Meta-Llama-3.1-8B-Instruct-Q4_0-GGUF/resolve/0aba27dd2f1c7f4941a94a5c59d80e0a256f9ff8/meta-llama-3.1-8b-instruct-q4_0.gguf",
-      size: 6036116480,
+        "https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf/resolve/d1c082be9cf3c8a514acf63b8761f4b41935842e/gemma-4-26B_q4_0-it.gguf",
+      size: 14439363584,
       sha256:
-        "b4778681efbd6898fe1965e74f810b3b7dfdf6afab01df9c88c1b0e6e9ca122d",
+        "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d",
       llamaCppBuild: "b11149",
       llamaCppCommit: "d2e54583c",
       llamaCppAsset: "llama-b11149-bin-macos-arm64.tar.gz",
       llamaCppSha256:
         "791eb0200a7c846ca925b6274fc21f0f21f537fda2924cc5a47402655816f56e",
-      chatTemplateMarker: "<|start_header_id|>",
+      chatTemplateMarker: "<|turn>model",
     })
   })
 })
