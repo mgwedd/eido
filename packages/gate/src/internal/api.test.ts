@@ -7,6 +7,7 @@ import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { payloadHash } from "./canonical"
+import { append } from "./audit"
 import {
   GateRequestError,
   GateUnavailableError,
@@ -31,6 +32,9 @@ import {
   socketAddress,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
+import { initializeProfileAudit } from "./profile-audit"
+import type { ProfileAudit } from "./profile-audit"
+import { InMemoryVault } from "./vault/vault"
 
 // The gate's listeners over real local sockets, in this process: routes, refusals, audit rows
 // and field exclusions. The two-process tests are in packages/core/src/planes.
@@ -83,6 +87,8 @@ let controlSocket: string
 let servers: Server[]
 let client: IntentClient
 let audit: AuditClient
+let profileAudit: ProfileAudit | undefined
+let profileVault: InMemoryVault
 
 async function serve(handler: Handler, path: string): Promise<Server> {
   const server = createGateServer("test", handler, silent)
@@ -98,8 +104,13 @@ beforeEach(async () => {
   servers = []
   s = setup()
   startGate(s.db, s.options, WEBAUTHN)
+  profileVault = new InMemoryVault()
+  profileAudit = await initializeProfileAudit(s.db, profileVault, "1")
   baseline = auditRows(s.db).length
-  await serve(dataPlaneHandler(runningGate), dataSocket)
+  await serve(
+    dataPlaneHandler(() => ({ ...runningGate(), profileAudit })),
+    dataSocket
+  )
   await serve(
     controlHandler(runningGate, () => new Date()),
     controlSocket
@@ -264,23 +275,72 @@ const created = {
 }
 
 describe("POST /audit", () => {
-  it("appends one hash-only audit.profile row and the chain still verifies", async () => {
+  it("preserves legacy unkeyed rows and distinguishes new tagged targets", async () => {
+    append(s.db, {
+      actor: "data-plane",
+      action: "audit.profile.entity.create",
+      target: SUBJECT,
+      detailHash: payloadHash(created),
+    })
+    const legacy = auditRows(s.db).at(-1)
+    await audit.record(created)
+    const rows = auditRows(s.db)
+    expect(rows.at(-2)).toEqual(legacy)
+    expect(rows.at(-1)?.target).toMatch(/^hmac:v1:1:/)
+    expect(
+      JSON.parse((await raw(controlSocket, "GET", "/audit/chain")).text)
+    ).toMatchObject({ ok: true })
+  })
+  it("refuses profile writes when no key is configured, without an unkeyed fallback", async () => {
+    profileAudit = undefined
+    const before = auditRows(s.db)
+    await expect(audit.record(created)).rejects.toMatchObject({
+      status: 503,
+      code: "unavailable",
+    })
+    expect(auditRows(s.db)).toEqual(before)
+  })
+
+  it("refuses a lost key without echoing digests or appending a profile row", async () => {
+    await profileVault.delete({
+      connector: "eido-profile-audit:1",
+      kind: "api_key",
+      client: "none",
+    })
+    const before = auditRows(s.db)
+    const response = await raw(
+      dataSocket,
+      "POST",
+      "/audit",
+      JSON.stringify(created)
+    )
+    expect(response).toEqual({
+      status: 503,
+      text: JSON.stringify({
+        code: "unavailable",
+        message: "profile audit key is unavailable",
+      }),
+    })
+    expect(auditRows(s.db)).toEqual(before)
+  })
+  it("appends one keyed audit.profile row and the chain still verifies", async () => {
     const result = await audit.record(created)
     const rows = auditRows(s.db)
     const last = rows.at(-1)
     expect(result).toEqual({ seq: last?.seq })
-    expect(last).toEqual({
+    expect(last).toMatchObject({
       seq: result.seq,
       actor: "data-plane",
       action: "audit.profile.entity.create",
-      target: SUBJECT,
-      detail_hash: payloadHash({
-        action: "entity.create",
-        subjectHash: SUBJECT,
-        beforeHash: null,
-        afterHash: AFTER,
-      }),
     })
+    expect(last?.target).toMatch(/^hmac:v1:1:[a-f0-9]{64}:[a-f0-9]{64}$/)
+    if (profileAudit === undefined) throw new Error("missing profile audit")
+    const tags = await profileAudit.tag(created)
+    expect(last?.detail_hash).toBe(
+      payloadHash({ action: created.action, ...tags })
+    )
+    const stored = JSON.stringify(rows)
+    for (const digest of [SUBJECT, AFTER]) expect(stored).not.toContain(digest)
     const chain = await raw(controlSocket, "GET", "/audit/chain")
     expect(JSON.parse(chain.text)).toEqual({ ok: true, rows: rows.length })
   })

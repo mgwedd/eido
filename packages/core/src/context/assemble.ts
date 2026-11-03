@@ -4,6 +4,7 @@ import { DEFAULT_CHARS_PER_TOKEN, estimateTokens } from "../inference/budget"
 import { LIVE_DOCUMENT_PREDICATE } from "../index/heads"
 import { fence, plainContent, toMaterial } from "../inference/fence"
 import { COMPACTION_LEGEND, compactMessage } from "./compact"
+import { mailSignalNotes } from "./mail-signals"
 import {
   type ContextPack,
   ESTIMATE_BOUNDARY,
@@ -197,10 +198,12 @@ function memberBody(db: DatabaseSync, doc: Doc): string {
 /** Every indexed document came from a connector, so it was written by someone else: fenced. */
 function entryFor(db: DatabaseSync, doc: Doc, tag: string): PackBlock {
   const source = doc.attachmentOf === undefined ? "mail" : "attachment"
+  const signals = mailSignalNotes(db, doc.sha256)
   return {
     tag,
     label: doc.source,
     block: fence(toMaterial(memberBody(db, doc), { source })),
+    ...(signals.length === 0 ? {} : { signals }),
   }
 }
 

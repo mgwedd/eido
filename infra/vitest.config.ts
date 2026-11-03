@@ -6,15 +6,21 @@ export default defineConfig({
   test: {
     coverage: {
       provider: "v8",
-      include: ["tailscale/**/*.ts", "stack/**/*.ts", "backup/**/*.ts"],
+      include: [
+        "tailscale/**/*.ts",
+        "stack/**/*.ts",
+        "backup/**/*.ts",
+        "bridge/**/*.ts",
+      ],
       exclude: [
         "**/*.test.ts", // test files are not product code
         "tailscale/bin.ts", // entry point: hands process.argv and the real tailscale CLI to main()
+        "bridge/bin.ts", // entry point: hands process.argv, real launchctl, files and TCP to main()
         "stack/bin.ts", // entry point: hands process.argv and real processes, signals and files to main()
         "backup/test-support.ts", // helpers for the backup tests
         "backup/bin.ts", // entry point: hands process.argv, the restic binary and the clock to main()
       ],
-      reporter: ["text", "json-summary"],
+      reporter: ["text", "json-summary", "cobertura"],
       thresholds: {
         lines: 90,
         statements: 90,

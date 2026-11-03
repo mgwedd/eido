@@ -9,12 +9,18 @@ import {
   type GateWebAuthnAssertion,
 } from "@eido/schemas"
 import { buildChallenge, toBase64url } from "@/lib/approval/challenge"
+import { hashPayloadText } from "@/lib/approval/canonical"
 
 const APPROVALS_URL = "/api/gate/approvals"
 
 /** Why an approval step failed: a code the gate sent, or one raised on the device. */
 export type ApprovalFailure = {
-  code: GateApiError["code"] | "network" | "invalid_response" | "cancelled"
+  code:
+    | GateApiError["code"]
+    | "network"
+    | "invalid_response"
+    | "cancelled"
+    | "payload_changed"
   message: string
 }
 
@@ -38,9 +44,25 @@ async function refusal<T>(response: Response): Promise<ApprovalResult<T>> {
   return failure("invalid_response", `The gate answered ${response.status}.`)
 }
 
+const PAYLOAD_CHANGED = "The payload changed. Nothing was signed."
+
+/**
+ * Recomputes the payload hash on this device (RFC 8785 canonical JSON, SHA-256) and returns the
+ * approval carrying that hash, or undefined when it differs from the gate's `payloadHash`.
+ */
+async function verifyPayload(
+  prepared: GatePrepareApproval
+): Promise<GatePrepareApproval | undefined> {
+  const local = await hashPayloadText(prepared.payload)
+  return local !== undefined && local === prepared.payloadHash
+    ? { ...prepared, payloadHash: local }
+    : undefined
+}
+
 /**
  * Asks the gate to prepare an intent for approval: the stored payload, its hash and a fresh
- * single-use nonce. Every call replaces the previous nonce, so sign over the latest result.
+ * single-use nonce. The hash is recomputed here over the payload as received; when it differs
+ * from the gate's the result is a `payload_changed` failure and no approval is offered. Every call replaces the previous nonce, so sign over the latest result.
  */
 export async function prepareApproval(
   intentId: string,
@@ -58,9 +80,15 @@ export async function prepareApproval(
   if (!response.ok) return refusal(response)
   try {
     const parsed = validateGatePrepareApproval(await response.json())
-    return parsed.ok
-      ? { ok: true, value: parsed.value }
-      : failure("invalid_response", "The gate sent an unreadable approval.")
+    if (!parsed.ok)
+      return failure(
+        "invalid_response",
+        "The gate sent an unreadable approval."
+      )
+    const verified = await verifyPayload(parsed.value)
+    return verified === undefined
+      ? failure("payload_changed", PAYLOAD_CHANGED)
+      : { ok: true, value: verified }
   } catch {
     return failure("invalid_response", "The gate sent an unreadable approval.")
   }
@@ -97,12 +125,16 @@ export function toAssertion(
 
 /**
  * Signs a prepared intent with the device passkey and sends the approval to the gate.
- * The nonce sent is the one in `prepared`, the one the assertion was signed over.
+ * The nonce sent is the one in `prepared`, the one the assertion was signed over. The payload
+ * is hashed again first and the challenge is built from that local hash; a payload that no
+ * longer matches its hash is refused before the passkey is touched.
  */
 export async function signApproval(
-  prepared: GatePrepareApproval,
+  unverified: GatePrepareApproval,
   signal?: AbortSignal
 ): Promise<ApprovalResult<GateDecisionResult>> {
+  const prepared = await verifyPayload(unverified)
+  if (prepared === undefined) return failure("payload_changed", PAYLOAD_CHANGED)
   let credential: Credential | null
   try {
     credential = await navigator.credentials.get({

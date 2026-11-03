@@ -16,6 +16,7 @@ import type { AskFigure } from "@eido/schemas"
 import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
 import { openIndex } from "./index/schema"
+import { DEFAULT_BRIEF_CONFIG, scheduleBrief } from "./brief/index"
 import { openDataDb } from "./ledger/db"
 import {
   connectModelClient,
@@ -390,6 +391,8 @@ export type DataPlane = {
   /** Accounts the configured connectors have reported: Proton's at startup, Gmail's per run. */
   connectorAccounts: () => readonly KnownAccount[]
   getInferenceQueue: () => Promise<InferenceQueue>
+  /** The model-backed digest service; Ask reads thread digests through it. */
+  getDigestService: () => Promise<DigestService>
   getModelContextTokens: () => number
   /** Schedule digests for documents committed by a connector batch. */
   scheduleIngestedDocuments: (documents: readonly IndexedDocument[]) => void
@@ -754,6 +757,19 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   const stopGmailSync = (): void => gmailTimer?.stop()
   const stopProtonSync = (): void => protonTimer?.stop()
   scheduleReplies()
+  const brief = scheduleBrief(
+    db,
+    async () => ({
+      ...DEFAULT_BRIEF_CONFIG,
+      timezone: (await profile.getProfile())?.timezone ?? "Etc/UTC",
+    }),
+    {
+      onError: (error) =>
+        log("brief_failed", {
+          reason: error instanceof Error ? error.message : "unknown error",
+        }),
+    }
+  )
   log("started", {
     dataDir: config.dataDir,
     db: config.dbPath,
@@ -772,12 +788,15 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     stopProtonSync,
     connectorAccounts: accounts.list,
     getInferenceQueue: model.getQueue,
+    getDigestService,
     getModelContextTokens: model.getContextTokens,
     scheduleIngestedDocuments: onIngested,
     scheduleReplyObligations: scheduleReplies,
     close: async () => {
       stopGmailSync()
       stopProtonSync()
+      brief.stop()
+      await brief.whenIdle()
       await gmailTimer?.inFlight()
       await protonTimer?.inFlight()
       await digestScheduling
@@ -800,6 +819,7 @@ export async function serveDataPlane(
   const modelBaseUrl = config.modelBaseUrl
   const conversation = plane.conversation
   const getQueue = plane.getInferenceQueue
+  const getDigestService = plane.getDigestService
   const ask =
     modelBaseUrl === undefined
       ? undefined
@@ -808,7 +828,9 @@ export async function serveDataPlane(
             if (question.trim() === "/compact") {
               return compactAskResult("Nothing to compact yet")
             }
-            return askPipeline(question, plane.db, await getQueue())
+            return askPipeline(question, plane.db, await getQueue(), {
+              digest: await getDigestService(),
+            })
           }
           const queue = await getQueue()
           const conversationId = "ask"
@@ -845,6 +867,7 @@ export async function serveDataPlane(
             { queue }
           )
           const result = await askPipeline(question, plane.db, queue, {
+            digest: await getDigestService(),
             budgetTokens: askBudgetTokens,
             conversation: compacted.turns,
             allocateSourceTag: (sourceRef) =>
@@ -918,7 +941,10 @@ function askPipeline(
   db: DatabaseSync,
   queue: ReturnType<typeof createInferenceQueue>,
   conversation: Partial<
-    Pick<AskDeps, "budgetTokens" | "conversation" | "allocateSourceTag">
+    Pick<
+      AskDeps,
+      "budgetTokens" | "conversation" | "allocateSourceTag" | "digest"
+    >
   > = {}
 ) {
   return ask(question, {

@@ -1,0 +1,5 @@
+# Pinned so the helper the gate pins by hash builds from a known compiler (ADR 0006).
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
