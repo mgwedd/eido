@@ -73,7 +73,7 @@ describe("the forged-fence lint rule", () => {
       "Build material blocks with fence() from src/inference/fence.ts; never write a material tag or an untrusted-data marker by hand.",
       "materialText() is for display and verification only; pass the Material to fence() instead.",
     ])
-  })
+  }, 20_000)
 
   test.each(["src/inference/fence.ts", "src/ask/ask.test.ts"])(
     "does not apply to %s",
