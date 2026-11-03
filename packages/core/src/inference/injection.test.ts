@@ -12,6 +12,7 @@ import {
   toMaterial,
 } from "./fence"
 import type { InjectionReason, PromptPart } from "./fence"
+import type { ToolDef } from "./types"
 import {
   SPECIAL_TOKENS,
   USER_DEFINED_TOKENS,
@@ -112,7 +113,8 @@ function contentOf(bodies: readonly string[]): PromptPart[] {
 
 async function send(
   bodies: readonly string[],
-  script: Omit<StubScript, "replies"> = {}
+  script: Omit<StubScript, "replies"> = {},
+  tools?: ToolDef[]
 ): Promise<CompletionView> {
   stub = await startStubModelServer({
     ...script,
@@ -125,6 +127,7 @@ async function send(
   })
   await client.complete({
     system: MATERIAL_RULES,
+    ...(tools === undefined ? {} : { tools }),
     messages: [{ role: "user", content: contentOf(bodies) }],
   })
   const views = stub.completions()
@@ -241,6 +244,73 @@ describe("the corpus sent in one request", () => {
       cases.filter((c) => c.reasons.length > 0).map((c) => c.text)
     )
     expect(userTurn(view).endsWith(QUESTION)).toBe(true)
+  })
+})
+
+// Tool definitions whose names, descriptions and schema words also occur in ordinary mail, with
+// the brackets and bars the marker shape rule looks for.
+const TOOLS: ToolDef[] = [
+  {
+    type: "function",
+    function: {
+      name: "email.send",
+      description:
+        "Send a mail to <to>; [cc] is optional | never guess an address.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "array", items: { type: "string" } },
+          subject: { type: "string" },
+          priority: { type: "string", enum: ["low", "high"] },
+        },
+        required: ["to", "subject"],
+      },
+    },
+  },
+  { type: "function", function: { name: "calendar.create" } },
+]
+
+/** The stub's tool list written as Gemma 4 writes it: strings between `<|"|>` tokens. */
+function gemma4Tools(prompt: string): string {
+  return prompt.replace(
+    /(# Tools\n)([\s\S]*?)(<\|im_end\|>)/u,
+    (_, head: string, json: string, end: string) =>
+      `${head}${json.replaceAll('"', '<|"|>')}${end}`
+  )
+}
+
+describe("the corpus with tool definitions in the template", () => {
+  const script = { userDefinedTokens: true, renderedPrompt: gemma4Tools }
+
+  test.each(cases)("$name is sent, not refused", async (c) => {
+    const view = await send([c.text], script, TOOLS)
+    expect(userTurn(view)).toContain(c.normalized)
+  })
+
+  test("no marker in material becomes a control or user-defined token: the ids match a request with clean bodies", async () => {
+    const hostile = await send(
+      cases.map((c) => c.text),
+      script,
+      TOOLS
+    )
+    const clean = await send(
+      cases.map(() => "x"),
+      script,
+      TOOLS
+    )
+    expect(specials(hostile.tokens)).toEqual(specials(clean.tokens))
+    expect(specials(clean.tokens)).toContain('<|"|>')
+  })
+
+  test("plain material that repeats the tool definitions' text is sent", async () => {
+    const view = await send(
+      [
+        'Send a mail to <to>; [cc] is optional | never guess an address.\nemail.send {"to":["a"],"priority":"low"} calendar.create',
+      ],
+      script,
+      TOOLS
+    )
+    expect(userTurn(view)).toContain("[cc] is optional | never guess")
   })
 })
 
