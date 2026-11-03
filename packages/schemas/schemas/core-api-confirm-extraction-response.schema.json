@@ -14,10 +14,7 @@
       "type": "boolean"
     },
     "obligationId": {
-      "oneOf": [
-        { "type": "integer", "minimum": 1 },
-        { "type": "null" }
-      ]
+      "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
     }
   },
   "required": ["ok", "confirmedAt", "extractionConfirmed"],

@@ -351,8 +351,8 @@ function linkedFor(
   ).map((r) => ({
     id: Number(r["id"]),
     action: String(r["action"]),
-    party: r["party"] === null ? null : String(r["party"]),
-    dueAt: r["dueAt"] === null ? null : String(r["dueAt"]),
+    party: typeof r["party"] === "string" ? r["party"] : null,
+    dueAt: typeof r["dueAt"] === "string" ? r["dueAt"] : null,
     status: String(r["status"]),
   }))
 
@@ -374,7 +374,7 @@ function linkedFor(
       .all(sha256, sha256, sha256) as Array<Record<string, unknown>>
   ).map((r) => ({
     sha256: String(r["sha256"]),
-    name: r["name"] === null ? null : String(r["name"]),
+    name: typeof r["name"] === "string" ? r["name"] : null,
     source: String(r["source"]),
   }))
 
@@ -471,7 +471,9 @@ function extractionsFor(
           verified:
             quoteMatches &&
             (typed === null || typed.status === "parsed") &&
-            (score >= threshold || confirmedAt !== null || "confirmed_at" in field),
+            (score >= threshold ||
+              confirmedAt !== null ||
+              "confirmed_at" in field),
         })
       }
       return {

@@ -5,7 +5,7 @@ import * as React from "react"
 
 import { validateGatePendingIntentList } from "@eido/schemas"
 import { Badge } from "@eido/ui/components/badge"
-import { Button } from "@eido/ui/components/button"
+import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { DueSoonCard } from "@/components/due-soon-card"
@@ -292,18 +292,15 @@ function NeedsYouCard({
                         <Badge className="border-blue-500/20 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20">
                           Confirm
                         </Badge>
-                        <Button
-                          asChild
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-xs"
+                        <Link
+                          href={`/queue?intent=${encodeURIComponent(intent.id)}`}
+                          className={
+                            buttonVariants({ variant: "outline", size: "sm" }) +
+                            " h-7 text-xs"
+                          }
                         >
-                          <Link
-                            href={`/queue?intent=${encodeURIComponent(intent.id)}`}
-                          >
-                            Review
-                          </Link>
-                        </Button>
+                          Review
+                        </Link>
                       </div>
                     ) : (
                       <Badge variant="outline">Approval</Badge>

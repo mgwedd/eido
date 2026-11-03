@@ -10,6 +10,18 @@ import { LedgerError } from "./errors"
 import { addDocs, ledgerFixture, testDoc } from "./ledger.test-support"
 import type { Entity } from "../profile/types"
 
+type TestExtractedFields = Record<
+  string,
+  {
+    raw?: string
+    status?: string
+    edited?: boolean
+    confirmed_at?: string
+    confirmed_value?: unknown
+    value?: unknown
+  }
+>
+
 let db: DatabaseSync
 let property: Entity
 let docA: string
@@ -83,13 +95,19 @@ describe("confirmExtractionField", () => {
       .prepare("SELECT confirmed_at, fields_json FROM extractions WHERE id = ?")
       .get(id) as { confirmed_at: string; fields_json: string }
     expect(extRow.confirmed_at).toBe("2026-11-02T11:00:00.000Z")
-    const updatedFields = JSON.parse(extRow.fields_json)
-    expect(updatedFields.amount.confirmed_at).toBe("2026-11-02T10:00:00.000Z")
-    expect(updatedFields.amount.confirmed_value).toEqual({
+    const updatedFields = JSON.parse(
+      extRow.fields_json
+    ) as unknown as TestExtractedFields
+    expect(updatedFields["amount"]?.confirmed_at).toBe(
+      "2026-11-02T10:00:00.000Z"
+    )
+    expect(updatedFields["amount"]?.confirmed_value).toEqual({
       amount_minor: 10000,
       currency: "USD",
     })
-    expect(updatedFields.due_date.confirmed_at).toBe("2026-11-02T11:00:00.000Z")
+    expect(updatedFields["due_date"]?.confirmed_at).toBe(
+      "2026-11-02T11:00:00.000Z"
+    )
 
     // Verify obligation was created
     const obligations = listObligations(db)
@@ -126,10 +144,12 @@ describe("confirmExtractionField", () => {
     const extRow = db
       .prepare("SELECT fields_json FROM extractions WHERE id = ?")
       .get(id) as { fields_json: string }
-    const updated = JSON.parse(extRow.fields_json)
-    expect(updated.amount.raw).toBe("$250.50")
-    expect(updated.amount.edited).toBe(true)
-    expect(updated.amount.confirmed_value).toEqual({
+    const updated = JSON.parse(
+      extRow.fields_json
+    ) as unknown as TestExtractedFields
+    expect(updated["amount"]?.raw).toBe("$250.50")
+    expect(updated["amount"]?.edited).toBe(true)
+    expect(updated["amount"]?.confirmed_value).toEqual({
       amount_minor: 25050,
       currency: "USD",
     })
@@ -161,9 +181,11 @@ describe("confirmExtractionField", () => {
     const extRow = db
       .prepare("SELECT fields_json FROM extractions WHERE id = ?")
       .get(id) as { fields_json: string }
-    const updated = JSON.parse(extRow.fields_json)
-    expect(updated.amount.edited).toBe(true)
-    expect(updated.amount.confirmed_value).toEqual({
+    const updated = JSON.parse(
+      extRow.fields_json
+    ) as unknown as TestExtractedFields
+    expect(updated["amount"]?.edited).toBe(true)
+    expect(updated["amount"]?.confirmed_value).toEqual({
       amount_minor: 50000,
       currency: "EUR",
     })

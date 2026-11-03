@@ -258,11 +258,7 @@ export type ConfirmFieldCardData = {
   field: "action" | "party" | "reference_number" | "amount" | "due_date"
   value: {
     raw: string
-    typed?:
-      | string
-      | number
-      | { amount_minor: number; currency: string }
-      | null
+    typed?: string | number | { amount_minor: number; currency: string } | null
   }
   source: {
     docSha256: string
@@ -284,8 +280,16 @@ export function parseConfirmField(
   payload: string
 ): ConfirmFieldCardData | undefined {
   try {
-    const parsed = JSON.parse(payload)
-    if (parsed?.kind === "confirm.field" && parsed?.args) {
+    const parsed: unknown = JSON.parse(payload)
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "kind" in parsed &&
+      parsed.kind === "confirm.field" &&
+      "args" in parsed &&
+      typeof parsed.args === "object" &&
+      parsed.args !== null
+    ) {
       return parsed.args as ConfirmFieldCardData
     }
   } catch {}

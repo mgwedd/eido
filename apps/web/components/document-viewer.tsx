@@ -5,18 +5,19 @@ import * as React from "react"
 import type { CoreApiDocumentView } from "@eido/schemas"
 import { validateCoreApiDocumentView } from "@eido/schemas"
 import { Badge } from "@eido/ui/components/badge"
-import { Button } from "@eido/ui/components/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@eido/ui/components/card"
+import { buttonVariants } from "@eido/ui/components/button"
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@eido/ui/components/card"
 import { Separator } from "@eido/ui/components/separator"
 import { Skeleton } from "@eido/ui/components/skeleton"
 
 export function validateFromParam(from: string | undefined): string {
   if (!from) return "/documents"
-  if (
-    !from.startsWith("/") ||
-    from.startsWith("//") ||
-    from.includes("\\")
-  ) {
+  if (!from.startsWith("/") || from.startsWith("//") || from.includes("\\")) {
     return "/documents"
   }
   const pathPart = from.split("?")[0] ?? ""
@@ -38,16 +39,21 @@ export interface DocumentViewerProps {
 type ViewerState =
   | { status: "loading" }
   | { status: "not_found" }
-  | { status: "span_not_found" }
   | { status: "error"; message: string }
   | { status: "ready"; view: CoreApiDocumentView; spanNotFound?: boolean }
+
+type DocumentLine = CoreApiDocumentView["lines"][number]
+type LinkedObligation = NonNullable<
+  NonNullable<CoreApiDocumentView["linked"]>["obligations"]
+>[number]
+type LinkedDocument = NonNullable<
+  NonNullable<CoreApiDocumentView["linked"]>["documents"]
+>[number]
 
 export function DocumentViewer({
   sha256,
   start,
   end,
-  page,
-  line,
   from,
 }: DocumentViewerProps) {
   const [state, setState] = React.useState<ViewerState>({ status: "loading" })
@@ -84,7 +90,8 @@ export function DocumentViewer({
             setState({ status: "not_found" })
             return
           }
-          const parsed = validateCoreApiDocumentView(await fallbackRes.json())
+          const fallbackJson: unknown = await fallbackRes.json()
+          const parsed = validateCoreApiDocumentView(fallbackJson)
           if (parsed.ok) {
             setState({
               status: "ready",
@@ -100,7 +107,7 @@ export function DocumentViewer({
           setState({ status: "error", message: `Core answered ${res.status}` })
           return
         }
-        const json = await res.json()
+        const json: unknown = await res.json()
         const parsed = validateCoreApiDocumentView(json)
         if (parsed.ok) {
           setState({
@@ -114,7 +121,7 @@ export function DocumentViewer({
         } else {
           setState({ status: "error", message: "Malformed document view" })
         }
-      } catch (err: unknown) {
+      } catch {
         if (!controller.signal.aborted) {
           setState({ status: "error", message: "Could not load document" })
         }
@@ -135,7 +142,7 @@ export function DocumentViewer({
 
   if (state.status === "loading") {
     return (
-      <div className="flex flex-col gap-6 p-4 max-w-5xl mx-auto w-full">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-4">
         <div className="flex items-center gap-3">
           <Skeleton className="h-8 w-24" />
           <Skeleton className="h-8 w-64" />
@@ -147,14 +154,18 @@ export function DocumentViewer({
 
   if (state.status === "not_found") {
     return (
-      <div className="flex flex-col items-start gap-4 p-6 max-w-2xl mx-auto">
-        <Button asChild variant="outline" size="sm">
-          <Link href={backHref}>← Back</Link>
-        </Button>
-        <div className="rounded-lg border p-6 w-full text-center flex flex-col gap-2">
+      <div className="mx-auto flex max-w-2xl flex-col items-start gap-4 p-6">
+        <Link
+          href={backHref}
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+        >
+          ← Back
+        </Link>
+        <div className="flex w-full flex-col gap-2 rounded-lg border p-6 text-center">
           <h2 className="text-lg font-semibold">Document not found</h2>
           <p className="text-sm text-muted-foreground">
-            No document matches hash <code className="font-mono">{sha256}</code>.
+            No document matches hash <code className="font-mono">{sha256}</code>
+            .
           </p>
         </div>
       </div>
@@ -163,12 +174,17 @@ export function DocumentViewer({
 
   if (state.status === "error") {
     return (
-      <div className="flex flex-col items-start gap-4 p-6 max-w-2xl mx-auto">
-        <Button asChild variant="outline" size="sm">
-          <Link href={backHref}>← Back</Link>
-        </Button>
-        <div className="rounded-lg border border-destructive/50 p-6 w-full text-center flex flex-col gap-2">
-          <h2 className="text-lg font-semibold text-destructive">Error loading document</h2>
+      <div className="mx-auto flex max-w-2xl flex-col items-start gap-4 p-6">
+        <Link
+          href={backHref}
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+        >
+          ← Back
+        </Link>
+        <div className="flex w-full flex-col gap-2 rounded-lg border border-destructive/50 p-6 text-center">
+          <h2 className="text-lg font-semibold text-destructive">
+            Error loading document
+          </h2>
           <p className="text-sm text-muted-foreground">{state.message}</p>
         </div>
       </div>
@@ -177,7 +193,7 @@ export function DocumentViewer({
 
   const { view, spanNotFound } = state
   const { document: doc, lines, highlight, linked } = view
-  const docTitle = doc.title ?? `${doc.source} · ${doc.sha256.slice(0, 12)}`
+  const docTitle = doc.name ?? `${doc.source} · ${doc.sha256.slice(0, 12)}`
   const ingestedFormatted = new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
@@ -186,17 +202,20 @@ export function DocumentViewer({
   const isBinary = lines.length === 0
 
   return (
-    <div className="flex flex-col gap-6 p-4 max-w-6xl mx-auto w-full">
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-4">
       {/* Top navigation & provenance header */}
       <header className="flex flex-col gap-4 border-b pb-4">
         <div className="flex items-center justify-between">
-          <Button asChild variant="outline" size="sm">
-            <Link href={backHref}>← Back</Link>
-          </Button>
+          <Link
+            href={backHref}
+            className={buttonVariants({ variant: "outline", size: "sm" })}
+          >
+            ← Back
+          </Link>
           <a
             href={`/api/core/documents/${doc.sha256}/blob`}
             download
-            className="text-xs text-primary hover:underline font-medium"
+            className="text-xs font-medium text-primary hover:underline"
           >
             Download original
           </a>
@@ -230,23 +249,24 @@ export function DocumentViewer({
       </header>
 
       {/* Main layout: Document Text Column + Linked Panel */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6 items-start">
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_300px]">
         {/* Document Content */}
         <main
           tabIndex={0}
           aria-label="Document text"
-          className="rounded-lg border bg-card p-6 min-h-[400px] overflow-auto focus:outline-none focus:ring-1 focus:ring-ring"
+          className="min-h-[400px] overflow-auto rounded-lg border bg-card p-6 focus:ring-1 focus:ring-ring focus:outline-none"
         >
           {isBinary ? (
-            <div className="text-center py-16 text-muted-foreground text-sm flex flex-col gap-2">
+            <div className="flex flex-col gap-2 py-16 text-center text-sm text-muted-foreground">
               <p>Text unavailable for this file</p>
               <p className="text-xs">
-                Binary or unsupported format. Metadata and provenance are shown above.
+                Binary or unsupported format. Metadata and provenance are shown
+                above.
               </p>
             </div>
           ) : (
-            <div className="font-sans text-sm leading-relaxed flex flex-col whitespace-pre-wrap font-normal break-words">
-              {lines.map((lineItem) => {
+            <div className="flex flex-col font-sans text-sm leading-relaxed font-normal break-words whitespace-pre-wrap">
+              {lines.map((lineItem: DocumentLine) => {
                 const lineStart = lineItem.start
                 const lineEnd = lineStart + lineItem.text.length
                 const hStart = highlight?.start ?? -1
@@ -254,9 +274,7 @@ export function DocumentViewer({
 
                 // Check overlap
                 const overlaps =
-                  highlight !== null &&
-                  hStart < lineEnd &&
-                  hEnd > lineStart
+                  highlight !== null && hStart < lineEnd && hEnd > lineStart
 
                 if (!overlaps) {
                   return (
@@ -268,7 +286,10 @@ export function DocumentViewer({
 
                 // Split line into before, mark, after
                 const startInLine = Math.max(0, hStart - lineStart)
-                const endInLine = Math.min(lineItem.text.length, hEnd - lineStart)
+                const endInLine = Math.min(
+                  lineItem.text.length,
+                  hEnd - lineStart
+                )
                 const before = lineItem.text.slice(0, startInLine)
                 const markText = lineItem.text.slice(startInLine, endInLine)
                 const after = lineItem.text.slice(endInLine)
@@ -279,7 +300,7 @@ export function DocumentViewer({
                     <mark
                       ref={highlightRef}
                       role="mark"
-                      className="bg-yellow-500/25 text-foreground rounded px-0.5 border border-yellow-500/40"
+                      className="rounded border border-yellow-500/40 bg-yellow-500/25 px-0.5 text-foreground"
                     >
                       <span className="sr-only">Referenced passage</span>
                       {markText}
@@ -295,26 +316,38 @@ export function DocumentViewer({
         {/* Linked Panel */}
         <aside aria-label="Linked" className="flex flex-col gap-4">
           <Card>
-            <CardHeader className="py-3 px-4">
-              <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <CardHeader className="px-4 py-3">
+              <CardTitle className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
                 Linked
               </CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-col gap-4 px-4 pb-4 pt-0 text-sm">
+            <CardContent className="flex flex-col gap-4 px-4 pt-0 pb-4 text-sm">
               {/* Obligations */}
               <div className="flex flex-col gap-2">
-                <h3 className="text-xs font-medium text-muted-foreground">Obligations</h3>
+                <h3 className="text-xs font-medium text-muted-foreground">
+                  Obligations
+                </h3>
                 {linked?.obligations && linked.obligations.length > 0 ? (
                   <ul className="flex flex-col gap-2 divide-y divide-border">
-                    {linked.obligations.map((obl) => (
-                      <li key={obl.id} className="pt-2 first:pt-0 flex flex-col gap-0.5">
-                        <span className="font-medium text-xs">{obl.action}</span>
+                    {linked.obligations.map((obl: LinkedObligation) => (
+                      <li
+                        key={obl.id}
+                        className="flex flex-col gap-0.5 pt-2 first:pt-0"
+                      >
+                        <span className="text-xs font-medium">
+                          {obl.action}
+                        </span>
                         {obl.party ? (
-                          <span className="text-[11px] text-muted-foreground">{obl.party}</span>
+                          <span className="text-[11px] text-muted-foreground">
+                            {obl.party}
+                          </span>
                         ) : null}
-                        <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
+                        <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
                           {obl.dueAt ? <span>Due {obl.dueAt}</span> : null}
-                          <Badge variant="outline" className="text-[9px] h-4 px-1">
+                          <Badge
+                            variant="outline"
+                            className="h-4 px-1 text-[9px]"
+                          >
                             {obl.status}
                           </Badge>
                         </div>
@@ -322,7 +355,9 @@ export function DocumentViewer({
                     ))}
                   </ul>
                 ) : (
-                  <p className="text-xs text-muted-foreground">No linked obligations</p>
+                  <p className="text-xs text-muted-foreground">
+                    No linked obligations
+                  </p>
                 )}
               </div>
 
@@ -330,14 +365,16 @@ export function DocumentViewer({
 
               {/* Related Documents */}
               <div className="flex flex-col gap-2">
-                <h3 className="text-xs font-medium text-muted-foreground">Related documents</h3>
+                <h3 className="text-xs font-medium text-muted-foreground">
+                  Related documents
+                </h3>
                 {linked?.documents && linked.documents.length > 0 ? (
                   <ul className="flex flex-col gap-2">
-                    {linked.documents.map((d) => (
+                    {linked.documents.map((d: LinkedDocument) => (
                       <li key={d.sha256} className="text-xs">
                         <Link
                           href={`/documents/${d.sha256}?from=${encodeURIComponent(backHref)}`}
-                          className="text-primary hover:underline font-medium block truncate"
+                          className="block truncate font-medium text-primary hover:underline"
                         >
                           {d.name ?? `${d.source} · ${d.sha256.slice(0, 8)}`}
                         </Link>
@@ -345,7 +382,9 @@ export function DocumentViewer({
                     ))}
                   </ul>
                 ) : (
-                  <p className="text-xs text-muted-foreground">No related documents</p>
+                  <p className="text-xs text-muted-foreground">
+                    No related documents
+                  </p>
                 )}
               </div>
 
@@ -356,7 +395,7 @@ export function DocumentViewer({
                 <a
                   href={`/api/core/documents/${doc.sha256}/blob`}
                   download
-                  className="text-xs font-medium text-primary hover:underline inline-flex items-center gap-1"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
                 >
                   Download original blob ({doc.source})
                 </a>

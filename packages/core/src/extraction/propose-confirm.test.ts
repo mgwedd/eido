@@ -21,13 +21,13 @@ describe("proposeConfirm", () => {
   test("proposes a valid confirm.field intent", async () => {
     let captured: IntentProposal | undefined
     const gate: Pick<IntentClient, "propose"> = {
-      propose: vi.fn(async (proposal: IntentProposal) => {
+      propose: vi.fn((proposal: IntentProposal) => {
         captured = proposal
-        return {
+        return Promise.resolve({
           id: "intent-123",
           tier: "approval" as const,
           state: "pending" as const,
-        }
+        })
       }),
     }
 
@@ -71,13 +71,13 @@ describe("proposeConfirm", () => {
   test("attaches injection reasons when injection is suspected", async () => {
     let captured: IntentProposal | undefined
     const gate: Pick<IntentClient, "propose"> = {
-      propose: vi.fn(async (proposal: IntentProposal) => {
+      propose: vi.fn((proposal: IntentProposal) => {
         captured = proposal
-        return {
+        return Promise.resolve({
           id: "intent-456",
           tier: "approval" as const,
           state: "pending" as const,
-        }
+        })
       }),
     }
 
@@ -95,14 +95,14 @@ describe("proposeConfirm", () => {
 
   test("throws if gate rejects the proposal", async () => {
     const gate: Pick<IntentClient, "propose"> = {
-      propose: vi.fn(async () => {
-        return {
+      propose: vi.fn(() =>
+        Promise.resolve({
           id: "intent-789",
           tier: "forbidden" as const,
           state: "rejected" as const,
           reason: "policy_violation",
-        }
-      }),
+        })
+      ),
     }
 
     await expect(proposeConfirm(gate, candidate)).rejects.toThrow(

@@ -1284,7 +1284,10 @@ describe("phoneHandler: approvals", () => {
   it("lists confirm.field pending intents with title and subtitle", async () => {
     const id = pendingConfirmField({
       field: "amount",
-      value: { raw: "$250.00", typed: { amount_minor: 25000, currency: "USD" } },
+      value: {
+        raw: "$250.00",
+        typed: { amount_minor: 25000, currency: "USD" },
+      },
       documentTitle: "Water Bill",
       documentSource: "a scan",
       confidence: 0.71,

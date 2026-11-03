@@ -1,9 +1,22 @@
 import type { DatabaseSync } from "node:sqlite"
 import { parseAmountField, parseDueDateField } from "@eido/schemas"
+import type { SourceSpan } from "@eido/schemas"
 import { writeQueueFor } from "../db/write-queue"
 import { DEFAULT_CONFIDENCE_THRESHOLD } from "../extraction/pipeline"
 import { LedgerError } from "./errors"
 import type { ExtractionFieldName } from "./types"
+
+export interface StoredFieldEntry {
+  raw: string
+  span: SourceSpan
+  status?: string
+  value?: unknown
+  confirmed_at?: string
+  confirmed_value?: unknown
+  edited?: boolean
+}
+
+export type StoredFieldsRecord = Record<string, StoredFieldEntry>
 
 export interface ConfirmExtractionFieldInput {
   extractionId: number
@@ -31,7 +44,7 @@ export function confirmExtractionField(
       .prepare(
         "SELECT id, doc_id, schema, status, fields_json, model, created_at, confirmed_at FROM extractions WHERE id = ?"
       )
-      .get(extractionId)
+      .get(extractionId) as Record<string, unknown> | undefined
     if (row === undefined) {
       throw new LedgerError("extraction_not_found", "no such extraction")
     }
@@ -42,9 +55,13 @@ export function confirmExtractionField(
       )
     }
 
-    let fields: Record<string, any>
+    let fields: StoredFieldsRecord
     try {
-      fields = JSON.parse(String(row["fields_json"]))
+      const parsed: unknown = JSON.parse(String(row["fields_json"]))
+      if (typeof parsed !== "object" || parsed === null) {
+        throw new Error("malformed")
+      }
+      fields = parsed as StoredFieldsRecord
     } catch {
       throw new LedgerError("invalid_fields", "stored fields_json is malformed")
     }
@@ -53,7 +70,7 @@ export function confirmExtractionField(
     if (currentField === undefined) {
       throw new LedgerError(
         "field_not_found",
-        `field ${field} not found in extraction`
+        `field ${String(field)} not found in extraction`
       )
     }
 
@@ -61,7 +78,7 @@ export function confirmExtractionField(
 
     if (value !== undefined) {
       if (field === "amount") {
-        let parsedAmount: any
+        let parsedAmount: { amount_minor: number; currency: string }
         if (typeof value === "string") {
           const res = parseAmountField(value, currentField.span)
           if (res.status !== "parsed" || res.value === null) {
@@ -74,10 +91,15 @@ export function confirmExtractionField(
         } else if (
           typeof value === "object" &&
           value !== null &&
-          typeof (value as any).amount_minor === "number" &&
-          typeof (value as any).currency === "string"
+          "amount_minor" in value &&
+          typeof value.amount_minor === "number" &&
+          "currency" in value &&
+          typeof value.currency === "string"
         ) {
-          parsedAmount = value
+          parsedAmount = {
+            amount_minor: value.amount_minor,
+            currency: value.currency,
+          }
         } else {
           throw new LedgerError("invalid_value", "invalid amount format")
         }
@@ -133,11 +155,13 @@ export function confirmExtractionField(
           edited: true,
         }
       } else {
-        throw new LedgerError("invalid_field", `unknown field ${field}`)
+        throw new LedgerError("invalid_field", "unknown field")
       }
     } else {
       const confirmedValue =
-        "value" in currentField && currentField.value !== null
+        "value" in currentField &&
+        currentField.value !== null &&
+        currentField.value !== undefined
           ? currentField.value
           : currentField.raw
       fields[field] = {
@@ -181,45 +205,54 @@ export function confirmExtractionField(
       const docId = String(row["doc_id"])
       const docRow = db
         .prepare("SELECT entity_id FROM documents WHERE sha256 = ?")
-        .get(docId)
-      if (docRow && docRow["entity_id"]) {
-        const entityId = String(docRow["entity_id"])
+        .get(docId) as Record<string, unknown> | undefined
+      if (docRow && typeof docRow["entity_id"] === "string") {
+        const entityId = docRow["entity_id"]
         const existingObl = db
           .prepare("SELECT id FROM obligations WHERE doc_id = ? LIMIT 1")
-          .get(docId)
+          .get(docId) as Record<string, unknown> | undefined
+
+        const actionField = fields["action"]
+        const partyField = fields["party"]
+        const dueDateField = fields["due_date"]
+        const amountField = fields["amount"]
 
         const action =
-          fields.action?.confirmed_value ?? fields.action?.raw ?? "Obligation"
+          typeof actionField?.confirmed_value === "string"
+            ? actionField.confirmed_value
+            : typeof actionField?.raw === "string"
+              ? actionField.raw
+              : "Obligation"
         const party =
-          fields.party?.confirmed_value ?? fields.party?.raw ?? undefined
+          typeof partyField?.confirmed_value === "string"
+            ? partyField.confirmed_value
+            : typeof partyField?.raw === "string"
+              ? partyField.raw
+              : null
         const dueAt =
-          fields.due_date?.status === "parsed" ||
-          fields.due_date?.confirmed_value
-            ? (fields.due_date.confirmed_value ?? fields.due_date.value)
-            : undefined
-        const span =
-          fields.action?.span ??
-          fields.amount?.span ?? { start: 0, end: 1 }
+          dueDateField &&
+          (dueDateField.status === "parsed" || dueDateField.confirmed_value)
+            ? typeof dueDateField.confirmed_value === "string"
+              ? dueDateField.confirmed_value
+              : typeof dueDateField.value === "string"
+                ? dueDateField.value
+                : null
+            : null
+        const span = actionField?.span ??
+          amountField?.span ?? { start: 0, end: 1 }
 
         if (existingObl) {
           obligationId = Number(existingObl["id"])
           db.prepare(
             "UPDATE obligations SET party = ?, action = ?, due_at = ? WHERE id = ?"
-          ).run(party ?? null, action, dueAt ?? null, obligationId)
+          ).run(party, action, dueAt, obligationId)
         } else {
           const res = db
             .prepare(
               `INSERT INTO obligations (entity_id, party, action, due_at, status, doc_id, source_span, injection_suspected, injection_reasons)
                VALUES (?, ?, ?, ?, 'open', ?, ?, 0, '[]')`
             )
-            .run(
-              entityId,
-              party ?? null,
-              action,
-              dueAt ?? null,
-              docId,
-              JSON.stringify(span)
-            )
+            .run(entityId, party, action, dueAt, docId, JSON.stringify(span))
           obligationId = Number(res.lastInsertRowid)
         }
       }

@@ -339,13 +339,13 @@ describe("per-field confidence", () => {
   test("extraction with amount below threshold proposes confirm.field and writes no obligations", async () => {
     const proposed: IntentProposal[] = []
     const gate = {
-      propose: vi.fn(async (proposal: IntentProposal) => {
+      propose: vi.fn((proposal: IntentProposal) => {
         proposed.push(proposal)
-        return {
+        return Promise.resolve({
           id: "intent-1",
           tier: "approval" as const,
           state: "pending" as const,
-        }
+        })
       }),
     }
     const reply = items({
@@ -364,7 +364,9 @@ describe("per-field confidence", () => {
     expect(result.obligationIds).toHaveLength(0)
     expect(h.counts()["obligations"]).toBe(0)
     expect(gate.propose).toHaveBeenCalledTimes(1)
-    expect((proposed[0]?.intent as any)?.kind).toBe("confirm.field")
+    expect((proposed[0]?.intent as { kind?: string } | undefined)?.kind).toBe(
+      "confirm.field"
+    )
 
     // Re-run on the same document: already processed, proposes nothing again
     const rerun = await h.extractor.extractDocument(h.docId)

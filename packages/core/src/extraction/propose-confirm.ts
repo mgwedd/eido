@@ -1,3 +1,4 @@
+import type { ConfirmFieldIntent } from "@eido/schemas"
 import type { IntentClient, IntentProposal } from "@eido/gate"
 import { lookupOffset } from "../parsers/offsets"
 import type { OffsetTable } from "../parsers/types"
@@ -30,7 +31,10 @@ export async function proposeConfirm(
         value: {
           raw: candidate.raw,
           ...(candidate.parsed !== undefined && candidate.parsed !== null
-            ? { typed: candidate.parsed as any }
+            ? {
+                typed:
+                  candidate.parsed as ConfirmFieldIntent["args"]["value"]["typed"],
+              }
             : {}),
         },
         source: {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import { validateGateIntentInjection, validateIntent } from "@eido/schemas"
 import type {
+  ConfirmFieldIntent,
   GateIntentInjection,
   GateIntentStatus,
   Intent,
@@ -692,17 +693,28 @@ export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
       const injection = injectionOf(optionalText(row["injection_reasons_json"]))
       let title: string | undefined
       let subtitle: string | undefined
-      if (row["kind"] === "confirm.field" && typeof row["payload_json"] === "string") {
+      if (
+        row["kind"] === "confirm.field" &&
+        typeof row["payload_json"] === "string"
+      ) {
         try {
-          const payload = JSON.parse(String(row["payload_json"]))
+          const payload = JSON.parse(String(row["payload_json"])) as unknown as
+            ConfirmFieldIntent | undefined
           const args = payload?.args
           if (args && typeof args === "object") {
-            const docTitle = args.documentTitle ? `${String(args.documentTitle)} ` : ""
+            const docTitle = args.documentTitle
+              ? `${String(args.documentTitle)} `
+              : ""
             const fieldLabel = String(args.field ?? "").replace(/_/g, " ")
-            const rawVal = args.value && typeof args.value === "object" ? String(args.value.raw ?? "") : ""
+            const rawVal =
+              args.value && typeof args.value === "object"
+                ? String(args.value.raw ?? "")
+                : ""
             title = `Confirm ${docTitle}${fieldLabel}: ${rawVal}`
-            const docSource = args.documentSource ? String(args.documentSource) : "a scan"
-            subtitle = `Extracted from ${docSource} · confidence ${args.confidence}`
+            const docSource = args.documentSource
+              ? String(args.documentSource)
+              : "a scan"
+            subtitle = `Extracted from ${docSource} · confidence ${String(args.confidence)}`
           }
         } catch {
           // Ignore unparseable payload for display title
