@@ -9,6 +9,10 @@ import {
   type GateWebAuthnAssertion,
 } from "@eido/schemas"
 import { buildChallenge, toBase64url } from "@/lib/approval/challenge"
+import {
+  authenticatorCopy,
+  currentAuthenticatorLabel,
+} from "@/lib/authenticator"
 import { hashPayloadText } from "@/lib/approval/canonical"
 
 const APPROVALS_URL = "/api/gate/approvals"
@@ -94,7 +98,10 @@ export async function prepareApproval(
   }
 }
 
-/** The options for the Face ID prompt: verification is required, the challenge is built here. */
+const cancelledMessage = () =>
+  `${authenticatorCopy(currentAuthenticatorLabel()).subject} did not complete.`
+
+/** The options for the passkey prompt: verification is required, the challenge is built here. */
 export async function assertionOptions(
   prepared: Pick<GatePrepareApproval, "payloadHash" | "intentId" | "nonce">,
   rpId: string
@@ -142,14 +149,13 @@ export async function signApproval(
       signal,
     })
   } catch {
-    return failure("cancelled", "Face ID did not complete.")
+    return failure("cancelled", cancelledMessage())
   }
   const assertion =
     credential instanceof PublicKeyCredential
       ? toAssertion(credential)
       : undefined
-  if (assertion === undefined)
-    return failure("cancelled", "Face ID did not complete.")
+  if (assertion === undefined) return failure("cancelled", cancelledMessage())
 
   const body: GateDecisionRequest = {
     intentId: prepared.intentId,

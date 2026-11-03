@@ -2,6 +2,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
+import { stubIphone } from "./platform"
 import { repinConnector } from "../lib/connector-repin"
 import { ConnectorsView } from "../components/connectors-view"
 import { formatDateTime } from "../lib/connectors"
@@ -309,7 +310,7 @@ test("a refused re-pin shows the message, keeps the connector disabled and re-en
   expect(button.disabled).toBe(false)
 })
 
-test("while the passkey prompt is open the card says it is waiting for Face ID", async () => {
+async function startRepin() {
   respond({ connectors: [driveDrifted] })
   repin.mockReturnValueOnce(new Promise(() => undefined))
   await render()
@@ -320,10 +321,22 @@ test("while the passkey prompt is open the card says it is waiting for Face ID",
     button.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
-  expect(
-    [...container.querySelectorAll('[role="status"]')].map((n) => n.textContent)
-  ).toContain("Waiting for Face ID…")
+  return button
+}
+
+const statusTexts = () =>
+  [...container.querySelectorAll('[role="status"]')].map((n) => n.textContent)
+
+test("while the passkey prompt is open the card says it is waiting for the passkey", async () => {
+  const button = await startRepin()
+  expect(statusTexts()).toContain("Waiting for your passkey…")
   expect(button.disabled).toBe(true)
+})
+
+test("on an iPhone the waiting card names Face ID", async () => {
+  stubIphone()
+  await startRepin()
+  expect(statusTexts()).toContain("Waiting for Face ID…")
 })
 
 test("an expired session during re-pin sends the owner to unlock", async () => {

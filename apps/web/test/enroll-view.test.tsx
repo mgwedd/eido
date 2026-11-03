@@ -165,7 +165,7 @@ describe("EnrollView", () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1) // the status check only
   })
 
-  it("allows a retry after Face ID is cancelled and shows no partial state", async () => {
+  it("allows a retry after the passkey prompt is cancelled and shows no partial state", async () => {
     setup({
       create: async () => {
         throw new DOMException("cancelled", "NotAllowedError")
@@ -176,7 +176,7 @@ describe("EnrollView", () => {
     await submit()
     expect(replace).not.toHaveBeenCalled()
     expect(alertText()).toBe(
-      "Face ID was cancelled. Nothing was saved. You can try again."
+      "The passkey prompt was cancelled. Nothing was saved. You can try again."
     )
     expect(button()?.disabled).toBe(false)
   })

@@ -105,7 +105,7 @@ async function refusal(response: Response): Promise<UnlockResult> {
 
 /**
  * Signs in with the passkey on this device: fetches a login challenge from the gate, asks for
- * Face ID with user verification required, and posts the assertion. The session is the
+ * the device passkey with user verification required, and posts the assertion. The session is the
  * HttpOnly cookie the gate sets; nothing is read back, logged or stored here.
  */
 export async function unlock(): Promise<UnlockResult> {

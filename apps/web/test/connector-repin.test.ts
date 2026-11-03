@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 /* eslint-disable @typescript-eslint/require-await -- fetch and navigator.credentials.get return promises, so their stubs are async functions with nothing to await */
+import { IPHONE_UA } from "./platform"
 import { createHash } from "node:crypto"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { GateRepinPrepared } from "@eido/schemas"
@@ -53,12 +54,17 @@ class FakeCredential {
 }
 
 function stubWebAuthn(
-  get: (options: CredentialRequestOptions) => Promise<unknown>
+  get: (options: CredentialRequestOptions) => Promise<unknown>,
+  userAgent = ""
 ) {
   vi.stubGlobal("AuthenticatorAssertionResponse", FakeAssertionResponse)
   vi.stubGlobal("PublicKeyCredential", FakeCredential)
   const spy = vi.fn(get)
-  vi.stubGlobal("navigator", { credentials: { get: spy } })
+  vi.stubGlobal("navigator", {
+    userAgent,
+    maxTouchPoints: 0,
+    credentials: { get: spy },
+  })
   return spy
 }
 
@@ -185,9 +191,21 @@ describe("repinConnector", () => {
     const fetchMock = stubFetch(json(200, prepared))
     expect(await repinConnector("drive", DRIFT)).toEqual({
       ok: false,
-      message: "Face ID did not complete. The connector stays disabled.",
+      message:
+        "The passkey prompt did not complete. The connector stays disabled.",
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("names Face ID when the prompt is cancelled on an iPhone", async () => {
+    stubWebAuthn(async () => {
+      throw new DOMException("cancelled", "NotAllowedError")
+    }, IPHONE_UA)
+    stubFetch(json(200, prepared))
+    expect(await repinConnector("drive", DRIFT)).toEqual({
+      ok: false,
+      message: "Face ID did not complete. The connector stays disabled.",
+    })
   })
 
   it("treats a credential that is not an assertion as cancelled", async () => {
