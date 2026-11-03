@@ -29,12 +29,19 @@ describe("reviewed-manifest", () => {
   it("writes the manifest where re-pin reads it, owner-only, and says what it placed", () => {
     expect(place(JSON.stringify(reviewed))).toBe(0)
     expect(readReviewedManifest(dir, "files")).toEqual(reviewed)
-    expect(statSync(target()).mode & 0o777).toBe(0o600)
     expect(readdirSync(join(dir, REVIEWED_MANIFEST_DIR))).toEqual([
       "files.json",
     ])
     expect(out[0]).toBe(`Placed files version 2 at ${target()}`)
   })
+
+  it.skipIf(process.platform === "win32")(
+    "makes the file readable by the owner only",
+    () => {
+      place(JSON.stringify(reviewed))
+      expect(statSync(target()).mode & 0o777).toBe(0o600)
+    }
+  )
 
   it("replaces an earlier reviewed manifest for the same connector", () => {
     place(JSON.stringify(reviewed))
