@@ -17,7 +17,7 @@ import type { WebAuthnConfig } from "./webauthn"
 export type ControlPurpose = "manifest.pin" | "policy.set"
 type ApprovalAssertion = Extract<
   GateDecisionRequest,
-  { decision: "approved" }
+  { decision: "approved"; nonce: string }
 >["assertion"]
 export type PreparedControlApproval = {
   id: string

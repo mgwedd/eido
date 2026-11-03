@@ -119,3 +119,37 @@ test("a 401 sends the user to Unlock, remembering the page", async () => {
   expect(replace).toHaveBeenCalledWith("/unlock?next=%2F%3Fx%3D1&expired=1")
   expect(container.querySelector("[role=alert]")).toBeNull()
 })
+
+test("renders confirm.field row with title, confidence subtitle, blue Confirm chip and Review link", async () => {
+  const confirmIntent = {
+    id: "intent-confirm-1",
+    kind: "confirm.field",
+    tier: "approval",
+    state: "pending",
+    origin: "proactive",
+    createdAt: "2026-10-18T08:00:00.000Z",
+    title: "Confirm Total: CHF 1,200.00",
+    subtitle: "Extracted from a scan · confidence 0.71",
+  } as const
+  const fetchMock = vi.fn<typeof fetch>((url) => {
+    const urlStr = toUrlString(url)
+    if (urlStr.includes("/api/gate/approvals")) {
+      return Promise.resolve(Response.json({ intents: [confirmIntent] }))
+    }
+    return Promise.resolve(new Response(null, { status: 404 }))
+  })
+  vi.stubGlobal("fetch", fetchMock)
+  await render()
+  const row = container.querySelector(
+    '[aria-labelledby="needs-you-heading"] li'
+  )
+  expect(row).not.toBeNull()
+  expect(row?.textContent).toContain("Confirm Total: CHF 1,200.00")
+  expect(row?.textContent).toContain("Extracted from a scan · confidence 0.71")
+  expect(row?.textContent).toContain("Confirm")
+  const reviewLink = row?.querySelector(
+    'a[href="/queue?intent=intent-confirm-1"]'
+  )
+  expect(reviewLink).not.toBeNull()
+  expect(reviewLink?.textContent).toContain("Review")
+})

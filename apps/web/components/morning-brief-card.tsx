@@ -95,6 +95,16 @@ export function MorningBriefCard({
                   )
                 }
 
+                if (line.kind === "deferred") {
+                  return (
+                    <React.Fragment
+                      key={`${line.ledger.type}-${line.ledger.id}-${idx}`}
+                    >
+                      <span>{line.text}</span>{" "}
+                    </React.Fragment>
+                  )
+                }
+
                 const spanUrl = documentSpanUrl(
                   line.source.documentId,
                   line.source.span

@@ -17,6 +17,11 @@ export type {
   ObligationStateStore,
   ObligationStateStoreOptions,
 } from "./obligation-state"
+export { confirmExtractionField } from "./confirm"
+export type {
+  ConfirmExtractionFieldInput,
+  ConfirmExtractionFieldResult,
+} from "./confirm"
 export {
   confirmExtraction,
   getObligationSource,

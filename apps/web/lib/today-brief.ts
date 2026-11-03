@@ -22,7 +22,9 @@ export function filterRenderableBriefLines(
 ): BriefLine[] {
   return lines.filter((line) => {
     if (line.kind === "more") return true
+    if (line.kind === "deferred") return true
     return (
+      "source" in line &&
       Boolean(line.source) &&
       typeof line.source.documentId === "string" &&
       line.source.documentId.length === 64 &&

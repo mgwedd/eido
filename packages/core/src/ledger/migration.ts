@@ -238,6 +238,14 @@ END;
 CREATE INDEX obligations_updated_at ON obligations(updated_at);
 `,
   TRIAGE_SCHEMA_SQL,
+  `
+DROP TRIGGER extractions_immutable;
+CREATE TRIGGER extractions_immutable BEFORE UPDATE ON extractions
+WHEN NEW.id IS NOT OLD.id OR NEW.doc_id IS NOT OLD.doc_id OR NEW.schema IS NOT OLD.schema
+  OR NEW.status IS NOT OLD.status
+  OR NEW.model IS NOT OLD.model OR NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'extractions are immutable except confirmed_at and fields_json'); END;
+`,
 ]
 
 export const LEDGER_SCHEMA_VERSION = LEDGER_MIGRATIONS.length
