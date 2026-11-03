@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "CoreApiBrief",
-  "description": "Response of GET /brief/latest and GET /brief/:date: one stored morning brief. `date` is the brief's local calendar date; `generatedAt` is the instant it was built. Every item line carries its ledger row and the source quote it was read from; the `more` line points at the whole ledger.",
+  "description": "Response of GET /brief/latest and GET /brief/:date: one stored morning brief. `date` is the brief's local calendar date; `generatedAt` is the instant it was built. Every item line carries its ledger row and the source quote it was read from; the `more` line points at the whole ledger; a `deferred` line links the ledger row of an item triage sent to the brief.",
   "type": "object",
   "properties": {
     "id": { "type": "string", "minLength": 1 },
@@ -70,6 +70,25 @@
               }
             },
             "required": ["kind", "text", "ledger", "source"],
+            "additionalProperties": false
+          },
+          {
+            "title": "CoreApiBriefDeferredLine",
+            "type": "object",
+            "properties": {
+              "kind": { "const": "deferred" },
+              "text": { "type": "string", "minLength": 1 },
+              "ledger": {
+                "type": "object",
+                "properties": {
+                  "type": { "enum": ["obligation", "extraction"] },
+                  "id": { "type": "string", "minLength": 1 }
+                },
+                "required": ["type", "id"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["kind", "text", "ledger"],
             "additionalProperties": false
           },
           {

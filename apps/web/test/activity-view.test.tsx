@@ -10,9 +10,13 @@ import {
   autoRow,
   chainBroken,
   chainOk,
+  contentCopyRow,
+  documentOpenRow,
   executedRow,
   executedUndoneRow,
   history,
+  inferenceUseRow,
+  instructionChangeRow,
   intentRow,
   refusedRow,
   rows,
@@ -110,6 +114,34 @@ test("shows the verified banner with the count and rows newest first with real d
   )
   expect(link).not.toBeNull()
   expect(container.querySelector('a[href*="markread"]')).toBeNull()
+})
+
+test("renders sensitive read and local AI access rows with human-readable labels and no content excerpts", async () => {
+  serve((url) =>
+    url.includes("/audit/chain")
+      ? Response.json(chainOk)
+      : page([
+          documentOpenRow,
+          inferenceUseRow,
+          contentCopyRow,
+          instructionChangeRow,
+        ])
+  )
+  await render()
+  expect(text()).toContain("Viewed document")
+  expect(text()).toContain("Local inference used")
+  expect(text()).toContain("Copied text")
+  expect(text()).toContain("Updated assistant instructions")
+
+  // Verify raw action codes are replaced with human labels
+  expect(text()).not.toContain("audit.access.document_open")
+  expect(text()).not.toContain("audit.access.inference_use")
+  expect(text()).not.toContain("audit.access.content_copy")
+  expect(text()).not.toContain("audit.access.instruction_change")
+
+  // Verify no raw subject text or sensitive excerpts are present
+  expect(text()).toContain("hmac:v1:1:fingerprint:taggeddoc")
+  expect(text()).not.toMatch(/excerpt|prompt|diagnosis|secret/i)
 })
 
 test("a broken chain is an alert naming the seq", async () => {

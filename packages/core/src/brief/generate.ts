@@ -4,10 +4,12 @@ import { writeQueueFor } from "../db/write-queue"
 import { readLatestDigest } from "../digest/cache"
 import { coverageLine, windowCoverage } from "./coverage"
 import { addDays, daysBetween, localParts, parseTime } from "./local-time"
+import { listDigestEvents, markShownInBrief } from "../triage/store"
 import { getBrief, insertBrief, latestWindowEnd } from "./store"
 import type {
   Brief,
   BriefConfig,
+  BriefDeferredLine,
   BriefItemLine,
   BriefLine,
   BriefSource,
@@ -222,6 +224,73 @@ function selectNeedsYou(db: DatabaseSync, threshold: number): Pending {
   return { lines, skipped }
 }
 
+const REF = /^(obl|ext):(.+)$/
+
+/** The text of the ledger row an event's `ref` names, or undefined when the row is gone. */
+function deferredText(
+  db: DatabaseSync,
+  type: "obligation" | "extraction",
+  id: string
+): string | undefined {
+  if (type === "obligation") {
+    const row = db
+      .prepare("SELECT action, party, due_at FROM obligations WHERE id = ?")
+      .get(id)
+    if (row === undefined) return undefined
+    const party = typeof row["party"] === "string" ? ` (${row["party"]})` : ""
+    const due =
+      typeof row["due_at"] === "string" ? `, due ${row["due_at"]}` : ""
+    return `${clip(String(row["action"]))}${party}${due}`
+  }
+  const row = db
+    .prepare(
+      `SELECT e.fields_json, c.field FROM extractions e
+       JOIN extraction_field_confidence c ON c.extraction_id = e.id
+       WHERE e.id = ? ORDER BY c.confidence, c.field LIMIT 1`
+    )
+    .get(id)
+  if (row === undefined) return undefined
+  const field = String(row["field"])
+  const fields: unknown = JSON.parse(String(row["fields_json"]))
+  const entry = isRecord(fields) ? fields[field] : undefined
+  const raw = isRecord(entry) ? entry["raw"] : undefined
+  const label = `Confirm ${field.replace(/_/g, " ")}`
+  return typeof raw === "string" ? `${label}: "${clip(raw)}"` : label
+}
+
+/**
+ * One line per ledger entry that triage sent to the digest since the window opened, highest
+ * score first. `eventIds` are every digest event read, to mark shown, including those with no
+ * line (their ledger row is gone), which count as skipped.
+ */
+function selectDeferred(
+  db: DatabaseSync,
+  windowStart: string
+): { lines: BriefDeferredLine[]; eventIds: string[]; skipped: number } {
+  const lines: BriefDeferredLine[] = []
+  const seen = new Set<string>()
+  const eventIds: string[] = []
+  let skipped = 0
+  for (const event of listDigestEvents(db, new Date(windowStart))) {
+    eventIds.push(event.id)
+    if (seen.has(event.ref)) continue
+    seen.add(event.ref)
+    const match = REF.exec(event.ref)
+    const type = match?.[1] === "obl" ? "obligation" : "extraction"
+    const id = match?.[2]
+    const text =
+      match === null || id === undefined
+        ? undefined
+        : deferredText(db, type, id)
+    if (text === undefined || id === undefined) {
+      skipped += 1
+      continue
+    }
+    lines.push({ text, kind: "deferred", ledger: { type, id } })
+  }
+  return { lines, eventIds, skipped }
+}
+
 function capLines(items: BriefItemLine[], maxLines: number): BriefLine[] {
   if (items.length <= maxLines) return items
   const kept = items.slice(0, maxLines - 1)
@@ -259,13 +328,15 @@ function build(db: DatabaseSync, now: Date, cfg: BriefConfig): Brief {
     windowEnd
   )
   const needsYou = selectNeedsYou(db, cfg.confirmThreshold)
-  const lines = capLines(
-    [...obligations.lines, ...needsYou.lines],
-    cfg.maxLines
-  )
+  const deferred = selectDeferred(db, windowStart)
+  // Deferred lines come on top of `maxLines`: dropping what triage deferred would lose it.
+  const lines: BriefLine[] = [
+    ...capLines([...obligations.lines, ...needsYou.lines], cfg.maxLines),
+    ...deferred.lines,
+  ]
   const coverage = {
     ...windowCoverage(db, windowStart, windowEnd),
-    skipped: obligations.skipped + needsYou.skipped,
+    skipped: obligations.skipped + needsYou.skipped + deferred.skipped,
   }
   const brief: Brief = {
     id: `brief-${forDate}`,
@@ -277,7 +348,17 @@ function build(db: DatabaseSync, now: Date, cfg: BriefConfig): Brief {
     coverage,
     coverageLine: coverageLine(coverage, lines.length > 0),
   }
-  insertBrief(db, brief)
+  // The brief row and the shown marks land together, so a digest event is listed exactly once.
+  db.exec("SAVEPOINT brief_write")
+  try {
+    insertBrief(db, brief)
+    markShownInBrief(db, deferred.eventIds, now)
+    db.exec("RELEASE brief_write")
+  } catch (error) {
+    db.exec("ROLLBACK TO brief_write")
+    db.exec("RELEASE brief_write")
+    throw error
+  }
   return brief
 }
 

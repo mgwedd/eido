@@ -44,8 +44,8 @@ import type { WebAuthnConfig } from "./webauthn"
 
 // The gate's routes. The data-plane listener serves the intent API (propose, and three
 // read-only views without payload bodies), connector health, and POST /audit, which appends one
-// hash-only audit.profile.* row for a profile change in core (#181) or audit.ledger.* row for an
-// obligation state change (#104). The control listener is a separate socket that the
+// hash-only audit.profile.* row for a profile change in core (#181), audit.ledger.* row for an
+// obligation state change (#104), or audit.access.* row for sensitive reads and uses (#322). The control listener is a separate socket that the
 // data plane is never given; it serves the same reads, the audit chain check and the owner's
 // enrolment codes (#78). The phone listener (#85) is a further handler over the same server
 // wrapper, on its own listener.
@@ -163,7 +163,7 @@ const HEX64 = /^[0-9a-f]{64}$/
 
 // Which sides of a change each action has: create and assign add a record (assign may replace
 // one), delete and unassign remove one, update replaces one. An obligation state change (#104)
-// replaces the obligation's state record.
+// replaces the obligation's state record. Sensitive reads and local AI uses (#322) have neither side.
 const SIDES = {
   "entity.create": { before: "absent", after: "present" },
   "entity.update": { before: "present", after: "present" },
@@ -174,6 +174,10 @@ const SIDES = {
   "obligation.resolve": { before: "present", after: "present" },
   "obligation.reopen": { before: "present", after: "present" },
   defaultEntity: { before: "either", after: "either" },
+  "access.document_open": { before: "absent", after: "absent" },
+  "access.inference_use": { before: "absent", after: "absent" },
+  "access.content_copy": { before: "absent", after: "absent" },
+  "access.instruction_change": { before: "absent", after: "absent" },
 } as const satisfies Record<
   GateAuditRecordRequest["action"],
   { before: Side; after: Side }
@@ -213,8 +217,10 @@ function auditRequestRefusal(db: DatabaseSync, reason: string): void {
   })
 }
 
-// Obligation state changes are ledger rows; entity and account changes are profile rows.
+// Obligation state changes are ledger rows; entity and account changes are profile rows;
+// sensitive reads and local AI uses are access rows (#322).
 function auditGroup(action: GateAuditRecordRequest["action"]): string {
+  if (action.startsWith("access.")) return "audit.access"
   return action.startsWith("obligation.") ? "audit.ledger" : "audit.profile"
 }
 
@@ -254,7 +260,10 @@ async function auditRoute(
     beforeHash: entry.beforeHash,
     afterHash: entry.afterHash,
   }
-  if (auditGroup(entry.action) === "audit.profile") {
+  if (
+    auditGroup(entry.action) === "audit.profile" ||
+    auditGroup(entry.action) === "audit.access"
+  ) {
     try {
       if (gate.profileAudit === undefined) throw new Error("unavailable")
       digests = await gate.profileAudit.tag(entry)
@@ -262,9 +271,14 @@ async function auditRoute(
       return apiError(503, "unavailable", "profile audit key is unavailable")
     }
   }
+  const group = auditGroup(entry.action)
+  const actionName = entry.action.startsWith("access.")
+    ? entry.action.slice("access.".length)
+    : entry.action
+  const storedAction = `${group}.${actionName}`
   const { seq } = append(gate.db, {
     actor: "data-plane",
-    action: `${auditGroup(entry.action)}.${entry.action}`,
+    action: storedAction,
     target: digests.subjectHash,
     detailHash: payloadHash({
       action: entry.action,

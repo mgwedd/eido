@@ -110,6 +110,30 @@ describe("GET /brief/latest", () => {
     ])
   })
 
+  test("serves a deferred line as stored", async () => {
+    insertBrief(
+      db,
+      stored("2026-11-02", {
+        lines: [
+          {
+            kind: "deferred",
+            text: "Renew the lease (Landlord Example), due 2026-12-01",
+            ledger: { type: "obligation", id: "7" },
+          },
+        ],
+      })
+    )
+    const body = (await (await get("latest")).json()) as CoreApiBrief
+    expect(validateCoreApiBrief(body).ok).toBe(true)
+    expect(body.lines).toEqual([
+      {
+        kind: "deferred",
+        text: "Renew the lease (Landlord Example), due 2026-12-01",
+        ledger: { type: "obligation", id: "7" },
+      },
+    ])
+  })
+
   test("serves detail cites and the more line", async () => {
     insertBrief(
       db,

@@ -21,7 +21,6 @@ import {
 } from "@eido/ui/components/input-group"
 import { Separator } from "@eido/ui/components/separator"
 import { Skeleton } from "@eido/ui/components/skeleton"
-import { AskSearch } from "@/components/ask-search"
 import { ASK_INPUT_ID, consumeAskFocus } from "@/lib/shortcuts"
 import {
   actionableFollowUps,
@@ -116,10 +115,7 @@ export function AskScreen({
   const figures = result ? computedFigures(result) : []
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">Ask Eido</h1>
-        <AskSearch />
-      </div>
+      <h1 className="text-2xl font-semibold tracking-tight">Ask Eido</h1>
       <div className="grid min-w-0 flex-1 content-start gap-5 min-[1100px]:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)]">
         <div className="flex min-w-0 flex-col gap-5" aria-live="polite">
           {state.status === "idle" && (

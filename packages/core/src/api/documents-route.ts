@@ -22,6 +22,10 @@ export interface DocumentsDeps {
   db: DatabaseSync
   /** Confidence a field needs to count as verified without a confirmation. */
   threshold?: number
+  /** Access auditor to record document openings (#322). */
+  accessAudit?: {
+    recordDocumentOpen: (input: { documentSha256: string }) => Promise<unknown>
+  }
 }
 
 type FieldError = { field: string; message: string }

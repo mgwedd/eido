@@ -491,7 +491,17 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         deps.documents
       )
       if (result !== null) {
-        if (result.ok) return json(result.body)
+        if (result.ok) {
+          if (
+            "lines" in result.body &&
+            deps.documents.accessAudit !== undefined
+          ) {
+            await deps.documents.accessAudit.recordDocumentOpen({
+              documentSha256: result.body.document.sha256,
+            })
+          }
+          return json(result.body)
+        }
         if (result.code === "method_not_allowed") return notAllowed("GET")
         const { code, message, fields } = result
         return failure(code, message, fields ? { fields } : {})

@@ -816,8 +816,26 @@ describe("audit record request and result", () => {
         validateGateAuditRecordRequest({ ...entry, action: "email.send" })
       )
     ).toEqual([
-      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen", "defaultEntity"',
+      '$.action: must be one of "entity.create", "entity.update", "entity.delete", "account.assign", "account.unassign", "obligation.done", "obligation.resolve", "obligation.reopen", "defaultEntity", "access.document_open", "access.inference_use", "access.content_copy", "access.instruction_change"',
     ])
+  })
+
+  test("accepts sensitive read and local AI use access actions", () => {
+    for (const action of [
+      "access.document_open",
+      "access.inference_use",
+      "access.content_copy",
+      "access.instruction_change",
+    ] as const) {
+      expect(
+        validateGateAuditRecordRequest({
+          action,
+          subjectHash: HASH,
+          beforeHash: null,
+          afterHash: null,
+        }).ok
+      ).toBe(true)
+    }
   })
 
   test("rejects a hash that is not 64 characters and a missing side", () => {

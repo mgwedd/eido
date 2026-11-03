@@ -1,16 +1,10 @@
 import {
   validateCoreApiAskRequest,
   validateCoreApiAskResponse,
-  validateCoreApiConversationSearch,
   validateGateProposeResult,
   validateIntent,
 } from "@eido/schemas"
-import type {
-  AskFigure,
-  AskFollowUp,
-  CoreApiAskResponse,
-  CoreApiConversationSearch,
-} from "@eido/schemas"
+import type { AskFigure, AskFollowUp, CoreApiAskResponse } from "@eido/schemas"
 
 export type AskLoad =
   { status: "ready"; value: CoreApiAskResponse } | { status: "error" }
@@ -100,60 +94,4 @@ export const FIGURE_LABELS: Record<AskFigure["key"], string> = {
 
 export function actionableFollowUps(result: CoreApiAskResponse): AskFollowUp[] {
   return result.status === "answered" ? result.followUps : []
-}
-
-export type ConversationSearchHit = CoreApiConversationSearch["hits"][number]
-
-export type ConversationSearchLoad =
-  { status: "ready"; hits: ConversationSearchHit[] } | { status: "error" }
-
-export async function searchConversations(
-  query: string,
-  opts?: {
-    limit?: number
-    kind?: "raw" | "digest" | "any"
-    signal?: AbortSignal
-  }
-): Promise<ConversationSearchLoad> {
-  const q = query.trim()
-  if (q === "") return { status: "ready", hits: [] }
-  const params = new URLSearchParams()
-  params.set("q", q)
-  if (opts?.limit !== undefined) {
-    params.set("limit", String(opts.limit))
-  }
-  if (opts?.kind !== undefined && opts.kind !== "any") {
-    params.set("kind", opts.kind)
-  }
-  try {
-    const response = await fetch(
-      `/api/core/conversations/search?${params.toString()}`,
-      {
-        method: "GET",
-        cache: "no-store",
-        signal: opts?.signal,
-      }
-    )
-    if (!response.ok) return { status: "error" }
-    const checked = validateCoreApiConversationSearch(await response.json())
-    return checked.ok
-      ? { status: "ready", hits: checked.value.hits }
-      : { status: "error" }
-  } catch {
-    return { status: "error" }
-  }
-}
-
-export function snippetParts(
-  snippet: string
-): { text: string; highlighted: boolean }[] {
-  return snippet
-    .split(/(\[[^\]]+\])/g)
-    .filter(Boolean)
-    .map((part) => {
-      if (part.startsWith("[") && part.endsWith("]")) {
-        return { text: part.slice(1, -1), highlighted: true }
-      }
-      return { text: part, highlighted: false }
-    })
 }
