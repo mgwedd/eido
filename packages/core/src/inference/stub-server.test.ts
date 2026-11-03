@@ -9,7 +9,9 @@ import {
   startStubModelServer,
   streamBody,
   stubDecode,
+  stubPieces,
   stubTokenize,
+  userDefinedId,
 } from "./stub-server"
 import type { StubModelServer } from "./stub-server"
 
@@ -79,14 +81,46 @@ describe("tokenizer", () => {
     ])
   })
 
+  test("matches user-defined tokens with parse_special off, only when enabled", () => {
+    expect(stubTokenize("a<|channel>", false, false, true)).toEqual([
+      0x61,
+      userDefinedId("<|channel>"),
+    ])
+    expect(stubTokenize("[THINK]", false, false)).toEqual([
+      0x5b, 0x54, 0x48, 0x49, 0x4e, 0x4b, 0x5d,
+    ])
+  })
+
+  test("user-defined ids follow the twelve control-token ids", () => {
+    expect([userDefinedId("<|tool_call>"), userDefinedId("[THINK]")]).toEqual([
+      268, 274,
+    ])
+  })
+
+  test("pieces: ASCII bytes as text, other bytes as lists, tokens as their strings", () => {
+    expect(
+      stubPieces([0x61, 0xc3, specialId("<s>"), userDefinedId("[THINK]"), 999])
+    ).toEqual([
+      { id: 0x61, piece: "a" },
+      { id: 0xc3, piece: [0xc3] },
+      { id: specialId("<s>"), piece: "<s>" },
+      { id: userDefinedId("[THINK]"), piece: "[THINK]" },
+      { id: 999, piece: "<unk 999>" },
+    ])
+  })
+
   test("add_special prepends BOS", () => {
     expect(stubTokenize("", true, true)).toEqual([BOS_ID])
   })
 
   test("decodes bytes and control tokens back to text", () => {
-    expect(stubDecode([...stubTokenize("é<s>x", false, true), 999])).toBe(
-      "é<s>x<unk 999>"
-    )
+    expect(
+      stubDecode([
+        ...stubTokenize("é<s>x", false, true),
+        userDefinedId('<|"|>'),
+        999,
+      ])
+    ).toBe('é<s>x<|"|><unk 999>')
   })
 
   test("splits turns on control-token ids, not on text", () => {
@@ -212,6 +246,31 @@ describe("startStubModelServer", () => {
       parse_special: false,
     })
     expect(await tokens.json()).toEqual({ tokens: [specialId("</s>")] })
+  })
+
+  test("with_pieces answers each id with its text", async () => {
+    stub = await startStubModelServer({ replies: [] })
+    const tokens = await post(`${stub.url}/tokenize`, {
+      content: "a<s>",
+      with_pieces: true,
+    })
+    expect(await tokens.json()).toEqual({
+      tokens: [
+        { id: 0x61, piece: "a" },
+        { id: BOS_ID, piece: "<s>" },
+      ],
+    })
+  })
+
+  test("userDefinedTokens matches them even with parse_special off", async () => {
+    stub = await startStubModelServer({ replies: [], userDefinedTokens: true })
+    const tokens = await post(`${stub.url}/tokenize`, {
+      content: "<channel|>",
+      parse_special: false,
+    })
+    expect(await tokens.json()).toEqual({
+      tokens: [userDefinedId("<channel|>")],
+    })
   })
 
   test("a tokenize body without content answers 400", async () => {

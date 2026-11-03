@@ -15,9 +15,13 @@ import {
 } from "@eido/ui/components/table"
 import { cn } from "@eido/ui/lib/utils"
 import {
-  formatIngestedDate,
+  formatDocumentDate,
+  formatDocumentSource,
   formatSourceLabel,
+  isLocalFile,
   loadDocumentsList,
+  loadPendingTrashKeys,
+  parseFileLocation,
   type DocumentItem,
 } from "@/lib/documents"
 import { loadEntities, type FilterEntity } from "@/lib/today-due-soon"
@@ -150,6 +154,9 @@ export function DocumentsView({
   const [activeSource, setActiveSource] = React.useState<string>(initialSource)
   const [entities, setEntities] = React.useState<FilterEntity[]>([])
   const [documents, setDocuments] = React.useState<DocumentItem[]>([])
+  const [pendingTrashKeys, setPendingTrashKeys] = React.useState<Set<string>>(
+    () => new Set()
+  )
   const [knownSources, setKnownSources] = React.useState<string[]>([])
   const [nextOffset, setNextOffset] = React.useState<number | null>(null)
   const [loading, setLoading] = React.useState<boolean>(true)
@@ -176,6 +183,9 @@ export function DocumentsView({
     void (async () => {
       setLoading(true)
       setError(null)
+      void loadPendingTrashKeys(controller.signal).then((keys) => {
+        setPendingTrashKeys(keys)
+      })
       const res = await loadDocumentsList(controller.signal, {
         entity: activeEntity,
         source: activeSource,
@@ -327,16 +337,19 @@ export function DocumentsView({
                     Document
                   </TableHead>
                   <TableHead scope="col" className="px-4 py-3">
-                    Source
-                  </TableHead>
-                  <TableHead scope="col" className="px-4 py-3">
                     Entity
                   </TableHead>
                   <TableHead scope="col" className="px-4 py-3">
                     Type
                   </TableHead>
                   <TableHead scope="col" className="px-4 py-3">
-                    Ingested
+                    Source
+                  </TableHead>
+                  <TableHead scope="col" className="px-4 py-3">
+                    Date
+                  </TableHead>
+                  <TableHead scope="col" className="px-4 py-3">
+                    Key facts
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -351,22 +364,34 @@ export function DocumentsView({
                     doc.name ||
                     `${formatSourceLabel(doc.source)} (${doc.sha256.slice(0, 8)})`
 
+                  const isPendingTrash = (() => {
+                    if (!isLocalFile(doc.source)) return false
+                    const loc = parseFileLocation(doc.source, doc.sourceRef)
+                    if (!loc) return false
+                    return (
+                      pendingTrashKeys.has(loc.path) ||
+                      pendingTrashKeys.has(`${loc.root}/${loc.path}`)
+                    )
+                  })()
+
                   return (
                     <TableRow key={doc.sha256}>
                       <TableCell className="px-4 py-3 font-medium text-foreground">
-                        <Link
-                          href={viewerUrl}
-                          className="font-medium text-primary underline underline-offset-4 hover:opacity-80"
-                        >
-                          {displayName}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="px-4 py-3 text-muted-foreground">
-                        <div className="flex flex-col">
-                          <span>{formatSourceLabel(doc.source)}</span>
-                          <span className="font-mono text-xs text-muted-foreground">
-                            {doc.sourceRef}
-                          </span>
+                        <div className="flex flex-col gap-0.5">
+                          <Link
+                            href={viewerUrl}
+                            className="font-medium text-primary underline underline-offset-4 hover:opacity-80"
+                          >
+                            {displayName}
+                          </Link>
+                          {isPendingTrash ? (
+                            <span
+                              role="status"
+                              className="text-xs font-normal text-amber-600 dark:text-amber-400"
+                            >
+                              Waiting for approval to move to Eido Trash.
+                            </span>
+                          ) : null}
                         </div>
                       </TableCell>
                       <TableCell className="px-4 py-3 text-muted-foreground">
@@ -378,7 +403,53 @@ export function DocumentsView({
                         </Badge>
                       </TableCell>
                       <TableCell className="px-4 py-3 text-sm text-muted-foreground">
-                        {formatIngestedDate(doc.ingestedAt)}
+                        <div className="flex flex-col">
+                          <span>
+                            {formatDocumentSource(
+                              doc.source,
+                              doc.entity.name,
+                              doc.mime
+                            )}
+                          </span>
+                          <span className="font-mono text-xs text-muted-foreground">
+                            {doc.sourceRef}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="px-4 py-3 text-sm text-muted-foreground">
+                        {formatDocumentDate(doc.occurredAt ?? doc.ingestedAt)}
+                      </TableCell>
+                      <TableCell className="px-4 py-3 text-sm">
+                        {isPendingTrash ? (
+                          <span
+                            role="status"
+                            className="text-xs font-medium text-amber-600 dark:text-amber-400"
+                          >
+                            Waiting for approval to move to Eido Trash.
+                          </span>
+                        ) : doc.keyFacts && doc.keyFacts.length > 0 ? (
+                          <div className="flex flex-col gap-1">
+                            {doc.keyFacts.map((fact, i) =>
+                              fact.href ? (
+                                <Link
+                                  key={i}
+                                  href={fact.href}
+                                  className="font-medium text-primary underline underline-offset-4 hover:opacity-80"
+                                >
+                                  {fact.text}
+                                </Link>
+                              ) : (
+                                <span key={i} className="text-muted-foreground">
+                                  {fact.text}
+                                </span>
+                              )
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            —
+                          </span>
+                        )}
                       </TableCell>
                     </TableRow>
                   )
@@ -400,6 +471,16 @@ export function DocumentsView({
                   doc.name ||
                   `${formatSourceLabel(doc.source)} (${doc.sha256.slice(0, 8)})`
 
+                const isPendingTrash = (() => {
+                  if (!isLocalFile(doc.source)) return false
+                  const loc = parseFileLocation(doc.source, doc.sourceRef)
+                  if (!loc) return false
+                  return (
+                    pendingTrashKeys.has(loc.path) ||
+                    pendingTrashKeys.has(`${loc.root}/${loc.path}`)
+                  )
+                })()
+
                 return (
                   <li
                     key={doc.sha256}
@@ -413,12 +494,17 @@ export function DocumentsView({
                         {displayName}
                       </Link>
                       <span className="shrink-0 text-xs text-muted-foreground">
-                        {formatIngestedDate(doc.ingestedAt)}
+                        {formatDocumentDate(doc.occurredAt ?? doc.ingestedAt)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                       <span>
-                        {doc.entity.name} · {formatSourceLabel(doc.source)}
+                        {doc.entity.name} ·{" "}
+                        {formatDocumentSource(
+                          doc.source,
+                          doc.entity.name,
+                          doc.mime
+                        )}
                       </span>
                       <Badge
                         variant="outline"
@@ -427,6 +513,32 @@ export function DocumentsView({
                         {doc.type || doc.mime}
                       </Badge>
                     </div>
+                    {isPendingTrash ? (
+                      <span
+                        role="status"
+                        className="text-xs font-medium text-amber-600 dark:text-amber-400"
+                      >
+                        Waiting for approval to move to Eido Trash.
+                      </span>
+                    ) : doc.keyFacts && doc.keyFacts.length > 0 ? (
+                      <div className="flex flex-col gap-1 pt-0.5 text-xs">
+                        {doc.keyFacts.map((fact, i) =>
+                          fact.href ? (
+                            <Link
+                              key={i}
+                              href={fact.href}
+                              className="font-medium text-primary underline underline-offset-4"
+                            >
+                              {fact.text}
+                            </Link>
+                          ) : (
+                            <span key={i} className="text-muted-foreground">
+                              {fact.text}
+                            </span>
+                          )
+                        )}
+                      </div>
+                    ) : null}
                   </li>
                 )
               })}

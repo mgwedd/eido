@@ -5,7 +5,7 @@ import * as React from "react"
 import type { CoreApiDocumentView } from "@eido/schemas"
 import { validateCoreApiDocumentView } from "@eido/schemas"
 import { Badge } from "@eido/ui/components/badge"
-import { buttonVariants } from "@eido/ui/components/button"
+import { Button, buttonVariants } from "@eido/ui/components/button"
 import {
   Card,
   CardContent,
@@ -14,6 +14,12 @@ import {
 } from "@eido/ui/components/card"
 import { Separator } from "@eido/ui/components/separator"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import {
+  isLocalFile,
+  loadPendingTrashKeys,
+  parseFileLocation,
+  proposeMoveToTrash,
+} from "@/lib/documents"
 
 export function validateFromParam(from: string | undefined): string {
   if (!from) return "/documents"
@@ -49,6 +55,67 @@ type LinkedObligation = NonNullable<
 type LinkedDocument = NonNullable<
   NonNullable<CoreApiDocumentView["linked"]>["documents"]
 >[number]
+type ExtractedField =
+  CoreApiDocumentView["extractions"][number]["fields"][number]
+
+function formatFieldLabel(field: string): string {
+  switch (field) {
+    case "party":
+      return "Vendor"
+    case "amount":
+      return "Total"
+    case "due_date":
+      return "Due date"
+    case "action":
+      return "Action"
+    case "reference_number":
+      return "Reference"
+    default:
+      return field.charAt(0).toUpperCase() + field.slice(1)
+  }
+}
+
+function formatExtractedValue(field: ExtractedField): string {
+  if (
+    field.field === "amount" &&
+    field.value &&
+    typeof field.value === "object" &&
+    "amount_minor" in field.value &&
+    "currency" in field.value
+  ) {
+    const val = field.value
+    try {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: val.currency,
+      }).format(val.amount_minor / 100)
+    } catch {
+      return `${val.currency} ${(val.amount_minor / 100).toFixed(2)}`
+    }
+  }
+  if (
+    field.field === "due_date" &&
+    typeof field.value === "string" &&
+    field.value
+  ) {
+    try {
+      const d = new Date(
+        field.value.includes("T") ? field.value : `${field.value}T00:00:00Z`
+      )
+      if (!Number.isNaN(d.getTime())) {
+        return new Intl.DateTimeFormat("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          timeZone: "UTC",
+        }).format(d)
+      }
+    } catch {
+      // fallback to raw
+    }
+  }
+  return field.raw
+}
 
 export function DocumentViewer({
   sha256,
@@ -57,8 +124,42 @@ export function DocumentViewer({
   from,
 }: DocumentViewerProps) {
   const [state, setState] = React.useState<ViewerState>({ status: "loading" })
+  const [pendingTrash, setPendingTrash] = React.useState(false)
+  const [submittingTrash, setSubmittingTrash] = React.useState(false)
+  const [trashError, setTrashError] = React.useState<string | null>(null)
   const highlightRef = React.useRef<HTMLElement | null>(null)
   const backHref = validateFromParam(from)
+
+  React.useEffect(() => {
+    if (state.status !== "ready") return
+    const doc = state.view.document
+    if (!isLocalFile(doc.source)) return
+    const loc = parseFileLocation(doc.source, doc.sourceRef)
+    if (!loc) return
+    const controller = new AbortController()
+    void loadPendingTrashKeys(controller.signal).then((keys) => {
+      if (keys.has(loc.path) || keys.has(`${loc.root}/${loc.path}`)) {
+        setPendingTrash(true)
+      }
+    })
+    return () => controller.abort()
+  }, [state])
+
+  const handleMoveToTrash = React.useCallback(async () => {
+    if (state.status !== "ready") return
+    const doc = state.view.document
+    const loc = parseFileLocation(doc.source, doc.sourceRef)
+    if (!loc) return
+    setSubmittingTrash(true)
+    setTrashError(null)
+    const res = await proposeMoveToTrash(loc.root, loc.path)
+    setSubmittingTrash(false)
+    if (res.ok) {
+      setPendingTrash(true)
+    } else {
+      setTrashError(res.message)
+    }
+  }, [state])
 
   React.useEffect(() => {
     const controller = new AbortController()
@@ -192,7 +293,8 @@ export function DocumentViewer({
   }
 
   const { view, spanNotFound } = state
-  const { document: doc, lines, highlight, linked } = view
+  const { document: doc, lines, highlight, linked, extractions } = view
+  const extractedFields = (extractions ?? []).flatMap((e) => e.fields)
   const docTitle = doc.name ?? `${doc.source} · ${doc.sha256.slice(0, 12)}`
   const ingestedFormatted = new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
@@ -205,21 +307,63 @@ export function DocumentViewer({
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-4">
       {/* Top navigation & provenance header */}
       <header className="flex flex-col gap-4 border-b pb-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <Link
             href={backHref}
             className={buttonVariants({ variant: "outline", size: "sm" })}
           >
             ← Back
           </Link>
-          <a
-            href={`/api/core/documents/${doc.sha256}/blob`}
-            download
-            className="text-xs font-medium text-primary hover:underline"
-          >
-            Download original
-          </a>
+          <div className="flex flex-wrap items-center gap-3">
+            <a
+              href={`/api/core/documents/${doc.sha256}/blob`}
+              download
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              Download original
+            </a>
+            {pendingTrash ? (
+              <Badge
+                variant="outline"
+                role="status"
+                className="border-amber-500/30 bg-amber-500/10 text-xs font-medium text-amber-600 dark:text-amber-400"
+              >
+                Waiting for approval to move to Eido Trash.
+              </Badge>
+            ) : isLocalFile(doc.source) ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  void handleMoveToTrash()
+                }}
+                disabled={submittingTrash}
+              >
+                {submittingTrash ? "Moving…" : "Move to Eido Trash"}
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled
+                title="Only local files can be moved to Eido Trash"
+                aria-label="Move to Eido Trash (Only local files can be moved to Eido Trash)"
+                className="cursor-not-allowed opacity-50"
+              >
+                Move to Eido Trash
+              </Button>
+            )}
+          </div>
         </div>
+
+        {trashError ? (
+          <div
+            role="alert"
+            className="rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          >
+            {trashError}
+          </div>
+        ) : null}
 
         <div className="flex flex-col gap-2">
           <h1 className="text-xl font-semibold tracking-tight">{docTitle}</h1>
@@ -250,68 +394,128 @@ export function DocumentViewer({
 
       {/* Main layout: Document Text Column + Linked Panel */}
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_300px]">
-        {/* Document Content */}
-        <main
-          tabIndex={0}
-          aria-label="Document text"
-          className="min-h-[400px] overflow-auto rounded-lg border bg-card p-6 focus:ring-1 focus:ring-ring focus:outline-none"
-        >
-          {isBinary ? (
-            <div className="flex flex-col gap-2 py-16 text-center text-sm text-muted-foreground">
-              <p>Text unavailable for this file</p>
-              <p className="text-xs">
-                Binary or unsupported format. Metadata and provenance are shown
-                above.
-              </p>
-            </div>
-          ) : (
-            <div className="flex flex-col font-sans text-sm leading-relaxed font-normal break-words whitespace-pre-wrap">
-              {lines.map((lineItem: DocumentLine) => {
-                const lineStart = lineItem.start
-                const lineEnd = lineStart + lineItem.text.length
-                const hStart = highlight?.start ?? -1
-                const hEnd = highlight?.end ?? -1
+        {/* Document Content Column */}
+        <div className="flex flex-col gap-6">
+          <main
+            tabIndex={0}
+            aria-label="Document text"
+            className="min-h-[400px] overflow-auto rounded-lg border bg-card p-6 focus:ring-1 focus:ring-ring focus:outline-none"
+          >
+            {isBinary ? (
+              <div className="flex flex-col gap-2 py-16 text-center text-sm text-muted-foreground">
+                <p>Text unavailable for this file</p>
+                <p className="text-xs">
+                  Binary or unsupported format. Metadata and provenance are
+                  shown above.
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col font-sans text-sm leading-relaxed font-normal break-words whitespace-pre-wrap">
+                {lines.map((lineItem: DocumentLine) => {
+                  const lineStart = lineItem.start
+                  const lineEnd = lineStart + lineItem.text.length
+                  const hStart = highlight?.start ?? -1
+                  const hEnd = highlight?.end ?? -1
 
-                // Check overlap
-                const overlaps =
-                  highlight !== null && hStart < lineEnd && hEnd > lineStart
+                  // Check overlap
+                  const overlaps =
+                    highlight !== null && hStart < lineEnd && hEnd > lineStart
 
-                if (!overlaps) {
+                  if (!overlaps) {
+                    return (
+                      <div key={lineItem.n} className="min-h-5">
+                        {lineItem.text || " "}
+                      </div>
+                    )
+                  }
+
+                  // Split line into before, mark, after
+                  const startInLine = Math.max(0, hStart - lineStart)
+                  const endInLine = Math.min(
+                    lineItem.text.length,
+                    hEnd - lineStart
+                  )
+                  const before = lineItem.text.slice(0, startInLine)
+                  const markText = lineItem.text.slice(startInLine, endInLine)
+                  const after = lineItem.text.slice(endInLine)
+
                   return (
                     <div key={lineItem.n} className="min-h-5">
-                      {lineItem.text || " "}
+                      {before}
+                      <mark
+                        ref={highlightRef}
+                        role="mark"
+                        className="rounded border border-yellow-500/40 bg-yellow-500/25 px-0.5 text-foreground"
+                      >
+                        <span className="sr-only">Referenced passage</span>
+                        {markText}
+                      </mark>
+                      {after}
                     </div>
                   )
-                }
+                })}
+              </div>
+            )}
+          </main>
 
-                // Split line into before, mark, after
-                const startInLine = Math.max(0, hStart - lineStart)
-                const endInLine = Math.min(
-                  lineItem.text.length,
-                  hEnd - lineStart
-                )
-                const before = lineItem.text.slice(0, startInLine)
-                const markText = lineItem.text.slice(startInLine, endInLine)
-                const after = lineItem.text.slice(endInLine)
-
-                return (
-                  <div key={lineItem.n} className="min-h-5">
-                    {before}
-                    <mark
-                      ref={highlightRef}
-                      role="mark"
-                      className="rounded border border-yellow-500/40 bg-yellow-500/25 px-0.5 text-foreground"
+          {/* Extracted Panel */}
+          <Card aria-label="Extracted fields">
+            <CardHeader className="px-4 py-3">
+              <CardTitle className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                Extracted
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3 px-4 pt-0 pb-4 text-sm">
+              {extractedFields.length > 0 ? (
+                <div className="flex flex-col gap-2.5">
+                  {extractedFields.map((field, idx) => (
+                    <div
+                      key={`${field.field}-${idx}`}
+                      className="flex flex-col gap-1 text-sm sm:flex-row sm:items-baseline sm:justify-between"
                     >
-                      <span className="sr-only">Referenced passage</span>
-                      {markText}
-                    </mark>
-                    {after}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </main>
+                      <span className="min-w-[120px] text-xs text-muted-foreground">
+                        {formatFieldLabel(field.field)}
+                      </span>
+                      <div className="flex flex-wrap items-baseline gap-1.5 font-medium">
+                        <span className="text-foreground">
+                          {formatExtractedValue(field)}
+                        </span>
+                        <span className="text-xs font-normal text-muted-foreground">
+                          {field.line !== null
+                            ? `· line ${field.line} · `
+                            : "· "}
+                          <span
+                            className={
+                              field.verified
+                                ? "font-medium text-emerald-500 dark:text-emerald-400"
+                                : "text-amber-500 dark:text-amber-400"
+                            }
+                          >
+                            {field.verified ? "verified" : "unverified"}
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  {doc.entity ? (
+                    <div className="flex flex-col gap-1 border-t border-border/50 pt-2 text-sm sm:flex-row sm:items-baseline sm:justify-between">
+                      <span className="min-w-[120px] text-xs text-muted-foreground">
+                        Entity
+                      </span>
+                      <span className="font-medium text-foreground">
+                        {doc.entity.name}
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No extracted fields.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
 
         {/* Linked Panel */}
         <aside aria-label="Linked" className="flex flex-col gap-4">

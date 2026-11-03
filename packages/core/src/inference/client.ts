@@ -5,7 +5,11 @@ import {
   estimateTokens,
   truncationSuspected,
 } from "./budget"
-import { InferenceError, UnsupportedModelServerError } from "./errors"
+import {
+  InferenceError,
+  MaterialMarkerError,
+  UnsupportedModelServerError,
+} from "./errors"
 import type { RequiredServerFeature } from "./errors"
 import { newBoundary } from "./fence"
 import {
@@ -364,6 +368,23 @@ interface TokenizeArgs {
   parseSpecial: boolean
 }
 
+function tokenizeBody(
+  content: string,
+  args: TokenizeArgs,
+  withPieces = false
+): string {
+  return JSON.stringify({
+    content,
+    add_special: args.addSpecial,
+    parse_special: args.parseSpecial,
+    ...(withPieces ? { with_pieces: true } : {}),
+  })
+}
+
+function isTokenId(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+}
+
 async function tokenize(
   doFetch: typeof fetch,
   baseUrl: string,
@@ -375,20 +396,11 @@ async function tokenize(
     doFetch,
     baseUrl,
     "tokenize",
-    JSON.stringify({
-      content,
-      add_special: args.addSpecial,
-      parse_special: args.parseSpecial,
-    }),
+    tokenizeBody(content, args),
     signal
   )
   const tokens = answer.tokens
-  if (
-    !Array.isArray(tokens) ||
-    !tokens.every(
-      (t): t is number => typeof t === "number" && Number.isInteger(t) && t >= 0
-    )
-  ) {
+  if (!Array.isArray(tokens) || !tokens.every(isTokenId)) {
     throw new InferenceError(
       "malformed",
       200,
@@ -396,6 +408,65 @@ async function tokenize(
     )
   }
   return tokens
+}
+
+/** One token with its text; `piece` is null when the server sent it as raw bytes. */
+interface Piece {
+  id: number
+  piece: string | null
+}
+
+function isByteList(value: unknown): boolean {
+  return Array.isArray(value) && value.every((b) => isTokenId(b) && b <= 255)
+}
+
+/** `/tokenize` with `with_pieces`: each id with its text, so trusted pieces show their markers. */
+async function tokenizePieces(
+  doFetch: typeof fetch,
+  baseUrl: string,
+  content: string,
+  args: TokenizeArgs,
+  signal: AbortSignal | undefined
+): Promise<Piece[]> {
+  const answer = await postJson(
+    doFetch,
+    baseUrl,
+    "tokenize",
+    tokenizeBody(content, args, true),
+    signal
+  )
+  const tokens = answer.tokens
+  const pieces: Piece[] = []
+  if (Array.isArray(tokens)) {
+    for (const token of tokens) {
+      if (!isRecord(token) || !isTokenId(token.id)) break
+      if (typeof token.piece === "string") {
+        pieces.push({ id: token.id, piece: token.piece })
+      } else if (isByteList(token.piece)) {
+        pieces.push({ id: token.id, piece: null })
+      } else break
+    }
+  }
+  if (!Array.isArray(tokens) || pieces.length !== tokens.length) {
+    throw new InferenceError(
+      "malformed",
+      200,
+      "/tokenize answer has no list of token ids"
+    )
+  }
+  return pieces
+}
+
+const MARKER_PUNCTUATION = /[<>[\]|]/u
+const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u
+
+/**
+ * Whether a token of the rendered template reads as a chat-template marker: its text mixes
+ * letters or digits with `<`, `>`, `[`, `]` or `|`, as `<|turn>`, `<channel|>`, `[INST]` and
+ * `<|im_start|>` do. Plain words, punctuation and whitespace do not, so material may share them.
+ */
+export function isMarkerPiece(piece: string): boolean {
+  return MARKER_PUNCTUATION.test(piece) && LETTER_OR_DIGIT.test(piece)
 }
 
 // A private-use character no template writes, around a per-request nonce.
@@ -448,6 +519,10 @@ export function splitRendered(
  * tokenized with special tokens on; every material span alone with `parse_special: false`, so
  * no text inside material can become a control token. The first piece carries the BOS token,
  * which the server strips from the rendered template.
+ *
+ * A server still matches user-defined tokens in plain text (Gemma 4's `<|channel>`, #536), so
+ * any material span holding an id that a trusted piece uses as a marker is refused with
+ * `MaterialMarkerError`, and nothing is sent.
  */
 async function promptTokens(
   doFetch: typeof fetch,
@@ -457,30 +532,37 @@ async function promptTokens(
   signal: AbortSignal | undefined
 ): Promise<number[]> {
   const ids: number[] = []
+  const markers = new Set<number>()
+  const materialIds = new Set<number>()
   for (const [i, piece] of pieces.entries()) {
     if (i === 0 || piece !== "") {
-      ids.push(
-        ...(await tokenize(
-          doFetch,
-          baseUrl,
-          piece,
-          { addSpecial: i === 0, parseSpecial: true },
-          signal
-        ))
-      )
+      for (const token of await tokenizePieces(
+        doFetch,
+        baseUrl,
+        piece,
+        { addSpecial: i === 0, parseSpecial: true },
+        signal
+      )) {
+        ids.push(token.id)
+        if (token.piece !== null && isMarkerPiece(token.piece))
+          markers.add(token.id)
+      }
     }
     const span = spans[i]
     if (span === undefined || span === "") continue
-    ids.push(
-      ...(await tokenize(
-        doFetch,
-        baseUrl,
-        span,
-        { addSpecial: false, parseSpecial: false },
-        signal
-      ))
+    const spanIds = await tokenize(
+      doFetch,
+      baseUrl,
+      span,
+      { addSpecial: false, parseSpecial: false },
+      signal
     )
+    for (const id of spanIds) materialIds.add(id)
+    ids.push(...spanIds)
   }
+  const found = [...materialIds].filter((id) => markers.has(id))
+  if (found.length > 0)
+    throw new MaterialMarkerError(found.sort((a, b) => a - b))
   return ids
 }
 

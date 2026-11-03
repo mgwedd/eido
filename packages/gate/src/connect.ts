@@ -12,8 +12,10 @@ import {
 } from "./internal/client"
 import {
   authorizationUrl,
+  DRIVE_READONLY_SCOPE,
   exchangeCode,
   GMAIL_MODIFY_SCOPE,
+  GMAIL_READONLY_SCOPE,
   oauthState,
   pkcePair,
   startLoopback,
@@ -21,12 +23,19 @@ import {
 import type { CallbackResult, ExchangeResult } from "./internal/connect/oauth"
 import { promptHidden } from "./internal/connect/prompt"
 import { GMAIL_CONNECTOR } from "./internal/gmail-writers"
-import type { Vault, VaultKey } from "./internal/vault/vault"
-import { createVault, vaultConfig } from "./main"
+import type { Vault, VaultClient, VaultKey } from "./internal/vault/vault"
+import {
+  createVault,
+  DRIVE_CLIENT_ID_ENV,
+  DRIVE_CONNECTOR,
+  GMAIL_READ_CLIENT_ID_ENV,
+  vaultConfig,
+} from "./main"
 
 // `pnpm --filter @eido/gate connect <connector>`: run on the Mac, as the gate user, to connect
-// or reconnect a connector (#98). Gmail signs in through Google in the browser (OAuth for native
-// apps, RFC 8252: a one-shot loopback listener on 127.0.0.1, PKCE S256 and a state check); the
+// or reconnect a connector (#98). Gmail's compose client, Gmail's read client (`gmail-read`,
+// #529) and Drive's read client (#516) sign in through Google in the browser (OAuth for native apps, RFC 8252: a one-shot loopback listener on
+// 127.0.0.1, PKCE S256 and a state check); the
 // Proton connectors take the Bridge password at a no-echo prompt. The credential goes to the
 // gate vault and nowhere else: it is never printed, logged, passed in argv or env, or written to
 // a file. Then the running gate checks the connector over its control socket, audits the
@@ -34,31 +43,71 @@ import { createVault, vaultConfig } from "./main"
 // infra/connectors.md.
 
 export const GMAIL_CLIENT_ID_ENV = "EIDO_GMAIL_CLIENT_ID"
-const CONNECTORS = [
+/** The command's name for Gmail's read client; the gate checks it as the `gmail` connector. */
+const GMAIL_READ_TARGET = "gmail-read"
+const TARGETS = [
   GMAIL_CONNECTOR,
+  GMAIL_READ_TARGET,
+  DRIVE_CONNECTOR,
   PROTON_CONNECTOR,
   PROTON_CALENDAR_CONNECTOR,
 ] as const
-type Connector = (typeof CONNECTORS)[number]
-const USAGE = `usage: pnpm --filter @eido/gate connect <${CONNECTORS.join("|")}>`
+type Target = (typeof TARGETS)[number]
+const USAGE = `usage: pnpm --filter @eido/gate connect <${TARGETS.join("|")}>`
 /** How long the browser sign-in may take before the listener closes. */
 const SIGN_IN_TIMEOUT_MS = 5 * 60_000
 
-const GMAIL_SECRET_KEY: VaultKey = {
-  connector: GMAIL_CONNECTOR,
-  kind: "api_key",
-  client: "write",
+/** One Google OAuth client the command signs in: where its grant goes and what it must carry. */
+type GoogleClient = {
+  connector: string
+  client: VaultClient
+  clientIdEnv: string
+  scope: string
+  /** The product named in messages: "Gmail", "Drive". */
+  label: string
+  /** What the stored grant is called in the confirmation line. */
+  credential: string
 }
-const GMAIL_REFRESH_KEY: VaultKey = {
-  connector: GMAIL_CONNECTOR,
-  kind: "refresh_token",
-  client: "write",
-}
-const GMAIL_ACCESS_KEY: VaultKey = {
-  connector: GMAIL_CONNECTOR,
-  kind: "access_token",
-  client: "write",
-}
+
+const GOOGLE_CLIENTS = {
+  [GMAIL_CONNECTOR]: {
+    connector: GMAIL_CONNECTOR,
+    client: "write",
+    clientIdEnv: GMAIL_CLIENT_ID_ENV,
+    scope: GMAIL_MODIFY_SCOPE,
+    label: "Gmail",
+    credential: "Gmail credential",
+  },
+  [GMAIL_READ_TARGET]: {
+    connector: GMAIL_CONNECTOR,
+    client: "read",
+    clientIdEnv: GMAIL_READ_CLIENT_ID_ENV,
+    scope: GMAIL_READONLY_SCOPE,
+    label: "Gmail",
+    credential: "Gmail read credential",
+  },
+  [DRIVE_CONNECTOR]: {
+    connector: DRIVE_CONNECTOR,
+    client: "read",
+    clientIdEnv: DRIVE_CLIENT_ID_ENV,
+    scope: DRIVE_READONLY_SCOPE,
+    label: "Drive",
+    credential: "Drive credential",
+  },
+} as const satisfies Record<string, GoogleClient>
+
+const googleClient = (name: Target): GoogleClient | undefined =>
+  name === GMAIL_CONNECTOR ||
+  name === GMAIL_READ_TARGET ||
+  name === DRIVE_CONNECTOR
+    ? GOOGLE_CLIENTS[name]
+    : undefined
+
+const vaultKey = (google: GoogleClient, kind: VaultKey["kind"]): VaultKey => ({
+  connector: google.connector,
+  kind,
+  client: google.client,
+})
 
 export type ConnectIo = {
   out: (line: string) => void
@@ -75,8 +124,8 @@ export type ConnectDeps = {
   signInTimeoutMs?: number
 }
 
-const isConnector = (name: string): name is Connector =>
-  CONNECTORS.some((connector) => connector === name)
+const isTarget = (name: string): name is Target =>
+  TARGETS.some((target) => target === name)
 
 const CALLBACK_MESSAGES = {
   state_mismatch:
@@ -89,30 +138,32 @@ const CALLBACK_MESSAGES = {
   string
 >
 
-const EXCHANGE_MESSAGES = {
-  token_endpoint_unreachable: "Google's token endpoint could not be reached",
-  token_endpoint_refused: "Google refused the authorization code",
-  no_refresh_token: "Google returned no refresh token",
-  scope_not_granted:
-    "The Gmail permission was not granted; tick it on the consent screen",
-} as const satisfies Record<
-  Extract<ExchangeResult, { ok: false }>["reason"],
-  string
->
+const exchangeMessage = (
+  reason: Extract<ExchangeResult, { ok: false }>["reason"],
+  label: string
+): string =>
+  ({
+    token_endpoint_unreachable: "Google's token endpoint could not be reached",
+    token_endpoint_refused: "Google refused the authorization code",
+    no_refresh_token: "Google returned no refresh token",
+    scope_not_granted: `The ${label} permission was not granted; tick it on the consent screen`,
+  })[reason]
 
 const withCode = (message: string, code: string | undefined) =>
   code === undefined ? `${message}.` : `${message} (${code}).`
 
 type Step = { ok: true } | { ok: false; status: number }
 
-async function connectGmail(
+async function connectGoogle(
+  google: GoogleClient,
   env: Readonly<Record<string, string | undefined>>,
   vault: Vault,
   io: ConnectIo,
   deps: ConnectDeps
 ): Promise<Step> {
-  const clientId = env[GMAIL_CLIENT_ID_ENV] ?? ""
-  let secret = await vault.get(GMAIL_SECRET_KEY)
+  const clientId = env[google.clientIdEnv] ?? ""
+  const secretKey = vaultKey(google, "api_key")
+  let secret = await vault.get(secretKey)
   const newSecret = secret === undefined
   if (secret === undefined) {
     secret = await io.prompt("Google OAuth client secret (not shown): ")
@@ -130,7 +181,7 @@ async function connectGmail(
   const url = authorizationUrl({
     clientId,
     redirectUri: loopback.redirectUri,
-    scope: GMAIL_MODIFY_SCOPE,
+    scope: google.scope,
     state,
     challenge: pkce.challenge,
   })
@@ -151,19 +202,19 @@ async function connectGmail(
     code: callback.code,
     verifier: pkce.verifier,
     redirectUri: loopback.redirectUri,
-    scope: GMAIL_MODIFY_SCOPE,
+    scope: google.scope,
   })
   if (!exchanged.ok) {
     io.err(
-      `${withCode(EXCHANGE_MESSAGES[exchanged.reason], exchanged.error)} Nothing was stored.`
+      `${withCode(exchangeMessage(exchanged.reason, google.label), exchanged.error)} Nothing was stored.`
     )
     return { ok: false, status: 1 }
   }
-  await vault.set(GMAIL_REFRESH_KEY, exchanged.refreshToken)
-  if (newSecret) await vault.set(GMAIL_SECRET_KEY, secret)
+  await vault.set(vaultKey(google, "refresh_token"), exchanged.refreshToken)
+  if (newSecret) await vault.set(secretKey, secret)
   // A cached access token belongs to the old grant; the gate's next call refreshes from the new one.
-  await vault.delete(GMAIL_ACCESS_KEY)
-  io.out("Stored the Gmail credential in the gate vault.")
+  await vault.delete(vaultKey(google, "access_token"))
+  io.out(`Stored the ${google.credential} in the gate vault.`)
   return { ok: true }
 }
 
@@ -203,8 +254,8 @@ export async function connect(
   io: ConnectIo,
   deps: ConnectDeps = {}
 ): Promise<number> {
-  const [name, ...rest] = args
-  if (name === undefined || rest.length > 0 || !isConnector(name)) {
+  const [target, ...rest] = args
+  if (target === undefined || rest.length > 0 || !isTarget(target)) {
     io.err(USAGE)
     return 2
   }
@@ -213,8 +264,13 @@ export async function connect(
     io.err(`${CONTROL_SOCKET_ENV} is not set`)
     return 2
   }
-  if (name === GMAIL_CONNECTOR && (env[GMAIL_CLIENT_ID_ENV] ?? "") === "") {
-    io.err(`${GMAIL_CLIENT_ID_ENV} is not set; use the gate's Gmail client id`)
+  const google = googleClient(target)
+  // The connector the gate pins and checks: both Gmail clients are the `gmail` connector.
+  const name = google?.connector ?? target
+  if (google !== undefined && (env[google.clientIdEnv] ?? "") === "") {
+    io.err(
+      `${google.clientIdEnv} is not set; use the gate's ${google.label} client id`
+    )
     return 2
   }
   const vault = deps.vault ?? selectVault(env, io)
@@ -239,9 +295,9 @@ export async function connect(
     return 1
   }
   const stored =
-    name === GMAIL_CONNECTOR
-      ? await connectGmail(env, vault, io, deps)
-      : await connectBridge(vault, io)
+    google === undefined
+      ? await connectBridge(vault, io)
+      : await connectGoogle(google, env, vault, io, deps)
   if (!stored.ok) return stored.status
   try {
     const checked = await client.connected(name)

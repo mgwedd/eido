@@ -10,7 +10,10 @@ import type { AddressInfo } from "node:net"
 // - `GET /v1/models` with one model id;
 // - `POST /apply-template`, rendering a ChatML template (tools in the system turn);
 // - `POST /tokenize`, a byte tokenizer: ids 0-255 are UTF-8 bytes, and with `parse_special`
-//   the control-token strings of common chat formats become ids from 256 up;
+//   the control-token strings of common chat formats become ids from 256 up; a script can add
+//   user-defined tokens, which become their ids either way; `with_pieces` answers each id with
+//   its text (a byte that is not ASCII as a one-byte list, as llama-server sends a partial
+//   UTF-8 sequence);
 // - `POST /completion` with a token-id prompt, streamed with `stop`, `stop_type` and
 //   `tokens_evaluated`.
 
@@ -38,6 +41,36 @@ const SPECIAL_BASE = 256
 export function specialId(token: SpecialToken): number {
   return SPECIAL_BASE + SPECIAL_TOKENS.indexOf(token)
 }
+
+/**
+ * User-defined tokens, matched in plain text whatever `parse_special` says, as llama.cpp does
+ * (#536): Gemma 4's, and `[THINK]`, which stands in for a later model's marker that no material
+ * normalization knows. Ids follow the control tokens. Only a script with `userDefinedTokens`
+ * tokenizes them.
+ */
+export const USER_DEFINED_TOKENS = [
+  "<|tool_call>",
+  "<tool_call|>",
+  "<tool_response|>",
+  "<|channel>",
+  "<channel|>",
+  '<|"|>',
+  "[THINK]",
+] as const
+
+export type UserDefinedToken = (typeof USER_DEFINED_TOKENS)[number]
+
+const USER_DEFINED_BASE = SPECIAL_BASE + SPECIAL_TOKENS.length
+
+/** The id `/tokenize` gives a user-defined token, with or without `parse_special`. */
+export function userDefinedId(token: UserDefinedToken): number {
+  return USER_DEFINED_BASE + USER_DEFINED_TOKENS.indexOf(token)
+}
+
+const TOKEN_TEXT: readonly string[] = [
+  ...SPECIAL_TOKENS,
+  ...USER_DEFINED_TOKENS,
+]
 
 /** The BOS id `add_special` prepends. */
 export const BOS_ID = specialId("<s>")
@@ -84,6 +117,8 @@ export interface StubScript {
   modelMetadataFailures?: number
   /** `/tokenize` parses special tokens whatever `parse_special` says. */
   ignoreParseSpecial?: boolean
+  /** `/tokenize` matches `USER_DEFINED_TOKENS` in all text, as llama.cpp does for Gemma 4. */
+  userDefinedTokens?: boolean
   /** Rewrites the `/apply-template` answer's prompt, for template tests. */
   renderedPrompt?: (prompt: string) => string
 }
@@ -121,11 +156,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }
 
-/** Ids for `content`: bytes, and control-token strings as their ids when `parseSpecial`. */
+/**
+ * Ids for `content`: bytes, control-token strings as their ids when `parseSpecial`, and
+ * user-defined tokens as their ids either way when `userDefined`.
+ */
 export function stubTokenize(
   content: string,
   addSpecial: boolean,
-  parseSpecial: boolean
+  parseSpecial: boolean,
+  userDefined = false
 ): number[] {
   const ids: number[] = addSpecial ? [BOS_ID] : []
   let text = ""
@@ -145,6 +184,16 @@ export function stubTokenize(
         }
       }
     }
+    if (userDefined) {
+      for (const [index, token] of USER_DEFINED_TOKENS.entries()) {
+        if (content.startsWith(token, i)) {
+          flush()
+          ids.push(USER_DEFINED_BASE + index)
+          i += token.length
+          continue outer
+        }
+      }
+    }
     text += content.charAt(i)
     i += 1
   }
@@ -152,7 +201,22 @@ export function stubTokenize(
   return ids
 }
 
-/** The text of byte ids; a control-token id is written as its string. */
+/** Each id with its text, as `/tokenize` answers with `with_pieces`. */
+export function stubPieces(
+  tokens: readonly number[]
+): { id: number; piece: string | number[] }[] {
+  return tokens.map((id) => ({
+    id,
+    piece:
+      id < 0x80
+        ? String.fromCharCode(id)
+        : id < SPECIAL_BASE
+          ? [id]
+          : (TOKEN_TEXT[id - SPECIAL_BASE] ?? `<unk ${String(id)}>`),
+  }))
+}
+
+/** The text of byte ids; a control-token or user-defined id is written as its string. */
 export function stubDecode(tokens: readonly number[]): string {
   const decoder = new TextDecoder()
   let text = ""
@@ -164,7 +228,7 @@ export function stubDecode(tokens: readonly number[]): string {
     }
     text += decoder.decode(new Uint8Array(bytes))
     bytes = []
-    text += SPECIAL_TOKENS[id - SPECIAL_BASE] ?? `<unk ${String(id)}>`
+    text += TOKEN_TEXT[id - SPECIAL_BASE] ?? `<unk ${String(id)}>`
   }
   return text + decoder.decode(new Uint8Array(bytes))
 }
@@ -425,12 +489,14 @@ export async function startStubModelServer(
         json(res, 400, { error: { code: 400, message: "no content" } })
         return
       }
+      const tokens = stubTokenize(
+        parsed.content,
+        parsed.add_special === true,
+        script.ignoreParseSpecial === true || parsed.parse_special !== false,
+        script.userDefinedTokens === true
+      )
       json(res, 200, {
-        tokens: stubTokenize(
-          parsed.content,
-          parsed.add_special === true,
-          script.ignoreParseSpecial === true || parsed.parse_special !== false
-        ),
+        tokens: parsed.with_pieces === true ? stubPieces(tokens) : tokens,
       })
       return
     }

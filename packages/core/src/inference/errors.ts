@@ -66,3 +66,20 @@ export class UnsupportedModelServerError extends Error {
     this.feature = feature
   }
 }
+
+/**
+ * A material span tokenized to an id the rendered template itself uses as a marker, such as a
+ * user-defined token the server matches even with `parse_special: false`. Nothing was sent.
+ */
+export class MaterialMarkerError extends Error {
+  /** The marker ids found in material, ascending. */
+  readonly ids: readonly number[]
+
+  constructor(ids: readonly number[]) {
+    super(
+      `material tokenizes to the chat template's marker ids ${ids.join(", ")}: nothing was sent`
+    )
+    this.name = "MaterialMarkerError"
+    this.ids = ids
+  }
+}

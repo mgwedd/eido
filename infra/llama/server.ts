@@ -34,6 +34,8 @@ export function serverArgs(modelPath: string, port: number): string[] {
     "2048",
     "-t",
     "8",
+    "--reasoning",
+    "off",
   ]
 }
 
