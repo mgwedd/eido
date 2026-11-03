@@ -6,6 +6,8 @@ export type NavItem = {
   icon: LucideIcon
   /** Shown in the phone tab bar. Entries without it appear only in the desktop sidebar. */
   phone: boolean
+  /** Carries the live pending count next to its label. */
+  badge?: "queue"
 }
 
 /**
@@ -15,7 +17,7 @@ export type NavItem = {
  */
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/", label: "Today", icon: Sun, phone: true },
-  { href: "/queue", label: "Queue", icon: Inbox, phone: true },
+  { href: "/queue", label: "Queue", icon: Inbox, phone: true, badge: "queue" },
 ]
 
 export const MAX_PHONE_TABS = 5

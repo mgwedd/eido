@@ -13,7 +13,9 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@eido/ui/components/sidebar"
+import { QueuePill, useQueueCount } from "@/components/queue-count"
 import { isActive, NAV_ITEMS } from "@/lib/nav"
+import { queueLinkName } from "@/lib/queue/badge"
 
 function BrandBlock() {
   return (
@@ -31,6 +33,7 @@ function BrandBlock() {
 
 function AppSidebar() {
   const pathname = usePathname()
+  const queue = useQueueCount()
 
   return (
     <Sidebar
@@ -45,7 +48,7 @@ function AppSidebar() {
           <SidebarGroupContent>
             <nav aria-label="Primary">
               <SidebarMenu>
-                {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
+                {NAV_ITEMS.map(({ href, label, icon: Icon, badge }) => {
                   const active = isActive(pathname, href)
                   return (
                     <SidebarMenuItem key={href}>
@@ -56,11 +59,17 @@ function AppSidebar() {
                           <Link
                             href={href}
                             aria-current={active ? "page" : undefined}
+                            aria-label={
+                              badge === "queue"
+                                ? queueLinkName(label, queue)
+                                : undefined
+                            }
                           />
                         }
                       >
                         <Icon aria-hidden />
                         <span>{label}</span>
+                        {badge === "queue" && <QueuePill queue={queue} />}
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   )

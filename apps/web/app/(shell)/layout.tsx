@@ -2,6 +2,7 @@ import { SidebarProvider } from "@eido/ui/components/sidebar"
 import { AppSidebar } from "@/components/app-sidebar"
 import { ConnectionBanner } from "@/components/connection-banner"
 import { PhoneTabBar } from "@/components/phone-tab-bar"
+import { QueueCountProvider } from "@/components/queue-count"
 
 export default function ShellLayout({
   children,
@@ -19,8 +20,10 @@ export default function ShellLayout({
       >
         Skip to content
       </a>
-      <AppSidebar />
-      <PhoneTabBar />
+      <QueueCountProvider>
+        <AppSidebar />
+        <PhoneTabBar />
+      </QueueCountProvider>
       <div className="flex min-w-0 flex-1 flex-col">
         <ConnectionBanner />
         <main
