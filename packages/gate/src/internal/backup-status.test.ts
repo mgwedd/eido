@@ -40,12 +40,14 @@ describe("backup-status", () => {
         defaultBackupStampPath({
           EIDO_BACKUP_LOG_DIR: "/custom/logs",
         })
-      ).toBe("/custom/logs/backup-last-success")
+      ).toBe(join("/custom/logs", "backup-last-success"))
     })
 
     it("falls back to default Library/Logs/eido/backup-last-success when env is empty", () => {
       const path = defaultBackupStampPath({})
-      expect(path).toMatch(/\/Library\/Logs\/eido\/backup-last-success$/)
+      expect(
+        path.endsWith(join("Library", "Logs", "eido", "backup-last-success"))
+      ).toBe(true)
     })
   })
 
