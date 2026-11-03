@@ -6,13 +6,17 @@ export default async function LedgerPage({
   searchParams: Promise<{
     entity?: string | string[]
     status?: string | string[]
+    obligation?: string | string[]
   }>
 }) {
-  const { entity, status } = await searchParams
+  const { entity, status, obligation } = await searchParams
   return (
     <LedgerView
       initialEntity={typeof entity === "string" ? entity : undefined}
       initialStatus={typeof status === "string" ? status : undefined}
+      initialObligation={
+        typeof obligation === "string" ? obligation : undefined
+      }
     />
   )
 }

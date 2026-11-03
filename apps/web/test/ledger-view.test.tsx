@@ -532,4 +532,79 @@ describe("LedgerView", () => {
     expect(container.textContent).toContain("Pay property tax")
     expect(container.textContent).toContain("Review lease terms")
   })
+
+  describe("opened on one obligation", () => {
+    const pageOne = sampleObligations.slice(0, 1)
+    const pageTwo = sampleObligations.slice(1)
+
+    function stubPaged(opts: { lookup: CoreApiObligationList["obligations"] }) {
+      const urls: string[] = []
+      const fetchMock = vi.fn().mockImplementation((req: RequestInfo | URL) => {
+        const url = toUrlString(req)
+        urls.push(url)
+        const body = url.includes("/api/core/entities")
+          ? { entities: sampleEntities }
+          : new URL(url).searchParams.has("id")
+            ? { obligations: opts.lookup, nextOffset: null }
+            : url.includes("offset=1")
+              ? { obligations: pageTwo, nextOffset: null }
+              : { obligations: pageOne, nextOffset: 1 }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(body),
+        })
+      })
+      vi.stubGlobal("fetch", fetchMock)
+      return urls
+    }
+
+    test("loads on to the page holding the obligation, marks its row and scrolls to it", async () => {
+      const scrolled: string[] = []
+      Element.prototype.scrollIntoView = function (this: Element) {
+        scrolled.push(this.getAttribute("data-obligation-row") ?? "")
+      }
+      const target = sampleObligations[1]
+      stubPaged({ lookup: target ? [target] : [] })
+
+      await renderLedger({ initialObligation: "2" })
+
+      const marked = Array.from(
+        container.querySelectorAll('[aria-current="true"]')
+      )
+      expect(
+        marked.map((el) => el.getAttribute("data-obligation-row"))
+      ).toEqual(["2", "2"])
+      expect(marked[0]?.textContent).toContain("Review lease terms")
+      expect(container.querySelector('[role="status"]')).toBeNull()
+      expect(scrolled).toEqual(["2", "2"])
+      const viewerLink = container.querySelector('a[href*="/documents/"]')
+      expect(viewerLink?.getAttribute("href")).toContain(
+        "from=%2Fledger%3Fobligation%3D2"
+      )
+    })
+
+    test("an obligation that does not exist says so and marks no row", async () => {
+      stubPaged({ lookup: [] })
+
+      await renderLedger({ initialObligation: "999" })
+
+      expect(container.querySelector('[role="status"]')?.textContent).toBe(
+        "That obligation was not found."
+      )
+      expect(container.querySelector('[aria-current="true"]')).toBeNull()
+      expect(container.textContent).toContain("Pay property tax")
+    })
+
+    test("a malformed id says so without looking it up", async () => {
+      const urls = stubPaged({ lookup: [] })
+
+      await renderLedger({ initialObligation: "abc" })
+
+      expect(container.querySelector('[role="status"]')?.textContent).toBe(
+        "That obligation was not found."
+      )
+      expect(urls.some((u) => /[?&]id=/.test(u))).toBe(false)
+    })
+  })
 })

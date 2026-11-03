@@ -122,7 +122,7 @@ function toObligationEntry(
 }
 
 /**
- * Serves GET /obligations?entity=&status=&direction=&limit=&offset= from the ledger. An owed
+ * Serves GET /obligations?id=&entity=&status=&direction=&limit=&offset= from the ledger. An owed
  * reply has `hasDraftIntent` when its thread has a live stored draft (#548); without the gate's
  * `status`, no row has one.
  */
@@ -172,6 +172,16 @@ export async function listObligationsRoute(
     }
   }
 
+  const rawId = param(params, "id")
+  let id: number | undefined
+  if (rawId !== undefined) {
+    if (ID.test(rawId) && Number.isSafeInteger(Number(rawId))) {
+      id = Number(rawId)
+    } else {
+      errors.push({ field: "id", message: "must be a positive integer" })
+    }
+  }
+
   if (errors.length > 0) {
     return {
       ok: false,
@@ -183,6 +193,11 @@ export async function listObligationsRoute(
 
   const conditions: string[] = []
   const values: SQLInputValue[] = []
+
+  if (id !== undefined) {
+    conditions.push("o.id = ?")
+    values.push(id)
+  }
 
   const entity = param(params, "entity")
   if (entity !== undefined) {

@@ -77,8 +77,8 @@ describe("loadTransactions", () => {
 })
 
 describe("linkedObligationUrl", () => {
-  test("escapes the entity id in the ledger query", () => {
-    expect(linkedObligationUrl("a&b c")).toBe("/ledger?entity=a%26b+c")
+  test("opens the ledger on the obligation id", () => {
+    expect(linkedObligationUrl(42)).toBe("/ledger?obligation=42")
   })
 })
 
