@@ -6,7 +6,7 @@ import * as React from "react"
 import type { GateIntentHistory, GatePrepareApproval } from "@eido/schemas"
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
-import { Button } from "@eido/ui/components/button"
+import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent } from "@eido/ui/components/card"
 import { Input } from "@eido/ui/components/input"
 import {
@@ -23,6 +23,8 @@ import { ShortcutKeys } from "@/components/shortcuts-provider"
 import { useKeydown } from "@/hooks/use-keydown"
 import { shortHash } from "@/lib/approval/challenge"
 import { prepareApproval, signApproval } from "@/lib/approval/sign"
+import { loadCredentialStatus } from "@/lib/auth/unlock"
+import { enrolUrl } from "@/lib/enrol"
 import {
   confirmFieldIntent,
   editIntent,
@@ -250,9 +252,12 @@ function ApprovalCard({
   onDecided,
   onReplaced,
   onSkip,
+  passkeyEnrolled = true,
 }: {
   intent: PendingIntent
   now: Date
+  /** False only when the gate says this device has no passkey; unknown counts as enrolled. */
+  passkeyEnrolled?: boolean
   onDecided: (message: string) => void
   /** The edit replaced this intent with a new pending one that was not approved. */
   onReplaced?: (newIntentId: string, message: string) => void
@@ -333,7 +338,8 @@ function ApprovalCard({
     now
   )
   const busy = action.status === "signing"
-  const canApprove = card.status === "ready" && view !== undefined && !busy
+  const canApprove =
+    card.status === "ready" && view !== undefined && !busy && passkeyEnrolled
   const canConfirm =
     card.status === "ready" && confirmData !== undefined && !busy
 
@@ -812,16 +818,25 @@ function ApprovalCard({
             Edit and approve
             <ShortcutKeys keys={["e"]} />
           </Button>
-          <Button
-            size="lg"
-            className="min-h-[60px] flex-1"
-            disabled={!canApprove}
-            aria-keyshortcuts="a"
-            onClick={() => void approve()}
-          >
-            Approve
-            <ShortcutKeys keys={["a"]} />
-          </Button>
+          {passkeyEnrolled ? (
+            <Button
+              size="lg"
+              className="min-h-[60px] flex-1"
+              disabled={!canApprove}
+              aria-keyshortcuts="a"
+              onClick={() => void approve()}
+            >
+              Approve
+              <ShortcutKeys keys={["a"]} />
+            </Button>
+          ) : (
+            <Link
+              href={enrolUrl("/queue")}
+              className={`${buttonVariants({ size: "lg" })} min-h-[60px] flex-1`}
+            >
+              Enrol this device
+            </Link>
+          )}
         </div>
       )}
       {card.status === "ready" ? (
@@ -887,8 +902,23 @@ function QueueRow({
   )
 }
 
+/** Whether the gate has a passkey for this device; undefined until it answers, and when it cannot. */
+function usePasskeyEnrolled(): boolean | undefined {
+  const [enrolled, setEnrolled] = React.useState<boolean>()
+  React.useEffect(() => {
+    const controller = new AbortController()
+    void loadCredentialStatus(controller.signal).then((result) => {
+      if (controller.signal.aborted) return
+      setEnrolled(result.ok ? result.status.enrolled : undefined)
+    })
+    return () => controller.abort()
+  }, [])
+  return enrolled
+}
+
 function QueueView({ initialId }: { initialId?: string }) {
   const { state, reload, remove } = useQueue()
+  const passkeyEnrolled = usePasskeyEnrolled()
   const [selectedId, setSelectedId] = React.useState(initialId)
   const [message, setMessage] = React.useState<string | null>(null)
   const [now] = React.useState(() => new Date())
@@ -994,6 +1024,7 @@ function QueueView({ initialId }: { initialId?: string }) {
             key={selected.id}
             intent={selected}
             now={now}
+            passkeyEnrolled={passkeyEnrolled !== false}
             onDecided={(text) => decided(selected.id, text)}
             onReplaced={replaced}
             onSkip={handleSkip}
