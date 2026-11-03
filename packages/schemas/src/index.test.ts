@@ -20,6 +20,7 @@ import {
   validateIntent,
   validateIntentResult,
   validateCoreApiAskResponse,
+  validateCoreApiConversationSearch,
   validateDocumentTypeClassification,
 } from "./index"
 import type { JsonSchema } from "./index"
@@ -75,6 +76,52 @@ describe("Core API Ask response metadata", () => {
             label: "Archive email",
             intent: { kind: "email.archive", args: { messageIds: [] } },
           },
+        ],
+      }).ok
+    ).toBe(false)
+  })
+})
+
+describe("Core API Conversation search schema", () => {
+  test("validates valid search results", () => {
+    const valid = {
+      hits: [
+        {
+          conversationId: "c1",
+          turnId: "t1",
+          kind: "raw",
+          snippet: "hello [world]",
+          score: -0.5,
+        },
+        {
+          conversationId: "c2",
+          kind: "digest",
+          snippet: "digest snippet",
+          score: -1.2,
+        },
+      ],
+    }
+    expect(validateCoreApiConversationSearch(valid).ok).toBe(true)
+  })
+
+  test("rejects more than 100 hits", () => {
+    const hit = { conversationId: "c1", kind: "raw", snippet: "s", score: 1 }
+    expect(
+      validateCoreApiConversationSearch({ hits: Array(100).fill(hit) }).ok
+    ).toBe(true)
+    expect(
+      validateCoreApiConversationSearch({ hits: Array(101).fill(hit) }).ok
+    ).toBe(false)
+  })
+
+  test("rejects invalid hits", () => {
+    expect(validateCoreApiConversationSearch({ hits: "not-an-array" }).ok).toBe(
+      false
+    )
+    expect(
+      validateCoreApiConversationSearch({
+        hits: [
+          { conversationId: "c1", kind: "unknown", snippet: "s", score: 1 },
         ],
       }).ok
     ).toBe(false)
@@ -160,6 +207,23 @@ const VALID: Record<string, unknown> = {
   "file.rename": { root: "docs", path: "a/b.txt", newName: "c.txt" },
   "file.move": { root: "docs", path: "a/b.txt", toPath: "d/b.txt" },
   "file.delete": { root: "docs", path: "a/b.txt" },
+  "confirm.field": {
+    extractionId: "ext-1",
+    field: "amount",
+    value: {
+      raw: "$4,800.00",
+      typed: { amount_minor: 480000, currency: "USD" },
+    },
+    source: {
+      docSha256: "ab".repeat(32),
+      start: 10,
+      end: 19,
+      page: 2,
+      line: 14,
+    },
+    confidence: 0.71,
+    threshold: 0.85,
+  },
 }
 
 const EXPECTED_KINDS = Object.keys(VALID)

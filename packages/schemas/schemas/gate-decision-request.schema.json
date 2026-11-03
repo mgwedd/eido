@@ -49,6 +49,23 @@
       },
       "required": ["intentId", "decision"],
       "additionalProperties": false
+    },
+    {
+      "title": "GateConfirmRequest",
+      "description": "Confirm an internal intent (such as confirm.field) without a WebAuthn assertion.",
+      "type": "object",
+      "properties": {
+        "intentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "decision": {
+          "const": "approved"
+        }
+      },
+      "required": ["intentId", "decision"],
+      "additionalProperties": false
     }
   ]
 }

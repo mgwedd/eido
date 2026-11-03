@@ -6,6 +6,8 @@ import { GMAIL_DEFAULTS } from "./gmail/config"
 import { gmailManifest } from "./gmail/manifest"
 import { resolveConfig as resolveProtonConfig } from "./proton/config"
 import { protonManifest } from "./proton/manifest"
+import { ProtonCalendarConfigError } from "./proton-calendar/config"
+import { protonCalendarManifest } from "./proton-calendar/manifest"
 
 // The manifest each connector declares today, for the owner's re-pin flow (#497). The gate
 // cannot import this package, so `pnpm --filter @eido/core connector-manifest <connector>` prints
@@ -20,6 +22,7 @@ export type CurrentManifest =
 
 // Mail's manifest reads only the mirrored folders from its config; the address is validated by
 // `resolveProtonConfig` and is the one the data plane already reads from the environment.
+// Calendar's manifest needs assistant and owner addresses to build invitations and egress.
 const BUILDERS: Readonly<
   Record<string, (env: Env) => ConnectorManifest | string>
 > = {
@@ -33,6 +36,26 @@ const BUILDERS: Readonly<
       return protonManifest(resolveProtonConfig({ username }))
     } catch {
       return "EIDO_PROTON_USERNAME must be an address"
+    }
+  },
+  "proton-calendar": (env) => {
+    const assistantAddress =
+      env["EIDO_PROTON_CALENDAR_ASSISTANT_ADDRESS"]?.trim() ||
+      env["EIDO_ASSISTANT_ADDRESS"]?.trim() ||
+      ""
+    if (assistantAddress === "")
+      return "EIDO_PROTON_CALENDAR_ASSISTANT_ADDRESS is not set"
+    const ownerAddress =
+      env["EIDO_PROTON_CALENDAR_OWNER_ADDRESS"]?.trim() ||
+      env["EIDO_OWNER_ADDRESS"]?.trim() ||
+      ""
+    if (ownerAddress === "")
+      return "EIDO_PROTON_CALENDAR_OWNER_ADDRESS is not set"
+    try {
+      return protonCalendarManifest({ assistantAddress, ownerAddress })
+    } catch (error) {
+      if (error instanceof ProtonCalendarConfigError) return error.message
+      throw error
     }
   },
 }

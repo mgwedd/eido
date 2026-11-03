@@ -1032,6 +1032,9 @@ export async function serveDataPlane(
     ...(ask === undefined ? {} : { ask }),
     propose: plane.gate.propose,
     documents: { db: plane.db, accessAudit: plane.accessAudit },
+    ...(plane.conversation === undefined
+      ? {}
+      : { conversations: plane.conversation }),
     ...config,
   })
   const closeApi = api.close.bind(api)

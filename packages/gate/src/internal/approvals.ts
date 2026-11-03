@@ -25,7 +25,7 @@ import type { CeremonyFailure, WebAuthnConfig } from "./webauthn"
 
 export type ApprovalAssertion = Extract<
   GateDecisionRequest,
-  { decision: "approved" }
+  { decision: "approved"; nonce: string }
 >["assertion"]
 
 export type ApprovalRequest = {

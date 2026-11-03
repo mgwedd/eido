@@ -11,6 +11,11 @@ export type LedgerErrorCode =
   | "invalid_injection_provenance"
   | "obligation_not_found"
   | "invalid_transition"
+  | "invalid_value"
+  | "invalid_status"
+  | "invalid_fields"
+  | "field_not_found"
+  | "invalid_field"
   | "busy"
 
 /** Typed failure of a ledger call. Messages never contain document text or stored values. */

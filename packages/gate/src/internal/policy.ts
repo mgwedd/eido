@@ -167,6 +167,10 @@ export function kindTier(
   connector?: string
 ): TierDecision {
   if (!isIntentKind(kind)) return forbidden("unknown_kind")
+  if (kind === "confirm.field") {
+    // Internal effect only: never auto, needs no connector.
+    return { tier: "approval" }
+  }
   const lookup = lookupOperation(db, kind, connector)
   switch (lookup.status) {
     case "none":
