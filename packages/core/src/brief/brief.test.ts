@@ -1,5 +1,7 @@
 import type { DatabaseSync } from "node:sqlite"
 import { beforeEach, describe, expect, test } from "vitest"
+import { decideEvent, emitEvent } from "../triage/store"
+import type { NewEvent } from "../triage/store"
 import { writeDigest } from "../digest/cache"
 import {
   coverageLine,
@@ -32,7 +34,10 @@ beforeEach(async () => {
 })
 
 const items = (lines: { kind: string }[]): BriefItemLine[] =>
-  lines.filter((line): line is BriefItemLine => line.kind !== "more")
+  lines.filter(
+    (line): line is BriefItemLine =>
+      line.kind !== "more" && line.kind !== "deferred"
+  )
 
 /** One overdue, one due, one new undated obligation and one unconfirmed field. */
 async function seedLedger(): Promise<void> {
@@ -685,5 +690,113 @@ describe("generateBrief changed lines (#481)", () => {
       "UPDATE obligations SET status = 'open', updated_at = ? WHERE id = ?"
     ).run(IN_WINDOW, id)
     expect((await generateBrief(db, NOW, CONFIG)).lines).toHaveLength(1)
+  })
+})
+
+describe("generateBrief deferred lines", () => {
+  const FIRED = "2026-11-02T04:00:00.000Z"
+
+  function digestEvent(over: Pick<NewEvent, "ref" | "triggerKey">): string {
+    const { id } = emitEvent(db, {
+      source: "extraction",
+      kind: "new-obligation",
+      fireId: "created",
+      signals: {},
+      receivedAt: FIRED,
+      ...over,
+    })
+    decideEvent(db, id, {
+      disposition: "digest",
+      reason: "budget",
+      decidedAt: FIRED,
+    })
+    return id
+  }
+
+  test("each digest event becomes one line linking its ledger row, on top of maxLines", async () => {
+    const doc = putDoc(db, f.entityId, "deferred", IN_WINDOW)
+    const obligation = await putObligation(db, f.entityId, doc, {
+      action: "Renew the lease",
+      party: "Landlord Example",
+      dueAt: "2026-12-01",
+    })
+    const extraction = await unconfirmedAmount(db, doc, 0.4)
+    digestEvent({ ref: `obl:${String(obligation)}`, triggerKey: "t:obl" })
+    digestEvent({ ref: `ext:${String(extraction)}`, triggerKey: "t:ext" })
+    const brief = await generateBrief(db, NOW, { ...CONFIG, maxLines: 1 })
+    const deferred = brief.lines.filter((line) => line.kind === "deferred")
+    expect(deferred).toEqual([
+      {
+        kind: "deferred",
+        text: "Renew the lease (Landlord Example), due 2026-12-01",
+        ledger: { type: "obligation", id: String(obligation) },
+      },
+      {
+        kind: "deferred",
+        text: 'Confirm amount: "CHF 120.00"',
+        ledger: { type: "extraction", id: String(extraction) },
+      },
+    ])
+    // The ledger items still fill maxLines on their own; the deferred lines are extra.
+    expect(brief.lines).toHaveLength(1 + 2)
+    expect(JSON.stringify(deferred)).not.toMatch(/\bmore\b|digest/i)
+  })
+
+  test("the next brief leaves out events the previous one listed, and the stored brief round-trips", async () => {
+    const doc = putDoc(db, f.entityId, "once", IN_WINDOW)
+    const obligation = await putObligation(db, f.entityId, doc, {
+      action: "Send the form",
+    })
+    digestEvent({ ref: `obl:${String(obligation)}`, triggerKey: "t:once" })
+    const first = await generateBrief(db, NOW, CONFIG)
+    expect(first.lines.some((line) => line.kind === "deferred")).toBe(true)
+    expect(getBrief(db, "2026-11-02")?.lines).toEqual(first.lines)
+    const tomorrow = new Date(NOW.getTime() + 24 * 60 * 60 * 1000)
+    const second = await generateBrief(db, tomorrow, CONFIG)
+    expect(second.lines.some((line) => line.kind === "deferred")).toBe(false)
+    const marked = db
+      .prepare("SELECT shown_in_brief_at FROM events WHERE trigger_key = ?")
+      .get("t:once")
+    expect(marked?.["shown_in_brief_at"]).toBe(NOW.toISOString())
+  })
+
+  test("two events for one ref give one line; an event whose row is gone is counted as skipped and not repeated", async () => {
+    const doc = putDoc(db, f.entityId, "dup", IN_WINDOW)
+    const obligation = await putObligation(db, f.entityId, doc, {
+      action: "Call the plumber",
+    })
+    digestEvent({ ref: `obl:${String(obligation)}`, triggerKey: "t:a" })
+    digestEvent({ ref: `obl:${String(obligation)}`, triggerKey: "t:b" })
+    digestEvent({ ref: "obl:99999", triggerKey: "t:gone" })
+    const brief = await generateBrief(db, NOW, CONFIG)
+    expect(brief.lines.filter((line) => line.kind === "deferred")).toHaveLength(
+      1
+    )
+    expect(brief.coverage.skipped).toBe(1)
+    const unshown = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM events WHERE disposition = 'digest' AND shown_in_brief_at IS NULL"
+      )
+      .get()
+    expect(unshown?.["n"]).toBe(0)
+  })
+
+  test("an event decided to the ledger or a card is not listed", async () => {
+    const doc = putDoc(db, f.entityId, "card", IN_WINDOW)
+    const obligation = await putObligation(db, f.entityId, doc, {
+      action: "Pay the fee",
+    })
+    const { id } = emitEvent(db, {
+      source: "extraction",
+      kind: "new-obligation",
+      triggerKey: "t:card",
+      fireId: "created",
+      ref: `obl:${String(obligation)}`,
+      signals: {},
+      receivedAt: FIRED,
+    })
+    decideEvent(db, id, { disposition: "card", decidedAt: FIRED })
+    const brief = await generateBrief(db, NOW, CONFIG)
+    expect(brief.lines.some((line) => line.kind === "deferred")).toBe(false)
   })
 })
