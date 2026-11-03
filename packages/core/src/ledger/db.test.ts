@@ -222,6 +222,19 @@ describe("migrations", () => {
       [a.id, "2030-02-30"],
       [b.id, "2030-02-28"],
     ])
+    // Rows stored before the change time existed take their document's ingest time (#481).
+    expect(
+      db
+        .prepare(
+          `SELECT o.updated_at AS updated_at, d.ingested_at AS ingested_at
+           FROM obligations o JOIN documents d ON d.sha256 = o.doc_id ORDER BY o.id`
+        )
+        .all()
+        .map((r) => [r["updated_at"], r["ingested_at"]])
+        .every(
+          ([updated, ingested]) => updated === ingested && ingested !== null
+        )
+    ).toBe(true)
     // A stored row can still change status, and gets no new check on columns it leaves alone.
     db.prepare("UPDATE obligations SET status = 'done' WHERE id = 1").run()
     expect(() =>

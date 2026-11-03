@@ -6,9 +6,12 @@ import type { DatabaseSync } from "node:sqlite"
 import {
   createAuditClient,
   createIntentClient,
+  createFileClient,
   createProtonMailClient,
 } from "@eido/gate"
 import type { IntentClient } from "@eido/gate"
+import { createFilesFacade } from "./connectors/files/reads"
+import type { FilesFacade } from "./connectors/files/reads"
 import { ask } from "./ask/ask"
 import type { AskDeps } from "./ask/types"
 import { coverageLabel } from "./ask/answer"
@@ -105,6 +108,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_REPLIES_CONFIG",
   "EIDO_TRIAGE_CONFIG",
   "EIDO_PROTON_USERNAME",
+  "EIDO_FILES_SYNC",
 ] as const
 
 /**
@@ -198,6 +202,7 @@ export type DataPlaneConfig = {
   logPath: string
   gateSocket: string
   api: CoreApiConfig
+  filesSync?: boolean
 }
 
 function portOf(value: string, name = "EIDO_CORE_PORT"): number {
@@ -382,12 +387,21 @@ export function dataPlaneConfig(env: Env): DataPlaneConfig {
   if (missing.length > 0) {
     throw new Error(`the data plane needs ${missing.join(", ")}`)
   }
+  const filesSync = env["EIDO_FILES_SYNC"]
+  if (
+    filesSync !== undefined &&
+    filesSync !== "" &&
+    filesSync !== "0" &&
+    filesSync !== "1"
+  )
+    throw new Error("EIDO_FILES_SYNC must be 0 or 1")
   return {
     dataDir,
     dbPath: join(dataDir, DATA_DB_FILE),
     logPath: join(dataDir, DATA_PLANE_LOG_FILE),
     gateSocket,
     api: coreApiConfig(env),
+    ...(filesSync === "1" ? { filesSync: true } : {}),
   }
 }
 
@@ -398,6 +412,7 @@ export type DataPlane = {
   gate: IntentClient
   /** The owner profile and entities; each entity or assignment change is audited by the gate. */
   profile: ProfileStore
+  files: FilesFacade
   /** Local obligation state changes (#104); each is audited by the gate. */
   obligations: ObligationStateStore
   log: (event: string, fields?: Readonly<Record<string, string>>) => void
@@ -662,6 +677,12 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   const gate = createIntentClient({ socketPath: config.gateSocket })
   const audit = createAuditClient({ socketPath: config.gateSocket })
   const profile = createProfileStore(db, { audit: audit.record })
+  const files = createFilesFacade({
+    db,
+    intents: gate,
+    files: createFileClient({ socketPath: config.gateSocket }),
+    entityId: async () => (await profile.getDefaultEntityId()) ?? undefined,
+  })
   const obligations = createObligationStateStore(db, { audit: audit.record })
   let digestService: DigestService | undefined
   let digestServicePromise: Promise<DigestService> | undefined
@@ -812,6 +833,25 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     })
     protonTimer = startSyncTimer(sync, PROTON_SYNC_INTERVAL_MS)
   }
+  let fileSyncRunning: Promise<void> | undefined
+  const fileTimer = config.filesSync
+    ? startSyncTimer(() => {
+        if (fileSyncRunning !== undefined) return fileSyncRunning
+        fileSyncRunning = (async () => {
+          try {
+            for (const { id } of (await files.roots()).roots) {
+              const result = await files.sync(id)
+              onIngested(result.documents)
+            }
+          } catch {
+            log("files_sync_failed", { reason: "files_unavailable" })
+          } finally {
+            fileSyncRunning = undefined
+          }
+        })()
+        return fileSyncRunning
+      }, 60_000)
+    : undefined
   const stopGmailSync = (): void => gmailTimer?.stop()
   const stopProtonSync = (): void => protonTimer?.stop()
   scheduleReplies()
@@ -843,6 +883,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     conversationIndex,
     gate,
     profile,
+    files,
     obligations,
     log,
     stopGmailSync,
@@ -854,6 +895,8 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     scheduleIngestedDocuments: onIngested,
     scheduleReplyObligations: onBatchCommitted,
     close: async () => {
+      fileTimer?.stop()
+      await fileTimer?.inFlight()
       stopGmailSync()
       stopProtonSync()
       clearInterval(triageTimer)

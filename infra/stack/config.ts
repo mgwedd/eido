@@ -36,6 +36,9 @@ export const OVERRIDES = [
   "EIDO_GATE_CONTROL_SOCKET",
   "EIDO_GATE_KEYCHAIN_PATH",
   "EIDO_PROFILE_AUDIT_EPOCH",
+  "EIDO_FILE_HELPER_PATH",
+  "EIDO_FILE_HELPER_SHA256",
+  "EIDO_FILES_SYNC",
   "EIDO_WEBAUTHN_RP_ID",
   "EIDO_WEBAUTHN_ORIGIN",
   "EIDO_GATE_PHONE_BASE_PATH",
@@ -191,6 +194,12 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
     command: input.nodePath,
     args: [...watch, ...NODE_FLAGS, ...TS_ENTRY],
     env: {
+      ...(env["EIDO_FILE_HELPER_PATH"] === undefined
+        ? {}
+        : { EIDO_FILE_HELPER_PATH: env["EIDO_FILE_HELPER_PATH"] }),
+      ...(env["EIDO_FILE_HELPER_SHA256"] === undefined
+        ? {}
+        : { EIDO_FILE_HELPER_SHA256: env["EIDO_FILE_HELPER_SHA256"] }),
       EIDO_GATE_DATA_DIR: gateDataDir,
       EIDO_GATE_SOCKET: gateSocket,
       EIDO_GATE_CONTROL_SOCKET: controlSocket,
@@ -228,6 +237,9 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
     command: input.nodePath,
     args: [...watch, ...NODE_FLAGS, ...TS_ENTRY],
     env: {
+      ...(env["EIDO_FILES_SYNC"] === undefined
+        ? {}
+        : { EIDO_FILES_SYNC: env["EIDO_FILES_SYNC"] }),
       EIDO_DATA_DIR: coreDataDir,
       EIDO_GATE_SOCKET: gateSocket,
       EIDO_CORE_HOST: LOOPBACK,

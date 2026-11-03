@@ -33,7 +33,11 @@ async function checkPin(config: FileHelperConfig): Promise<void> {
     throw new Error("file helper does not match its pinned hash")
 }
 
-function run(path: string, input: string): Promise<GateFileHelperResponse> {
+function run(
+  path: string,
+  input: string,
+  limit: number
+): Promise<GateFileHelperResponse> {
   return new Promise((resolve, reject) => {
     // No shell, no arguments, no inherited environment: the request travels on stdin only.
     const child = spawn(path, [], {
@@ -52,8 +56,8 @@ function run(path: string, input: string): Promise<GateFileHelperResponse> {
     // The helper writes nothing to stderr by design; never forward it if a runtime does.
     child.stderr.resume()
     child.stdout.on("data", (chunk: unknown) => {
-      size += Buffer.isBuffer(chunk) ? chunk.length : MAX_REPLY_BYTES + 1
-      if (!Buffer.isBuffer(chunk) || size > MAX_REPLY_BYTES) {
+      size += Buffer.isBuffer(chunk) ? chunk.length : limit + 1
+      if (!Buffer.isBuffer(chunk) || size > limit) {
         overflow = true
         child.kill()
         return
@@ -84,6 +88,14 @@ export function fileHelper(config: FileHelperConfig): FileHelper {
     const checked = validateGateFileHelperRequest(request)
     if (!checked.ok) throw failed()
     await checkPin(config)
-    return run(config.path, JSON.stringify(checked.value))
+    return run(
+      config.path,
+      JSON.stringify(checked.value),
+      checked.value.op === "read"
+        ? 12 * 1024 * 1024
+        : checked.value.op === "list"
+          ? 512 * 1024
+          : MAX_REPLY_BYTES
+    )
   }
 }
