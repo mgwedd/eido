@@ -8,6 +8,11 @@ import { payloadHash } from "./canonical"
 import { openControlDb } from "./control-db"
 import { MAIL_OPS, auditRows, manifest } from "./test-fixtures"
 
+// These tests open an on-disk SQLite file and run 15 migrations, each a durable commit.
+// On the windows-latest runner under load that took up to 9.4 s (issue #554) against
+// 0.05-0.4 s elsewhere; 30 s is over 3x the worst measured run.
+const DISK_TIMEOUT_MS = 30_000
+
 const dirs: string[] = []
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
@@ -21,7 +26,7 @@ const version = (db: DatabaseSync) =>
   Number(db.prepare("PRAGMA user_version").get()?.["user_version"])
 
 describe("openControlDb", () => {
-  it("creates the schema, enables foreign keys and WAL", () => {
+  it("creates the schema, enables foreign keys and WAL", { timeout: DISK_TIMEOUT_MS }, () => {
     const db = openControlDb(tempPath())
     expect(version(db)).toBe(15)
     const connectorColumns = db
@@ -47,7 +52,7 @@ describe("openControlDb", () => {
     db.close()
   })
 
-  it("does not re-run applied migrations on an existing file", () => {
+  it("does not re-run applied migrations on an existing file", { timeout: DISK_TIMEOUT_MS }, () => {
     const path = tempPath()
     const first = openControlDb(path)
     first.exec(
@@ -82,7 +87,7 @@ describe("openControlDb", () => {
     db.close()
   })
 
-  it("disables and audits enabled legacy pins during migration", () => {
+  it("disables and audits enabled legacy pins during migration", { timeout: DISK_TIMEOUT_MS }, () => {
     const path = tempPath()
     const legacy = new DatabaseSync(path)
     legacy.exec(`CREATE TABLE audit_log (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail_hash TEXT NOT NULL, prev_hash TEXT NOT NULL);
