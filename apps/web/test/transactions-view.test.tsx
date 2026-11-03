@@ -144,7 +144,7 @@ describe("TransactionsView", () => {
     const cell = linked?.querySelector("td:last-child a")
     expect(cell?.textContent).toBe("Lorem ipsum dolor")
     expect(cell?.getAttribute("href")).toBe(
-      `/ledger?entity=${ENTITY_PROPERTY.id}`
+      "/ledger?obligation=7"
     )
     expect(unlinked?.querySelector("a")).toBeNull()
   })
@@ -154,7 +154,7 @@ describe("TransactionsView", () => {
     await render()
     const [linked, unlinked] = Array.from(container.querySelectorAll("ul > li"))
     expect(linked?.querySelector("a")?.getAttribute("href")).toBe(
-      `/ledger?entity=${ENTITY_PROPERTY.id}`
+      "/ledger?obligation=7"
     )
     expect(linked?.querySelector("p")?.textContent).toBe(
       "Oct 12 · Property · Checking · Lorem ipsum dolor"

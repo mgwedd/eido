@@ -200,7 +200,7 @@ function TransactionsTable({
               <TableCell className="px-4 py-3 whitespace-normal">
                 {row.linkedObligation ? (
                   <Link
-                    href={linkedObligationUrl(row.entity.id)}
+                    href={linkedObligationUrl(row.linkedObligation.id)}
                     className="text-foreground underline-offset-4 hover:underline"
                   >
                     {row.linkedObligation.action}
@@ -262,7 +262,7 @@ function TransactionsList({
         <li key={row.id}>
           {row.linkedObligation ? (
             <Link
-              href={linkedObligationUrl(row.entity.id)}
+              href={linkedObligationUrl(row.linkedObligation.id)}
               className="flex flex-col gap-1 py-3"
             >
               <TransactionRowContent row={row} now={now} />

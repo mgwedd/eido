@@ -83,12 +83,9 @@ export function transactionsPageUrl(entity: string, account: string): string {
   return query ? `/ledger/transactions?${query}` : "/ledger/transactions"
 }
 
-/**
- * Where a transaction's linked obligation opens: the ledger's Obligations tab for the obligation's
- * entity, which core guarantees is the transaction's own.
- */
-export function linkedObligationUrl(entityId: string): string {
-  return `/ledger?${new URLSearchParams({ entity: entityId }).toString()}`
+/** Where a transaction's linked obligation opens: the ledger's Obligations tab, on that row. */
+export function linkedObligationUrl(obligationId: number): string {
+  return `/ledger?${new URLSearchParams({ obligation: String(obligationId) }).toString()}`
 }
 
 const MONTHS = [

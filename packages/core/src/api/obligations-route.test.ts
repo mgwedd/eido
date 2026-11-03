@@ -509,6 +509,43 @@ describe("GET /obligations", () => {
     expect(err.fields?.[0]?.field).toBe("direction")
   })
 
+  test("filters by id: one obligation, none for an unknown id, 422 for a malformed one", async () => {
+    const first = await insertObligation(db, {
+      entityId: propertyId,
+      action: "Pay water bill",
+      party: "Acme Corp",
+      dueAt: "2026-03-01",
+      status: "open",
+      docId: docA,
+      span: { start: 0, end: 5 },
+    })
+    const second = await insertObligation(db, {
+      entityId: companyId,
+      action: "Renew vendor contract",
+      party: "Acme Corp",
+      dueAt: "2026-03-05",
+      status: "done",
+      docId: docB,
+      span: { start: 0, end: 5 },
+    })
+
+    const one = await list(`?id=${second}`)
+    expect(one.obligations.map((o) => o.id)).toEqual([second])
+    expect(one.nextOffset).toBeNull()
+
+    const otherEntity = await list(`?id=${first}&entity=${companyId}`)
+    expect(otherEntity.obligations).toEqual([])
+
+    const unknown = await list(`?id=${second + first + 1000}`)
+    expect(unknown.obligations).toEqual([])
+
+    for (const bad of ["abc", "0", "1.5", "-2"]) {
+      const err = await errorOf(await get(`?id=${bad}`))
+      expect(err.status).toBe(422)
+      expect(err.fields?.[0]?.field).toBe("id")
+    }
+  })
+
   test("orders by due_at ASC NULLS LAST, id ASC", async () => {
     // Current 'id' from beforeEach has dueAt: null.
     const earlyId = await insertObligation(db, {

@@ -11,6 +11,7 @@ export const OBLIGATIONS_URL = "/api/core/obligations"
 export const DEFAULT_LEDGER_LIMIT = 50
 
 export interface LoadLedgerOptions {
+  id?: number
   entity?: string
   status?: ObligationStatusFilter
   direction?: "owed" | "waiting"
@@ -36,6 +37,9 @@ export async function loadLedgerObligations(
         ? window.location.origin
         : "http://localhost"
     const url = new URL(OBLIGATIONS_URL, origin)
+    if (typeof options.id === "number") {
+      url.searchParams.set("id", String(options.id))
+    }
     if (options.entity && options.entity !== "all") {
       url.searchParams.set("entity", options.entity)
     }
@@ -86,4 +90,17 @@ export async function loadLedgerObligations(
       message: error instanceof Error ? error.message : "Network error",
     }
   }
+}
+
+/**
+ * Reads the `obligation` address parameter: `undefined` when absent, `null` when it is not a
+ * positive integer id (no obligation can match it), else the id.
+ */
+export function parseObligationParam(
+  raw: string | undefined
+): number | null | undefined {
+  if (raw === undefined) return undefined
+  if (!/^[1-9][0-9]*$/.test(raw)) return null
+  const id = Number(raw)
+  return Number.isSafeInteger(id) ? id : null
 }
