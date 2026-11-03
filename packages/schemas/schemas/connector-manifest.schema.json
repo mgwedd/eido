@@ -10,7 +10,9 @@
     "auth": {
       "type": "object",
       "properties": {
-        "type": { "enum": ["oauth2", "password", "api_key", "none"] },
+        "type": {
+          "enum": ["oauth2", "password", "api_key", "basic-url", "none"]
+        },
         "scopes": {
           "type": "array",
           "maxItems": 20,
@@ -126,6 +128,19 @@
             }
           },
           "required": ["failureThreshold", "halfOpenProbeAfterMs"],
+          "additionalProperties": false
+        },
+        "rateLimit": {
+          "description": "Upstream requests the gate proxy sends per local calendar day; the next one is refused locally.",
+          "type": "object",
+          "properties": {
+            "requestsPerDay": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            }
+          },
+          "required": ["requestsPerDay"],
           "additionalProperties": false
         }
       },
