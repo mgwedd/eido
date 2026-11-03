@@ -763,6 +763,22 @@ describe("read-client token refresh", () => {
     }
   )
 
+  test("a read client with no stored grant answers credential_missing and stays enabled", async () => {
+    const fake = fakeGoogle(FRESH)
+    const { request, vault, db } = await refreshable(fake)
+    await vault.delete({ ...READ, kind: "access_token" })
+    await vault.delete({ ...READ, kind: "refresh_token" })
+    const response = await request()
+    expect(response.status).toBe(424)
+    expect(await response.json()).toEqual({ reason: "credential_missing" })
+    expect(fake).not.toHaveBeenCalled()
+    expect(
+      db.prepare("SELECT enabled FROM connectors WHERE name = 'mail'").get()?.[
+        "enabled"
+      ]
+    ).toBe(1)
+  })
+
   test("a connector without a configured client id is not refreshed", async () => {
     const fake = fakeGoogle(FRESH)
     const { request } = await refreshable(fake, { clientIds: {} })
