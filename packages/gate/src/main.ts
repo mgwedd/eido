@@ -75,6 +75,7 @@ const CONTROL_SOCKET_MODE = 0o600
 
 export const DRIVE_CONNECTOR = "drive"
 export const DRIVE_CLIENT_ID_ENV = "EIDO_DRIVE_CLIENT_ID"
+export const GMAIL_READ_CLIENT_ID_ENV = "EIDO_GMAIL_READ_CLIENT_ID"
 /**
  * The read connectors whose OAuth client the gate refreshes in the egress proxy: the variable
  * naming each client's id, and the pinned read its health probe makes.
@@ -82,7 +83,7 @@ export const DRIVE_CLIENT_ID_ENV = "EIDO_DRIVE_CLIENT_ID"
 export const READ_CONNECTORS = [
   {
     connector: GMAIL_CONNECTOR,
-    clientIdEnv: "EIDO_GMAIL_READ_CLIENT_ID",
+    clientIdEnv: GMAIL_READ_CLIENT_ID_ENV,
     probeUrl: "https://gmail.googleapis.com/gmail/v1/users/me/profile",
   },
   {
@@ -617,7 +618,7 @@ export async function runGate(
 }
 
 /** One probe over several clients: the first outcome that is not ok, or ok. */
-function allProbes(probes: readonly ConnectorProbe[]): ConnectorProbe {
+export function allProbes(probes: readonly ConnectorProbe[]): ConnectorProbe {
   return async () => {
     for (const probe of probes) {
       const outcome = await probe()

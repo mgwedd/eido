@@ -4,6 +4,7 @@ A connector is connected on the Mac, never through the web app. The credential g
 
 ```bash
 pnpm --filter @eido/gate connect gmail
+pnpm --filter @eido/gate connect gmail-read
 pnpm --filter @eido/gate connect drive
 pnpm --filter @eido/gate connect proton-mail
 pnpm --filter @eido/gate connect proton-calendar
@@ -17,6 +18,7 @@ The same command connects a connector for the first time and reconnects one late
   - `EIDO_GATE_CONTROL_SOCKET`;
   - `EIDO_GATE_KEYCHAIN_PATH` (see `infra/keychain-vault.md`), or `EIDO_DEV_VAULT=1` with `EIDO_GATE_VAULT_FILE` for development;
   - `EIDO_GMAIL_CLIENT_ID` for Gmail;
+  - `EIDO_GMAIL_READ_CLIENT_ID` for the Gmail read client, the same id the gate's read proxy uses (see "The read proxy");
   - `EIDO_DRIVE_CLIENT_ID` for Drive, the same id the gate's read proxy uses (see "The read proxy").
 
   The command writes the same vault the gate reads.
@@ -76,6 +78,18 @@ ssh -L <port>:127.0.0.1:<port> <mac>
 
 When Google revokes the grant, the gate disables Gmail and `/connectors` shows it with the reason `auth_failed`. Run `pnpm --filter @eido/gate connect gmail` again. The new refresh token replaces the old one, and Gmail is re-enabled once the check passes.
 
+## The Gmail read client
+
+Gmail has two Google clients. The compose client (`connect gmail`, `gmail.modify`) makes the gate's writes. The read client makes core's reads through the gate's read proxy. It is a second **Desktop app** OAuth client in Google Cloud; its client id is `EIDO_GMAIL_READ_CLIENT_ID`, in both the gate's environment and the command's.
+
+`connect gmail-read` is the same sign-in as `connect gmail`, with these differences:
+
+- It asks for the `gmail.readonly` permission. Leave the Gmail box ticked on the consent screen; without it the command refuses the grant.
+- It stores the refresh token and the client secret under the Gmail **read** client. The compose client's grant is left as it was. The first connect asks for the read client's secret; later reconnects reuse the stored one.
+- The gate checks Gmail with both clients: the compose client's profile read, and one pinned profile read through the proxy with the read client. Gmail is healthy only when both work. The gate must run with `EIDO_GMAIL_READ_CLIENT_ID` and `EIDO_GATE_EGRESS_PORT` set, or it has no read check.
+
+When Google revokes either grant, the gate disables Gmail with `auth_failed`. Run the connect command for the client whose grant was revoked; Gmail is re-enabled once both checks pass.
+
 ## Drive
 
 Drive is a read connector: core reads it through the gate's read proxy, and the gate holds its read client's grant. The client is a **Desktop app** OAuth client in Google Cloud; its client id is `EIDO_DRIVE_CLIENT_ID`, in both the gate's environment and the command's.
@@ -119,17 +133,13 @@ Each connector is checked separately. After a new Bridge password, run the comma
   - `auth_failed`: the credential was refused; run connect again.
   - `handshake_failed`, `timeout` or `unavailable`: the upstream could not be reached; the gate retries with backoff.
 
-## Not available yet
-
-- **The Gmail read client.** The command connects the Gmail write client (`gmail.modify`) only. Nothing stores the read client's refresh token yet, so reads through the proxy answer `credential_missing` (#529).
-
 ## Not verified by the tests
 
 The tests run the whole flow with a fake token endpoint, an in-memory vault and a gate on a test socket, with no network.
 
 These steps are the owner's, on the Mac:
 
-- a real Google consent, for Gmail and for Drive;
+- a real Google consent, for the Gmail compose client, the Gmail read client and Drive;
 - a real Bridge password;
 - the SSH port forward;
 - seeing the result on `/connectors`.
