@@ -709,6 +709,7 @@ describe("intent status", () => {
     tier: "approval",
     state: "pending",
     edited_from: null,
+    discarded: false,
   }
 
   test("accepts edited_from as null or an id", () => {
@@ -718,10 +719,16 @@ describe("intent status", () => {
     )
   })
 
-  test("requires edited_from and refuses a payload, signature or nonce", () => {
+  test("requires edited_from and discarded and refuses a payload, signature or nonce", () => {
     expect(
       errorsOf(validateGateIntentStatus(without(status, "edited_from")))
     ).toEqual(["$.edited_from: required"])
+    expect(
+      errorsOf(validateGateIntentStatus(without(status, "discarded")))
+    ).toEqual(["$.discarded: required"])
+    expect(
+      errorsOf(validateGateIntentStatus({ ...status, discarded: "yes" }))
+    ).toEqual(["$.discarded: expected boolean, got string"])
     expect(
       errorsOf(
         validateGateIntentStatus({

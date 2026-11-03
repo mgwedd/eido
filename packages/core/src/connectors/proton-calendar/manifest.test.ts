@@ -66,6 +66,7 @@ describe("Proton Calendar Manifest", () => {
             id: "dummy",
             kind: "calendar.create" as const,
             edited_from: null,
+            discarded: false,
             state: "proposed" as const,
             tier: "auto" as const,
           }),
