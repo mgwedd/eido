@@ -49,8 +49,10 @@ function gate(
   return calls
 }
 
-const json = (body: unknown, status = 200) => () =>
-  new Response(JSON.stringify(body), { status })
+const json =
+  (body: unknown, status = 200) =>
+  () =>
+    new Response(JSON.stringify(body), { status })
 const apiError = (status: number, code: string) =>
   json({ code, message: "refused" }, status)
 
@@ -110,12 +112,12 @@ describe("checkedFileRoots", () => {
   test("accepts a list hashed and bound as the gate does", async () => {
     const prepared = preparedFor(identifiedRoots)
     const checked = await checkedFileRoots(reviewRequest, prepared)
-    expect(checked?.folders.map((f) => [f.id, f.requested, f.root.path])).toEqual(
-      [
-        ["notes", "/Users/owner.example/Notes", "/Users/owner.example/Notes"],
-        ["studio", "/Users/owner.example/Studio", "/Volumes/Work.example/Studio"],
-      ]
-    )
+    expect(
+      checked?.folders.map((f) => [f.id, f.requested, f.root.path])
+    ).toEqual([
+      ["notes", "/Users/owner.example/Notes", "/Users/owner.example/Notes"],
+      ["studio", "/Users/owner.example/Studio", "/Volumes/Work.example/Studio"],
+    ])
     expect(Buffer.from(checked!.challenge).toString("base64url")).toBe(
       prepared.challenge
     )
