@@ -9,6 +9,7 @@ import { Button } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { expiredUnlockUrl } from "@/lib/auth/unlock"
+import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
 import { repinConnector } from "@/lib/connector-repin"
 import {
   bridgeNotice,
@@ -86,6 +87,7 @@ function RepinAction({
   drift: { added: readonly string[]; removed: readonly string[] }
   onRepinned: () => void
 }) {
+  const copy = authenticatorCopy(useAuthenticatorLabel())
   const [state, setState] = React.useState<RepinState>({ status: "idle" })
   const signing = state.status === "signing"
 
@@ -117,7 +119,7 @@ function RepinAction({
       </Button>
       {signing ? (
         <p role="status" className="text-sm text-muted-foreground">
-          Waiting for Face ID…
+          Waiting for {copy.waitingFor}…
         </p>
       ) : null}
       {state.status === "failed" ? (

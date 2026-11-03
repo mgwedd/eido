@@ -170,7 +170,7 @@ describe("unlock", () => {
     expect(optionCalls).toHaveLength(2)
   })
 
-  it("posts nothing when Face ID is cancelled", async () => {
+  it("posts nothing when the passkey prompt is cancelled", async () => {
     stubWebAuthn(async () => {
       throw new DOMException("cancelled", "NotAllowedError")
     })
@@ -194,7 +194,7 @@ describe("unlock", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it("reports an unreachable gate before and after Face ID", async () => {
+  it("reports an unreachable gate before and after the passkey prompt", async () => {
     vi.stubGlobal("fetch", async () => {
       throw new TypeError("offline")
     })
