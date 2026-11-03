@@ -35,6 +35,7 @@ import type { DocumentsDeps } from "./documents-route"
 import { ProfileError } from "../profile/errors"
 import type { ProfileErrorCode } from "../profile/errors"
 import type { ProfileStore } from "../profile/store"
+import { BRIEF_PATH, briefRoute } from "./brief-route"
 import { dueSoonRoute } from "./due-soon"
 import { OBLIGATION_CHANGE_PATH, changeObligation } from "./obligations-route"
 
@@ -67,7 +68,7 @@ export interface ApiDeps {
   propose?: IntentClient["propose"]
   /** Local obligation state changes (#104). When absent, `/obligations/...` is not served. */
   obligations?: ObligationStateStore
-  /** The data DB the Documents list and viewer read. When absent, `/documents` is not served. */
+  /** The data DB the Documents list and viewer, Today due-soon and morning brief read. When absent, none of them is served. */
   documents?: DocumentsDeps
   /** The clock `/today/due-soon` reads "today" from. Absent: the system clock. */
   now?: () => Date
@@ -454,6 +455,14 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       )
       if (result.ok) return json(result.body)
       return failure(result.code, result.message, { fields: result.fields })
+    }
+
+    const briefMatch = BRIEF_PATH.exec(path)
+    if (briefMatch !== null && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = briefRoute(deps.documents.db, briefMatch)
+      if (result.ok) return json(result.body)
+      return failure(result.code, result.message)
     }
 
     if (deps.documents !== undefined) {

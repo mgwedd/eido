@@ -89,6 +89,7 @@ export {
   validateCoreApiSendFrom,
   validateCoreApiError,
   validateCoreApiTodayDueSoon,
+  validateCoreApiBrief,
   validateAskCoverage,
   validateAskCitation,
 } from "./generated/validators"
