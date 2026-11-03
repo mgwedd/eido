@@ -677,6 +677,7 @@ describe("the read routes", () => {
       tier: "approval",
       state: "pending",
       edited_from: null,
+      discarded: false,
     })
   })
 
