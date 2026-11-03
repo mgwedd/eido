@@ -1,5 +1,6 @@
 import {
   validateCoreApiError,
+  validateCoreApiObligationState,
   validateCoreApiReplyDraftResponse,
   type CoreApiError,
   type CoreApiReplyDraftRequest,
@@ -225,6 +226,83 @@ export function draftFailureMessage(reason: DraftReplyFailure): string {
       return "Connection lost. Nothing was saved. Try again."
     default:
       return "Draft failed. Nothing was saved. Try again."
+  }
+}
+
+/** Core's local resolve route for one obligation, reached through the web's core proxy. */
+export function resolveObligationUrl(obligationId: number): string {
+  return `/api/core/obligations/${obligationId}/resolve`
+}
+
+export type ResolveFailure =
+  CoreApiError["error"]["code"] | "unauthenticated" | "network" | "unreadable"
+
+/** What one resolve request came to. `resolved` only for a 200 that says this obligation is done. */
+export type ResolveOutcome =
+  { status: "resolved" } | { status: "failed"; reason: ResolveFailure }
+
+/** One Waiting on row's resolve state in the view. A row with no entry is idle. */
+export type ResolveState =
+  { status: "pending" } | { status: "failed"; reason: ResolveFailure }
+
+/**
+ * Marks an obligation resolved in core. It is a local state change, never an external write: the
+ * obligation moves from open to done and the row leaves the list.
+ */
+export async function requestResolveObligation(
+  obligationId: number
+): Promise<ResolveOutcome> {
+  let response: Response
+  try {
+    response = await fetch(resolveObligationUrl(obligationId), {
+      method: "POST",
+      cache: "no-store",
+    })
+  } catch {
+    return { status: "failed", reason: "network" }
+  }
+
+  if (response.status === 401) {
+    return { status: "failed", reason: "unauthenticated" }
+  }
+
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    return { status: "failed", reason: "unreadable" }
+  }
+
+  if (response.status === 200) {
+    const state = validateCoreApiObligationState(body)
+    if (
+      !state.ok ||
+      state.value.id !== obligationId ||
+      state.value.status !== "done"
+    ) {
+      return { status: "failed", reason: "unreadable" }
+    }
+    return { status: "resolved" }
+  }
+
+  const error = validateCoreApiError(body)
+  if (!error.ok) return { status: "failed", reason: "unreadable" }
+  return { status: "failed", reason: error.value.error.code }
+}
+
+/** The row's message for a failed resolve. Core's own message is not shown: it is for logs. */
+export function resolveFailureMessage(reason: ResolveFailure): string {
+  switch (reason) {
+    case "not_found":
+      return "This thread is gone. Reload the page."
+    case "invalid_transition":
+      return "This thread is no longer open. Reload the page."
+    case "unauthenticated":
+      return "Sign in again to mark this resolved."
+    case "network":
+      return "Connection lost. Nothing was changed. Try again."
+    default:
+      return "Could not mark this resolved. Nothing was changed. Try again."
   }
 }
 
