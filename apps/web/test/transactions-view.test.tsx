@@ -143,9 +143,7 @@ describe("TransactionsView", () => {
     )
     const cell = linked?.querySelector("td:last-child a")
     expect(cell?.textContent).toBe("Lorem ipsum dolor")
-    expect(cell?.getAttribute("href")).toBe(
-      "/ledger?obligation=7"
-    )
+    expect(cell?.getAttribute("href")).toBe("/ledger?obligation=7")
     expect(unlinked?.querySelector("a")).toBeNull()
   })
 
