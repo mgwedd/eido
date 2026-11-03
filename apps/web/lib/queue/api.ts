@@ -1,4 +1,5 @@
 import {
+  validateCoreApiDocumentList,
   validateGateApiError,
   validateGateDecisionResult,
   validateGateIntentHistory,
@@ -15,6 +16,7 @@ import type { ApprovalResult } from "@/lib/approval/sign"
 import type { PendingIntent } from "@/lib/today"
 
 const APPROVALS_URL = "/api/gate/approvals"
+const CORE_DOCUMENTS_URL = "/api/core/documents"
 
 export type Loaded<T> =
   { ok: true; value: T } | { ok: false; status: number | "network" }
@@ -63,6 +65,26 @@ export function loadHistory(
     validateGateIntentHistory,
     signal
   )
+}
+
+/**
+ * The names of the documents an intent was built from, read from core by id. Core lists only live
+ * documents, so an id with no live document is left out; a stored title of null becomes "Untitled".
+ */
+export async function loadSourceNames(
+  documentIds: readonly string[],
+  signal?: AbortSignal
+): Promise<Loaded<string[]>> {
+  const result = await getJson(
+    `${CORE_DOCUMENTS_URL}?ids=${documentIds.map(encodeURIComponent).join(",")}&limit=200`,
+    validateCoreApiDocumentList,
+    signal
+  )
+  if (!result.ok) return result
+  return {
+    ok: true,
+    value: result.value.documents.map((d) => d.name ?? "Untitled"),
+  }
 }
 
 /** Rejects an intent; the reason is optional and feeds the evals. */
