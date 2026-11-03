@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { Search, X } from "lucide-react"
-import { cn } from "cn"
+import { cn } from "@eido/ui/lib/utils"
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
 import { Button } from "@eido/ui/components/button"
