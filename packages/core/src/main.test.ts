@@ -1162,6 +1162,43 @@ describe("serveDataPlane", () => {
 
   it.each([
     [
+      "serves POST /replies/draft when a local model is configured",
+      true,
+      "no such obligation",
+    ],
+    [
+      "does not serve /replies/draft without a local model",
+      false,
+      "no such route",
+    ],
+  ])("%s", async (_name, withModel, message) => {
+    const env = servedEnv(
+      withModel ? { EIDO_LLAMA_HOST: "127.0.0.1", EIDO_LLAMA_PORT: "1" } : {}
+    )
+    const config = dataPlaneConfig(env)
+    const plane = runDataPlane(config, env)
+    const api = await serveDataPlane(plane, config.api)
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${String(api.port)}/replies/draft`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ obligationId: 1 }),
+        }
+      )
+      expect(response.status).toBe(404)
+      expect(await response.json()).toEqual({
+        error: { code: "not_found", message },
+      })
+    } finally {
+      await api.close()
+      await plane.close()
+    }
+  })
+
+  it.each([
+    [
       "sends the configured chat template kwargs on every /apply-template",
       '{"enable_thinking": false}',
     ],

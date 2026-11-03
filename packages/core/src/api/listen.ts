@@ -9,6 +9,7 @@ import type { DocumentsDeps } from "./documents-route"
 import type { ConversationStore } from "../conversation/store"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
+import type { ReplyDrafter } from "./reply-draft-route"
 import { createApiServer } from "./server"
 
 // Core's API has no auth of its own: the tailnet is the trust boundary, and `tailscale serve`
@@ -68,6 +69,8 @@ export type CoreApiOptions = {
   /** The Proton account behind `/connectors/send-from`. */
   sendFrom?: string
   ask?: (question: string) => Promise<AskResult>
+  /** The drafter behind `POST /replies/draft`; unset without a local model. */
+  draftReply?: ReplyDrafter
   propose?: IntentClient["propose"]
   obligations?: ObligationStateStore
   /** The data DB behind `/documents`. */
@@ -101,6 +104,7 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
       connectorAccounts: options.connectorAccounts,
       sendFrom: options.sendFrom,
       ask: options.ask,
+      draftReply: options.draftReply,
       propose: options.propose,
       obligations: options.obligations,
       documents: options.documents,

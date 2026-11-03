@@ -21,6 +21,9 @@ import {
   validateIntentResult,
   validateCoreApiAskResponse,
   validateCoreApiObligationList,
+  validateCoreApiReplyDraftRequest,
+  validateCoreApiReplyDraftResponse,
+  validateCoreApiError,
   validateCoreApiConversationSearch,
   validateCoreApiConversationGet,
   validateDocumentTypeClassification,
@@ -373,6 +376,62 @@ function errorsOf(value: unknown): string[] {
 
 test("schemas package loads", () => {
   expect(SCHEMA_VERSION).toBe(0)
+})
+
+describe("core API reply draft schemas", () => {
+  test("the request names one obligation by a positive integer id", () => {
+    expect(validateCoreApiReplyDraftRequest({ obligationId: 7 }).ok).toBe(true)
+    expect(validateCoreApiReplyDraftRequest({ obligationId: 0 }).ok).toBe(false)
+    expect(validateCoreApiReplyDraftRequest({ obligationId: 1.5 }).ok).toBe(
+      false
+    )
+    expect(validateCoreApiReplyDraftRequest({ obligationId: "7" }).ok).toBe(
+      false
+    )
+    expect(validateCoreApiReplyDraftRequest({}).ok).toBe(false)
+  })
+
+  test("the request takes no thread id, kind or free text alongside", () => {
+    expect(
+      validateCoreApiReplyDraftRequest({ obligationId: 7, kind: "email.send" })
+        .ok
+    ).toBe(false)
+  })
+
+  const response = {
+    intentId: "int_1",
+    tier: "auto",
+    state: "approved",
+    activityHref: "/activity?intent=int_1",
+    created: true,
+  }
+
+  test("the response carries the intent id, its tier and state, and the Activity link", () => {
+    expect(validateCoreApiReplyDraftResponse(response).ok).toBe(true)
+    expect(
+      validateCoreApiReplyDraftResponse({ ...response, created: undefined }).ok
+    ).toBe(false)
+    expect(
+      validateCoreApiReplyDraftResponse({ ...response, state: "sent" }).ok
+    ).toBe(false)
+  })
+
+  test("the Activity link is a relative Activity path", () => {
+    expect(
+      validateCoreApiReplyDraftResponse({
+        ...response,
+        activityHref: "https://example.invalid/activity?intent=int_1",
+      }).ok
+    ).toBe(false)
+  })
+
+  test("the error codes include a paused connector and no usable draft", () => {
+    for (const code of ["connector_paused", "no_draft"]) {
+      expect(validateCoreApiError({ error: { code, message: "x" } }).ok).toBe(
+        true
+      )
+    }
+  })
 })
 
 describe("verbs", () => {

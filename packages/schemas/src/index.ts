@@ -99,6 +99,8 @@ export {
   validateCoreApiConfirmExtractionRequest,
   validateCoreApiConfirmExtractionResponse,
   validateCoreApiObligationList,
+  validateCoreApiReplyDraftRequest,
+  validateCoreApiReplyDraftResponse,
   validateAskCoverage,
   validateAskCitation,
 } from "./generated/validators"

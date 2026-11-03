@@ -18,6 +18,9 @@ import { coverageLabel } from "./ask/answer"
 import type { AskFigure } from "@eido/schemas"
 import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
+import { createReplyDrafter } from "./api/reply-draft-route"
+import { DEFAULT_CHARS_PER_TOKEN } from "./inference/budget"
+import { createProposalLimiter } from "./propose/limiter"
 import { openIndex } from "./index/schema"
 import { DEFAULT_BRIEF_CONFIG, scheduleBrief } from "./brief/index"
 import { openDataDb } from "./ledger/db"
@@ -131,6 +134,8 @@ export const DEFAULT_CORE_HOST = "127.0.0.1"
 export const DEFAULT_CORE_PORT = 8789
 export const ASK_CONTEXT_BUDGET_TOKENS = 3000
 export const ASK_REPLY_TOKENS = 512
+/** Reply drafts (`POST /replies/draft`) core may propose per hour; past it the route answers busy. */
+export const DRAFT_PROPOSALS_PER_HOUR = 30
 export const GMAIL_SYNC_INTERVAL_MS = 5 * 60_000
 export const PROTON_SYNC_INTERVAL_MS = 5 * 60_000
 export const CONVERSATION_DIGEST_SWEEP_INTERVAL_MS = 60_000
@@ -994,6 +999,26 @@ export async function serveDataPlane(
           })
           return result
         }
+  const draftReply =
+    modelBaseUrl === undefined
+      ? undefined
+      : createReplyDrafter({
+          db: plane.db,
+          gate: plane.gate,
+          queue: getQueue,
+          limiter: createProposalLimiter({
+            maxProposalsPerHour: DRAFT_PROPOSALS_PER_HOUR,
+          }),
+          budgetTokens: () =>
+            Math.max(
+              1,
+              Math.min(
+                ASK_CONTEXT_BUDGET_TOKENS,
+                Math.floor(plane.getModelContextTokens() / 2)
+              )
+            ),
+          charsPerToken: DEFAULT_CHARS_PER_TOKEN,
+        })
   let sweeping = false
   const sweep = async (): Promise<void> => {
     if (
@@ -1030,6 +1055,7 @@ export async function serveDataPlane(
     connectorAccounts: plane.connectorAccounts,
     sendFrom: config.protonUsername,
     ...(ask === undefined ? {} : { ask }),
+    ...(draftReply === undefined ? {} : { draftReply }),
     propose: plane.gate.propose,
     documents: { db: plane.db, accessAudit: plane.accessAudit },
     ...(plane.conversation === undefined
