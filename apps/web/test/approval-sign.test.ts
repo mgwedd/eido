@@ -13,8 +13,10 @@ const prepared: GatePrepareApproval = {
   kind: "email.send",
   origin: "reactive",
   state: "pending",
-  payload: "{}",
-  payloadHash: "a".repeat(64),
+  payload: '{"a":1}',
+  // SHA-256 of the 7 bytes {"a":1}, computed with Python hashlib.
+  payloadHash:
+    "015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862",
   nonce: "N".repeat(43),
   documentIds: [],
 }
@@ -107,6 +109,52 @@ describe("prepareApproval", () => {
       ok: false,
       error: { code: "invalid_response", message: "The gate answered 502." },
     })
+  })
+})
+
+describe("device-side payload check", () => {
+  const altered = { ...prepared, payload: '{"a":2}' }
+
+  it("refuses an approval whose payload does not hash to the gate's hash", async () => {
+    vi.stubGlobal("fetch", async () => json(200, altered))
+    expect(await prepareApproval("intent-1")).toEqual({
+      ok: false,
+      error: {
+        code: "payload_changed",
+        message: "The payload changed. Nothing was signed.",
+      },
+    })
+  })
+
+  it("refuses a payload that is not JSON", async () => {
+    vi.stubGlobal("fetch", async () =>
+      json(200, { ...prepared, payload: "{nope" })
+    )
+    expect(failureCode(await prepareApproval("intent-1"))).toBe(
+      "payload_changed"
+    )
+  })
+
+  it("never calls credentials.get or the gate when the payload was altered after prepare", async () => {
+    const get = stubWebAuthn(async () => new FakeCredential())
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    expect(failureCode(await signApproval(altered))).toBe("payload_changed")
+    expect(get).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("changes the challenge when one byte of the payload changes", async () => {
+    const hash =
+      "7e8059f495589fcd981232cc11d00b00da3802c01d688fa1cf1f6bed6e5bb33c"
+    const original = await assertionOptions(prepared, "eido.example.invalid")
+    const changed = await assertionOptions(
+      { ...prepared, payloadHash: hash },
+      "eido.example.invalid"
+    )
+    expect(toHex(changed.publicKey?.challenge as ArrayBuffer)).not.toBe(
+      toHex(original.publicKey?.challenge as ArrayBuffer)
+    )
   })
 })
 

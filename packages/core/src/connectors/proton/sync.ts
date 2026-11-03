@@ -9,6 +9,7 @@ import type { ProtonConfig } from "./config"
 import { CONNECTOR_NAME } from "./manifest"
 import { isTextMime, parseMessage, attachmentText } from "../mail/parse"
 import { extractAddresses } from "../reply-target"
+import { computeMailSignals } from "../mail/phishing"
 import { callSource } from "./source"
 import type { ProtonMailSource } from "./source"
 import { healthAwareSyncRunner } from "../health-aware-sync"
@@ -22,6 +23,22 @@ export type FolderSyncResult = {
   skipped: number
   /** True when UIDVALIDITY changed and the folder was read again from the start. */
   resynced: boolean
+}
+
+/**
+ * Domains the owner has corresponded with: every sender and recipient domain in stored Proton mail
+ * that raised no signal itself, so a phishing sender cannot make its own domain familiar.
+ */
+function correspondentDomains(db: DatabaseSync): Set<string> {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT lower(substr(a.address, instr(a.address, '@') + 1)) AS domain
+       FROM mail_addresses a JOIN documents d ON d.sha256 = a.sha256
+       WHERE d.source = ? AND a.role IN ('from', 'to', 'cc')
+         AND NOT EXISTS (SELECT 1 FROM mail_message_signals s WHERE s.sha256 = a.sha256)`
+    )
+    .all(CONNECTOR)
+  return new Set(rows.map((r) => String(r["domain"])))
 }
 
 const sha256 = (data: string | Uint8Array): string =>
@@ -51,9 +68,11 @@ async function toDocuments(
   uidValidity: string,
   uid: number,
   entityId: string,
-  mailboxId: string
+  mailboxId: string,
+  knownDomains: ReadonlySet<string>
 ): Promise<IndexedDocument[]> {
   const parsed = await parseMessage(raw)
+  const mailSignals = computeMailSignals(parsed, { knownDomains })
   const contentHash = sha256(raw)
   // The Message-ID is the stable identity; a UID is only unique within one UIDVALIDITY epoch.
   const key = parsed.messageId ?? `proton:${folder}:${uidValidity}:${uid}`
@@ -93,6 +112,7 @@ async function toDocuments(
     ],
     addresses: extractAddresses(parsed),
     mailboxId,
+    ...(mailSignals.length === 0 ? {} : { mailSignals }),
     mailFacts: {
       listUnsubscribe: parsed.listUnsubscribe,
       ...(parsed.autoSubmitted === undefined
@@ -177,6 +197,7 @@ export async function syncFolder(
     const seen = new Set<string>()
     const documents: IndexedDocument[] = []
     let duplicates = 0
+    const knownDomains = correspondentDomains(db)
     for (const message of fetched) {
       const docs = await toDocuments(
         message.raw,
@@ -184,7 +205,8 @@ export async function syncFolder(
         state.uidValidity,
         message.uid,
         entityId,
-        account.accountRef
+        account.accountRef,
+        knownDomains
       )
       const id = docs[0]?.headers?.messageId
       if (

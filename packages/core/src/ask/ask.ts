@@ -26,6 +26,8 @@ import {
   substitutePlaceholders,
 } from "./answer"
 import { buildAskPack } from "./pack"
+import { ZOOM_FACTS_RESERVE, buildZoomedAsk } from "./zoom-pack"
+import { routeQuestion } from "../digest/route"
 import { PLAN_SCHEMA, PLAN_SYSTEM, askScope, parsePlan } from "./plan"
 import type { AskCitation, AskDeps, AskResult, SearchPlan } from "./types"
 
@@ -146,7 +148,8 @@ function factsText(
   matched: number,
   searched: number,
   readInFull: number,
-  readPartially: number
+  readPartially: number,
+  extra: readonly string[] = []
 ): string {
   return [
     "Facts (computed by code):",
@@ -155,6 +158,7 @@ function factsText(
     `readInFull: ${String(readInFull)}`,
     `readPartially: ${String(readPartially)}`,
     `wants: ${plan.wants}`,
+    ...extra,
   ].join("\n")
 }
 
@@ -267,13 +271,15 @@ async function run(
     limit: deps.searchLimit ?? DEFAULT_SEARCH_LIMIT,
   })
   const historyParts = conversationParts(deps.conversation)
+  const zoomable = askScope(plan) === "broad" && deps.digest !== undefined
   const contextHeaderParts: PromptPart[] = [
     `${factsText(
       plan,
       matchCount,
       searched,
       Number.MAX_SAFE_INTEGER,
-      Number.MAX_SAFE_INTEGER
+      Number.MAX_SAFE_INTEGER,
+      zoomable ? ZOOM_FACTS_RESERVE : []
     )}\n\nMessages:\n`,
     `\n\nQuestion: ${question}`,
   ]
@@ -299,21 +305,45 @@ async function run(
       truncatedPlan
     )
   }
-  const pack = await buildAskPack(db, {
-    hits: hits.map((h) => h.sha256),
-    budgetTokens: packBudgetTokens,
-    ...(deps.charsPerToken === undefined
-      ? {}
-      : { charsPerToken: deps.charsPerToken }),
-    ...(askScope(plan) === "focused"
-      ? {
-          focus: {
-            terms: matchTerms(db, query),
-            searchScores: new Map(hits.map((h) => [h.sha256, h.score])),
-          },
-        }
-      : {}),
-  })
+  const terms = matchTerms(db, query)
+  const zoomed =
+    zoomable && deps.digest !== undefined && hits[0] !== undefined
+      ? await buildZoomedAsk(db, {
+          topHit: hits[0].sha256,
+          digest: deps.digest,
+          terms,
+          // Anything not clearly an overview is treated as an existence question: raw first.
+          existence: routeQuestion(question) === "search",
+          budgetTokens: packBudgetTokens,
+          ...(deps.charsPerToken === undefined
+            ? {}
+            : { charsPerToken: deps.charsPerToken }),
+        })
+      : undefined
+  const pack =
+    zoomed !== undefined
+      ? "refused" in zoomed
+        ? zoomed
+        : zoomed.pack
+      : await buildAskPack(db, {
+          hits: hits.map((h) => h.sha256),
+          budgetTokens: packBudgetTokens,
+          ...(deps.charsPerToken === undefined
+            ? {}
+            : { charsPerToken: deps.charsPerToken }),
+          ...(askScope(plan) === "focused"
+            ? {
+                focus: {
+                  terms,
+                  searchScores: new Map(hits.map((h) => [h.sha256, h.score])),
+                },
+              }
+            : {}),
+        })
+  const zoomFacts =
+    zoomed === undefined || "refused" in zoomed ? [] : zoomed.facts
+  const summaryParts =
+    zoomed === undefined || "refused" in zoomed ? [] : zoomed.summaryParts
   if ("refused" in pack) {
     return refused(
       `the top matching message needs ${String(pack.seedTokens)} tokens; the prompt, conversation, question and follow-up reserve leave ${String(pack.budgetTokens)} of ${String(cap)} ask tokens for messages`,
@@ -328,7 +358,14 @@ async function run(
     (m) => m.excerpt !== undefined
   ).length
   const readInFull = pack.members.length - readPartially
-  const facts = factsText(plan, matchCount, searched, readInFull, readPartially)
+  const facts = factsText(
+    plan,
+    matchCount,
+    searched,
+    readInFull,
+    readPartially,
+    zoomFacts
+  )
 
   // Step 2: the model answers from the pack.
   let answered
@@ -342,6 +379,7 @@ async function run(
           content: [
             ...historyParts,
             `${facts}\n\nMessages:\n`,
+            ...summaryParts,
             ...packParts(pack),
             `\n\nQuestion: ${question}`,
           ],

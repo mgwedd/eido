@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateFileHelperRequest",
+  "description": "One request to the gate's native file helper (packages/gate/native/file-helper, ADR 0006), written to its stdin. Paths are relative to the approved root with / separators. There is no delete, truncate or overwrite verb.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "op": { "const": "identify" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      },
+      "required": ["op", "path"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": { "const": "create" },
+        "root": { "$ref": "gate-file-root.schema.json" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "contentBase64": { "type": "string", "maxLength": 4000000 }
+      },
+      "required": ["op", "root", "path", "contentBase64"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": { "const": "move" },
+        "root": { "$ref": "gate-file-root.schema.json" },
+        "from": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "to": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      },
+      "required": ["op", "root", "from", "to"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": { "const": "trash" },
+        "root": { "$ref": "gate-file-root.schema.json" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "trashName": { "type": "string", "minLength": 1, "maxLength": 255 }
+      },
+      "required": ["op", "root", "path", "trashName"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": { "const": "restore" },
+        "root": { "$ref": "gate-file-root.schema.json" },
+        "trashName": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      },
+      "required": ["op", "root", "trashName", "path"],
+      "additionalProperties": false
+    }
+  ]
+}

@@ -17,6 +17,7 @@ import { fence, plainContent, toMaterial } from "../inference/fence"
 import { LIVE_DOCUMENT_PREDICATE } from "../index/heads"
 import { compareUnits, matchingPassages, termHits } from "./passages"
 import type { Passage, RankedUnit } from "./passages"
+import type { ZoomItem } from "./zoom"
 
 export interface AskPackArgs {
   /** sha256 of each search hit, best first. The first one seeds the pack. */
@@ -211,12 +212,56 @@ async function buildFocusedPack(
   return finishPack(db, blocks, members, docs.size - chosen.size, charsPerToken)
 }
 
+/**
+ * A pack of the raw items a zoom selected (passages and openings), one excerpt member per
+ * document in selection order. Offsets are those of the stored body, as the selector verified them.
+ */
+export async function buildZoomPack(
+  db: DatabaseSync,
+  items: readonly ZoomItem[],
+  charsPerToken: number = DEFAULT_CHARS_PER_TOKEN,
+  store = true
+): Promise<ContextPack> {
+  const bySha = new Map<string, Passage[]>()
+  for (const item of items) {
+    if (item.kind === "summary") continue
+    const list = bySha.get(item.sha256) ?? []
+    list.push({ start: item.start, end: item.end })
+    bySha.set(item.sha256, list)
+  }
+  const blocks: PackBlock[] = []
+  const members: PackMember[] = []
+  for (const [sha256, list] of bySha) {
+    const doc = focusDoc(db, sha256)
+    const passages = [...list].sort(byStart)
+    const tag = `[M${String(members.length + 1)}]`
+    const entry = excerptEntry(doc, passages, tag)
+    blocks.push(entry)
+    members.push({
+      tag,
+      sha256,
+      edge: "seed",
+      tokens: entryTokens(entry, charsPerToken),
+      injectionSuspected: entry.block.injectionSuspected,
+      injectionReasons: [...entry.block.reasons],
+      excerpt: {
+        passages,
+        omittedChars:
+          doc.body.length -
+          passages.reduce((sum, p) => sum + p.end - p.start, 0),
+      },
+    })
+  }
+  return finishPack(db, blocks, members, 0, charsPerToken, store)
+}
+
 async function finishPack(
   db: DatabaseSync,
   blocks: PackBlock[],
   members: PackMember[],
   droppedMembers: number,
-  charsPerToken: number
+  charsPerToken: number,
+  store = true
 ): Promise<ContextPack> {
   const packHash = createHash("sha256")
     .update(packText({ blocks }))
@@ -232,7 +277,7 @@ async function finishPack(
     droppedMembers,
     packHash,
   }
-  await storeContextPack(db, pack)
+  if (store) await storeContextPack(db, pack)
   return pack
 }
 

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateFileRoot",
+  "description": "One approved local file root (#313): the canonical absolute path, the device and file identity captured when the owner approved it, and the name of its trash directory directly under the root. The native file helper refuses every operation when the directory at path no longer has this identity.",
+  "type": "object",
+  "properties": {
+    "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "dev": { "type": "string", "pattern": "^[0-9a-f]{1,40}$" },
+    "ino": { "type": "string", "pattern": "^[0-9a-f]{1,40}$" },
+    "trashDir": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._-]*[A-Za-z0-9_-]$"
+    }
+  },
+  "required": ["path", "dev", "ino", "trashDir"],
+  "additionalProperties": false
+}

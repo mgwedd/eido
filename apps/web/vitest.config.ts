@@ -24,7 +24,7 @@ export default defineConfig({
         "app/**/error.tsx", // Next route glue: static error boundary markup, no logic
         "app/**/manifest.ts", // Next route glue: static PWA manifest object, no logic
       ],
-      reporter: ["text", "json-summary"],
+      reporter: ["text", "json-summary", "cobertura"],
       thresholds: {
         lines: 90,
         statements: 90,

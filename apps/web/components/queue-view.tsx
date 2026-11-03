@@ -19,12 +19,7 @@ import {
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { shortHash } from "@/lib/approval/challenge"
 import { prepareApproval, signApproval } from "@/lib/approval/sign"
-import {
-  loadHistory,
-  loadQueue,
-  payloadMatchesHash,
-  rejectIntent,
-} from "@/lib/queue/api"
+import { loadHistory, loadQueue, rejectIntent } from "@/lib/queue/api"
 import {
   REJECT_REASONS,
   buildCard,
@@ -220,17 +215,12 @@ function ApprovalCard({
     void (async () => {
       const result = await prepareApproval(intent.id, controller.signal)
       if (controller.signal.aborted) return
-      if (!result.ok) return setCard({ status: "failed" })
-      const matches = await payloadMatchesHash(
-        result.value.payload,
-        result.value.payloadHash
-      )
-      if (controller.signal.aborted) return
-      setCard(
-        matches
-          ? { status: "ready", prepared: result.value }
-          : { status: "mismatch" }
-      )
+      if (!result.ok)
+        return setCard({
+          status:
+            result.error.code === "payload_changed" ? "mismatch" : "failed",
+        })
+      setCard({ status: "ready", prepared: result.value })
     })()
     return () => controller.abort()
   }, [intent.id, reloads])
@@ -269,6 +259,10 @@ function ApprovalCard({
     if (result.ok) return onDecided("Approved")
     if (result.error.code === "already_decided")
       return onDecided("Already decided")
+    if (result.error.code === "payload_changed") {
+      setAction({ status: "idle" })
+      return setCard({ status: "mismatch" })
+    }
     setAction({
       status: "error",
       message:
@@ -416,7 +410,7 @@ function ApprovalCard({
             <span>{waiting}</span>
             {card.status === "ready" ? (
               <span>
-                Payload hash ·{" "}
+                Hashed on this device ·{" "}
                 <code>{shortHash(card.prepared.payloadHash)}</code>
               </span>
             ) : null}

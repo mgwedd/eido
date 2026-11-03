@@ -25,6 +25,7 @@
     },
     "test": {
       "dependsOn": ["^build"],
+      "env": ["EIDO_FILE_HELPER"],
       "outputs": ["coverage/**"]
     },
     "test:watch": {
