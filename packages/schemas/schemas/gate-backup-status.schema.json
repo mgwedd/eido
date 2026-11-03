@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateBackupStatus",
+  "description": "Authenticated phone view of the backup status for Settings (#414). Reports whether a backup has run, the last successful snapshot timestamp, and whether the snapshot is fresh or stale (older than 36 hours).",
+  "oneOf": [
+    {
+      "title": "GateBackupNeverRun",
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "never_run"
+        },
+        "lastSuccess": {
+          "type": "null"
+        }
+      },
+      "required": ["status", "lastSuccess"],
+      "additionalProperties": false
+    },
+    {
+      "title": "GateBackupSnapshot",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["fresh", "stale"]
+        },
+        "lastSuccess": {
+          "type": "string",
+          "format": "date-time",
+          "minLength": 20,
+          "maxLength": 40
+        }
+      },
+      "required": ["status", "lastSuccess"],
+      "additionalProperties": false
+    }
+  ]
+}
