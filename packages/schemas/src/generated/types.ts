@@ -514,6 +514,73 @@ export interface GateEnrolmentCode {
   expiresAt: string
 }
 
+/** One request to the gate's native file helper (packages/gate/native/file-helper, ADR 0006), written to its stdin. Paths are relative to the approved root with / separators. There is no delete, truncate or overwrite verb. */
+export type GateFileHelperRequest = {
+  op: "identify"
+  path: string
+} | {
+  op: "create"
+  root: GateFileRoot
+  path: string
+  contentBase64: string
+} | {
+  op: "move"
+  root: GateFileRoot
+  from: string
+  to: string
+} | {
+  op: "trash"
+  root: GateFileRoot
+  path: string
+  trashName: string
+} | {
+  op: "restore"
+  root: GateFileRoot
+  trashName: string
+  path: string
+}
+
+/** The single line the native file helper writes to stdout (ADR 0006). Errors carry a fixed code and a fixed message; never a path or OS text. */
+export type GateFileHelperResponse = {
+  ok: true
+  op: "identify"
+  canonicalPath: string
+  dev: string
+  ino: string
+} | {
+  ok: true
+  op: "create" | "move" | "trash" | "restore"
+} | {
+  ok: false
+  code: "bad_request" | "invalid_path" | "root_changed" | "not_found" | "exists" | "not_a_directory" | "symlink" | "io" | "unsupported"
+  message: string
+}
+
+/** One approved local file root (#313): the canonical absolute path, the device and file identity captured when the owner approved it, and the name of its trash directory directly under the root. The native file helper refuses every operation when the directory at path no longer has this identity. */
+export interface GateFileRoot {
+  path: string
+  dev: string
+  ino: string
+  trashDir: string
+}
+
+/** The owner's requested local file roots (#313), before the gate captures each root's canonical path and identity with the native helper and prepares the signed policy.set ceremony. */
+export interface GateFileRootsRequest {
+  roots: Array<{
+    id: string
+    path: string
+    trashDir: string
+  }>
+}
+
+/** The owner-signed set of local file roots the gate may operate in (#313). Stored only through a signed policy.set control approval on target file-roots; an unsigned, replayed, tampered or superseded set is never loaded. */
+export interface GateFileRoots {
+  roots: Array<{
+    id: string
+    root: GateFileRoot
+  }>
+}
+
 /** Response of an intent's state-transition history, oldest first, derived from audit_log (#11 getIntentHistory). from is null on the first entry. An undo is an entry whose from and to are both executed with reason undone. */
 export interface GateIntentHistory {
   intentId: string

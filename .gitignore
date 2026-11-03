@@ -174,3 +174,6 @@ eval-local/
 .vercel
 # typescript
 next-env.d.ts
+
+# Rust build output (packages/gate/native)
+target/
