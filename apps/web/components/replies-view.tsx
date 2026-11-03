@@ -23,6 +23,7 @@ import {
 } from "@eido/ui/components/table"
 import { cn } from "@eido/ui/lib/utils"
 import { DraftReplyAction } from "@/components/draft-reply-action"
+import { ResolveAction } from "@/components/resolve-action"
 import { useKeydown } from "@/hooks/use-keydown"
 import { loadConnectors, type Connector } from "@/lib/connectors"
 import { loadLedgerObligations, type ObligationItem } from "@/lib/ledger"
@@ -33,8 +34,10 @@ import {
   moveRowFocus,
   partitionReplies,
   requestDraftReply,
+  requestResolveObligation,
   sortReplies,
   type DraftReplyState,
+  type ResolveState,
 } from "@/lib/replies"
 import { isInteractiveTarget, isShortcutEvent } from "@/lib/shortcuts"
 import {
@@ -150,6 +153,11 @@ export function RepliesView({
   const [drafts, setDrafts] = React.useState<Record<number, DraftReplyState>>(
     {}
   )
+  const [resolves, setResolves] = React.useState<Record<number, ResolveState>>(
+    {}
+  )
+  const resolving = React.useRef<Set<number>>(new Set())
+
   const router = useRouter()
   const [focusedId, setFocusedId] = React.useState<number | null>(null)
   // Rows with a request in flight. A ref, so a second click in the same tick finds it.
@@ -244,6 +252,30 @@ export function RepliesView({
       }))
     },
     [isOffline, drafts]
+  )
+
+  const handleResolve = React.useCallback(
+    async (row: ObligationItem) => {
+      if (isOffline || resolving.current.has(row.id)) return
+      resolving.current.add(row.id)
+      setResolves((prev) => ({ ...prev, [row.id]: { status: "pending" } }))
+      const outcome = await requestResolveObligation(row.id)
+      resolving.current.delete(row.id)
+      if (outcome.status === "resolved") {
+        setObligations((prev) => prev.filter((o) => o.id !== row.id))
+        setResolves((prev) => {
+          const rest = { ...prev }
+          delete rest[row.id]
+          return rest
+        })
+      } else {
+        setResolves((prev) => ({
+          ...prev,
+          [row.id]: { status: "failed", reason: outcome.reason },
+        }))
+      }
+    },
+    [isOffline]
   )
 
   const partialCoverageNotice = React.useMemo(() => {
@@ -689,6 +721,12 @@ export function RepliesView({
                           >
                             Since
                           </TableHead>
+                          <TableHead
+                            scope="col"
+                            className="px-4 py-2.5 text-right text-xs"
+                          >
+                            <span className="sr-only">Action</span>
+                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -728,6 +766,14 @@ export function RepliesView({
                                 )}
                               >
                                 {dueInfo.text}
+                              </TableCell>
+                              <TableCell className="px-4 py-3 text-right">
+                                <ResolveAction
+                                  state={resolves[row.id]}
+                                  isOffline={isOffline}
+                                  size="desktop"
+                                  onResolve={() => void handleResolve(row)}
+                                />
                               </TableCell>
                             </TableRow>
                           )
@@ -779,12 +825,20 @@ export function RepliesView({
                                 </span>
                               </div>
                             </Link>
-                            <Badge
-                              variant="outline"
-                              className="border-blue-500/30 bg-blue-500/10 text-xs font-medium text-blue-600 dark:text-blue-400"
-                            >
-                              Waiting
-                            </Badge>
+                            <div className="flex shrink-0 flex-col items-end gap-1">
+                              <Badge
+                                variant="outline"
+                                className="border-blue-500/30 bg-blue-500/10 text-xs font-medium text-blue-600 dark:text-blue-400"
+                              >
+                                Waiting
+                              </Badge>
+                              <ResolveAction
+                                state={resolves[row.id]}
+                                isOffline={isOffline}
+                                size="phone"
+                                onResolve={() => void handleResolve(row)}
+                              />
+                            </div>
                           </div>
                         </li>
                       )

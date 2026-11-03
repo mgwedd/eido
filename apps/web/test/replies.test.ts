@@ -8,6 +8,8 @@ import {
   moveRowFocus,
   partitionReplies,
   requestDraftReply,
+  requestResolveObligation,
+  resolveFailureMessage,
   sortReplies,
 } from "@/lib/replies"
 
@@ -370,6 +372,103 @@ describe("lib/replies", () => {
 
     it("has no focus without rows", () => {
       expect(moveRowFocus([], null, "next")).toBeNull()
+    })
+  })
+
+  describe("requestResolveObligation", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    function stubResolve(status: number, body: unknown) {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          new Response(typeof body === "string" ? body : JSON.stringify(body), {
+            status,
+            headers: { "content-type": "application/json" },
+          })
+        )
+      )
+      vi.stubGlobal("fetch", fetchMock)
+      return fetchMock
+    }
+    const errorBody = (code: string) => ({
+      error: { code, message: "for logs" },
+    })
+
+    it("POSTs to the obligation's resolve route and reports resolved on a done answer", async () => {
+      const fetchMock = stubResolve(200, { id: 7, status: "done" })
+
+      expect(await requestResolveObligation(7)).toEqual({ status: "resolved" })
+
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [
+        string,
+        RequestInit,
+      ]
+      expect(url).toBe("/api/core/obligations/7/resolve")
+      expect(init.method).toBe("POST")
+    })
+
+    it.each([
+      ["another obligation's id", { id: 8, status: "done" }],
+      ["a status other than done", { id: 7, status: "open" }],
+      ["a body that is not an obligation state", { ok: true }],
+    ])("does not count %s as resolved", async (_name, body) => {
+      stubResolve(200, body)
+      expect(await requestResolveObligation(7)).toEqual({
+        status: "failed",
+        reason: "unreadable",
+      })
+    })
+
+    it("reports core's error code", async () => {
+      stubResolve(409, errorBody("invalid_transition"))
+      expect(await requestResolveObligation(7)).toEqual({
+        status: "failed",
+        reason: "invalid_transition",
+      })
+    })
+
+    it("reports a 401 as unauthenticated, an unreadable body, and a network failure", async () => {
+      stubResolve(401, {})
+      expect(await requestResolveObligation(7)).toEqual({
+        status: "failed",
+        reason: "unauthenticated",
+      })
+
+      stubResolve(500, "<html>")
+      expect(await requestResolveObligation(7)).toEqual({
+        status: "failed",
+        reason: "unreadable",
+      })
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => Promise.reject(new TypeError("offline")))
+      )
+      expect(await requestResolveObligation(7)).toEqual({
+        status: "failed",
+        reason: "network",
+      })
+    })
+
+    it("words each failure for the row", () => {
+      expect(resolveFailureMessage("not_found")).toBe(
+        "This thread is gone. Reload the page."
+      )
+      expect(resolveFailureMessage("invalid_transition")).toBe(
+        "This thread is no longer open. Reload the page."
+      )
+      expect(resolveFailureMessage("unauthenticated")).toBe(
+        "Sign in again to mark this resolved."
+      )
+      expect(resolveFailureMessage("network")).toBe(
+        "Connection lost. Nothing was changed. Try again."
+      )
+      expect(resolveFailureMessage("unreadable")).toBe(
+        "Could not mark this resolved. Nothing was changed. Try again."
+      )
     })
   })
 })
