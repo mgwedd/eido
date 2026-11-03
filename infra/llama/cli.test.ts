@@ -6,18 +6,18 @@ import type { HttpResponse } from "./server.ts"
 import type { RunResult } from "./verify.ts"
 
 const LOCK = readFileSync(new URL("../model.lock", import.meta.url), "utf8")
-const SHA = "b4778681efbd6898fe1965e74f810b3b7dfdf6afab01df9c88c1b0e6e9ca122d"
-const SIZE = 6036116480
+const SHA = "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
+const SIZE = 14439363584
 const ASSET_SHA =
   "791eb0200a7c846ca925b6274fc21f0f21f537fda2924cc5a47402655816f56e"
 const HOME = "/Users/u"
 const ROOT = `${HOME}/Library/Application Support/eido-dev`
-const MODEL = `${ROOT}/models/meta-llama-3.1-8b-instruct-q4_0.gguf`
+const MODEL = `${ROOT}/models/gemma-4-26B_q4_0-it.gguf`
 const BIN = `${ROOT}/llama.cpp/b11149/llama-server`
 const PLIST = `${HOME}/Library/LaunchAgents/com.eido.llama-server.plist`
 const VERSION = "version: 0.5.0-dev (build 11149, commit d2e54583c)\n"
 const REFERENCE =
-  "<|start_header_id|>user<|end_header_id|>\n\nThanks.<|eot_id|>"
+  "<|turn>user\nThanks.<turn|>\n<|turn>model\n"
 
 const reply = (status: number, body: unknown): HttpResponse => ({
   status,
@@ -71,14 +71,14 @@ function harness(o: Options = {}) {
     "/repo/infra/model.lock": LOCK,
     [MODEL]: "",
     [BIN]: "",
-    "/repo/infra/llama/fixtures/meta-llama-3.1-8b-instruct-q4_0.gguf.prompt.txt":
+    "/repo/infra/llama/fixtures/gemma-4-26B_q4_0-it.gguf.prompt.txt":
       REFERENCE,
     ...o.files,
   }
   const http: Record<string, HttpResponse | Error> = {
     "/health": reply(200, { status: "ok" }),
     "/props": reply(200, {
-      chat_template: "'<|start_header_id|>' + message['role']",
+      chat_template: "'<|turn>model\n' + message['content']",
     }),
     "/apply-template": reply(200, { prompt: REFERENCE }),
     "/v1/chat/completions": reply(200, {
@@ -214,7 +214,7 @@ describe("llama launch", () => {
     expect(await main(["launch"], h.deps)).toBe(1)
     expect(h.spawned).toEqual([])
     expect(h.err).toEqual([
-      "FAIL: no model file at /empty/meta-llama-3.1-8b-instruct-q4_0.gguf",
+      "FAIL: no model file at /empty/gemma-4-26B_q4_0-it.gguf",
       "llama-server was not started",
     ])
   })
@@ -235,7 +235,7 @@ describe("llama launch", () => {
       "8080",
     ])
     expect(h.out.at(-1)).toMatch(
-      /^ok: llama-server ready on http:\/\/127\.0\.0\.1:8080 in [\d.]+ s; chat template has <\|start_header_id\|>$/
+      /^ok: llama-server ready on http:\/\/127\.0\.0\.1:8080 in [\d.]+ s; chat template has <\|turn>model$/
     )
     process.exit(0)
     expect(await running).toBe(1)
@@ -273,7 +273,7 @@ describe("llama launch", () => {
     expect(await main(["launch"], h.deps)).toBe(1)
     expect(h.spawned[0]?.process.killed).toEqual(["SIGTERM"])
     expect(h.err).toEqual([
-      'FAIL: /props chat_template does not contain "<|start_header_id|>"',
+      'FAIL: /props chat_template does not contain "<|turn>model"',
     ])
   })
 
@@ -342,7 +342,7 @@ describe("llama check-template", () => {
       "ok: chat template",
       "ok: rendered prompt",
       "ok: JSON-schema request",
-      "ok: template check passed on b11149 with meta-llama-3.1-8b-instruct-q4_0.gguf",
+      "ok: template check passed on b11149 with gemma-4-26B_q4_0-it.gguf",
     ])
   })
 
@@ -361,7 +361,7 @@ describe("llama check-template", () => {
     const deps = { ...h.deps, fixtureDir: "/nowhere" }
     expect(await main(["check-template"], deps)).toBe(1)
     expect(h.err).toEqual([
-      "FAIL: no reference prompt at /nowhere/meta-llama-3.1-8b-instruct-q4_0.gguf.prompt.txt",
+      "FAIL: no reference prompt at /nowhere/gemma-4-26B_q4_0-it.gguf.prompt.txt",
     ])
   })
 })

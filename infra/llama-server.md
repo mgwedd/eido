@@ -41,10 +41,10 @@ The web app is served only at `https://<host>.ts.net:8443`. `llama-server` has n
 
 `infra/model.lock` pins:
 
-- **Model:** Llama 3.1 8B Instruct Q4_0 (`ggml-org/Meta-Llama-3.1-8B-Instruct-Q4_0-GGUF` at a fixed revision), with its size and SHA-256.
+- **Model:** Gemma 4 26B-A4B instruct, Google's QAT Q4_0 GGUF (`google/gemma-4-26B-A4B-it-qat-q4_0-gguf` at a fixed revision, Apache 2.0), with its size and SHA-256. It is a mixture-of-experts model: 128 experts, 8 active per token, about 4B active parameters.
 - **llama.cpp:** release `b11149` (commit `d2e54583c`), with the SHA-256 of `llama-b11149-bin-macos-arm64.tar.gz`.
 
-The choice comes from #69. #28 makes the final choice and may change it.
+The MVP starts on this pin. Llama 3.1 8B Q4_0, the earlier stand-in from #69, has no tool-call support in its template (#473). The other candidates are benchmarked during the dogfood week (#532), and #28 makes the final choice.
 
 Default locations (each can be overridden by env, none is a secret):
 
@@ -137,13 +137,21 @@ Not yet recorded, still to do on the host by the owner (#472):
 
 `llama check-template` runs three checks against a running server:
 
-1. `/props` reports a chat template containing the lock's `chat_template_marker` (`<|start_header_id|>`).
+1. `/props` reports a chat template containing the lock's `chat_template_marker` (`<|turn>model`).
 2. `/apply-template` renders the fixed synthetic conversation in `infra/llama/server.ts` (`FIXED_CONVERSATION`: system, user, an assistant tool call, the tool result, an assistant reply, a user turn). The result must equal `infra/llama/fixtures/<model file>.prompt.txt` exactly; on a difference the check names the first differing character.
 3. One `/v1/chat/completions` request constrained by a strict JSON schema (four required string fields, no others) must return content that parses and matches the schema.
 
-The reference fixture was written by hand from the Llama 3.1 template embedded in the GGUF, not captured from the server. Each message becomes `<|start_header_id|>{role}<|end_header_id|>\n\n{content trimmed}<|eot_id|>`, followed by the assistant header. `/apply-template` leaves out `<|begin_of_text|>`, which llama.cpp adds when it tokenizes the prompt, so the fixture leaves it out too.
+The reference fixture was written by hand from the Gemma 4 template embedded in the GGUF (`tokenizer.chat_template`), not captured from the server:
 
-**Finding:** the template embedded in this GGUF has no tool-call support. An assistant turn that carries `tool_calls` renders as an empty assistant turn, so the call itself (`get_weather` and its arguments) never reaches the model; only the tool result does. The reference fixture records this behaviour as it is, so the check catches any change. Tool calling on this pin needs another template or model (#473, #28).
+- **System message:** the template renders it in its own `<|turn>system` turn.
+- **Assistant turns:** each one becomes a `<|turn>model` turn.
+- **Tool call:** renders as `<|tool_call>call:get_weather{city:<|"|>Testville<|"|>}<tool_call|>`.
+- **Tool result:** goes inline in the same model turn, as `<|tool_response>response:get_weather{value:…}<tool_response|>`.
+- **Reply:** the assistant reply after the tool result continues that turn, with no new header.
+- **Generation prompt:** with thinking off, it is `<|turn>model\n<|channel>thought\n<channel|>`.
+- **`<bos>`:** llama.cpp adds it when it tokenizes, so the fixture leaves it out.
+
+Unlike the earlier Llama 3.1 8B pin, whose template dropped the call itself and rendered an empty assistant turn, this template carries the tool call to the model. The Llama fixture stays in `infra/llama/fixtures/` for the benchmark in #532.
 
 ## Updating the pin
 
