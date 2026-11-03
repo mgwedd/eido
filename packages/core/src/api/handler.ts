@@ -61,6 +61,7 @@ import {
   changeObligation,
   listObligationsRoute,
 } from "./obligations-route"
+import { TRANSACTIONS_PATH, listTransactionsRoute } from "./transactions-route"
 
 export interface ApiDeps {
   profile: ProfileStore
@@ -450,6 +451,13 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         url.searchParams,
         deps.intentStatus
       )
+      if (result.ok) return json(result.body)
+      return failure(result.code, result.message, { fields: result.fields })
+    }
+
+    if (path === TRANSACTIONS_PATH && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = listTransactionsRoute(deps.documents.db, url.searchParams)
       if (result.ok) return json(result.body)
       return failure(result.code, result.message, { fields: result.fields })
     }

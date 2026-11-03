@@ -307,6 +307,15 @@ export function LedgerView({
               Replies owed
             </Link>
             <Link
+              href="/ledger/transactions"
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "min-h-[44px] px-3 font-medium"
+              )}
+            >
+              Transactions
+            </Link>
+            <Link
               href="/documents"
               className={cn(
                 buttonVariants({ variant: "outline", size: "sm" }),
@@ -341,6 +350,15 @@ export function LedgerView({
             )}
           >
             Replies owed
+          </Link>
+          <Link
+            href="/ledger/transactions"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "sm" }),
+              "h-8 px-3 text-xs"
+            )}
+          >
+            Transactions
           </Link>
           <Link
             href="/documents"

@@ -8,6 +8,19 @@ The local admin signs a WebAuthn `webauthn.get` challenge formed as base64url(SH
 
 The gate stores the accepted override in `approved_policy` with its consumed approval and audit binding. `permissions.json` remains an owner-only proposal file: editing it alone never changes effective permissions, including after restart. An invalid or changed unsigned proposal is reported as `policy.rejected`. A signed empty `tiers` object resets to shipped tiers. Loading a signed policy checks its canonical hash, approval reference, latest approval pointer, and audit chain. The running gate can use `applyPolicyOverrides` to perform a signed change and refresh its policy snapshot immediately. These functions are internal to the gate; they are not phone-facing APIs.
 
+## Phone listener routes for signed control changes
+
+The phone listener (`PHONE_ROUTES` in `packages/gate/src/internal/phone-routes.ts`, reached as `/api/gate/...`) serves these signed control ceremonies, each behind the passkey session. The session only lets the phone ask; every change still needs a fresh WebAuthn assertion over the challenge the gate prepared.
+
+| Route                                                                               | Ceremony                                                                                     |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `POST /connector-settings/:id/repin`, `POST /connector-settings/:id/repin/decision` | `manifest.pin` for a drift-disabled connector, over the reviewed manifest on the Mac (below) |
+| `POST /push/prepare`, `POST /push/subscriptions`                                    | `policy.set` binding one push subscription to its endpoint                                   |
+| `POST /file-roots/prepare`, `POST /file-roots/complete`                             | `policy.set` on target `file-roots` (#574); see `docs/local-files.md`                        |
+| `GET /file-roots`                                                                   | reads the approved roots; changes nothing                                                    |
+
+Permission overrides (`policy.set` on `permissions`), enrolment codes and passkey revocation stay off the phone listener.
+
 ## Re-pinning a drifted connector: placing the reviewed manifest (#97, #497)
 
 When a connector's server reports a different tool list, the gate disables it and Connectors shows Review and re-pin. That action reads the manifest the owner reviewed from `<EIDO_GATE_DATA_DIR>/reviewed-manifests/<connector>.json`; the phone never supplies it. The gate cannot import the connector manifests in `packages/core`, so two commands carry the manifest across, run on the Mac as the gate user:

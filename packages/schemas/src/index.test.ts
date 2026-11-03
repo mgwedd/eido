@@ -21,6 +21,7 @@ import {
   validateIntentResult,
   validateCoreApiAskResponse,
   validateCoreApiObligationList,
+  validateCoreApiTransactionList,
   validateCoreApiReplyDraftRequest,
   validateCoreApiReplyDraftResponse,
   validateCoreApiSimpleFinSync,
@@ -284,6 +285,87 @@ describe("core API obligation list schema", () => {
     expect(
       validateCoreApiObligationList({
         obligations: [{ ...item, direction: "pending" }],
+        nextOffset: null,
+      }).ok
+    ).toBe(false)
+  })
+})
+
+describe("validateCoreApiTransactionList", () => {
+  const item = {
+    id: "acct-1:txn-1",
+    postedAt: "2026-10-17T00:00:00.000Z",
+    description: "Example Power Co.",
+    amountCents: -8412,
+    currency: "USD",
+    account: { id: "acct-1", name: "Checking" },
+    entity: { id: "ent-1", name: "Rental", tag: "RENT" },
+    linkedObligation: null,
+  }
+
+  test("accepts a page and the empty list", () => {
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [item],
+        accounts: [{ id: "acct-1", name: "Checking" }],
+        nextOffset: 50,
+      }).ok
+    ).toBe(true)
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [],
+        accounts: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test("rejects an amount that is not whole cents", () => {
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [{ ...item, amountCents: -84.12 }],
+        accounts: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(false)
+  })
+
+  test("accepts a transaction linked to the obligation it paid (#576)", () => {
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [
+          { ...item, linkedObligation: { id: 3, action: "Lorem ipsum" } },
+        ],
+        accounts: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test.each([
+    ["left out", undefined],
+    ["without an action", { id: 3 }],
+    ["with an empty action", { id: 3, action: "" }],
+    ["with a fractional id", { id: 3.5, action: "Lorem ipsum" }],
+  ])("rejects a linked obligation %s", (_, linkedObligation) => {
+    const row: Record<string, unknown> = { ...item, linkedObligation }
+    if (linkedObligation === undefined) delete row["linkedObligation"]
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [row],
+        accounts: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(false)
+  })
+
+  test("rejects a transaction with no account", () => {
+    const noAccount: Record<string, unknown> = { ...item }
+    delete noAccount["account"]
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [noAccount],
+        accounts: [],
         nextOffset: null,
       }).ok
     ).toBe(false)

@@ -43,7 +43,7 @@ import type { ProfileAudit } from "./profile-audit"
 import type { FileHelper } from "./files/file-helper"
 import type { FileReads } from "./files/file-reads"
 import { fileReadRoute } from "./files/file-reads"
-import { fileRootControlRoute } from "./file-root-routes"
+import { fileRootRoute } from "./file-root-routes"
 import type { WebAuthnConfig } from "./webauthn"
 
 // The gate's routes. The data-plane listener serves the intent API (propose, and three
@@ -498,7 +498,7 @@ async function revokePasskeyRoute(
 export function controlHandler(gate: () => GateState, now: Clock): Handler {
   return async (request) => {
     const state = gate()
-    const fileReply = await fileRootControlRoute(request, state)
+    const fileReply = await fileRootRoute(request, state)
     if (fileReply !== undefined) return fileReply
     if (request.method === "GET" && request.path === "/passkeys") {
       const body: GatePasskeyList = { passkeys: listPasskeys(state.db) }

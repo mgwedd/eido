@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest"
 import type { DatabaseSync } from "node:sqlite"
 import { openIndex } from "../../index/schema"
+import { insertExtraction, insertObligation, linksFor } from "../../ledger"
+import {
+  addDocs,
+  ledgerFixture,
+  testDoc,
+} from "../../ledger/ledger.test-support"
 import { parseAccountSet, SimpleFinError } from "./client"
 import type { GetAccountsParams, SimpleFinClient } from "./client"
 import { CURSOR_OVERLAP_SECONDS, healthMessages, syncSimpleFin } from "./sync"
@@ -135,6 +141,49 @@ function cursor(db: DatabaseSync) {
 }
 
 describe("syncSimpleFin", () => {
+  it("links a stored debit to the obligation it paid", async () => {
+    const { db, property } = await ledgerFixture()
+    const [docId = ""] = addDocs(db, [
+      testDoc("bill", { entityId: property.id }),
+    ])
+    await insertExtraction(db, {
+      docId,
+      schema: "extracted-fields",
+      status: "extracted",
+      fields: {
+        action: { raw: "Lorem", span: { start: 0, end: 5 } },
+        amount: {
+          raw: "USD 12.30",
+          span: { start: 0, end: 9 },
+          status: "parsed",
+          value: { amount_minor: 1230, currency: "USD" },
+        },
+      },
+      confidence: { action: 0.9, amount: 0.9 },
+      model: "local-test-model",
+      createdAt: "2026-02-01T00:00:00.000Z",
+    })
+    const id = await insertObligation(db, {
+      entityId: property.id,
+      action: "Pay the cafe invoice",
+      dueAt: "2026-02-25",
+      status: "open",
+      docId,
+      span: { start: 0, end: 9 },
+    })
+    const result = await syncSimpleFin({
+      db,
+      client: stubClient(() => ACCOUNT_SET),
+      assignments: { acc_chk: property.id },
+      now: () => NOW_MS,
+    })
+    expect(result.paymentsLinked).toBe(1)
+    // tx_1 is the -12.30 debit; the 0.07 credit pays nothing.
+    expect(linksFor(db, `obl:${id}`).map((link) => link.src)).toEqual([
+      "txn:acc_chk:tx_1",
+    ])
+  })
+
   it("tags every stored transaction with its account's entity and stores amounts as integer cents", async () => {
     const db = ledger()
     const result = await syncSimpleFin({
@@ -167,6 +216,8 @@ describe("syncSimpleFin", () => {
       windows: 1,
       accounts: 3,
       transactionsStored: 2,
+      // The index alone, with no ledger: there are no obligations to link.
+      paymentsLinked: 0,
       // An account with no entity (acc_sav) and one assigned to an entity that does not exist.
       unassignedAccounts: 2,
       // 12.345 is malformed; tx_6 has no description.

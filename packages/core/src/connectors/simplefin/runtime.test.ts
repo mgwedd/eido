@@ -99,7 +99,13 @@ describe("SimpleFIN runtime", () => {
     expect(log.mock.calls).toEqual([
       [
         "simplefin_synced",
-        { windows: "1", transactions: "1", rejected: "0", unassigned: "0" },
+        {
+          windows: "1",
+          transactions: "1",
+          linked: "0",
+          rejected: "0",
+          unassigned: "0",
+        },
       ],
     ])
     expect(runtime.messages()).toEqual(["Lorem notice"])
