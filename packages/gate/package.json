@@ -9,7 +9,6 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/main.ts",
     "enrol-code": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/enrol-code.ts",
-    "claim-simplefin": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/claim-simplefin.ts",
     "connect": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/connect.ts",
     "reviewed-manifest": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/reviewed-manifest.ts",
     "lint": "eslint",

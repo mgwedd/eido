@@ -221,10 +221,11 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
   // The fence's injection flag on an intent (#300): a JSON GateIntentInjection, NULL for an intent
   // from clean material. Display-only on the approval card, never part of the payload or its hash.
   `ALTER TABLE intents ADD COLUMN injection_reasons_json TEXT;`,
-  // Rate limit tracking for connectors with a quota (#51).
-  `ALTER TABLE connectors ADD COLUMN requests_today INTEGER NOT NULL DEFAULT 0;
-   ALTER TABLE connectors ADD COLUMN rate_window_start TEXT;
-   ALTER TABLE connectors ADD COLUMN next_sync_at TEXT;`,
+  // A connector's daily request quota (#51): the local day (YYYY-MM-DD) the count belongs to, and
+  // the upstream requests the proxy sent that day. Only connectors whose manifest sets a
+  // health.rateLimit use them.
+  `ALTER TABLE connectors ADD COLUMN quota_day TEXT;
+   ALTER TABLE connectors ADD COLUMN quota_requests INTEGER NOT NULL DEFAULT 0;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

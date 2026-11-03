@@ -1,171 +1,234 @@
 import { SIMPLEFIN_CONNECTOR, SIMPLEFIN_HOST } from "./config"
+import { SIMPLEFIN_ACCOUNTS_PATH } from "./manifest"
+
+// The SimpleFIN read client. It talks only to the gate's egress proxy, which holds the access URL,
+// injects it as a Basic header and enforces the daily request budget. Nothing here sees the
+// credential, and response bodies are never logged.
 
 export interface SimpleFinTransaction {
   id: string
+  /** Unix seconds; 0 while pending. */
   posted: number
-  amount: string
+  amount: unknown
   description: string
-  pending?: boolean
-  transacted_at?: number
-  extra?: Record<string, unknown>
+  pending: boolean
+  raw: Record<string, unknown>
 }
 
 export interface SimpleFinAccount {
   id: string
   name: string
   currency: string
-  balance: string
-  "balance-date": number
-  "available-balance"?: string
-  transactions?: SimpleFinTransaction[]
+  balance: unknown
+  balanceDate: number | undefined
+  transactions: SimpleFinTransaction[]
+  /** Transaction records missing a field the ledger needs. */
+  rejected: number
 }
 
-export interface SimpleFinResponse {
+export interface SimpleFinAccounts {
   accounts: SimpleFinAccount[]
-  errors?: string[]
-  errlist?: string[]
+  /** SimpleFIN `errors` entries, scrubbed of URLs. */
+  errors: string[]
 }
 
 export interface GetAccountsParams {
+  /** Unix seconds, inclusive. */
   startDate?: number
+  /** Unix seconds, exclusive. */
   endDate?: number
   balancesOnly?: boolean
-  account?: string
 }
 
 export interface SimpleFinClientOptions {
-  /** If set, requests are routed through the gate's credential-injecting egress proxy. */
-  proxyUrl?: string
-  /** If set, direct base URL used (for testing with local stub bridge). */
-  baseUrl?: string
+  /** The gate's loopback egress proxy. */
+  proxyUrl: string
   fetch?: typeof fetch
   timeoutMs?: number
 }
 
-/**
- * Scrubs URLs from error strings so secrets or URLs in errors are never logged or leaked.
- */
+export type SimpleFinErrorCode =
+  | "daily_limit"
+  | "unauthorized"
+  | "network_error"
+  | "request_failed"
+  | "invalid_payload"
+
+/** Replaces every URL in `text`, so an error string cannot carry an access URL anywhere. */
 export function scrubUrls(text: string): string {
-  return text.replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+  return text.replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[url]")
 }
 
 export class SimpleFinError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string
-  ) {
+  readonly code: SimpleFinErrorCode
+  constructor(code: SimpleFinErrorCode, message: string) {
     super(scrubUrls(message))
     this.name = "SimpleFinError"
+    this.code = code
   }
 }
 
 export interface SimpleFinClient {
-  getAccounts(params?: GetAccountsParams): Promise<{
-    accounts: SimpleFinAccount[]
-    errors: string[]
-  }>
+  getAccounts(params?: GetAccountsParams): Promise<SimpleFinAccounts>
+}
+
+type Json = Record<string, unknown>
+
+const isRecord = (value: unknown): value is Json =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const text = (value: unknown): value is string => typeof value === "string"
+
+function transactionOf(value: unknown): SimpleFinTransaction | undefined {
+  if (!isRecord(value)) return undefined
+  const { id, posted, amount, description, pending } = value
+  if (!text(id) || id === "" || typeof posted !== "number") return undefined
+  if (!Number.isSafeInteger(posted) || posted < 0) return undefined
+  if (!text(description)) return undefined
+  return {
+    id,
+    posted,
+    amount,
+    description,
+    pending: pending === true,
+    raw: value,
+  }
+}
+
+function accountOf(value: unknown): SimpleFinAccount | undefined {
+  if (!isRecord(value)) return undefined
+  const { id, name, currency, balance } = value
+  if (!text(id) || id === "" || !text(name) || !text(currency)) return undefined
+  const balanceDate = value["balance-date"]
+  const transactions: SimpleFinTransaction[] = []
+  let rejected = 0
+  const listed = value["transactions"]
+  for (const entry of Array.isArray(listed) ? listed : []) {
+    const transaction = transactionOf(entry)
+    if (transaction === undefined) rejected++
+    else transactions.push(transaction)
+  }
+  return {
+    id,
+    name,
+    currency,
+    balance,
+    balanceDate:
+      typeof balanceDate === "number" && Number.isSafeInteger(balanceDate)
+        ? balanceDate
+        : undefined,
+    transactions,
+    rejected,
+  }
+}
+
+/** Parses a SimpleFIN Account Set. A record the ledger cannot use is refused, not guessed. */
+export function parseAccountSet(data: unknown): SimpleFinAccounts {
+  if (!isRecord(data) || !Array.isArray(data["accounts"])) {
+    throw new SimpleFinError(
+      "invalid_payload",
+      "SimpleFIN answered without an accounts list"
+    )
+  }
+  const accounts: SimpleFinAccount[] = []
+  for (const entry of data["accounts"]) {
+    const account = accountOf(entry)
+    if (account === undefined) {
+      throw new SimpleFinError(
+        "invalid_payload",
+        "SimpleFIN answered with an account missing its id, name or currency"
+      )
+    }
+    accounts.push(account)
+  }
+  const errors = data["errors"]
+  return {
+    accounts,
+    errors: (Array.isArray(errors) ? errors : [])
+      .filter(text)
+      .map((entry) => scrubUrls(entry)),
+  }
+}
+
+/** Gate refusals that only reconnecting the credential clears. */
+const CREDENTIAL_REFUSALS: ReadonlySet<string> = new Set([
+  "grant_revoked",
+  "connector_disabled",
+  "credential_missing",
+  "credential_invalid",
+])
+
+async function reasonOf(response: Response): Promise<string | undefined> {
+  try {
+    const body: unknown = await response.json()
+    return isRecord(body) && text(body["reason"]) ? body["reason"] : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export function createSimpleFinClient(
-  options: SimpleFinClientOptions = {}
+  options: SimpleFinClientOptions
 ): SimpleFinClient {
-  const fetchFn = options.fetch ?? fetch
+  const send = options.fetch ?? fetch
   const timeoutMs = options.timeoutMs ?? 30_000
-
+  const endpoint = new URL("/", options.proxyUrl).href
   return {
     async getAccounts(params: GetAccountsParams = {}) {
-      const searchParams = new URLSearchParams()
-      if (params.startDate !== undefined) {
-        searchParams.set("start-date", String(params.startDate))
-      }
-      if (params.endDate !== undefined) {
-        searchParams.set("end-date", String(params.endDate))
-      }
-      if (params.balancesOnly) {
-        searchParams.set("balances-only", "1")
-      }
-      if (params.account !== undefined) {
-        searchParams.set("account", params.account)
-      }
-
-      const queryString = searchParams.toString()
-      const queryPart = queryString ? `?${queryString}` : ""
-
-      let requestUrl: string
-      const headers = new Headers()
-
-      if (options.proxyUrl) {
-        requestUrl = options.proxyUrl
-        const targetUrl = `https://${SIMPLEFIN_HOST}/simplefin/accounts${queryPart}`
-        headers.set("x-eido-connector", SIMPLEFIN_CONNECTOR)
-        headers.set("x-eido-target", targetUrl)
-      } else {
-        const base = options.baseUrl ?? `https://${SIMPLEFIN_HOST}/simplefin`
-        const normalizedBase = base.endsWith("/") ? base.slice(0, -1) : base
-        requestUrl = `${normalizedBase}/accounts${queryPart}`
-      }
-
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeoutMs)
-
+      const target = new URL(
+        `https://${SIMPLEFIN_HOST}${SIMPLEFIN_ACCOUNTS_PATH}`
+      )
+      if (params.startDate !== undefined)
+        target.searchParams.set("start-date", String(params.startDate))
+      if (params.endDate !== undefined)
+        target.searchParams.set("end-date", String(params.endDate))
+      if (params.balancesOnly === true)
+        target.searchParams.set("balances-only", "1")
       let response: Response
       try {
-        response = await fetchFn(requestUrl, {
+        response = await send(endpoint, {
           method: "GET",
-          headers,
-          signal: controller.signal,
+          headers: {
+            "x-eido-connector": SIMPLEFIN_CONNECTOR,
+            "x-eido-target": target.toString(),
+          },
+          signal: AbortSignal.timeout(timeoutMs),
         })
-      } catch (err) {
-        clearTimeout(timer)
-        if (err instanceof SimpleFinError) throw err
-        const rawMessage = err instanceof Error ? err.message : String(err)
-        throw new SimpleFinError(500, "network_error", scrubUrls(rawMessage))
-      } finally {
-        clearTimeout(timer)
-      }
-
-      if (!response.ok) {
+      } catch {
         throw new SimpleFinError(
-          response.status,
-          response.status === 401 || response.status === 403
-            ? "unauthorized"
-            : response.status === 429
-              ? "rate_limited"
-              : "request_failed",
-          `SimpleFIN request failed with status ${response.status}`
+          "network_error",
+          "the gate egress proxy could not be reached"
         )
       }
-
+      if (!response.ok) {
+        const reason = await reasonOf(response)
+        if (response.status === 429 && reason === "daily_limit") {
+          throw new SimpleFinError(
+            "daily_limit",
+            "the daily SimpleFIN request limit is spent"
+          )
+        }
+        if (reason !== undefined && CREDENTIAL_REFUSALS.has(reason)) {
+          throw new SimpleFinError(
+            "unauthorized",
+            `the SimpleFIN credential is not usable (${reason}); reconnect it`
+          )
+        }
+        throw new SimpleFinError(
+          "request_failed",
+          `SimpleFIN read failed with status ${String(response.status)}${reason === undefined ? "" : ` (${reason})`}`
+        )
+      }
       let data: unknown
       try {
         data = await response.json()
       } catch {
         throw new SimpleFinError(
-          502,
-          "invalid_json",
-          "SimpleFIN returned invalid JSON"
-        )
-      }
-
-      if (typeof data !== "object" || data === null || !("accounts" in data)) {
-        throw new SimpleFinError(
-          502,
           "invalid_payload",
-          "SimpleFIN payload missing accounts array"
+          "SimpleFIN answered with invalid JSON"
         )
       }
-
-      const payload = data as SimpleFinResponse
-      const rawErrors = [
-        ...(Array.isArray(payload.errors) ? payload.errors : []),
-        ...(Array.isArray(payload.errlist) ? payload.errlist : []),
-      ]
-
-      const errors = rawErrors.map((e) => scrubUrls(String(e)))
-      const accounts = Array.isArray(payload.accounts) ? payload.accounts : []
-
-      return { accounts, errors }
+      return parseAccountSet(data)
     },
   }
 }

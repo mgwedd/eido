@@ -12,6 +12,16 @@ import {
 import type { IntentClient } from "@eido/gate"
 import { createFilesFacade } from "./connectors/files/reads"
 import type { FilesFacade } from "./connectors/files/reads"
+import { createSimpleFinClient } from "./connectors/simplefin/client"
+import {
+  SIMPLEFIN_TICK_INTERVAL_MS,
+  simplefinPlaneConfig,
+} from "./connectors/simplefin/config"
+import type { SimpleFinPlaneConfig } from "./connectors/simplefin/config"
+import {
+  createSimpleFinRuntime,
+  withSimpleFinMessages,
+} from "./connectors/simplefin/runtime"
 import { ask } from "./ask/ask"
 import type { AskDeps } from "./ask/types"
 import { coverageLabel } from "./ask/answer"
@@ -111,6 +121,9 @@ export const DATA_PLANE_ENV = [
   "EIDO_TRIAGE_CONFIG",
   "EIDO_PROTON_USERNAME",
   "EIDO_FILES_SYNC",
+  "EIDO_SIMPLEFIN_PROXY_URL",
+  "EIDO_SIMPLEFIN_ACCOUNTS_FILE",
+  "EIDO_SIMPLEFIN_MAX_RANGE_DAYS",
 ] as const
 
 /**
@@ -205,6 +218,8 @@ export type DataPlaneConfig = {
   gateSocket: string
   api: CoreApiConfig
   filesSync?: boolean
+  /** SimpleFIN sync settings (#51); sync is off when `EIDO_SIMPLEFIN_PROXY_URL` is unset. */
+  simplefin?: SimpleFinPlaneConfig
 }
 
 function portOf(value: string, name = "EIDO_CORE_PORT"): number {
@@ -397,6 +412,7 @@ export function dataPlaneConfig(env: Env): DataPlaneConfig {
     filesSync !== "1"
   )
     throw new Error("EIDO_FILES_SYNC must be 0 or 1")
+  const simplefin = simplefinPlaneConfig(env, dataDir)
   return {
     dataDir,
     dbPath: join(dataDir, DATA_DB_FILE),
@@ -404,6 +420,7 @@ export function dataPlaneConfig(env: Env): DataPlaneConfig {
     gateSocket,
     api: coreApiConfig(env),
     ...(filesSync === "1" ? { filesSync: true } : {}),
+    ...(simplefin === undefined ? {} : { simplefin }),
   }
 }
 
@@ -424,6 +441,8 @@ export type DataPlane = {
   close: () => Promise<void>
   stopGmailSync: () => void
   stopProtonSync: () => void
+  /** The gate's connector health, with core's SimpleFIN messages (accounts needing an entity). */
+  connectorHealth: IntentClient["getConnectorHealth"]
   /** Accounts the configured connectors have reported: Proton's at startup, Gmail's per run. */
   connectorAccounts: () => readonly KnownAccount[]
   getInferenceQueue: () => Promise<InferenceQueue>
@@ -838,6 +857,23 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     })
     protonTimer = startSyncTimer(sync, PROTON_SYNC_INTERVAL_MS)
   }
+  const simplefin =
+    config.simplefin === undefined
+      ? undefined
+      : createSimpleFinRuntime({
+          db,
+          gate,
+          client: createSimpleFinClient({
+            proxyUrl: config.simplefin.proxyUrl,
+          }),
+          accountsFile: config.simplefin.accountsFile,
+          config: config.simplefin.config,
+          log,
+        })
+  const simplefinTimer =
+    simplefin === undefined
+      ? undefined
+      : startSyncTimer(simplefin.sync, SIMPLEFIN_TICK_INTERVAL_MS)
   let fileSyncRunning: Promise<void> | undefined
   const fileTimer = config.filesSync
     ? startSyncTimer(() => {
@@ -894,6 +930,10 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     log,
     stopGmailSync,
     stopProtonSync,
+    connectorHealth: withSimpleFinMessages(
+      gate.getConnectorHealth,
+      simplefin?.messages ?? (() => [])
+    ),
     connectorAccounts: accounts.list,
     getInferenceQueue: model.getQueue,
     getDigestService,
@@ -905,11 +945,13 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       await fileTimer?.inFlight()
       stopGmailSync()
       stopProtonSync()
+      simplefinTimer?.stop()
       clearInterval(triageTimer)
       brief.stop()
       await brief.whenIdle()
       await gmailTimer?.inFlight()
       await protonTimer?.inFlight()
+      await simplefinTimer?.inFlight()
       await digestScheduling
       await replyScheduling
       await triageScheduling
@@ -1026,7 +1068,7 @@ export async function serveDataPlane(
   const api = await listenCoreApi({
     profile: plane.profile,
     obligations: plane.obligations,
-    connectorHealth: plane.gate.getConnectorHealth,
+    connectorHealth: plane.connectorHealth,
     connectorAccounts: plane.connectorAccounts,
     sendFrom: config.protonUsername,
     ...(ask === undefined ? {} : { ask }),

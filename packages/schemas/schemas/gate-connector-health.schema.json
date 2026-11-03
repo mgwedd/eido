@@ -43,18 +43,31 @@
           "requestsToday": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 1000000
+            "maximum": 1000000,
+            "description": "Upstream requests the gate proxy sent today (local day), for a connector whose manifest sets a daily rate limit."
           },
           "requestLimit": {
             "type": "integer",
-            "minimum": 0,
-            "maximum": 1000000
+            "minimum": 1,
+            "maximum": 100000,
+            "description": "The manifest's daily request limit."
           },
           "nextSyncAt": {
             "type": "string",
             "format": "date-time",
             "minLength": 20,
-            "maxLength": 40
+            "maxLength": 40,
+            "description": "When the daily request budget is spent: the next local midnight, when reads are admitted again."
+          },
+          "messages": {
+            "type": "array",
+            "maxItems": 20,
+            "description": "Connector messages for the user, such as accounts that need an entity or errors the upstream reported. Added by the data plane; never credentials, URLs or response bodies.",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            }
           }
         },
         "required": ["name", "health", "consecutiveFailures"],

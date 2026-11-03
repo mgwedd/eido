@@ -4,6 +4,11 @@ import type { GateConnectorHealth } from "@eido/schemas"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
 import { getPinnedManifest } from "./connectors"
+import {
+  dailyRequestLimit,
+  nextLocalMidnight,
+  requestsToday,
+} from "./connector-quota"
 
 /** A probe reservation expires if the gate process stops mid-request. */
 const PROBE_LEASE_MS = 60_000
@@ -18,44 +23,54 @@ export type ReadAttempt = {
   reason?: "connector_open" | "connector_backoff" | "connector_disabled"
 }
 
-/** The read-only projection served to the data plane and Today API. */
-export function getConnectorHealth(db: DatabaseSync): ConnectorHealth[] {
+/**
+ * The read-only projection served to the data plane and Today API. A connector whose manifest
+ * sets a daily rate limit also reports today's request count and limit; once the budget is spent
+ * it shows as degraded with "Daily limit" until the next local midnight (`nextSyncAt`).
+ */
+export function getConnectorHealth(
+  db: DatabaseSync,
+  now = Date.now()
+): ConnectorHealth[] {
   return db
     .prepare(
       `SELECT name, health, consecutive_failures, next_attempt_at, last_error,
-              requests_today, rate_window_start, next_sync_at
+              quota_day, quota_requests
        FROM connectors ORDER BY name`
     )
     .all()
     .map((row) => {
       const name = String(row["name"])
-      const manifest = getPinnedManifest(db, name)
-      const rateLimit = manifest?.health?.rateLimit
-      const requestsToday =
-        typeof row["requests_today"] === "number" ? row["requests_today"] : 0
-      const nextSyncAt =
-        typeof row["next_sync_at"] === "string"
-          ? row["next_sync_at"]
-          : typeof row["next_attempt_at"] === "string"
-            ? row["next_attempt_at"]
-            : undefined
-
+      const health = row["health"] as ConnectorHealth["health"]
+      const limit = dailyRequestLimit(db, name)
+      const used =
+        limit === undefined
+          ? 0
+          : requestsToday(
+              {
+                quota_day: row["quota_day"],
+                quota_requests: row["quota_requests"],
+              },
+              now
+            )
+      const spent = limit !== undefined && used >= limit && health !== "open"
       return {
         name,
-        health: row["health"] as ConnectorHealth["health"],
+        health: spent ? "degraded" : health,
         consecutiveFailures: Number(row["consecutive_failures"]),
-        ...(typeof row["last_error"] === "string"
-          ? { lastError: row["last_error"] }
-          : {}),
+        ...(spent
+          ? { lastError: "Daily limit" }
+          : typeof row["last_error"] === "string"
+            ? { lastError: row["last_error"] }
+            : {}),
         ...(typeof row["next_attempt_at"] === "string"
           ? { nextAttemptAt: row["next_attempt_at"] }
           : {}),
-        ...(rateLimit !== undefined
-          ? {
-              requestsToday,
-              requestLimit: rateLimit.requestsPerWindow,
-              ...(nextSyncAt !== undefined ? { nextSyncAt } : {}),
-            }
+        ...(limit === undefined
+          ? {}
+          : { requestsToday: used, requestLimit: limit }),
+        ...(spent
+          ? { nextSyncAt: new Date(nextLocalMidnight(now)).toISOString() }
           : {}),
       }
     })
@@ -76,7 +91,7 @@ export function beginConnectorRead(
     const row = db
       .prepare(
         `SELECT enabled, health, next_attempt_at, probe_started_at,
-                health_generation, last_error, requests_today, rate_window_start
+                health_generation
          FROM connectors WHERE name = ?`
       )
       .get(name)
@@ -90,70 +105,9 @@ export function beginConnectorRead(
       }
     }
     const generation = Number(row["health_generation"])
-
-    const manifest = getPinnedManifest(db, name)
-    const rateLimit = manifest?.health?.rateLimit
-    let requestsToday =
-      typeof row["requests_today"] === "number" ? row["requests_today"] : 0
-    let rateWindowStart =
-      typeof row["rate_window_start"] === "string"
-        ? Date.parse(row["rate_window_start"])
-        : 0
-
-    if (rateLimit !== undefined) {
-      const windowMs = rateLimit.windowSeconds * 1000
-      if (rateWindowStart === 0 || now - rateWindowStart >= windowMs) {
-        requestsToday = 0
-        rateWindowStart = now
-        db.prepare(
-          "UPDATE connectors SET requests_today = 0, rate_window_start = ?, next_sync_at = NULL WHERE name = ?"
-        ).run(new Date(now).toISOString(), name)
-      }
-
-      if (requestsToday >= rateLimit.requestsPerWindow) {
-        const nextSyncAt = new Date(rateWindowStart + windowMs).toISOString()
-        db.prepare(
-          `UPDATE connectors SET health = 'degraded', last_error = 'Daily limit',
-             next_attempt_at = ?, next_sync_at = ? WHERE name = ?`
-        ).run(nextSyncAt, nextSyncAt, name)
-        db.exec("COMMIT")
-        return {
-          allowed: false,
-          probe: false,
-          generation,
-          reason: "connector_backoff",
-        }
-      }
-
-      const nextCount = requestsToday + 1
-      const isSpent = nextCount >= rateLimit.requestsPerWindow
-      const nextSyncAt = isSpent
-        ? new Date(rateWindowStart + windowMs).toISOString()
-        : null
-
-      db.prepare(
-        `UPDATE connectors SET requests_today = ?,
-           health = CASE WHEN ? = 1 THEN 'degraded' ELSE health END,
-           last_error = CASE WHEN ? = 1 THEN 'Daily limit' ELSE last_error END,
-           next_attempt_at = CASE WHEN ? = 1 THEN ? ELSE next_attempt_at END,
-           next_sync_at = CASE WHEN ? = 1 THEN ? ELSE next_sync_at END
-         WHERE name = ?`
-      ).run(
-        nextCount,
-        isSpent ? 1 : 0,
-        isSpent ? 1 : 0,
-        isSpent ? 1 : 0,
-        nextSyncAt,
-        isSpent ? 1 : 0,
-        nextSyncAt,
-        name
-      )
-    }
-
     if (row["health"] !== "open") {
       if (
         row["health"] === "degraded" &&
-        row["last_error"] !== "Daily limit" &&
         typeof row["next_attempt_at"] === "string" &&
         Date.parse(row["next_attempt_at"]) > now
       ) {
@@ -246,12 +200,8 @@ export function recordConnectorReadSuccess(
     )
   } else {
     db.prepare(
-      `UPDATE connectors SET
-         health = CASE WHEN health = 'degraded' AND last_error = 'Daily limit' THEN 'degraded' ELSE 'healthy' END,
-         consecutive_failures = 0,
-         next_attempt_at = CASE WHEN health = 'degraded' AND last_error = 'Daily limit' THEN next_attempt_at ELSE NULL END,
-         last_error = CASE WHEN health = 'degraded' AND last_error = 'Daily limit' THEN last_error ELSE NULL END,
-         probe_started_at = NULL,
+      `UPDATE connectors SET health = 'healthy', consecutive_failures = 0,
+         next_attempt_at = NULL, last_error = NULL, probe_started_at = NULL,
          probe_lease_id = NULL, health_generation = health_generation + 1,
          last_success_at = ?
        WHERE name = ? AND health_generation = ? AND health != 'open'

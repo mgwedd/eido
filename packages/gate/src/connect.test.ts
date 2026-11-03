@@ -270,6 +270,84 @@ const driveKey = (kind: VaultKey["kind"]): VaultKey => ({
   client: "read",
 })
 
+const SIMPLEFIN_HOST = "bridge.simplefin.org"
+const SIMPLEFIN_KEY: VaultKey = {
+  connector: "simplefin",
+  kind: "api_key",
+  client: "read",
+}
+const CLAIM_URL = `https://${SIMPLEFIN_HOST}/simplefin/claim/test-claim-4d1e`
+const SETUP_TOKEN = Buffer.from(CLAIM_URL).toString("base64")
+const ACCESS_PASSWORD = "test-simplefin-pass-a71c"
+const ACCESS_URL = `https://test-user-3b2:${ACCESS_PASSWORD}@${SIMPLEFIN_HOST}/simplefin`
+const SIMPLEFIN_BASIC = `Basic ${Buffer.from(`test-user-3b2:${ACCESS_PASSWORD}`).toString("base64")}`
+
+/** A pinned SimpleFIN manifest: reads only, authorised by the access URL in the vault. */
+function simplefinManifest(): ConnectorManifest {
+  const pinned = manifest("simplefin", [])
+  pinned.auth = { type: "basic-url", scopes: [] }
+  pinned.egress.hosts = [
+    { host: SIMPLEFIN_HOST, methods: ["GET"], pathPrefixes: ["/simplefin"] },
+  ]
+  pinned.operations = [
+    {
+      name: "accounts",
+      effect: "read",
+      reversibility: "reversible",
+      defaultTier: "auto",
+      sensitivity: "high",
+      untrustedOutput: true,
+      authScopes: [],
+      routes: [
+        {
+          host: SIMPLEFIN_HOST,
+          method: "GET",
+          pathPattern: "/simplefin/accounts",
+        },
+      ],
+    },
+  ]
+  pinned.health.rateLimit = { requestsPerDay: 24 }
+  return pinned
+}
+
+/**
+ * A fake SimpleFIN Bridge: the claim URL answers `accessUrl` once, and the accounts route
+ * accepts only the Basic header for ACCESS_URL. `seen` records each request URL in order.
+ */
+function fakeBridge(accessUrl: Response | string = ACCESS_URL) {
+  const seen: Array<{ url: string; method: string }> = []
+  let claimed = false
+  const send = vi.fn<typeof fetch>((input, init) => {
+    const url = input instanceof Request ? input.url : input.toString()
+    const method = init?.method ?? "GET"
+    seen.push({ url, method })
+    if (url === CLAIM_URL && method === "POST") {
+      if (claimed) return Promise.resolve(new Response(null, { status: 403 }))
+      claimed = true
+      return Promise.resolve(
+        typeof accessUrl === "string" ? new Response(accessUrl) : accessUrl
+      )
+    }
+    const authorization = new Headers(init?.headers).get("authorization")
+    return Promise.resolve(
+      authorization === SIMPLEFIN_BASIC
+        ? Response.json({ errors: [], accounts: [] })
+        : new Response(null, { status: 403 })
+    )
+  })
+  return { send, seen }
+}
+
+/** The gate's real SimpleFIN probe, as runGate registers it, over the test vault. */
+function simplefinProbe(send: typeof fetch): ConnectorProbe {
+  return egressProbe(
+    { db: s.db, vault, fetch: send },
+    "simplefin",
+    `https://${SIMPLEFIN_HOST}/simplefin/accounts?balances-only=1`
+  )
+}
+
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "eido-connect-"))
   socket = socketAddress(dir, "control.sock")
@@ -278,6 +356,7 @@ beforeEach(async () => {
     driveManifest(),
     manifest("proton-mail", MAIL_OPS),
     manifest("proton-calendar", MAIL_OPS),
+    simplefinManifest(),
   ])
   vault = new InMemoryVault()
   probes = {
@@ -996,13 +1075,139 @@ describe("connect proton", () => {
   })
 })
 
+describe("connect simplefin", () => {
+  it("claims the access URL, stores it in the vault only, and ends healthy", async () => {
+    answers = [SETUP_TOKEN]
+    const bridge = fakeBridge()
+    probes = { simplefin: simplefinProbe(bridge.send) }
+    const status = await connect(["simplefin"], env(), io(), {
+      vault,
+      fetch: bridge.send,
+    })
+    expect(status).toBe(0)
+    expect(questions).toEqual(["SimpleFIN setup token (not shown): "])
+    expect(await vault.get(SIMPLEFIN_KEY)).toBe(ACCESS_URL)
+    expect(bridge.seen).toEqual([
+      { url: CLAIM_URL, method: "POST" },
+      {
+        url: `https://${SIMPLEFIN_HOST}/simplefin/accounts?balances-only=1`,
+        method: "GET",
+      },
+    ])
+    expect(out).toEqual([
+      "Stored the SimpleFIN access credential in the gate vault.",
+      "simplefin: healthy",
+    ])
+    const shown = visible()
+    expect(shown).not.toContain(ACCESS_PASSWORD)
+    expect(shown).not.toContain(SETUP_TOKEN)
+  })
+
+  it("refuses a setup token for another host without sending anything", async () => {
+    answers = [
+      Buffer.from("https://claim.example.invalid/simplefin/claim/x").toString(
+        "base64"
+      ),
+    ]
+    const bridge = fakeBridge()
+    const status = await connect(["simplefin"], env(), io(), {
+      vault,
+      fetch: bridge.send,
+    })
+    expect(status).toBe(1)
+    expect(bridge.send).not.toHaveBeenCalled()
+    expect(err).toEqual([
+      "The setup token points somewhere other than bridge.simplefin.org, so it was refused. Nothing was stored.",
+    ])
+    expect(await vault.get(SIMPLEFIN_KEY)).toBeUndefined()
+  })
+
+  it.each([
+    [
+      "a token that is not base64",
+      "not a token!",
+      undefined,
+      "That is not a SimpleFIN setup token",
+    ],
+    [
+      "a claim URL over plain http",
+      Buffer.from(`http://${SIMPLEFIN_HOST}/simplefin/claim/x`).toString(
+        "base64"
+      ),
+      undefined,
+      "That is not a SimpleFIN setup token",
+    ],
+    [
+      "a claim Bridge refuses",
+      SETUP_TOKEN,
+      new Response(null, { status: 403 }),
+      "SimpleFIN Bridge refused the setup token; it may have been claimed already",
+    ],
+    [
+      "an answer that is not an access URL",
+      SETUP_TOKEN,
+      `https://${SIMPLEFIN_HOST}/simplefin`,
+      "SimpleFIN Bridge did not answer with an access URL",
+    ],
+    [
+      "an access URL for another host",
+      SETUP_TOKEN,
+      `https://u:p@bank.example.invalid/simplefin`,
+      "SimpleFIN Bridge did not answer with an access URL",
+    ],
+    [
+      "an answer far larger than an access URL",
+      SETUP_TOKEN,
+      `${ACCESS_URL}${"x".repeat(4096)}`,
+      "SimpleFIN Bridge did not answer with an access URL",
+    ],
+  ])("stores nothing for %s", async (_case, token, answer, message) => {
+    answers = [token]
+    const bridge = fakeBridge(answer)
+    const status = await connect(["simplefin"], env(), io(), {
+      vault,
+      fetch: bridge.send,
+    })
+    expect(status).toBe(1)
+    expect(err).toEqual([`${message}. Nothing was stored.`])
+    expect(await vault.get(SIMPLEFIN_KEY)).toBeUndefined()
+  })
+
+  it("says so when Bridge cannot be reached", async () => {
+    answers = [SETUP_TOKEN]
+    const send = vi.fn<typeof fetch>(() =>
+      Promise.reject(new TypeError("fetch failed"))
+    )
+    const status = await connect(["simplefin"], env(), io(), {
+      vault,
+      fetch: send,
+    })
+    expect(status).toBe(1)
+    expect(err).toEqual([
+      "SimpleFIN Bridge could not be reached. Nothing was stored.",
+    ])
+  })
+
+  it("stores nothing when no setup token is given", async () => {
+    answers = [undefined]
+    const bridge = fakeBridge()
+    const status = await connect(["simplefin"], env(), io(), {
+      vault,
+      fetch: bridge.send,
+    })
+    expect(status).toBe(1)
+    expect(err).toEqual(["No setup token was given. Nothing was stored."])
+    expect(bridge.send).not.toHaveBeenCalled()
+  })
+})
+
 describe("connect refusals", () => {
   it.each([[[]], [["dropbox"]], [["gmail", "extra"]]])(
     "prints usage for %j",
     async (args) => {
       expect(await connect(args, env(), io(), { vault })).toBe(2)
       expect(err).toEqual([
-        "usage: pnpm --filter @eido/gate connect <gmail|gmail-read|drive|proton-mail|proton-calendar>",
+        "usage: pnpm --filter @eido/gate connect <gmail|gmail-read|drive|proton-mail|proton-calendar|simplefin>",
       ])
     }
   )

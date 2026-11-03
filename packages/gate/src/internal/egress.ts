@@ -15,6 +15,7 @@ import {
   markGrantRevoked,
 } from "./vault/revocation"
 import type { Vault } from "./vault/vault"
+import { takeDailyRequest } from "./connector-quota"
 import {
   beginConnectorRead,
   recordConnectorReadFailure,
@@ -29,13 +30,13 @@ type ReadOptions = {
   /** OAuth client id of each read connector's client, for the refresh-token exchange. */
   clientIds?: Readonly<Record<string, string>>
   fetch?: typeof fetch
+  now?: () => number
 }
 
 type Options = ReadOptions & {
   port?: number
   maxBodyBytes?: number
   timeoutMs?: number
-  now?: () => number
   random?: () => number
 }
 
@@ -239,6 +240,94 @@ type ReadInit = {
 }
 
 /**
+ * The read client's credential for an `auth: basic-url` connector (SimpleFIN, #51): an access URL
+ * `https://user:pass@host/path` held in the vault as the read client's api_key. It answers the
+ * Authorization header for `upstream` when the access URL names the same host and `upstream`
+ * lies under its path, and the strings the response must not echo. The URL itself never leaves
+ * the gate.
+ */
+function basicUrlCredential(
+  accessUrl: string,
+  upstream: URL
+): { authorization: string; secrets: string[] } {
+  let parsed: URL
+  let user: string
+  let password: string
+  try {
+    parsed = new URL(accessUrl)
+    user = decodeURIComponent(parsed.username)
+    password = decodeURIComponent(parsed.password)
+  } catch {
+    return fail(424, "credential_invalid")
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username === "" ||
+    parsed.password === "" ||
+    parsed.hostname !== upstream.hostname ||
+    parsed.port !== "" ||
+    !within(upstream.pathname, parsed.pathname.replace(/\/$/, "") || "/")
+  )
+    return fail(424, "credential_invalid")
+  const authorization = `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`
+  return {
+    authorization,
+    secrets: [accessUrl, parsed.password, password, authorization],
+  }
+}
+
+/**
+ * One upstream read for an `auth: basic-url` connector. There is no refresh: a 401 or 403
+ * disables the connector once with `auth_failed`, audited, and the read is not retried.
+ */
+async function basicUrlRead(
+  options: ReadOptions,
+  connector: string,
+  url: string,
+  init: ReadInit
+): Promise<{ upstream: Response; tokens: readonly string[] }> {
+  const accessUrl = await options.vault.get({
+    connector,
+    kind: "api_key",
+    client: "read",
+  })
+  if (accessUrl === undefined) return fail(424, "credential_missing")
+  const { authorization, secrets } = basicUrlCredential(accessUrl, new URL(url))
+  init.beforeCall()
+  if (!takeDailyRequest(options.db, connector, (options.now ?? Date.now)()))
+    fail(429, "daily_limit")
+  const headers = new Headers(init.headers)
+  headers.set("authorization", authorization)
+  const upstream = await (options.fetch ?? fetch)(url, {
+    method: init.method,
+    headers,
+    ...(init.body === undefined ? {} : { body: init.body }),
+    redirect: "manual",
+    signal: init.signal,
+  })
+  if (upstream.status === 401 || upstream.status === 403) {
+    void upstream.body?.cancel().catch(() => undefined)
+    await markGrantRevoked(
+      connector,
+      "unauthorized",
+      connectorRevocationDeps(options.db, options.vault, "system")
+    )
+    throw new GrantRevokedError(connector)
+  }
+  return { upstream, tokens: secrets }
+}
+
+/** The read path for a connector's pinned auth type. */
+function readFor(
+  options: ReadOptions,
+  connector: string
+): typeof authorizedRead {
+  return getPinnedManifest(options.db, connector)?.auth.type === "basic-url"
+    ? basicUrlRead
+    : authorizedRead
+}
+
+/**
  * One upstream read with the connector's read-client credential. A missing or refused access
  * token is refreshed once from the stored refresh token and the read retried once. A grant the
  * token endpoint revokes (`invalid_grant`), or an access token refused with no way to refresh it,
@@ -277,6 +366,10 @@ async function authorizedRead(
         ),
       call: async (accessToken) => {
         init.beforeCall()
+        if (
+          !takeDailyRequest(options.db, connector, (options.now ?? Date.now)())
+        )
+          fail(429, "daily_limit")
         tokens.push(accessToken)
         const headers = new Headers(init.headers)
         headers.set("authorization", `Bearer ${accessToken}`)
@@ -337,7 +430,7 @@ export function egressProbe(
       const target = targetURL(probeUrl)
       const check = () =>
         selectedRoute(options.db, connector, target, "GET", true)
-      const { upstream } = await authorizedRead(
+      const { upstream } = await readFor(options, connector)(
         options,
         connector,
         upstreamURL(check(), target),
@@ -447,19 +540,24 @@ export async function startEgressProxy(
             headers.set(name, value)
         }
         const read = await bounded(
-          authorizedRead(options, connector, upstreamURL(route, target), {
-            method,
-            headers,
-            ...(body.length ? { body: new Uint8Array(body) } : {}),
-            signal: controller.signal,
-            // Recheck after vault and token-endpoint IO: disabling a connector while awaiting a
-            // token stops the call.
-            beforeCall: () => {
-              selectedRoute(db, connector, target, method, admitted)
-              if (controller.signal.aborted) fail(502, "upstream_timeout")
-              upstreamReadStarted = true
-            },
-          })
+          readFor(options, connector)(
+            options,
+            connector,
+            upstreamURL(route, target),
+            {
+              method,
+              headers,
+              ...(body.length ? { body: new Uint8Array(body) } : {}),
+              signal: controller.signal,
+              // Recheck after vault and token-endpoint IO: disabling a connector while awaiting a
+              // token stops the call.
+              beforeCall: () => {
+                selectedRoute(db, connector, target, method, admitted)
+                if (controller.signal.aborted) fail(502, "upstream_timeout")
+                upstreamReadStarted = true
+              },
+            }
+          )
         )
         tokens = read.tokens
         const upstream = read.upstream

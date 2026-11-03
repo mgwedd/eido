@@ -1,6 +1,5 @@
 export type AmountParseResult =
-  | { ok: true; cents: number }
-  | { ok: false; error: string }
+  { ok: true; cents: number } | { ok: false; error: string }
 
 /**
  * Parses a decimal currency string into integer cents without any floating-point arithmetic.

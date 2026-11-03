@@ -23,7 +23,7 @@ const version = (db: DatabaseSync) =>
 describe("openControlDb", () => {
   it("creates the schema, enables foreign keys and WAL", () => {
     const db = openControlDb(tempPath())
-    expect(version(db)).toBe(14)
+    expect(version(db)).toBe(15)
     const connectorColumns = db
       .prepare("PRAGMA table_info(connectors)")
       .all()
@@ -32,6 +32,8 @@ describe("openControlDb", () => {
       expect.arrayContaining([
         "next_attempt_at",
         "last_error",
+        "quota_day",
+        "quota_requests",
         "probe_started_at",
         "probe_lease_id",
         "health_generation",
@@ -57,7 +59,7 @@ describe("openControlDb", () => {
     )
     first.close()
     const second = openControlDb(path) // re-running migration 1 would throw "table already exists"
-    expect(version(second)).toBe(14)
+    expect(version(second)).toBe(15)
     expect(
       second.prepare("SELECT COUNT(*) AS n FROM audit_log").get()?.["n"]
     ).toBe(1)
@@ -66,7 +68,7 @@ describe("openControlDb", () => {
 
   it("works with :memory:", () => {
     const db = openControlDb(":memory:")
-    expect(version(db)).toBe(14)
+    expect(version(db)).toBe(15)
     db.close()
   })
 
@@ -103,7 +105,7 @@ describe("openControlDb", () => {
     legacy.close()
 
     const upgraded = openControlDb(path)
-    expect(version(upgraded)).toBe(14)
+    expect(version(upgraded)).toBe(15)
     expect(
       upgraded
         .prepare(

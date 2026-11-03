@@ -1,109 +1,79 @@
 import { describe, expect, it } from "vitest"
 import { openIndex } from "../../index/schema"
-import type { SimpleFinClient } from "./client"
-import * as FacadeModule from "./facade"
+import * as facadeModule from "./facade"
+import * as connectorModule from "./index"
 import { createSimpleFinFacade } from "./facade"
-import { simplefinManifest } from "./manifest"
 
-describe("simplefin facade and manifest safety", () => {
-  it("declares only effect: read operations in manifest", () => {
-    const manifest = simplefinManifest()
-    expect(manifest.operations.length).toBeGreaterThan(0)
-    for (const op of manifest.operations) {
-      expect(op.effect).toBe("read")
-      expect(op.name).not.toMatch(/write|transfer|pay|send|delete|charge|debit/i)
-    }
+// Invariant 4: the bank connector reads; nothing it exports writes to the bank, moves money or
+// deletes. The ledger rows below are synthetic.
+
+const FORBIDDEN =
+  /write|transfer|pay|send|delete|remove|charge|debit|credit|withdraw|deposit|execute|submit|^post|update|mutate|move|approve/i
+
+describe("SimpleFIN read verbs", () => {
+  it("export no verb that writes, transfers or pays", () => {
+    const db = openIndex(":memory:")
+    expect(Object.keys(createSimpleFinFacade(db)).sort()).toEqual([
+      "listAccounts",
+      "listTransactions",
+    ])
+    expect(Object.keys(facadeModule)).toEqual(["createSimpleFinFacade"])
+    expect(
+      Object.keys(connectorModule).filter((name) => FORBIDDEN.test(name))
+    ).toEqual([])
   })
 
-  it("exports no verb or function that writes, transfers, pays or modifies funds", () => {
-    const forbiddenPatterns = [
-      /write/i,
-      /transfer/i,
-      /pay/i,
-      /send/i,
-      /delete/i,
-      /charge/i,
-      /debit/i,
-      /credit/i,
-      /execute/i,
-      /post(?!ed)/i, // allow posted / postedAt, forbid post / postPayment
-      /mutate/i,
-      /update/i,
-    ]
-
-    for (const exportName of Object.keys(FacadeModule)) {
-      for (const pattern of forbiddenPatterns) {
-        expect(exportName).not.toMatch(pattern)
-      }
-    }
-
-    const dummyClient: SimpleFinClient = {
-      getAccounts: () => Promise.resolve({ accounts: [], errors: [] }),
-    }
+  it("list stored accounts and filter transactions by account, entity and limit", () => {
     const db = openIndex(":memory:")
-    const facade = createSimpleFinFacade({ db, client: dummyClient })
-    const methodNames = Object.keys(facade)
-
-    for (const method of methodNames) {
-      for (const pattern of forbiddenPatterns) {
-        expect(method).not.toMatch(pattern)
-      }
-    }
-  })
-
-  it("lists accounts and transactions with filters", async () => {
-    const db = openIndex(":memory:")
-    db.prepare(`
-      INSERT INTO entities (id, kind, name, tag, created_at)
-      VALUES ('ent_1', 'personal', 'Personal', 'PERS', '2026-01-01T00:00:00Z')
-    `).run()
-
-    db.prepare(`
-      INSERT INTO accounts (id, connector, name, currency, entity_id, balance_cents, balance_at)
-      VALUES ('acc_1', 'simplefin', 'Main Checking', 'USD', 'ent_1', 500000, '2026-11-01T00:00:00Z')
-    `).run()
-
-    db.prepare(`
-      INSERT INTO transactions (
-        id, account_id, entity_id, posted_at, amount_cents, currency, description, category, raw_json, ingested_at
-      )
-      VALUES (
-        'acc_1:tx_1', 'acc_1', 'ent_1', '2026-11-02T12:00:00Z', -1230, 'USD', 'Grocery Store', NULL, '{}', '2026-11-02T12:05:00Z'
-      )
-    `).run()
-
-    const dummyClient: SimpleFinClient = {
-      getAccounts: () => Promise.resolve({ accounts: [], errors: [] }),
-    }
-
-    const facade = createSimpleFinFacade({ db, client: dummyClient })
-
-    const accounts = await facade.listAccounts()
-    expect(accounts).toEqual([
+    db.exec(`
+      INSERT INTO entities (id, kind, name, tag, created_at) VALUES
+        ('ent_a', 'personal', 'A', 'A', '2026-01-01T00:00:00Z'),
+        ('ent_b', 'company', 'B', 'B', '2026-01-01T00:00:00Z');
+      INSERT INTO accounts (id, connector, name, currency, entity_id, balance_cents, balance_at) VALUES
+        ('acc_1', 'simplefin', 'Lorem', 'USD', 'ent_a', 1050, '2026-02-01T00:00:00.000Z'),
+        ('acc_2', 'simplefin', 'Ipsum', 'USD', 'ent_b', NULL, NULL),
+        ('acc_3', 'other', 'Dolor', 'USD', 'ent_a', 1, NULL);
+      INSERT INTO transactions (id, account_id, entity_id, posted_at, amount_cents, currency, description, category, raw_json, ingested_at) VALUES
+        ('acc_1:t1', 'acc_1', 'ent_a', '2026-02-01T00:00:00.000Z', -1230, 'USD', 'one', NULL, '{}', 'x'),
+        ('acc_1:t2', 'acc_1', 'ent_a', '2026-02-03T00:00:00.000Z', 7, 'USD', 'two', 'food', '{}', 'x'),
+        ('acc_2:t3', 'acc_2', 'ent_b', '2026-02-02T00:00:00.000Z', 500, 'USD', 'three', NULL, '{}', 'x'),
+        ('acc_3:t4', 'acc_3', 'ent_a', '2026-02-04T00:00:00.000Z', 1, 'USD', 'other', NULL, '{}', 'x');`)
+    const facade = createSimpleFinFacade(db)
+    expect(facade.listAccounts()).toEqual([
+      {
+        id: "acc_2",
+        name: "Ipsum",
+        currency: "USD",
+        entityId: "ent_b",
+        balanceCents: null,
+        balanceAt: null,
+      },
       {
         id: "acc_1",
-        connector: "simplefin",
-        name: "Main Checking",
+        name: "Lorem",
         currency: "USD",
-        entityId: "ent_1",
-        balanceCents: 500000,
-        balanceAt: "2026-11-01T00:00:00Z",
+        entityId: "ent_a",
+        balanceCents: 1050,
+        balanceAt: "2026-02-01T00:00:00.000Z",
       },
     ])
-
-    const txs = await facade.listTransactions()
-    expect(txs).toHaveLength(1)
-    expect(txs[0]).toMatchObject({
-      id: "acc_1:tx_1",
-      accountId: "acc_1",
-      entityId: "ent_1",
-      postedAt: "2026-11-02T12:00:00Z",
-      amountCents: -1230,
-      currency: "USD",
-      description: "Grocery Store",
-    })
-
-    const filtered = await facade.listTransactions({ accountId: "acc_other" })
-    expect(filtered).toHaveLength(0)
+    const ids = (filter?: Parameters<typeof facade.listTransactions>[0]) =>
+      facade.listTransactions(filter).map((row) => row.id)
+    expect(ids()).toEqual(["acc_1:t2", "acc_2:t3", "acc_1:t1"])
+    expect(ids({ accountId: "acc_1" })).toEqual(["acc_1:t2", "acc_1:t1"])
+    expect(ids({ entityId: "ent_b" })).toEqual(["acc_2:t3"])
+    expect(ids({ limit: 1 })).toEqual(["acc_1:t2"])
+    expect(facade.listTransactions({ accountId: "acc_1", limit: 1 })).toEqual([
+      {
+        id: "acc_1:t2",
+        accountId: "acc_1",
+        entityId: "ent_a",
+        postedAt: "2026-02-03T00:00:00.000Z",
+        amountCents: 7,
+        currency: "USD",
+        description: "two",
+        category: "food",
+      },
+    ])
   })
 })

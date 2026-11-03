@@ -20,6 +20,22 @@ describe("currentManifest", () => {
     })
   })
 
+  it("declares the SimpleFIN daily budget from the environment, refusing a bad one", () => {
+    const result = currentManifest("simplefin", {
+      EIDO_SIMPLEFIN_REQUESTS_PER_DAY: "6",
+    })
+    expect(result.ok && result.manifest.health.rateLimit).toEqual({
+      requestsPerDay: 6,
+    })
+    expect(
+      currentManifest("simplefin", { EIDO_SIMPLEFIN_REQUESTS_PER_DAY: "0" })
+    ).toEqual({
+      ok: false,
+      error:
+        "EIDO_SIMPLEFIN_REQUESTS_PER_DAY must be an integer from 1 to 100000",
+    })
+  })
+
   it("asks for the mail address when it is not set", () => {
     expect(currentManifest("proton-mail", {})).toEqual({
       ok: false,

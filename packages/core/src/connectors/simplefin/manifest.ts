@@ -1,11 +1,12 @@
 import type { ConnectorManifest, ConnectorOperation } from "@eido/schemas"
 import {
-  DEFAULT_DAILY_REQUEST_LIMIT,
+  resolveSimpleFinConfig,
   SIMPLEFIN_CONNECTOR,
   SIMPLEFIN_HOST,
   SIMPLEFIN_SOURCE,
-  type SimpleFinConfig,
+  SIMPLEFIN_SYNC_INTERVAL_MS,
 } from "./config"
+import type { SimpleFinConfig } from "./config"
 
 export const SIMPLEFIN_PATH_PREFIX = "/simplefin"
 export const SIMPLEFIN_ACCOUNTS_PATH = "/simplefin/accounts"
@@ -34,10 +35,11 @@ export const OPERATIONS: readonly ConnectorOperation[] = [
   read("listTransactions", [get(SIMPLEFIN_ACCOUNTS_PATH)]),
 ]
 
+/** The SimpleFIN manifest: reads only, no write, transfer or payment operation exists. */
 export function simplefinManifest(
   config?: Partial<SimpleFinConfig>
 ): ConnectorManifest {
-  const dailyLimit = config?.dailyRequestLimit ?? DEFAULT_DAILY_REQUEST_LIMIT
+  const { dailyRequestLimit } = resolveSimpleFinConfig(config)
 
   return {
     name: SIMPLEFIN_CONNECTOR,
@@ -62,7 +64,7 @@ export function simplefinManifest(
       {
         kind: "poll",
         stream: "transactions",
-        intervalSeconds: 86400,
+        intervalSeconds: SIMPLEFIN_SYNC_INTERVAL_MS / 1000,
       },
     ],
     ledgerMapping: {
@@ -79,10 +81,7 @@ export function simplefinManifest(
         failureThreshold: 3,
         halfOpenProbeAfterMs: 60_000,
       },
-      rateLimit: {
-        requestsPerWindow: dailyLimit,
-        windowSeconds: 86400,
-      },
+      rateLimit: { requestsPerDay: dailyRequestLimit },
     },
   }
 }
