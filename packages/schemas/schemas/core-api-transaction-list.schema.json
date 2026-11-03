@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiTransactionList",
+  "description": "Response of GET /transactions?entity=&account=&limit=&offset=. Stored bank transactions, newest first. `amountCents` is a signed integer in the minor unit of `currency`; negative is money out. `accounts` lists every account that has stored transactions, whatever the filters, so a filter can offer them all. `nextOffset` is the offset of the next page, or null on the last page. Read only.",
+  "type": "object",
+  "properties": {
+    "transactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "postedAt": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" },
+          "amountCents": { "type": "integer" },
+          "currency": { "type": "string", "minLength": 1 },
+          "account": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "name": { "type": "string" }
+            },
+            "required": ["id", "name"],
+            "additionalProperties": false
+          },
+          "entity": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "name": { "type": "string" },
+              "tag": { "type": "string" }
+            },
+            "required": ["id", "name", "tag"],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "postedAt",
+          "description",
+          "amountCents",
+          "currency",
+          "account",
+          "entity"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "accounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string" }
+        },
+        "required": ["id", "name"],
+        "additionalProperties": false
+      }
+    },
+    "nextOffset": {
+      "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }]
+    }
+  },
+  "required": ["transactions", "accounts", "nextOffset"],
+  "additionalProperties": false
+}
