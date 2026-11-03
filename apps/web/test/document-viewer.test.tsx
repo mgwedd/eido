@@ -48,6 +48,7 @@ const SAMPLE_VIEW: CoreApiDocumentView = {
     },
     ingestedAt: "2026-03-01T12:00:00.000Z",
     occurredAt: null,
+    keyFacts: [],
   },
   lines: [
     { n: 1, start: 0, text: "Invoice #1042" },
@@ -61,7 +62,33 @@ const SAMPLE_VIEW: CoreApiDocumentView = {
     fromLine: 2,
     toLine: 2,
   },
-  extractions: [],
+  extractions: [
+    {
+      id: 1,
+      createdAt: "2026-03-01T12:00:00.000Z",
+      confirmedAt: null,
+      fields: [
+        {
+          field: "party",
+          raw: "Example Roofing Co.",
+          value: null,
+          span: { start: 0, end: 19 },
+          line: 1,
+          confidence: 0.95,
+          verified: true,
+        },
+        {
+          field: "amount",
+          raw: "$3,250.00",
+          value: { amount_minor: 325000, currency: "USD" },
+          span: { start: 28, end: 37 },
+          line: 9,
+          confidence: 0.98,
+          verified: true,
+        },
+      ],
+    },
+  ],
   linked: {
     obligations: [
       {
@@ -235,6 +262,114 @@ describe("DocumentViewer states", () => {
     expect(view.textContent).toContain("Quote 980.pdf")
     const quoteLink = view.querySelector(`a[href*="${RELATED_SHA256}"]`)
     expect(quoteLink).not.toBeNull()
+
+    // Extracted panel
+    expect(view.textContent).toContain("Extracted")
+    expect(view.textContent).toContain("Vendor")
+    expect(view.textContent).toContain("Example Roofing Co.")
+    expect(view.textContent).toContain("Total")
+    expect(view.textContent).toContain("$3,250.00")
+    expect(view.textContent).toContain("line 9")
+    expect(view.textContent).toContain("verified")
+    expect(view.textContent).toContain("Entity")
+    expect(view.textContent).toContain("Acme Corp")
+  })
+
+  test("renders extracted panel with unverified field and date formatting", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json({
+            ...SAMPLE_VIEW,
+            extractions: [
+              {
+                id: 2,
+                createdAt: "2026-03-01T12:00:00.000Z",
+                confirmedAt: null,
+                fields: [
+                  {
+                    field: "due_date",
+                    raw: "2026-11-03",
+                    value: "2026-11-03",
+                    span: { start: 0, end: 10 },
+                    line: 3,
+                    confidence: 0.3,
+                    verified: false,
+                  },
+                ],
+              },
+            ],
+          })
+        )
+      )
+    )
+    const view = await renderViewer({ sha256: SHA256 })
+    expect(view.textContent).toContain("Due date")
+    expect(view.textContent).toContain("Nov 3, 2026")
+    expect(view.textContent).toContain("line 3")
+    expect(view.textContent).toContain("unverified")
+  })
+
+  test("renders empty extracted panel when extractions are empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json({
+            ...SAMPLE_VIEW,
+            extractions: [],
+          })
+        )
+      )
+    )
+    const view = await renderViewer({ sha256: SHA256 })
+    expect(view.textContent).toContain("No extracted fields.")
+  })
+
+  test("renders extracted panel with null line, action field and reference field", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json({
+            ...SAMPLE_VIEW,
+            extractions: [
+              {
+                id: 3,
+                createdAt: "2026-03-01T12:00:00.000Z",
+                confirmedAt: null,
+                fields: [
+                  {
+                    field: "action",
+                    raw: "Pay water bill",
+                    value: null,
+                    span: { start: 0, end: 14 },
+                    line: null,
+                    confidence: 0.8,
+                    verified: true,
+                  },
+                  {
+                    field: "reference_number",
+                    raw: "REF-9999",
+                    value: "REF-9999",
+                    span: { start: 15, end: 23 },
+                    line: null,
+                    confidence: 0.9,
+                    verified: false,
+                  },
+                ],
+              },
+            ],
+          })
+        )
+      )
+    )
+    const view = await renderViewer({ sha256: SHA256 })
+    expect(view.textContent).toContain("Action")
+    expect(view.textContent).toContain("Pay water bill")
+    expect(view.textContent).toContain("Reference")
+    expect(view.textContent).toContain("REF-9999")
   })
 
   test("renders error when core answers non-ok status like 500", async () => {

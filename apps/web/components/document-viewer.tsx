@@ -49,6 +49,67 @@ type LinkedObligation = NonNullable<
 type LinkedDocument = NonNullable<
   NonNullable<CoreApiDocumentView["linked"]>["documents"]
 >[number]
+type ExtractedField =
+  CoreApiDocumentView["extractions"][number]["fields"][number]
+
+function formatFieldLabel(field: string): string {
+  switch (field) {
+    case "party":
+      return "Vendor"
+    case "amount":
+      return "Total"
+    case "due_date":
+      return "Due date"
+    case "action":
+      return "Action"
+    case "reference_number":
+      return "Reference"
+    default:
+      return field.charAt(0).toUpperCase() + field.slice(1)
+  }
+}
+
+function formatExtractedValue(field: ExtractedField): string {
+  if (
+    field.field === "amount" &&
+    field.value &&
+    typeof field.value === "object" &&
+    "amount_minor" in field.value &&
+    "currency" in field.value
+  ) {
+    const val = field.value
+    try {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: val.currency,
+      }).format(val.amount_minor / 100)
+    } catch {
+      return `${val.currency} ${(val.amount_minor / 100).toFixed(2)}`
+    }
+  }
+  if (
+    field.field === "due_date" &&
+    typeof field.value === "string" &&
+    field.value
+  ) {
+    try {
+      const d = new Date(
+        field.value.includes("T") ? field.value : `${field.value}T00:00:00Z`
+      )
+      if (!Number.isNaN(d.getTime())) {
+        return new Intl.DateTimeFormat("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+          timeZone: "UTC",
+        }).format(d)
+      }
+    } catch {
+      // fallback to raw
+    }
+  }
+  return field.raw
+}
 
 export function DocumentViewer({
   sha256,
@@ -192,7 +253,8 @@ export function DocumentViewer({
   }
 
   const { view, spanNotFound } = state
-  const { document: doc, lines, highlight, linked } = view
+  const { document: doc, lines, highlight, linked, extractions } = view
+  const extractedFields = (extractions ?? []).flatMap((e) => e.fields)
   const docTitle = doc.name ?? `${doc.source} · ${doc.sha256.slice(0, 12)}`
   const ingestedFormatted = new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
@@ -250,68 +312,128 @@ export function DocumentViewer({
 
       {/* Main layout: Document Text Column + Linked Panel */}
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_300px]">
-        {/* Document Content */}
-        <main
-          tabIndex={0}
-          aria-label="Document text"
-          className="min-h-[400px] overflow-auto rounded-lg border bg-card p-6 focus:ring-1 focus:ring-ring focus:outline-none"
-        >
-          {isBinary ? (
-            <div className="flex flex-col gap-2 py-16 text-center text-sm text-muted-foreground">
-              <p>Text unavailable for this file</p>
-              <p className="text-xs">
-                Binary or unsupported format. Metadata and provenance are shown
-                above.
-              </p>
-            </div>
-          ) : (
-            <div className="flex flex-col font-sans text-sm leading-relaxed font-normal break-words whitespace-pre-wrap">
-              {lines.map((lineItem: DocumentLine) => {
-                const lineStart = lineItem.start
-                const lineEnd = lineStart + lineItem.text.length
-                const hStart = highlight?.start ?? -1
-                const hEnd = highlight?.end ?? -1
+        {/* Document Content Column */}
+        <div className="flex flex-col gap-6">
+          <main
+            tabIndex={0}
+            aria-label="Document text"
+            className="min-h-[400px] overflow-auto rounded-lg border bg-card p-6 focus:ring-1 focus:ring-ring focus:outline-none"
+          >
+            {isBinary ? (
+              <div className="flex flex-col gap-2 py-16 text-center text-sm text-muted-foreground">
+                <p>Text unavailable for this file</p>
+                <p className="text-xs">
+                  Binary or unsupported format. Metadata and provenance are
+                  shown above.
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col font-sans text-sm leading-relaxed font-normal break-words whitespace-pre-wrap">
+                {lines.map((lineItem: DocumentLine) => {
+                  const lineStart = lineItem.start
+                  const lineEnd = lineStart + lineItem.text.length
+                  const hStart = highlight?.start ?? -1
+                  const hEnd = highlight?.end ?? -1
 
-                // Check overlap
-                const overlaps =
-                  highlight !== null && hStart < lineEnd && hEnd > lineStart
+                  // Check overlap
+                  const overlaps =
+                    highlight !== null && hStart < lineEnd && hEnd > lineStart
 
-                if (!overlaps) {
+                  if (!overlaps) {
+                    return (
+                      <div key={lineItem.n} className="min-h-5">
+                        {lineItem.text || " "}
+                      </div>
+                    )
+                  }
+
+                  // Split line into before, mark, after
+                  const startInLine = Math.max(0, hStart - lineStart)
+                  const endInLine = Math.min(
+                    lineItem.text.length,
+                    hEnd - lineStart
+                  )
+                  const before = lineItem.text.slice(0, startInLine)
+                  const markText = lineItem.text.slice(startInLine, endInLine)
+                  const after = lineItem.text.slice(endInLine)
+
                   return (
                     <div key={lineItem.n} className="min-h-5">
-                      {lineItem.text || " "}
+                      {before}
+                      <mark
+                        ref={highlightRef}
+                        role="mark"
+                        className="rounded border border-yellow-500/40 bg-yellow-500/25 px-0.5 text-foreground"
+                      >
+                        <span className="sr-only">Referenced passage</span>
+                        {markText}
+                      </mark>
+                      {after}
                     </div>
                   )
-                }
+                })}
+              </div>
+            )}
+          </main>
 
-                // Split line into before, mark, after
-                const startInLine = Math.max(0, hStart - lineStart)
-                const endInLine = Math.min(
-                  lineItem.text.length,
-                  hEnd - lineStart
-                )
-                const before = lineItem.text.slice(0, startInLine)
-                const markText = lineItem.text.slice(startInLine, endInLine)
-                const after = lineItem.text.slice(endInLine)
-
-                return (
-                  <div key={lineItem.n} className="min-h-5">
-                    {before}
-                    <mark
-                      ref={highlightRef}
-                      role="mark"
-                      className="rounded border border-yellow-500/40 bg-yellow-500/25 px-0.5 text-foreground"
+          {/* Extracted Panel */}
+          <Card aria-label="Extracted fields">
+            <CardHeader className="px-4 py-3">
+              <CardTitle className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                Extracted
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3 px-4 pt-0 pb-4 text-sm">
+              {extractedFields.length > 0 ? (
+                <div className="flex flex-col gap-2.5">
+                  {extractedFields.map((field, idx) => (
+                    <div
+                      key={`${field.field}-${idx}`}
+                      className="flex flex-col gap-1 text-sm sm:flex-row sm:items-baseline sm:justify-between"
                     >
-                      <span className="sr-only">Referenced passage</span>
-                      {markText}
-                    </mark>
-                    {after}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </main>
+                      <span className="min-w-[120px] text-xs text-muted-foreground">
+                        {formatFieldLabel(field.field)}
+                      </span>
+                      <div className="flex flex-wrap items-baseline gap-1.5 font-medium">
+                        <span className="text-foreground">
+                          {formatExtractedValue(field)}
+                        </span>
+                        <span className="text-xs font-normal text-muted-foreground">
+                          {field.line !== null
+                            ? `· line ${field.line} · `
+                            : "· "}
+                          <span
+                            className={
+                              field.verified
+                                ? "font-medium text-emerald-500 dark:text-emerald-400"
+                                : "text-amber-500 dark:text-amber-400"
+                            }
+                          >
+                            {field.verified ? "verified" : "unverified"}
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  {doc.entity ? (
+                    <div className="flex flex-col gap-1 border-t border-border/50 pt-2 text-sm sm:flex-row sm:items-baseline sm:justify-between">
+                      <span className="min-w-[120px] text-xs text-muted-foreground">
+                        Entity
+                      </span>
+                      <span className="font-medium text-foreground">
+                        {doc.entity.name}
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No extracted fields.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
 
         {/* Linked Panel */}
         <aside aria-label="Linked" className="flex flex-col gap-4">
