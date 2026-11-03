@@ -176,6 +176,7 @@ describe(
         tier: "approval",
         state: "pending",
         edited_from: null,
+        discarded: false,
       })
       expect(settledValue(await planes.probe("pending"))).toMatchObject([
         { id, kind: "email.send", tier: "approval" },

@@ -11,6 +11,7 @@ import type {
   GateConnectorHealth,
   GateEnrolmentCode,
   GateIntentHistory,
+  GateIntentStatus,
   GatePasskeyList,
   GatePendingIntentList,
   GateProposeRefusal,
@@ -27,6 +28,7 @@ import type { MailReads } from "./bridge/mail-routes"
 import { payloadHash } from "./canonical"
 import { apiError, NOT_FOUND } from "./http"
 import type { GateRequest, Handler, Reply } from "./http"
+import { draftDiscarded } from "./draft-discard"
 import { executionReceipt } from "./executor"
 import type { ExecutionResult } from "./executor"
 import {
@@ -399,7 +401,13 @@ function readRoute(request: GateRequest, gate: GateState): Reply | undefined {
   if (summary === undefined) {
     return apiError(404, "not_found", "no such intent")
   }
-  if (match[2] === undefined) return { status: 200, body: summary }
+  if (match[2] === undefined) {
+    const status: GateIntentStatus = {
+      ...summary,
+      discarded: draftDiscarded(gate.db, id),
+    }
+    return { status: 200, body: status }
+  }
   const history: GateIntentHistory = {
     intentId: id,
     entries: intentHistory(gate.db, id),

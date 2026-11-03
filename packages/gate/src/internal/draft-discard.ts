@@ -70,3 +70,37 @@ export function proposeDraftDiscard(
     return { id: proposed.intentId, tier: proposed.tier, state: proposed.state }
   })
 }
+
+/**
+ * Whether the executed Gmail draft `draftId` was discarded: an executed email.trash moved the
+ * message its receipt names to Trash, and no executed email.untrash restored that trash. A
+ * pending or rejected discard leaves the draft in place. False for any other intent.
+ */
+export function draftDiscarded(db: DatabaseSync, draftId: string): boolean {
+  const source = db
+    .prepare("SELECT kind, state FROM intents WHERE id=?")
+    .get(draftId)
+  if (source?.["kind"] !== "email.draft" || source["state"] !== "executed")
+    return false
+  const result = executionReceipt(db, draftId)?.result
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    !("messageId" in result) ||
+    typeof result.messageId !== "string"
+  )
+    return false
+  const trashed = db
+    .prepare(
+      `SELECT 1 FROM intents t, json_each(t.payload_json, '$.args.messageIds') m
+       WHERE t.kind = 'email.trash' AND t.state = 'executed' AND m.value = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM intents u
+         WHERE u.kind = 'email.untrash' AND u.state = 'executed'
+         AND json_extract(u.payload_json, '$.args.sourceIntentId') = t.id
+       )
+       LIMIT 1`
+    )
+    .get(result.messageId)
+  return trashed !== undefined
+}
