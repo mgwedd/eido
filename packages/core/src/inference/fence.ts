@@ -34,10 +34,16 @@ const FENCE_TAG = /<(?=\s*\/?\s*(?:material|summary)(?![a-z0-9_-]))/giu
 /** Stands in for `<` in a defused tag: it reads the same to a person and opens nothing. */
 const DEFUSED_LT = "\u2039"
 
+// Gemma 4's asymmetric markers, `<|name>` and `<name|>`, and its string delimiter `<|"|>`. Some
+// of them (`<|tool_call>`, `<tool_call|>`, `<tool_response|>`, `<|channel>`, `<channel|>`,
+// `<|"|>`) are user-defined tokens: llama.cpp matches them in plain text even with
+// `parse_special: false`, so they are defused like a fence tag, not only flagged (#536).
+const GEMMA4_MARKER = /<(?=\|"\|>|\|[a-z0-9_]+>|[a-z0-9_]+\|>)/giu
+
 /**
  * The text exactly as the model reads it and the owner sees it: NFKC, then invisible and bidi
- * characters and tag characters stripped, then any `material` or `summary` tag defused.
- * Idempotent: normalizing twice gives the same text.
+ * characters and tag characters stripped, then any `material` or `summary` tag and any Gemma 4
+ * marker defused. Idempotent: normalizing twice gives the same text.
  */
 export function normalizeMaterial(raw: string): string {
   return inspect(raw).text
@@ -47,7 +53,10 @@ export function normalizeMaterial(raw: string): string {
 export type InjectionReason =
   /** A `material` or `summary` tag, in any case, spacing or width, was defused. */
   | "fence-tag"
-  /** A chat-template marker such as `<|im_start|>` or `[INST]`. It is sent as plain text. */
+  /**
+   * A chat-template marker such as `<|im_start|>` or `[INST]`. It is sent as plain text; a Gemma 4
+   * marker such as `<|tool_call>` is defused as well.
+   */
   | "template-marker"
   /** An `[End of …]` line followed by `System note:`, `IMPORTANT:` or `Override:`. */
   | "boundary-confusion"
@@ -62,7 +71,8 @@ export const INJECTION_REASONS: readonly InjectionReason[] = [
   "hidden-characters",
 ]
 
-// ChatML and Llama 3 (`<|...|>`), Gemma, Mistral and Llama 2 markers.
+// ChatML and Llama 3 (`<|...|>`), Gemma 2 and 3, Mistral and Llama 2 markers. Gemma 4 markers
+// are found by GEMMA4_MARKER.
 const TEMPLATE_MARKER =
   /<\|[a-z0-9_]+\|>|<\/?(?:start|end)_of_turn>|\[\/?INST\]|<<\/?SYS>>/iu
 
@@ -81,9 +91,11 @@ function inspect(raw: string): Inspected {
   const folded = raw.normalize("NFKC")
   const visible = folded.replace(INVISIBLE, "")
   if (visible !== folded) reasons.add("hidden-characters")
-  const text = visible.replace(FENCE_TAG, DEFUSED_LT)
-  if (text !== visible) reasons.add("fence-tag")
-  if (TEMPLATE_MARKER.test(text)) reasons.add("template-marker")
+  const untagged = visible.replace(FENCE_TAG, DEFUSED_LT)
+  if (untagged !== visible) reasons.add("fence-tag")
+  const text = untagged.replace(GEMMA4_MARKER, DEFUSED_LT)
+  if (text !== untagged || TEMPLATE_MARKER.test(text))
+    reasons.add("template-marker")
   if (BOUNDARY_CONFUSION.test(text)) reasons.add("boundary-confusion")
   return { text, reasons }
 }
