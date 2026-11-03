@@ -54,6 +54,7 @@ export function legendGroups(
         { keys: ["k"], label: "Previous intent" },
         { keys: ["Enter"], label: "Open the card" },
         { keys: ["a"], label: "Approve with passkey" },
+        { keys: ["e"], label: "Edit and approve" },
         { keys: ["r"], label: "Reject" },
         { keys: ["Esc"], label: "Back to the list" },
       ],

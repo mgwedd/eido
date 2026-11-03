@@ -3,6 +3,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, test } from "vitest"
 import { createModelClient } from "./client"
+import { MaterialMarkerError } from "./errors"
 import {
   MATERIAL_RULES,
   fence,
@@ -11,7 +12,12 @@ import {
   toMaterial,
 } from "./fence"
 import type { InjectionReason, PromptPart } from "./fence"
-import { SPECIAL_TOKENS, startStubModelServer, stubDecode } from "./stub-server"
+import {
+  SPECIAL_TOKENS,
+  USER_DEFINED_TOKENS,
+  startStubModelServer,
+  stubDecode,
+} from "./stub-server"
 import type { CompletionView, StubModelServer, StubScript } from "./stub-server"
 
 // The adversarial corpus in fixtures/injection/cases.json, sent through the real client to the
@@ -131,10 +137,15 @@ async function send(
   return view
 }
 
+const TOKEN_TEXT: readonly string[] = [
+  ...SPECIAL_TOKENS,
+  ...USER_DEFINED_TOKENS,
+]
+
 const specials = (tokens: readonly number[]): string[] =>
   tokens
     .filter((id) => id >= SPECIAL_BASE)
-    .map((id) => SPECIAL_TOKENS[id - SPECIAL_BASE] ?? String(id))
+    .map((id) => TOKEN_TEXT[id - SPECIAL_BASE] ?? String(id))
 
 function userTurn(view: CompletionView): string {
   const turn = view.turns.find((t) => t.role === "user")
@@ -164,13 +175,41 @@ describe("the corpus sent in one request", () => {
     expect(specials(hostile.tokens)).toEqual(specials(clean.tokens))
   })
 
-  test("the check fails on a server that parses special tokens in material", async () => {
-    const leaky = await send(
+  test("no Gemma 4 marker in material becomes a user-defined token, which a server matches even with parse_special off", async () => {
+    const hostile = await send(
+      cases.map((c) => c.text),
+      { userDefinedTokens: true }
+    )
+    const clean = await send(
+      cases.map(() => "x"),
+      { userDefinedTokens: true }
+    )
+    expect(specials(hostile.tokens)).toEqual(specials(clean.tokens))
+  })
+
+  test("the user-defined check fails when material is not normalized", async () => {
+    const raw = cases.find((c) => c.name === "Gemma 4 channel block")
+    if (raw === undefined) throw new Error("no Gemma 4 channel block case")
+    stub = await startStubModelServer({ replies: [], userDefinedTokens: true })
+    const response = await fetch(`${stub.url}/tokenize`, {
+      method: "POST",
+      body: JSON.stringify({ content: raw.text, parse_special: false }),
+    })
+    const answer: unknown = await response.json()
+    if (!isRecord(answer) || !Array.isArray(answer.tokens)) {
+      throw new Error("no tokens")
+    }
+    const ids = answer.tokens.filter((t): t is number => typeof t === "number")
+    expect(specials(ids)).toEqual(["<|channel>", "<channel|>"])
+  })
+
+  test("a server that parses special tokens in material is refused before anything is sent", async () => {
+    const error = await send(
       cases.map((c) => c.text),
       { ignoreParseSpecial: true }
-    )
-    const clean = await send(cases.map(() => "x"))
-    expect(specials(leaky.tokens)).not.toEqual(specials(clean.tokens))
+    ).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(MaterialMarkerError)
+    expect(stub?.completions()).toEqual([])
   })
 
   test("the model reads the rules, then each normalized body inside this request's boundary, then the question", async () => {

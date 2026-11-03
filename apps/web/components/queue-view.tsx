@@ -18,12 +18,14 @@ import {
   SheetTitle,
 } from "@eido/ui/components/sheet"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import { QueueEditSheet } from "@/components/queue-edit-sheet"
 import { ShortcutKeys } from "@/components/shortcuts-provider"
 import { useKeydown } from "@/hooks/use-keydown"
 import { shortHash } from "@/lib/approval/challenge"
 import { prepareApproval, signApproval } from "@/lib/approval/sign"
 import {
   confirmFieldIntent,
+  editIntent,
   loadHistory,
   loadQueue,
   rejectIntent,
@@ -37,6 +39,11 @@ import {
   waitingSince,
   type ConfirmFieldCardData,
 } from "@/lib/queue/card"
+import {
+  buildEditedIntent,
+  editRefusalMessage,
+  editableFields,
+} from "@/lib/queue/edit"
 import { isInteractiveTarget, isShortcutEvent } from "@/lib/shortcuts"
 import { formatWaiting } from "@/lib/relative-time"
 import { describeKind, type PendingIntent } from "@/lib/today"
@@ -240,11 +247,14 @@ function ApprovalCard({
   intent,
   now,
   onDecided,
+  onReplaced,
   onSkip,
 }: {
   intent: PendingIntent
   now: Date
   onDecided: (message: string) => void
+  /** The edit replaced this intent with a new pending one that was not approved. */
+  onReplaced?: (newIntentId: string, message: string) => void
   onSkip?: () => void
 }) {
   const [card, setCard] = React.useState<CardState>({ status: "loading" })
@@ -253,6 +263,8 @@ function ApprovalCard({
   })
   const [action, setAction] = React.useState<Action>({ status: "idle" })
   const [rejectOpen, setRejectOpen] = React.useState(false)
+  const [editOpen, setEditOpen] = React.useState(false)
+  const [editError, setEditError] = React.useState<string | null>(null)
   const [reloads, setReloads] = React.useState(0)
   const [historyReloads, setHistoryReloads] = React.useState(0)
   const [dx, setDx] = React.useState(0)
@@ -345,6 +357,42 @@ function ApprovalCard({
     })
   }
 
+  const canEdit =
+    card.status === "ready" &&
+    view !== undefined &&
+    !busy &&
+    editableFields(card.prepared.payload).length > 0
+
+  const submitEdit = async (values: Record<string, string>) => {
+    if (card.status !== "ready") return
+    const edited = buildEditedIntent(card.prepared.payload, values)
+    if (edited === undefined) return
+    setEditError(null)
+    setAction({ status: "signing" })
+    const result = await editIntent(intent.id, edited)
+    if (!result.ok) {
+      setAction({ status: "idle" })
+      if (
+        result.error.code === "already_decided" ||
+        result.error.code === "not_found"
+      ) {
+        setEditOpen(false)
+        return onDecided("Already decided")
+      }
+      return setEditError(editRefusalMessage(result.error))
+    }
+    const signed = await signApproval(result.value)
+    setEditOpen(false)
+    if (signed.ok) return onDecided("Approved")
+    // The gate has already replaced this intent with the edited one, so the queue reloads onto it.
+    onReplaced?.(
+      result.value.intentId,
+      signed.error.code === "cancelled"
+        ? "Edit saved. Face ID did not complete, so the edited intent is waiting in the queue."
+        : signed.error.message
+    )
+  }
+
   const handleConfirm = async (customValue?: unknown) => {
     if (!confirmData) return
     setAction({ status: "signing" })
@@ -384,6 +432,10 @@ function ApprovalCard({
       if (event.key === "a" && canApprove) {
         event.preventDefault()
         void approve()
+      } else if (event.key === "e" && canEdit) {
+        event.preventDefault()
+        setEditError(null)
+        setEditOpen(true)
       } else if (event.key === "r" && !busy) {
         event.preventDefault()
         setRejectOpen(true)
@@ -745,6 +797,20 @@ function ApprovalCard({
             <ShortcutKeys keys={["r"]} />
           </Button>
           <Button
+            variant="outline"
+            size="lg"
+            className="min-h-11"
+            disabled={!canEdit}
+            aria-keyshortcuts="e"
+            onClick={() => {
+              setEditError(null)
+              setEditOpen(true)
+            }}
+          >
+            Edit and approve
+            <ShortcutKeys keys={["e"]} />
+          </Button>
+          <Button
             size="lg"
             className="min-h-[60px] flex-1"
             disabled={!canApprove}
@@ -756,6 +822,17 @@ function ApprovalCard({
           </Button>
         </div>
       )}
+      {card.status === "ready" ? (
+        <QueueEditSheet
+          open={editOpen}
+          intentId={intent.id}
+          payload={card.prepared.payload}
+          busy={busy}
+          error={editError}
+          onSubmit={(values) => void submitEdit(values)}
+          onOpenChange={setEditOpen}
+        />
+      ) : null}
       <RejectSheet
         open={rejectOpen}
         busy={busy}
@@ -842,6 +919,12 @@ function QueueView({ initialId }: { initialId?: string }) {
     setSelectedId(undefined)
   }
 
+  const replaced = (id: string, text: string) => {
+    setMessage(text)
+    setSelectedId(id)
+    reload()
+  }
+
   const handleSkip = () => {
     if (intents.length <= 1) return
     const currentIndex = selected ? intents.indexOf(selected) : 0
@@ -910,6 +993,7 @@ function QueueView({ initialId }: { initialId?: string }) {
             intent={selected}
             now={now}
             onDecided={(text) => decided(selected.id, text)}
+            onReplaced={replaced}
             onSkip={handleSkip}
           />
         </div>

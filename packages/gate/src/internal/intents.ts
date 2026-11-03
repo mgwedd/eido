@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { validateGateIntentInjection, validateIntent } from "@eido/schemas"
 import type {
   ConfirmFieldIntent,
+  FileDeleteIntent,
   GateIntentInjection,
   GateIntentStatus,
   Intent,
@@ -715,6 +716,25 @@ export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
               ? String(args.documentSource)
               : "a scan"
             subtitle = `Extracted from ${docSource} · confidence ${String(args.confidence)}`
+          }
+        } catch {
+          // Ignore unparseable payload for display title
+        }
+      } else if (
+        row["kind"] === "file.delete" &&
+        typeof row["payload_json"] === "string"
+      ) {
+        try {
+          const payload = JSON.parse(String(row["payload_json"])) as unknown as
+            FileDeleteIntent | undefined
+          const args = payload?.args
+          if (args && typeof args === "object") {
+            title = args.path
+              ? `Move to Eido Trash: ${args.path}`
+              : "Move to Eido Trash"
+            if (args.root && args.path) {
+              subtitle = `${args.root}/${args.path}`
+            }
           }
         } catch {
           // Ignore unparseable payload for display title

@@ -41,10 +41,10 @@ The web app is served only at `https://<host>.ts.net:8443`. `llama-server` has n
 
 `infra/model.lock` pins:
 
-- **Model:** Llama 3.1 8B Instruct Q4_0 (`ggml-org/Meta-Llama-3.1-8B-Instruct-Q4_0-GGUF` at a fixed revision), with its size and SHA-256.
+- **Model:** Gemma 4 26B-A4B instruct, Google's QAT Q4_0 GGUF (`google/gemma-4-26B-A4B-it-qat-q4_0-gguf` at a fixed revision, Apache 2.0), with its size and SHA-256. It is a mixture-of-experts model: 128 experts, 8 active per token, about 4B active parameters.
 - **llama.cpp:** release `b11149` (commit `d2e54583c`), with the SHA-256 of `llama-b11149-bin-macos-arm64.tar.gz`.
 
-The choice comes from #69. #28 makes the final choice and may change it.
+The MVP starts on this pin. Llama 3.1 8B Q4_0, the earlier stand-in from #69, has no tool-call support in its template (#473). The other candidates are benchmarked during the dogfood week (#532), and #28 makes the final choice.
 
 Default locations (each can be overridden by env, none is a secret):
 
@@ -86,7 +86,7 @@ pnpm --filter @eido/infra llama status          # launchd's view, who listens on
 `launch` does these steps in order:
 
 1. Verifies the binary and the model; on a mismatch it exits 1 and does not start the server.
-2. Starts `llama-server -m <model> --jinja --host 127.0.0.1 --port <port> -c 8192 -fa on --cache-type-k q8_0 --cache-type-v q8_0 -ngl 99 -b 2048 -ub 2048 -t 8`. These are the flags measured in #69, plus the fixed loopback bind.
+2. Starts `llama-server -m <model> --jinja --host 127.0.0.1 --port <port> -c 8192 -fa on --cache-type-k q8_0 --cache-type-v q8_0 -ngl 99 -b 2048 -ub 2048 -t 8 --reasoning off`. These are the flags measured in #69, plus the fixed loopback bind. `--reasoning off` keeps Gemma 4 out of thinking mode: with the default (`auto`) the template injects `<|think|>` into the system turn and a schema-constrained completion comes back with empty content.
 3. Waits up to 180 s for `/health`.
 4. Checks that `/props` reports a chat template containing the lock's `chat_template_marker`. If not, it stops the server and exits 1.
 5. Stays in the foreground. It exits non-zero if the server dies, and on SIGTERM it stops the server and exits 0.
@@ -104,7 +104,19 @@ launchd restarts the launcher whenever it exits, and every restart re-verifies t
 
 Install it only after `llama verify` passes; `install` refuses when the binary or model file is missing. The node path written into the plist is the one that ran `install`, so after upgrading node, run `llama install` again.
 
-### Recorded results (2026-11-02, development Mac: M3 Max, 36 GB)
+### Recorded results (2026-11-03, Gemma 4 26B-A4B QAT Q4_0, same Mac)
+
+Launcher on port 18092, outside launchd.
+
+- `llama launch` reported `b11149 (d2e54583c)` and matched the SHA-256; node hashed the 14.4 GB model in 12.6 s on the first run and 17.1 s on the second.
+- `/health` answered 2.3 s after start (11.1 s on the first, cold load), and `/props` had `<|turn>model`.
+- `llama status`: `port 18092 listens on loopback only`, `/health 200`.
+- `llama check-template` printed `ok: chat template`, `ok: rendered prompt`, `ok: JSON-schema request` and `ok: template check passed on b11149 with gemma-4-26B_q4_0-it.gguf`.
+- Without `--reasoning off` the same check failed: the rendered prompt had `<|think|>` after `<|turn>system`, and the JSON-schema completion was empty.
+
+The altered-copy, server-killed and launchd runs below were recorded on the Llama pin; the launcher code they exercise is unchanged.
+
+### Recorded results (2026-11-02, Llama 3.1 8B pin, development Mac: M3 Max, 36 GB)
 
 These runs used the launcher on port 18091, outside launchd.
 
@@ -137,13 +149,21 @@ Not yet recorded, still to do on the host by the owner (#472):
 
 `llama check-template` runs three checks against a running server:
 
-1. `/props` reports a chat template containing the lock's `chat_template_marker` (`<|start_header_id|>`).
+1. `/props` reports a chat template containing the lock's `chat_template_marker` (`<|turn>model`).
 2. `/apply-template` renders the fixed synthetic conversation in `infra/llama/server.ts` (`FIXED_CONVERSATION`: system, user, an assistant tool call, the tool result, an assistant reply, a user turn). The result must equal `infra/llama/fixtures/<model file>.prompt.txt` exactly; on a difference the check names the first differing character.
 3. One `/v1/chat/completions` request constrained by a strict JSON schema (four required string fields, no others) must return content that parses and matches the schema.
 
-The reference fixture was written by hand from the Llama 3.1 template embedded in the GGUF, not captured from the server. Each message becomes `<|start_header_id|>{role}<|end_header_id|>\n\n{content trimmed}<|eot_id|>`, followed by the assistant header. `/apply-template` leaves out `<|begin_of_text|>`, which llama.cpp adds when it tokenizes the prompt, so the fixture leaves it out too.
+The reference fixture was written by hand from the Gemma 4 template embedded in the GGUF (`tokenizer.chat_template`), not captured from the server:
 
-**Finding:** the template embedded in this GGUF has no tool-call support. An assistant turn that carries `tool_calls` renders as an empty assistant turn, so the call itself (`get_weather` and its arguments) never reaches the model; only the tool result does. The reference fixture records this behaviour as it is, so the check catches any change. Tool calling on this pin needs another template or model (#473, #28).
+- **System message:** the template renders it in its own `<|turn>system` turn.
+- **Assistant turns:** each one becomes a `<|turn>model` turn.
+- **Tool call:** renders as `<|tool_call>call:get_weather{city:<|"|>Testville<|"|>}<tool_call|>`.
+- **Tool result:** goes inline in the same model turn, as `<|tool_response>response:get_weather{value:…}<tool_response|>`.
+- **Reply:** the assistant reply after the tool result continues that turn, with no new header.
+- **Generation prompt:** with thinking off, it is `<|turn>model\n<|channel>thought\n<channel|>`.
+- **`<bos>`:** llama.cpp adds it when it tokenizes, so the fixture leaves it out.
+
+Unlike the earlier Llama 3.1 8B pin, whose template dropped the call itself and rendered an empty assistant turn, this template carries the tool call to the model. The Llama fixture stays in `infra/llama/fixtures/` for the benchmark in #532.
 
 ## Updating the pin
 

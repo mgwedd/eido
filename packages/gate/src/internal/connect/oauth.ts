@@ -14,6 +14,12 @@ export const GOOGLE_AUTH_ENDPOINT =
 export const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 /** The compose client's scope: the gate's Gmail writes and the profile read its probe makes. */
 export const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+/** The Gmail read client's scope: the reads core makes through the gate's egress proxy. */
+export const GMAIL_READONLY_SCOPE =
+  "https://www.googleapis.com/auth/gmail.readonly"
+/** The Drive read client's scope: the reads core makes through the gate's egress proxy. */
+export const DRIVE_READONLY_SCOPE =
+  "https://www.googleapis.com/auth/drive.readonly"
 
 export const CALLBACK_PATH = "/oauth2callback"
 const LOOPBACK = "127.0.0.1"

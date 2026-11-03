@@ -18,6 +18,7 @@ const summary = {
   entity: { id: "ent-1", kind: "property", name: "Test Property", tag: "PROP" },
   ingestedAt: "2030-01-02T03:04:05.000Z",
   occurredAt: null,
+  keyFacts: [],
 }
 
 describe("documents API schemas", () => {
@@ -34,6 +35,31 @@ describe("documents API schemas", () => {
         nextOffset: null,
       }).ok
     ).toBe(false)
+  })
+
+  test("a list summary with keyFacts is valid", () => {
+    expect(
+      validateCoreApiDocumentList({
+        documents: [
+          {
+            ...summary,
+            keyFacts: [
+              {
+                text: "Total $3,250.00",
+                href: null,
+                isConfirm: false,
+              },
+              {
+                text: "1 field to confirm",
+                href: "/queue?intent=abc",
+                isConfirm: true,
+              },
+            ],
+          },
+        ],
+        nextOffset: null,
+      }).ok
+    ).toBe(true)
   })
 
   test("a viewer payload with a highlight and typed fields is valid", () => {
