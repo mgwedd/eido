@@ -33,7 +33,18 @@ export type BriefMoreLine = {
   ledger: { type: "ledger" }
 }
 
-export type BriefLine = BriefItemLine | BriefMoreLine
+/**
+ * An item triage deferred to the brief instead of showing it as a card. It links the ledger entry
+ * the event's `ref` names; the entry carries the source. Always listed, never counted against
+ * `maxLines`.
+ */
+export type BriefDeferredLine = {
+  text: string
+  kind: "deferred"
+  ledger: BriefLedgerRef
+}
+
+export type BriefLine = BriefItemLine | BriefMoreLine | BriefDeferredLine
 
 export type BriefCoverage = {
   messagesRead: number
@@ -66,7 +77,7 @@ export type BriefConfig = {
   time: string
   /** Open obligations due within this many days of today are listed. */
   dueWithinDays: number
-  /** Most lines a brief holds, including the "more" line. */
+  /** Most lines a brief holds from the ledger, including the "more" line; deferred lines come on top. */
   maxLines: number
   /** An unconfirmed extraction field scoring below this is listed as "needs you". */
   confirmThreshold: number
