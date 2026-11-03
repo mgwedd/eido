@@ -13,6 +13,7 @@ export const DEFAULT_LEDGER_LIMIT = 50
 export interface LoadLedgerOptions {
   entity?: string
   status?: ObligationStatusFilter
+  direction?: "owed" | "waiting"
   limit?: number
   offset?: number
 }
@@ -40,6 +41,9 @@ export async function loadLedgerObligations(
     }
     if (options.status && options.status !== "all") {
       url.searchParams.set("status", options.status)
+    }
+    if (options.direction) {
+      url.searchParams.set("direction", options.direction)
     }
     if (typeof options.limit === "number") {
       url.searchParams.set("limit", String(options.limit))

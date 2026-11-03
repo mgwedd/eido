@@ -286,24 +286,72 @@ export function LedgerView({
   return (
     <div className="flex flex-col gap-6">
       {/* Header */}
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">
-            Ledger
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Tracking and obligations across all entities.
-          </p>
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">
+              Ledger
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Tracking and obligations across all entities.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/ledger/replies"
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "min-h-[44px] px-3 font-medium"
+              )}
+            >
+              Replies owed
+            </Link>
+            <Link
+              href="/documents"
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "min-h-[44px] px-3 font-medium md:hidden"
+              )}
+            >
+              Documents
+            </Link>
+          </div>
         </div>
-        <Link
-          href="/documents"
-          className={cn(
-            buttonVariants({ variant: "outline", size: "sm" }),
-            "min-h-[44px] px-3 font-medium md:hidden"
-          )}
+
+        {/* Sub-nav */}
+        <div
+          className="flex items-center gap-1.5"
+          role="navigation"
+          aria-label="Ledger views"
         >
-          Documents
-        </Link>
+          <Link
+            href="/ledger"
+            className={cn(
+              buttonVariants({ variant: "secondary", size: "sm" }),
+              "h-8 px-3 text-xs"
+            )}
+          >
+            Obligations
+          </Link>
+          <Link
+            href="/ledger/replies"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "sm" }),
+              "h-8 px-3 text-xs"
+            )}
+          >
+            Replies owed
+          </Link>
+          <Link
+            href="/documents"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "sm" }),
+              "h-8 px-3 text-xs md:hidden"
+            )}
+          >
+            Documents
+          </Link>
+        </div>
       </div>
 
       {/* Filter Toolbar */}

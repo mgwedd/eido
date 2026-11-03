@@ -347,6 +347,46 @@ describe("GET /obligations", () => {
     expect(err.fields?.[0]?.field).toBe("status")
   })
 
+  test("filters by direction", async () => {
+    const owedId = await insertObligation(db, {
+      entityId: propertyId,
+      action: "Reply to Tenant",
+      party: "Tenant",
+      dueAt: "2026-03-01",
+      status: "open",
+      direction: "owed",
+      docId: docA,
+      span: { start: 0, end: 5 },
+    })
+    const waitingId = await insertObligation(db, {
+      entityId: propertyId,
+      action: "Waiting on Contractor: Quote",
+      party: "Contractor",
+      dueAt: "2026-03-05",
+      status: "open",
+      direction: "waiting",
+      docId: docA,
+      span: { start: 0, end: 5 },
+    })
+
+    const owedList = await list("?direction=owed")
+    expect(owedList.obligations.every((o) => o.direction === "owed")).toBe(true)
+    expect(owedList.obligations.some((o) => o.id === owedId)).toBe(true)
+    expect(owedList.obligations.some((o) => o.id === waitingId)).toBe(false)
+
+    const waitingList = await list("?direction=waiting")
+    expect(
+      waitingList.obligations.every((o) => o.direction === "waiting")
+    ).toBe(true)
+    expect(waitingList.obligations.some((o) => o.id === waitingId)).toBe(true)
+    expect(waitingList.obligations.some((o) => o.id === owedId)).toBe(false)
+
+    const err = await errorOf(await get("?direction=other"))
+    expect(err.status).toBe(422)
+    expect(err.code).toBe("invalid")
+    expect(err.fields?.[0]?.field).toBe("direction")
+  })
+
   test("orders by due_at ASC NULLS LAST, id ASC", async () => {
     // Current 'id' from beforeEach has dueAt: null.
     const earlyId = await insertObligation(db, {

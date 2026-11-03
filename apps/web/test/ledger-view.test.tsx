@@ -153,6 +153,9 @@ describe("LedgerView", () => {
     const heading = container.querySelector("h1")
     expect(heading?.textContent).toBe("Ledger")
 
+    const repliesLink = container.querySelector('a[href="/ledger/replies"]')
+    expect(repliesLink?.textContent).toContain("Replies owed")
+
     // Scoped table headers at desktop
     const ths = Array.from(container.querySelectorAll("th"))
     expect(ths.map((th) => th.textContent?.trim())).toEqual([
