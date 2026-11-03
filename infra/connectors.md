@@ -76,7 +76,6 @@ ssh -L <port>:127.0.0.1:<port> <mac>
 
 When Google revokes the grant, the gate disables Gmail and `/connectors` shows it with the reason `auth_failed`. Run `pnpm --filter @eido/gate connect gmail` again. The new refresh token replaces the old one, and Gmail is re-enabled once the check passes.
 
-<<<<<<< HEAD
 ## Drive
 
 Drive is a read connector: core reads it through the gate's read proxy, and the gate holds its read client's grant. The client is a **Desktop app** OAuth client in Google Cloud; its client id is `EIDO_DRIVE_CLIENT_ID`, in both the gate's environment and the command's.
@@ -89,8 +88,6 @@ Drive is a read connector: core reads it through the gate's read proxy, and the 
 
 When Google revokes the grant, the gate disables Drive with `auth_failed`. Run `pnpm --filter @eido/gate connect drive` again; Drive is re-enabled once the check passes.
 
-=======
->>>>>>> origin/main
 ## The read proxy
 
 Core's connectors read through the gate's egress proxy, which adds the read client's token to each pinned read. The gate starts the proxy when a read client is configured:
@@ -124,10 +121,6 @@ Each connector is checked separately. After a new Bridge password, run the comma
 
 ## Not available yet
 
-<<<<<<< HEAD
-=======
-- **Drive.** The proxy refreshes Drive read tokens and the gate can check Drive, but the command has no `connect drive` step to store a Drive grant yet (#516).
->>>>>>> origin/main
 - **The Gmail read client.** The command connects the Gmail write client (`gmail.modify`) only. Nothing stores the read client's refresh token yet, so reads through the proxy answer `credential_missing` (#529).
 
 ## Not verified by the tests
