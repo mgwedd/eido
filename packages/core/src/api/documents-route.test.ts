@@ -415,7 +415,6 @@ describe("GET /documents/:sha256", () => {
     expect(viewRes.status).toBe(200)
     expect(opened).toEqual([invoice])
   })
-  })
 
   test("only GET is allowed", async () => {
     const response = await handle(
