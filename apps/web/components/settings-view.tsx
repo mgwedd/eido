@@ -28,12 +28,14 @@ import {
   chainSummary,
   isRevoked,
   loadAuditChain,
+  loadBackupStatus,
   loadPasskeys,
   loadPermissions,
   reasonLabel,
   shortFingerprint,
   TIER_LABELS,
   type AboutInfo,
+  type BackupStatus,
   type ChainStatus,
   type Passkey,
   type PermissionList,
@@ -45,6 +47,7 @@ type Settled<T> = Exclude<SectionLoad<T>, { status: "unauthenticated" }>
 type SettingsData = {
   passkeys: Settled<Passkey[]>
   permissions: Settled<PermissionList>
+  backup: Settled<BackupStatus>
   chain: Settled<ChainStatus>
 }
 
@@ -60,12 +63,14 @@ function useSettings(): { state: SettingsState; retry: () => void } {
     void Promise.all([
       loadPasskeys(controller.signal),
       loadPermissions(controller.signal),
+      loadBackupStatus(controller.signal),
       loadAuditChain(controller.signal),
-    ]).then(([passkeys, permissions, chain]) => {
+    ]).then(([passkeys, permissions, backup, chain]) => {
       if (controller.signal.aborted) return
       if (
         passkeys.status === "unauthenticated" ||
         permissions.status === "unauthenticated" ||
+        backup.status === "unauthenticated" ||
         chain.status === "unauthenticated"
       ) {
         window.location.replace(
@@ -80,6 +85,7 @@ function useSettings(): { state: SettingsState; retry: () => void } {
             ? { status: "ready", value: passkeys.value.passkeys }
             : passkeys,
         permissions,
+        backup,
         chain,
       })
     })
@@ -422,6 +428,54 @@ function PermissionsSection({ load }: { load: SettingsData["permissions"] }) {
   )
 }
 
+function DataSection({ load }: { load: SettingsData["backup"] }) {
+  return (
+    <Section
+      id="data"
+      title="Data"
+      tip="Encrypted backups run on the Mac. The gate checks snapshot freshness; a backup older than 36 hours is marked stale."
+    >
+      {load.status === "ready" ? (
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm">Last backup</span>
+          {load.value.status === "never_run" ? (
+            <Badge
+              role="status"
+              variant="outline"
+              className="border-amber-500/40 text-amber-600 dark:border-amber-400/40 dark:text-amber-400"
+            >
+              No backup yet
+            </Badge>
+          ) : load.value.status === "stale" ? (
+            <Badge
+              role="status"
+              variant="outline"
+              className="gap-1.5 border-amber-500/40 text-amber-600 dark:border-amber-400/40 dark:text-amber-400"
+            >
+              <span
+                className="size-1.5 rounded-full bg-amber-500"
+                aria-hidden
+              />
+              <time dateTime={load.value.lastSuccess}>
+                {formatDateTime(load.value.lastSuccess)}
+              </time>
+              <span>· Stale</span>
+            </Badge>
+          ) : (
+            <Badge variant="outline">
+              <time dateTime={load.value.lastSuccess}>
+                {formatDateTime(load.value.lastSuccess)}
+              </time>
+            </Badge>
+          )}
+        </div>
+      ) : (
+        <SectionError load={load} what="Backup status" />
+      )}
+    </Section>
+  )
+}
+
 function SecuritySection({ load }: { load: SettingsData["chain"] }) {
   return (
     <Section
@@ -505,13 +559,17 @@ function SettingsBody({
         <NotificationsSection key="notifications" device={pushDevice} />
         <Skeleton className="h-32 w-full" />
         <Skeleton className="h-32 w-full" />
+        <Skeleton className="h-20 w-full" />
         <Skeleton className="h-24 w-full" />
         {about ? <AboutSection info={about} /> : null}
       </>
     )
-  const failed = [state.passkeys, state.permissions, state.chain].some(
-    (s) => s.status === "offline" || s.status === "error"
-  )
+  const failed = [
+    state.passkeys,
+    state.permissions,
+    state.backup,
+    state.chain,
+  ].some((s) => s.status === "offline" || s.status === "error")
   return (
     <>
       <ProfileRow />
@@ -519,6 +577,7 @@ function SettingsBody({
       <NotificationsSection key="notifications" device={pushDevice} />
       <PasskeysSection load={state.passkeys} />
       <PermissionsSection load={state.permissions} />
+      <DataSection load={state.backup} />
       <SecuritySection load={state.chain} />
       {about ? <AboutSection info={about} /> : null}
       {failed ? (

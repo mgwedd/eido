@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 import { SettingsBody, type SettingsState } from "../components/settings-view"
-import { activePasskey, chainOk, permissions } from "./fixtures/settings"
+import {
+  activePasskey,
+  backupFresh,
+  backupNeverRun,
+  chainOk,
+  permissions,
+} from "./fixtures/settings"
 import { fakeBrowser } from "./push-device"
 import { describeStates } from "./render-states"
 
@@ -10,6 +16,7 @@ const loaded = (
   status: "loaded",
   passkeys: { status: "ready", value: [activePasskey] },
   permissions: { status: "ready", value: permissions },
+  backup: { status: "ready", value: backupFresh },
   chain: { status: "ready", value: chainOk },
   ...over,
 })
@@ -40,6 +47,15 @@ describeStates("Settings", [
     role: "status",
     selector: '[aria-labelledby="settings-devices"] [role="status"]',
     message: "No passkey is enrolled.",
+  },
+  {
+    state: "backup never run",
+    render: body(
+      loaded({ backup: { status: "ready", value: backupNeverRun } })
+    ),
+    role: "status",
+    selector: '[aria-labelledby="settings-data"] [role="status"]',
+    message: "No backup yet",
   },
   {
     state: "gate unreachable",

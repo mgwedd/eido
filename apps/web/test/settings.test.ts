@@ -5,6 +5,7 @@ import {
   chainReason,
   chainSummary,
   loadAuditChain,
+  loadBackupStatus,
   loadPasskeys,
   loadPermissions,
   reasonLabel,
@@ -14,6 +15,7 @@ import {
 } from "../lib/settings"
 import {
   activePasskey,
+  backupFresh,
   chainBroken,
   chainOk,
   chainOneRow,
@@ -47,7 +49,9 @@ describe("loadSection", () => {
           ? { passkeys: [activePasskey] }
           : requestUrl(input).endsWith("/permissions")
             ? permissions
-            : chainOk
+            : requestUrl(input).endsWith("/backup/status")
+              ? backupFresh
+              : chainOk
       )
     )
     expect(await loadPasskeys(signal())).toEqual({
@@ -58,6 +62,10 @@ describe("loadSection", () => {
       status: "ready",
       value: permissions,
     })
+    expect(await loadBackupStatus(signal())).toEqual({
+      status: "ready",
+      value: backupFresh,
+    })
     expect(await loadAuditChain(signal())).toEqual({
       status: "ready",
       value: chainOk,
@@ -65,6 +73,7 @@ describe("loadSection", () => {
     expect(fn.mock.calls.map((c) => c[0])).toEqual([
       "/api/gate/passkeys",
       "/api/gate/permissions",
+      "/api/gate/backup/status",
       "/api/gate/audit/chain",
     ])
     for (const call of fn.mock.calls)

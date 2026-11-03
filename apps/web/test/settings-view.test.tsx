@@ -6,6 +6,9 @@ import { ThemeProvider } from "../components/theme-provider"
 import { SettingsView } from "../components/settings-view"
 import {
   activePasskey,
+  backupFresh,
+  backupNeverRun,
+  backupStale,
   currentPasskey,
   chainBroken,
   chainOk,
@@ -66,6 +69,7 @@ const healthy: Routes = {
     passkeys: [activePasskey, currentPasskey, revokedPasskey],
   }),
   "/api/gate/permissions": ok(permissions),
+  "/api/gate/backup/status": ok(backupFresh),
   "/api/gate/audit/chain": ok(chainOk),
 }
 
@@ -93,18 +97,18 @@ test("shows the sections in the issue's order", async () => {
     "Notifications",
     "Devices and passkeys",
     "Assistant behaviour",
+    "Data",
     "Security",
     "About",
   ])
 })
 
-test("omits sections whose data source does not exist: no Data", async () => {
+test("profile is reached by row, not an h2 section", async () => {
   gate(healthy)
   await render()
-  for (const absent of ["Profile", "Data"])
-    expect(
-      [...container.querySelectorAll("h2")].map((h) => h.textContent)
-    ).not.toContain(absent)
+  expect(
+    [...container.querySelectorAll("h2")].map((h) => h.textContent)
+  ).not.toContain("Profile")
 })
 
 test("a phone-only row links to the Profile page", async () => {
@@ -170,6 +174,68 @@ test("security shows the chain result, including a broken chain", async () => {
   )
 })
 
+test("data shows the last backup time when fresh", async () => {
+  gate(healthy)
+  await render()
+  const dataCard = [...container.querySelectorAll("[role=group]")].find((g) =>
+    g.textContent?.includes("Last backup")
+  )!
+  expect(dataCard).not.toBeNull()
+  expect(dataCard.textContent).toContain("Last backup")
+  expect(dataCard.querySelector("time")?.getAttribute("datetime")).toBe(
+    backupFresh.lastSuccess
+  )
+  expect(dataCard.textContent).not.toContain("Stale")
+  expect(dataCard.textContent).not.toContain("No backup yet")
+})
+
+test("data shows the last backup time and a stale state past 36 hours", async () => {
+  gate({ ...healthy, "/api/gate/backup/status": ok(backupStale) })
+  await render()
+  const dataCard = [...container.querySelectorAll("[role=group]")].find((g) =>
+    g.textContent?.includes("Last backup")
+  )!
+  expect(dataCard.querySelector("time")?.getAttribute("datetime")).toBe(
+    backupStale.lastSuccess
+  )
+  expect(dataCard.textContent).toContain("Stale")
+  expect(dataCard.querySelector(".bg-amber-500")).not.toBeNull()
+})
+
+test("data shows amber 'No backup yet' when backup has never run", async () => {
+  gate({ ...healthy, "/api/gate/backup/status": ok(backupNeverRun) })
+  await render()
+  const dataCard = [...container.querySelectorAll("[role=group]")].find((g) =>
+    g.textContent?.includes("Last backup")
+  )!
+  expect(dataCard.textContent).toContain("No backup yet")
+  expect(dataCard.querySelector('[role="status"]')?.textContent).toBe(
+    "No backup yet"
+  )
+})
+
+test("data read failure shows offline and error messages", async () => {
+  gate({
+    ...healthy,
+    "/api/gate/backup/status": () => new Response("{}", { status: 500 }),
+  })
+  await render()
+  expect(text()).toContain("Could not read backup status from the gate.")
+
+  act(() => root.unmount())
+  root = createRoot(container)
+  gate({
+    ...healthy,
+    "/api/gate/backup/status": () => {
+      throw new TypeError("net")
+    },
+  })
+  await render()
+  expect(text()).toContain(
+    "Offline. Backup status is not stored on this device."
+  )
+})
+
 test("about shows the build's version and id", async () => {
   gate(healthy)
   await render()
@@ -231,7 +297,7 @@ test("a section whose read fails says so; the others still render; retry reloads
     retry.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
-  expect(fn.mock.calls.length).toBe(before + 3)
+  expect(fn.mock.calls.length).toBe(before + 4)
 })
 
 test("an expired session sends the user to unlock", async () => {

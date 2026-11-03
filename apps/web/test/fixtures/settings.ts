@@ -2,6 +2,7 @@
 // (enforced by the `web-test-fixtures-are-test-only` rule in .dependency-cruiser.cjs).
 import type {
   GateAuditChainStatus,
+  GateBackupStatus,
   GatePasskeyList,
   GatePermissionList,
 } from "@eido/schemas"
@@ -54,9 +55,27 @@ const chainBroken: GateAuditChainStatus = {
   reason: "prev_hash_mismatch",
 }
 
+const backupFresh: GateBackupStatus = {
+  status: "fresh",
+  lastSuccess: "2026-10-18T03:00:00.000Z",
+}
+
+const backupStale: GateBackupStatus = {
+  status: "stale",
+  lastSuccess: "2026-10-15T03:00:00.000Z",
+}
+
+const backupNeverRun: GateBackupStatus = {
+  status: "never_run",
+  lastSuccess: null,
+}
+
 export {
   currentPasskey,
   activePasskey,
+  backupFresh,
+  backupNeverRun,
+  backupStale,
   chainBroken,
   chainOk,
   chainOneRow,

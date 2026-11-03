@@ -1,8 +1,10 @@
 import {
   validateGateAuditChainStatus,
+  validateGateBackupStatus,
   validateGatePasskeyList,
   validateGatePermissionList,
   type GateAuditChainStatus,
+  type GateBackupStatus,
   type GatePasskeyList,
   type GatePermissionList,
 } from "@eido/schemas"
@@ -11,10 +13,12 @@ export type Passkey = GatePasskeyList["passkeys"][number]
 export type PermissionTier = GatePermissionList["tiers"][number]
 export type PermissionList = GatePermissionList
 export type ChainStatus = GateAuditChainStatus
+export type BackupStatus = GateBackupStatus
 export type Tier = PermissionTier["tier"]
 
 export const PASSKEYS_URL = "/api/gate/passkeys"
 export const PERMISSIONS_URL = "/api/gate/permissions"
+export const BACKUP_STATUS_URL = "/api/gate/backup/status"
 export const AUDIT_CHAIN_URL = "/api/gate/audit/chain"
 
 /** One section's read: data, a gate that cannot be reached, or a failed read. */
@@ -55,6 +59,8 @@ export const loadPasskeys = (signal: AbortSignal) =>
   loadSection(PASSKEYS_URL, validateGatePasskeyList, signal)
 export const loadPermissions = (signal: AbortSignal) =>
   loadSection(PERMISSIONS_URL, validateGatePermissionList, signal)
+export const loadBackupStatus = (signal: AbortSignal) =>
+  loadSection(BACKUP_STATUS_URL, validateGateBackupStatus, signal)
 export const loadAuditChain = (signal: AbortSignal) =>
   loadSection(AUDIT_CHAIN_URL, validateGateAuditChainStatus, signal)
 
