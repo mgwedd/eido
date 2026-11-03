@@ -2,6 +2,16 @@
 
 How to prove a backup restores, and the record of each drill. Setup, schedule and retention are in the Backup section of `infra/README.md`. Run this on the Mac, against the real stores, restoring into a scratch directory. Nothing below touches the live data, and nothing records file contents: only pass or fail, counts and timings.
 
+## Data-at-rest boundary
+
+Per [ADR 0007](../docs/adr/0007-data-at-rest-boundary.md), Eido's data-at-rest boundary rests on:
+
+1. **FileVault 2 full disk encryption**: protects data at rest on host storage when the host Mac is powered off or locked.
+2. **Restic repository encryption (AES-256-CTR + Poly1305)**: protects all backup snapshots and off-host repository copies; keyed by a high-entropy passphrase stored in the owner's macOS Keychain (`eido-backup` account `restic`).
+3. **POSIX file permissions (`0700` directories, `0600` files)**: prevents cross-user access on the running host.
+
+There is no application-level database encryption (SQLCipher) on the live SQLite stores. While the Mac is booted and logged in, protection against unauthorized local access relies on host user account isolation and the gate process boundary, not on-disk cryptographic locks. Restore scratch directories (`~/eido-restore-scratch`) hold unencrypted copies of the data while present and must be removed after verification.
+
 ## Steps
 
 All commands from the repo root. `EIDO_BACKUP_REPO` must be set to the repository path, and the backup drive plugged in.
