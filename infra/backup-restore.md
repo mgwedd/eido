@@ -1,0 +1,55 @@
+# Backup restore drill
+
+How to prove a backup restores, and the record of each drill. Setup, schedule and retention are in the Backup section of `infra/README.md`. Run this on the Mac, against the real stores, restoring into a scratch directory. Nothing below touches the live data, and nothing records file contents: only pass or fail, counts and timings.
+
+## Steps
+
+All commands from the repo root. `EIDO_BACKUP_REPO` must be set to the repository path, and the backup drive plugged in.
+
+1. See what is there, and note the snapshot id and time you will restore:
+
+   ```bash
+   RESTIC_REPOSITORY="$EIDO_BACKUP_REPO" \
+   RESTIC_PASSWORD_COMMAND='/usr/bin/security find-generic-password -s eido-backup -a restic -w' \
+   restic snapshots --host eido
+   ```
+
+2. Restore the latest snapshot into a new scratch directory and verify it:
+
+   ```bash
+   node --disable-warning=ExperimentalWarning infra/backup/bin.ts restore ~/eido-restore-scratch
+   ```
+
+   The command refuses a directory that already holds files. It prints the snapshot id, its time and how long the restore took, then one `PASS` or `FAIL` line each for:
+   - `PRAGMA integrity_check` on `eido-data.db` and on `eido-control.db`;
+   - the audit hash chain in `eido-control.db`, verified from seq 1;
+   - every restored blob: its SHA-256 equals its content-hash file name, and it sits in the matching two-character directory.
+
+   It exits 0 only when every line is `PASS`. To re-verify a directory you restored by other means, run `backup verify <dir>`.
+
+3. To show versioning, restore an older snapshot (needs two or more) and compare:
+
+   ```bash
+   node --disable-warning=ExperimentalWarning infra/backup/bin.ts restore ~/eido-restore-older --snapshot <older-id>
+   ```
+
+4. Delete the scratch directories when done (`rm -rf ~/eido-restore-scratch ~/eido-restore-older`). They hold plaintext copies of the data.
+
+Checks to run once at setup, and note in the log below:
+
+- Encrypted: `RESTIC_PASSWORD=wrong restic -r "$EIDO_BACKUP_REPO" snapshots` fails with a wrong-password error, and `security find-generic-password -s eido-backup -a restic` finds the passphrase while `grep -r` of the repo, the plist and the repo checkout finds none.
+- Live databases not stopped: run `backup run` while the stack is up (`pnpm stack:status` healthy before and after).
+- Drive absent: unmount the drive, run `backup run` and `backup check`; both exit 1 with a log line naming the missing drive, and nothing is written to the internal disk.
+
+## After a real restore
+
+1. Put the restored `eido-data.db`, `eido-control.db` and `blobs/` where `infra/stack/config.ts` says (`EIDO_DATA_DIR`, `EIDO_GATE_DATA_DIR`) with the stack stopped. In the restore directory they sit under their original absolute paths; the databases are under the staging directory name `backup-staging`.
+2. Re-authorize Google and re-run Bridge login: Keychain items are not backed up.
+3. Re-fetch model weights by the pin in `infra/model.lock` (#29).
+4. The gate refuses authority until its control-state anchor matches the restored database (ADR 0005); follow that recovery.
+
+## Drill log
+
+Record each drill here: date, snapshot id, time taken, and the result of each check.
+
+No drill has been recorded yet. The first one is an owner step on the Mac (acceptance criteria of #30 that need the live host).

@@ -17,6 +17,7 @@ import {
   validateGatePermissionList,
   validateGateUndoResult,
 } from "@eido/schemas"
+import type { GateIntentInjection } from "@eido/schemas"
 import type { Body, GateRequest, Reply } from "./http"
 import { append } from "./audit"
 import {
@@ -135,7 +136,11 @@ async function signIn(): Promise<string> {
 }
 
 function pendingSend(
-  extra: { rationale?: string; subject?: string } = {}
+  extra: {
+    rationale?: string
+    subject?: string
+    injection?: GateIntentInjection
+  } = {}
 ): string {
   const result = propose(s.db, s.policy, {
     intent: sample(
@@ -146,6 +151,7 @@ function pendingSend(
     contextPackId: "pack-1",
     documentIds: ["doc-1", "doc-2"],
     ...(extra.rationale === undefined ? {} : { rationale: extra.rationale }),
+    ...(extra.injection === undefined ? {} : { injection: extra.injection }),
   })
   if (!result.ok || result.state !== "pending") throw new Error("not pending")
   return result.intentId
@@ -1200,6 +1206,49 @@ describe("phoneHandler: approvals", () => {
     )
     expect(card.payload).not.toContain("lorem ipsum dolor")
     expect(reply.body).not.toHaveProperty("challenge")
+  })
+
+  describe("injection flag", () => {
+    const flag: GateIntentInjection = {
+      reasons: ["template-marker", "hidden-characters"],
+    }
+
+    it("lists a flagged intent with its reasons and a clean one without the field", async () => {
+      const flagged = pendingSend({ injection: flag })
+      const clean = pendingSend({ subject: "Clean" })
+      const reply = await call("GET", "/approvals", { cookie })
+      const parsed = validateGatePendingIntentList(reply.body)
+      if (!parsed.ok) throw new Error(parsed.errors.join("; "))
+      const byId = new Map(parsed.value.intents.map((i) => [i.id, i]))
+      expect(byId.get(flagged)?.injection).toEqual(flag)
+      expect(byId.get(clean)).not.toHaveProperty("injection")
+    })
+
+    it("puts the reasons on the prepared card and leaves them out of the payload hash", async () => {
+      const card = async (id: string) => {
+        const reply = await call("POST", `/approvals/${id}/nonce`, { cookie })
+        const parsed = validateGatePrepareApproval(reply.body)
+        if (!parsed.ok) throw new Error(parsed.errors.join("; "))
+        return parsed.value
+      }
+      const flagged = await card(pendingSend({ injection: flag }))
+      const clean = await card(pendingSend())
+      expect(flagged.injection).toEqual(flag)
+      expect(clean).not.toHaveProperty("injection")
+      expect(flagged.payloadHash).toBe(clean.payloadHash)
+      expect(flagged.payload).not.toContain("template-marker")
+    })
+
+    it("keeps the flag on the card of an edited intent", async () => {
+      const original = pendingSend({ injection: flag })
+      const reply = await call("POST", `/approvals/${original}/edit`, {
+        cookie,
+        body: { intent: sample("email.send", { subject: "Edited" }) },
+      })
+      const parsed = validateGatePrepareApproval(reply.body)
+      if (!parsed.ok) throw new Error(parsed.errors.join("; "))
+      expect(parsed.value.injection).toEqual(flag)
+    })
   })
 
   it("leaves the rationale out of the payload hash", async () => {

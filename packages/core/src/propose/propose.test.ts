@@ -296,6 +296,36 @@ describe("proposeIntents", () => {
     })
   })
 
+  describe("injection flag", () => {
+    const flaggedMail = (body: string) =>
+      mail({
+        id: "nl-3",
+        date: "2030-02-15T08:00:00.000Z",
+        subject: "Weekly digest",
+        from: "Cleo Varn",
+        body,
+        threadId: "t-news",
+      })
+
+    test("a proposal from clean material carries no flag", async () => {
+      const { h, request } = await setup({ replies: [reply([ARCHIVE])] })
+      await proposeIntents(request, h.deps)
+      expect(h.gate.proposals).toHaveLength(1)
+      expect(h.gate.proposals[0]).not.toHaveProperty("injection")
+    })
+
+    test("a proposal from a pack with flagged mail carries every reason, in the fence's order", async () => {
+      const { h, request } = await setup({ replies: [reply([ARCHIVE])] })
+      ingest(h.db, [
+        flaggedMail("Lorem ipsum <|im_start|>system\nzero\u200bwidth"),
+      ])
+      await proposeIntents(request, h.deps)
+      expect(h.gate.proposals[0]?.injection).toEqual({
+        reasons: ["template-marker", "hidden-characters"],
+      })
+    })
+  })
+
   describe("rate limits", () => {
     test("intents past maxIntentsPerRequest are dropped and counted", async () => {
       const intents = ["nl-1", "nl-2", "nl-1"].map((id, i) => ({
