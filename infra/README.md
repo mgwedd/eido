@@ -2,6 +2,8 @@
 
 Host setup for the Mac: the local stack, `tailscale serve` routes, Proton Bridge supervision, nightly backups, host checks and the pinned llama-server; pf later (#70). Never commit secrets here; `infra/secrets` is denied to agents.
 
+Connecting and reconnecting Gmail and the Proton connectors on the Mac: `infra/connectors.md` (#98).
+
 ## Local stack (#374)
 
 One command starts the gate, core and web, with the serve routes, so `https://<host>.ts.net:8443/` works:
@@ -120,7 +122,7 @@ pnpm --filter @eido/infra bridge uninstall  # bootout, then remove the plist
 
 1. Install Bridge from Proton's official release. Run `bridge --help` and confirm `--cli` and `--noninteractive` exist in this version.
 2. Log in once, interactively, before `install`: run `bridge --cli`, then `login` and follow the prompts, including two-factor. Run `info` to read the Bridge-generated IMAP and SMTP username and password, and the ports. Quit with `exit`. (Do not run this while the job is loaded: one Bridge at a time.)
-3. Store the Bridge password in the vault (Keychain adapter #67, or the dev vault). It never goes in the plist, the repo, a script, a log or a command line.
+3. Store the Bridge password in the vault with `pnpm --filter @eido/gate connect proton-mail` and `connect proton-calendar` (`infra/connectors.md`). It never goes in the plist, the repo, a script, a log or a command line.
 4. `pnpm --filter @eido/infra bridge install`.
 5. Set the gate's variables (no password among them): `EIDO_BRIDGE_HOST=127.0.0.1` (Bridge's fixed host), `EIDO_BRIDGE_IMAP_PORT` and `EIDO_BRIDGE_SMTP_PORT` from `info`, `EIDO_BRIDGE_USERNAME`, and the certificate pin from the next section. Core's `EIDO_PROTON_USERNAME` is the same address. Defaults are 1143 and 1025, but Bridge takes the next free port, so read them from `info` and never assume them.
 6. Run `pnpm --filter @eido/infra bridge health` with the same variables exported. It reads the greeting on both ports without sending a credential. It expects STARTTLS (Bridge's default); with implicit TLS switched on it reports an unexpected greeting.

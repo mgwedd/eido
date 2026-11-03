@@ -18,6 +18,8 @@ import type {
 } from "@eido/schemas"
 import { append, verifyChain } from "./audit"
 import { getConnectorHealth } from "./connector-health"
+import { connectedRoute } from "./connector-connect"
+import type { ConnectorProbes } from "./connector-connect"
 import { listPasskeys, revokeByFingerprint } from "./credentials"
 import { issueEnrolmentCode } from "./enrolment"
 import { mailRoute } from "./bridge/mail-routes"
@@ -58,6 +60,8 @@ export type GateState = {
   fileHelper?: FileHelper
   files?: FileReads
   webAuthn?: WebAuthnConfig
+  /** Health probes by connector name, run after the owner connects one (#98). */
+  probes?: ConnectorProbes
 }
 
 const MAX_ERRORS = 50
@@ -480,8 +484,8 @@ async function revokePasskeyRoute(
 }
 
 /**
- * The control listener: the intent reads, the audit chain check, enrolment codes and passkey
- * revocation. Never given to the data plane or the phone.
+ * The control listener: the intent reads, the audit chain check, enrolment codes, passkey
+ * revocation and the connector check after a connect (#98). Never given to the data plane or the phone.
  */
 export function controlHandler(gate: () => GateState, now: Clock): Handler {
   return async (request) => {
@@ -501,6 +505,13 @@ export function controlHandler(gate: () => GateState, now: Clock): Handler {
     if (request.method === "POST" && request.path === "/enrolment-codes") {
       return enrolmentCodeRoute(state.db, now)
     }
+    const connected = await connectedRoute(
+      request,
+      state.db,
+      state.probes,
+      () => now().getTime()
+    )
+    if (connected !== undefined) return connected
     return (
       connectorHealthRoute(request, state) ??
       readRoute(request, state) ??
