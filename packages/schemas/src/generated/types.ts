@@ -708,7 +708,7 @@ export interface GatePermissionList {
     tier: "auto" | "approval" | "forbidden"
     default: "auto" | "approval" | null
     override?: "auto" | "approval"
-    reason?: "unknown_kind" | "no_operation" | "ambiguous_operation" | "manifest_forbidden" | "root_not_allowed" | "connector_disabled"
+    reason?: "unknown_kind" | "no_operation" | "ambiguous_operation" | "manifest_forbidden" | "root_not_allowed" | "connector_disabled" | "event_not_found"
   }>
   forbiddenKinds: Array<string>
 }

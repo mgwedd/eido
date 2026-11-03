@@ -3,7 +3,11 @@ import type { Server } from "node:http"
 import { isAbsolute, join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { createProtonBridge } from "./internal/bridge/bridge"
-import { PROTON_CONNECTOR, bridgeConfig } from "./internal/bridge/config"
+import {
+  PROTON_CALENDAR_CONNECTOR,
+  PROTON_CONNECTOR,
+  bridgeConfig,
+} from "./internal/bridge/config"
 import type { BridgeConfig } from "./internal/bridge/config"
 import { BRIDGE_WRITERS, bridgeTransport } from "./internal/bridge/writers"
 import { gmailWriteTransport } from "./internal/gmail-transport"
@@ -371,7 +375,8 @@ export async function runGate(
           ? gmail === undefined
             ? Promise.reject(new Error("Gmail is not configured"))
             : gmail(request)
-          : request.connector === PROTON_CONNECTOR
+          : request.connector === PROTON_CONNECTOR ||
+              request.connector === PROTON_CALENDAR_CONNECTOR
             ? protonTransport(request)
             : Promise.reject(new Error("no write transport for connector"))
     )

@@ -7308,7 +7308,8 @@ export const GATE_PERMISSION_LIST_JSON_SCHEMA: JsonSchema = {
               "ambiguous_operation",
               "manifest_forbidden",
               "root_not_allowed",
-              "connector_disabled"
+              "connector_disabled",
+              "event_not_found"
             ]
           }
         },
