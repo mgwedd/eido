@@ -6,6 +6,7 @@ import type { AskResult } from "../ask/types"
 import type { ObligationStateStore } from "../ledger/obligation-state"
 import type { ProfileStore } from "../profile/store"
 import type { DocumentsDeps } from "./documents-route"
+import type { ConversationStore } from "../conversation/store"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
 import { createApiServer } from "./server"
@@ -71,6 +72,8 @@ export type CoreApiOptions = {
   obligations?: ObligationStateStore
   /** The data DB behind `/documents`. */
   documents?: DocumentsDeps
+  /** The conversation store behind `/conversations/search`. */
+  conversations?: ConversationStore
   host: LoopbackHost
   /** 0 picks a free port. */
   port: number
@@ -101,6 +104,7 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
       propose: options.propose,
       obligations: options.obligations,
       documents: options.documents,
+      conversations: options.conversations,
       allowedHosts,
       basePath: options.basePath,
     })
