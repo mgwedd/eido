@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite"
 import { GateRequestError } from "@eido/gate"
-import type { IntentClient, IntentState } from "@eido/gate"
+import type { IntentClient, IntentState, Tier } from "@eido/gate"
 import { INTENT_KINDS } from "@eido/schemas"
 import type { GateIntentInjection, Intent } from "@eido/schemas"
 import { assembleContext } from "../context/assemble"
@@ -29,6 +29,14 @@ export interface ProposalRequest {
   text: string
   /** sha256 of the document the request is about; the context pack is built from it. */
   seed: string
+  /**
+   * The only kinds this request may propose, in place of the kinds `selectTools` picks from the
+   * text. A caller that offers one kind (the draft-reply route offers `email.draft`) gets nothing
+   * else: any other kind in the reply fails the check as `kind_not_offered`.
+   */
+  kinds?: readonly Intent["kind"][]
+  /** The connector pinned on every proposed intent, overriding any the model named. */
+  connector?: string
 }
 
 /** From configuration. */
@@ -56,6 +64,9 @@ export interface ProposeDeps {
 export interface ProposedIntent {
   intentId: string
   status: IntentState
+  tier: Tier
+  /** The gate's reason when policy refused the intent (state rejected), e.g. `connector_disabled`. */
+  reason?: string
 }
 
 export interface ProposalResult {
@@ -132,10 +143,14 @@ export async function proposeIntents(
   if (!deps.limiter.tryAcquire())
     return { ...base, status: "rate_limited", reason: "max_proposals_per_hour" }
 
-  const kinds = selectTools(
-    { text: request.text, task: "propose" },
-    INTENT_TOOLS
-  ).map((tool) => tool.function.name)
+  const kinds =
+    request.kinds === undefined
+      ? selectTools({ text: request.text, task: "propose" }, INTENT_TOOLS).map(
+          (tool) => tool.function.name
+        )
+      : [...new Set(request.kinds)].sort()
+  const pin =
+    request.connector === undefined ? {} : { connector: request.connector }
   const assembled = await assembleContext(
     deps.db,
     {
@@ -187,10 +202,9 @@ export async function proposeIntents(
     const checked = checkReply(text, context, deps.config.maxIntentsPerRequest)
     failures = checked.ok ? [] : checked.failures
     if (checked.ok) {
-      const kept: Intent[] = checked.intents.slice(
-        0,
-        deps.config.maxIntentsPerRequest
-      )
+      const kept: Intent[] = checked.intents
+        .slice(0, deps.config.maxIntentsPerRequest)
+        .map((intent) => ({ ...intent, ...pin }))
       limited = checked.intents.length - kept.length
       for (const [index, intent] of kept.entries()) {
         const key = JSON.stringify(intent)
@@ -202,7 +216,14 @@ export async function proposeIntents(
             sources,
             ...injection,
           })
-          stored.set(key, { intentId: proposed.id, status: proposed.state })
+          stored.set(key, {
+            intentId: proposed.id,
+            status: proposed.state,
+            tier: proposed.tier,
+            ...(proposed.reason === undefined
+              ? {}
+              : { reason: proposed.reason }),
+          })
         } catch (error) {
           if (!(error instanceof GateRequestError)) throw error
           failures.push(...gateFailures(error, index))

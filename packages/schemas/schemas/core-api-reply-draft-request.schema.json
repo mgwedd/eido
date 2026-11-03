@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiReplyDraftRequest",
+  "description": "Request body for POST /replies/draft (#540): draft one reply for the thread of an open owed-reply obligation (a Replies owed row from GET /obligations).",
+  "type": "object",
+  "properties": {
+    "obligationId": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": ["obligationId"],
+  "additionalProperties": false
+}
