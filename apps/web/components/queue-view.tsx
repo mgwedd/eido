@@ -17,6 +17,8 @@ import {
   SheetTitle,
 } from "@eido/ui/components/sheet"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import { ShortcutKeys } from "@/components/shortcuts-provider"
+import { useKeydown } from "@/hooks/use-keydown"
 import { shortHash } from "@/lib/approval/challenge"
 import { prepareApproval, signApproval } from "@/lib/approval/sign"
 import { loadHistory, loadQueue, rejectIntent } from "@/lib/queue/api"
@@ -28,6 +30,7 @@ import {
   swipeOutcome,
   waitingSince,
 } from "@/lib/queue/card"
+import { isInteractiveTarget, isShortcutEvent } from "@/lib/shortcuts"
 import { formatWaiting } from "@/lib/relative-time"
 import { describeKind, type PendingIntent } from "@/lib/today"
 
@@ -274,6 +277,20 @@ function ApprovalCard({
     })
   }
 
+  useKeydown((event) => {
+    if (!isShortcutEvent(event) || event.repeat) return
+    if (event.key === "a" && canApprove) {
+      event.preventDefault()
+      void approve()
+    } else if (event.key === "r" && !busy) {
+      event.preventDefault()
+      setRejectOpen(true)
+    } else if (event.key === "Enter" && !isInteractiveTarget(event.target)) {
+      event.preventDefault()
+      heading.current?.focus()
+    }
+  })
+
   const reject = async (code?: (typeof REJECT_REASONS)[number]["code"]) => {
     setAction({ status: "signing" })
     const result = await rejectIntent(intent.id, code)
@@ -448,17 +465,21 @@ function ApprovalCard({
           size="lg"
           className="min-h-11"
           disabled={busy}
+          aria-keyshortcuts="r"
           onClick={() => setRejectOpen(true)}
         >
           Reject
+          <ShortcutKeys keys={["r"]} />
         </Button>
         <Button
           size="lg"
           className="min-h-[60px] flex-1"
           disabled={!canApprove}
+          aria-keyshortcuts="a"
           onClick={() => void approve()}
         >
           Approve
+          <ShortcutKeys keys={["a"]} />
         </Button>
       </div>
       <RejectSheet
@@ -486,6 +507,7 @@ function QueueRow({
     <li>
       <button
         type="button"
+        data-queue-row={intent.id}
         aria-current={selected ? "true" : undefined}
         onClick={onSelect}
         className="flex min-h-11 w-full flex-col items-start rounded-lg border p-3 text-left aria-[current=true]:bg-muted"
@@ -509,6 +531,23 @@ function QueueView({ initialId }: { initialId?: string }) {
   const selected =
     intents.find((intent) => intent.id === selectedId) ?? intents[0]
   const position = selected ? intents.indexOf(selected) + 1 : 0
+
+  useKeydown((event) => {
+    if (!isShortcutEvent(event) || intents.length === 0) return
+    const step = event.key === "j" ? 1 : event.key === "k" ? -1 : 0
+    if (step !== 0) {
+      event.preventDefault()
+      const next = Math.min(
+        intents.length - 1,
+        Math.max(0, (selected ? intents.indexOf(selected) : 0) + step)
+      )
+      setSelectedId(intents[next]?.id)
+    } else if (event.key === "Escape" && selected) {
+      document
+        .querySelector<HTMLElement>(`[data-queue-row="${selected.id}"]`)
+        ?.focus()
+    }
+  })
 
   const decided = (id: string, text: string) => {
     setMessage(text)

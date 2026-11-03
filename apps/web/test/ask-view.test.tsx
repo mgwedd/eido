@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import { AskView } from "../components/ask-view"
 import AskPage from "../app/(shell)/ask/page"
+import { consumeAskFocus, requestAskFocus } from "../lib/shortcuts"
 import { answered, noMatch, refused } from "./fixtures/ask"
 
 ;(
@@ -321,4 +322,57 @@ test("a failed proposal stays visible and does not report success", async () => 
   expect(button?.disabled).toBe(true)
   await click("Archive matching emails")
   expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
+async function keydown(input: HTMLInputElement, init: KeyboardEventInit) {
+  await flush(() => {
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init })
+    )
+  })
+}
+
+test("Cmd+Enter in the field sends the question", async () => {
+  const fetcher = vi.fn().mockResolvedValue(Response.json(answered))
+  vi.stubGlobal("fetch", fetcher)
+  await render()
+  const input = await fill()
+  await keydown(input, { key: "Enter", metaKey: true })
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(container.querySelector("article")?.textContent).toContain(
+    "The invoice was paid"
+  )
+})
+
+test("Ctrl+Enter sends too, and a bare letter does not", async () => {
+  const fetcher = vi.fn().mockResolvedValue(Response.json(answered))
+  vi.stubGlobal("fetch", fetcher)
+  await render()
+  const input = await fill()
+  await keydown(input, { key: "a" })
+  expect(fetcher).not.toHaveBeenCalled()
+  await keydown(input, { key: "Enter", ctrlKey: true })
+  expect(fetcher).toHaveBeenCalledTimes(1)
+})
+
+test("Cmd+Enter with an empty field sends nothing", async () => {
+  const fetcher = vi.fn()
+  vi.stubGlobal("fetch", fetcher)
+  await render()
+  const input = container.querySelector("input")
+  if (!input) throw new Error("Question input missing")
+  await keydown(input, { key: "Enter", metaKey: true })
+  expect(fetcher).not.toHaveBeenCalled()
+})
+
+test("a pending focus request from the / shortcut focuses the field on mount", async () => {
+  requestAskFocus()
+  await render()
+  expect(container.querySelector("input")).toBe(document.activeElement)
+  expect(consumeAskFocus()).toBe(false)
+})
+
+test("without a focus request the field is not focused on mount", async () => {
+  await render()
+  expect(container.querySelector("input")).not.toBe(document.activeElement)
 })

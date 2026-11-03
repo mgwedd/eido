@@ -15,6 +15,8 @@ export type NavItem = {
   icon: LucideIcon
   /** Shown in the phone tab bar. Entries without it appear only in the desktop sidebar. */
   phone: boolean
+  /** The keyboard shortcut from the design: "g t" is a go-to sequence, "/" a single key. */
+  shortcut?: string
 }
 
 /**
@@ -23,13 +25,37 @@ export type NavItem = {
  * Today's page is #34, Queue #33, Ask #35, Activity #36, Profile #81.
  */
 export const NAV_ITEMS: readonly NavItem[] = [
-  { href: "/", label: "Today", icon: Sun, phone: true },
-  { href: "/queue", label: "Queue", icon: Inbox, phone: true },
-  { href: "/ask", label: "Ask", icon: MessageSquare, phone: true },
-  { href: "/activity", label: "Activity", icon: History, phone: true },
+  { href: "/", label: "Today", icon: Sun, phone: true, shortcut: "g t" },
+  { href: "/queue", label: "Queue", icon: Inbox, phone: true, shortcut: "g q" },
+  {
+    href: "/ask",
+    label: "Ask",
+    icon: MessageSquare,
+    phone: true,
+    shortcut: "/",
+  },
+  {
+    href: "/activity",
+    label: "Activity",
+    icon: History,
+    phone: true,
+    shortcut: "g a",
+  },
   { href: "/connectors", label: "Connectors", icon: Plug, phone: false },
-  { href: "/settings", label: "Settings", icon: Settings, phone: false },
-  { href: "/profile", label: "Profile", icon: UserRound, phone: false },
+  {
+    href: "/settings",
+    label: "Settings",
+    icon: Settings,
+    phone: false,
+    shortcut: "g s",
+  },
+  {
+    href: "/profile",
+    label: "Profile",
+    icon: UserRound,
+    phone: false,
+    shortcut: "g p",
+  },
 ]
 
 export const MAX_PHONE_TABS = 5
