@@ -20,6 +20,7 @@ import {
   validateIntent,
   validateIntentResult,
   validateCoreApiAskResponse,
+  validateCoreApiObligationList,
   validateCoreApiConversationSearch,
   validateCoreApiConversationGet,
   validateDocumentTypeClassification,
@@ -209,6 +210,79 @@ describe("document type classification schema", () => {
       false
     )
     expect(validateDocumentTypeClassification({ type: null }).ok).toBe(true)
+  })
+})
+
+describe("core API obligation list schema", () => {
+  const item = {
+    id: 1,
+    action: "Review proposal",
+    party: "Acme Corp",
+    dueAt: "2030-05-01",
+    status: "open",
+    direction: "owed",
+    hasDraftIntent: true,
+    updatedAt: "2030-01-01T00:00:00.000Z",
+    entity: { id: "ent-1", name: "Personal", tag: "PERS" },
+    source: {
+      documentId: "a".repeat(64),
+      span: { start: 0, end: 10 },
+      title: "Proposal doc",
+    },
+  }
+
+  test("validates full and minimal obligation lists", () => {
+    expect(
+      validateCoreApiObligationList({
+        obligations: [item],
+        nextOffset: 50,
+      }).ok
+    ).toBe(true)
+
+    expect(
+      validateCoreApiObligationList({
+        obligations: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test("accepts nulls for nullable fields and omits optional fields", () => {
+    const minimalItem = {
+      id: 2,
+      action: "Check balance",
+      party: null,
+      dueAt: null,
+      status: "done",
+      direction: null,
+      entity: { id: "ent-2", name: "Company", tag: "CORP" },
+      source: {
+        documentId: "b".repeat(64),
+        span: { start: 5, end: 15 },
+      },
+    }
+    expect(
+      validateCoreApiObligationList({
+        obligations: [minimalItem],
+        nextOffset: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test("rejects invalid status or direction values", () => {
+    expect(
+      validateCoreApiObligationList({
+        obligations: [{ ...item, status: "unknown" }],
+        nextOffset: null,
+      }).ok
+    ).toBe(false)
+
+    expect(
+      validateCoreApiObligationList({
+        obligations: [{ ...item, direction: "pending" }],
+        nextOffset: null,
+      }).ok
+    ).toBe(false)
   })
 })
 

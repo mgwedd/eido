@@ -98,6 +98,7 @@ export {
   validateCoreApiConversationGet,
   validateCoreApiConfirmExtractionRequest,
   validateCoreApiConfirmExtractionResponse,
+  validateCoreApiObligationList,
   validateAskCoverage,
   validateAskCitation,
 } from "./generated/validators"
