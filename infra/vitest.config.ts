@@ -13,7 +13,7 @@ export default defineConfig({
         "bridge/bin.ts", // entry point: hands process.argv, real launchctl, files and TCP to main()
         "stack/bin.ts", // entry point: hands process.argv and real processes, signals and files to main()
       ],
-      reporter: ["text", "json-summary"],
+      reporter: ["text", "json-summary", "cobertura"],
       thresholds: {
         lines: 90,
         statements: 90,
