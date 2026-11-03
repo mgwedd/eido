@@ -10,6 +10,7 @@
     "format:check": "prettier --check .",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
+    "install:file-helper": "node scripts/install-file-helper.ts",
     "check:deps": "depcruise packages apps --config .dependency-cruiser.mts",
     "check:deps-fixture": "node scripts/check-boundary-fixture.ts",
     "check:gate-deps": "node scripts/check-gate-deps.ts",

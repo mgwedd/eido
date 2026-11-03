@@ -241,17 +241,15 @@ describe("native file executor lifecycle", () => {
     const f = await fixture()
     const p = f.proposal(automatic[0])
     await f.executor.execute(p.intentId)
-    f.db
-      .prepare("UPDATE executions SET inverse_op=? WHERE intent_id=?")
-      .run(
-        JSON.stringify({
-          op: "trash",
-          root: ROOT,
-          path: "a.txt",
-          trashName: "tampered",
-        }),
-        p.intentId
-      )
+    f.db.prepare("UPDATE executions SET inverse_op=? WHERE intent_id=?").run(
+      JSON.stringify({
+        op: "trash",
+        root: ROOT,
+        path: "a.txt",
+        trashName: "tampered",
+      }),
+      p.intentId
+    )
     expect(await f.executor.undo(p.intentId)).toEqual({
       ok: false,
       code: "record_mismatch",

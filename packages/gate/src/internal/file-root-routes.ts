@@ -65,7 +65,11 @@ export async function fileRootControlRoute(
         },
       }
     } catch {
-      return apiError(400, "invalid_request", "file roots could not be prepared")
+      return apiError(
+        400,
+        "invalid_request",
+        "file roots could not be prepared"
+      )
     }
   }
 
@@ -78,10 +82,18 @@ export async function fileRootControlRoute(
       !("roots" in parsed.value) ||
       !("authorization" in parsed.value)
     )
-      return apiError(400, "invalid_request", "the request must contain roots and authorization")
+      return apiError(
+        400,
+        "invalid_request",
+        "the request must contain roots and authorization"
+      )
     const roots = validateGateFileRoots(parsed.value.roots)
     if (!roots.ok)
-      return apiError(400, "invalid_request", "the request must contain valid file roots")
+      return apiError(
+        400,
+        "invalid_request",
+        "the request must contain valid file roots"
+      )
     if (state.webAuthn === undefined)
       return apiError(503, "unavailable", "WebAuthn is unavailable")
     try {
@@ -91,7 +103,11 @@ export async function fileRootControlRoute(
       })
       return { status: 200, body: { saved: true } }
     } catch {
-      return apiError(409, "already_decided", "the file-roots approval was refused")
+      return apiError(
+        409,
+        "already_decided",
+        "the file-roots approval was refused"
+      )
     }
   }
   return undefined

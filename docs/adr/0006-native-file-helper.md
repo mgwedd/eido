@@ -64,7 +64,7 @@ A missing, tampered, replayed, stale or cross-target approval returns no root, a
 
 - `rust-toolchain.toml` pins the compiler (1.98.1). CI builds the helper with `cargo build --release --locked`, with `panic = "abort"`, LTO and one codegen unit.
 - The gate takes `{path, sha256}`. Before every spawn it hashes the binary and refuses to run it unless the hash matches the pin. A missing binary or malformed pin also refuses.
-- There is a residual window between the hash check and `exec`. The pin catches a binary replaced at rest, not one swapped in during that window. The binary must therefore live in a directory that only the gate's user can write, the same requirement as the gate's own code. Installing it there, and recording its hash in the gate's configuration, is packaging work tracked in a follow-up issue.
+- There is a residual window between the hash check and `exec`. The pin catches a binary replaced at rest, not one swapped in during that window. The binary must therefore live in a directory that only the gate's user can write, the same requirement as the gate's own code. `pnpm install:file-helper <absolute directory>` ([`scripts/install-file-helper.ts`](../../scripts/install-file-helper.ts), #463) builds with `cargo build --release --locked`, installs the binary into a directory it creates with mode 0700 (and refuses one that group or others can write), and prints `EIDO_FILE_HELPER_PATH` and `EIDO_FILE_HELPER_SHA256` for the gate configuration. After an upgrade, rebuild with the same command and re-pin: the gate refuses the old pin without running the new binary. On Windows the directory needs a gate/admin-only ACL, which the script cannot set.
 
 ## Platform behaviour
 

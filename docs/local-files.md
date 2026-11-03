@@ -4,13 +4,13 @@ Local files use root IDs rather than caller-supplied absolute paths. Core has no
 
 ## Gate setup
 
-Build `packages/gate/native/file-helper` with its pinned Rust toolchain:
+Build and install the helper (`packages/gate/native/file-helper`, pinned Rust toolchain) into a directory controlled by the gate identity, running as the gate's user:
 
 ```sh
-cargo build --release --locked --manifest-path packages/gate/native/file-helper/Cargo.toml
+pnpm install:file-helper /absolute/gate-owned/bin
 ```
 
-Install the release binary in a directory controlled by the gate identity. Configure its absolute path in `EIDO_FILE_HELPER_PATH` and its lowercase SHA-256 in `EIDO_FILE_HELPER_SHA256`. Both settings are required together. The gate checks the pin before every dispatch. An upgrade requires a new pin. POSIX startup rejects non-executable or linked helper files, untrusted owners and writable install ancestors, except root-owned sticky temporary ancestors. Windows mode bits cannot prove ACL isolation: the install directory and binary must have gate/admin-only write ACLs. Host installation automation remains #463.
+The script runs `cargo build --release --locked`, copies the binary there (mode 0700 directory, refused if group or others can write) and prints the two settings below. Re-run it after every upgrade and update the pin. Configure the printed absolute path in `EIDO_FILE_HELPER_PATH` and the lowercase SHA-256 in `EIDO_FILE_HELPER_SHA256`. Both settings are required together. The gate checks the pin before every dispatch. An upgrade requires a new pin. POSIX startup rejects non-executable or linked helper files, untrusted owners and writable install ancestors, except root-owned sticky temporary ancestors. Windows mode bits cannot prove ACL isolation: the install directory and binary must have gate/admin-only write ACLs. The install step itself is not run on the live host by this change; that remains the owner's step under #463.
 
 Pin the `filesManifest()` connector through the ordinary signed manifest ceremony. Prepare allowed roots on the **local control socket**, not the phone or data-plane listener:
 

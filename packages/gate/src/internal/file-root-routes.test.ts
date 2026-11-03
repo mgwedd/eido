@@ -18,13 +18,14 @@ const REQUEST = {
   roots: [{ id: "docs", path: "/caller/path", trashDir: ".trash" }],
 }
 
-const helper = () => Promise.resolve({
-  ok: true as const,
-  op: "identify" as const,
-  canonicalPath: ROOT.path,
-  dev: ROOT.dev,
-  ino: ROOT.ino,
-})
+const helper = () =>
+  Promise.resolve({
+    ok: true as const,
+    op: "identify" as const,
+    canonicalPath: ROOT.path,
+    dev: ROOT.dev,
+    ino: ROOT.ino,
+  })
 
 function request(method: string, path: string, value?: unknown): GateRequest {
   return {
@@ -44,7 +45,11 @@ describe("file root control routes", () => {
       { db, fileHelper: helper }
     )
     expect(reply?.status).toBe(200)
-    if (reply?.status !== 200 || typeof reply.body !== "object" || reply.body === null)
+    if (
+      reply?.status !== 200 ||
+      typeof reply.body !== "object" ||
+      reply.body === null
+    )
       throw new Error("prepare did not return a challenge")
     expect(reply.body).toMatchObject({
       purpose: "policy.set",
@@ -61,15 +66,20 @@ describe("file root control routes", () => {
       request("POST", "/file-roots/prepare", REQUEST),
       {
         db,
-        fileHelper: () => Promise.resolve({
-          ok: false,
-          code: "not_found",
-          message: "no such directory",
-        }),
+        fileHelper: () =>
+          Promise.resolve({
+            ok: false,
+            code: "not_found",
+            message: "no such directory",
+          }),
       }
     )
     expect(reply?.status).toBe(400)
-    expect(db.prepare("SELECT COUNT(*) AS count FROM control_approvals").get()?.["count"]).toBe(0)
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM control_approvals").get()?.[
+        "count"
+      ]
+    ).toBe(0)
     db.close()
   })
 
@@ -81,7 +91,11 @@ describe("file root control routes", () => {
       { db, fileHelper: helper }
     )
     expect(reply?.status).toBe(400)
-    expect(db.prepare("SELECT COUNT(*) AS count FROM control_approvals").get()?.["count"]).toBe(0)
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM control_approvals").get()?.[
+        "count"
+      ]
+    ).toBe(0)
     db.close()
   })
 
@@ -89,7 +103,12 @@ describe("file root control routes", () => {
     const db = openControlDb(":memory:")
     const prepared = await prepareFileRoots(db, helper, REQUEST)
     const auth = controlAuthorization(db, prepared)
-    const otherTarget = prepareControlApproval(db, "policy.set", "permissions", ROOTS)
+    const otherTarget = prepareControlApproval(
+      db,
+      "policy.set",
+      "permissions",
+      ROOTS
+    )
     const crossTargetAuth = controlAuthorization(db, otherTarget)
     const complete = (roots: unknown, authorization: unknown) =>
       fileRootControlRoute(
@@ -106,6 +125,63 @@ describe("file root control routes", () => {
     expect((await complete(ROOTS, auth.request))?.status).toBe(200)
     expect(approvedFileRoot(db, "docs")).toEqual(ROOT)
     expect((await complete(ROOTS, auth.request))?.status).toBe(409)
+    db.close()
+  })
+  it("refuses malformed or oversized bodies before any ceremony", async () => {
+    const db = openControlDb(":memory:")
+    const body = (text: string): GateRequest => ({
+      ...request("POST", "/file-roots/prepare"),
+      body: () => Promise.resolve({ ok: true, text }),
+    })
+    const oversize: GateRequest = {
+      ...request("POST", "/file-roots/prepare"),
+      body: () => Promise.resolve({ ok: false }),
+    }
+    const state = { db, fileHelper: helper }
+    expect((await fileRootControlRoute(body("{not json"), state))?.status).toBe(
+      400
+    )
+    expect((await fileRootControlRoute(oversize, state))?.status).toBe(413)
+    db.close()
+  })
+
+  it("reports an unavailable helper or WebAuthn as 503 and ignores other routes", async () => {
+    const db = openControlDb(":memory:")
+    expect(
+      (
+        await fileRootControlRoute(
+          request("POST", "/file-roots/prepare", REQUEST),
+          { db }
+        )
+      )?.status
+    ).toBe(503)
+    const complete = { roots: ROOTS, authorization: {} }
+    expect(
+      (
+        await fileRootControlRoute(
+          request("POST", "/file-roots/complete", complete),
+          { db }
+        )
+      )?.status
+    ).toBe(503)
+    expect(
+      await fileRootControlRoute(request("GET", "/file-roots/prepare"), { db })
+    ).toBeUndefined()
+    db.close()
+  })
+
+  it("rejects a completion without roots, authorization or valid roots", async () => {
+    const db = openControlDb(":memory:")
+    const post = (value: unknown) =>
+      fileRootControlRoute(request("POST", "/file-roots/complete", value), {
+        db,
+        webAuthn: WEBAUTHN,
+      })
+    expect((await post("text"))?.status).toBe(400)
+    expect((await post({ roots: ROOTS }))?.status).toBe(400)
+    expect(
+      (await post({ roots: { roots: "x" }, authorization: {} }))?.status
+    ).toBe(400)
     db.close()
   })
 })

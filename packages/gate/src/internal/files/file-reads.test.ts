@@ -33,13 +33,11 @@ async function fixture(signed = true) {
   const db = openControlDb(":memory:")
   databases.push(db)
   if (signed) await signedFileRoots(db, ROOTS)
-  const helper = vi
-    .fn<FileHelper>()
-    .mockResolvedValue({
-      ok: true,
-      op: "read",
-      contentBase64: Buffer.from("private-body-marker").toString("base64"),
-    })
+  const helper = vi.fn<FileHelper>().mockResolvedValue({
+    ok: true,
+    op: "read",
+    contentBase64: Buffer.from("private-body-marker").toString("base64"),
+  })
   const files = createFileReads(db, helper)
   return { db, helper, files }
 }
