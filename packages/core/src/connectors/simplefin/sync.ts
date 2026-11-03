@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite"
+import { linkPayments } from "../../ledger/payments"
 import { parseAmountCents } from "./amounts"
 import type { AccountAssignments } from "./assignments"
 import type { SimpleFinAccount, SimpleFinClient } from "./client"
@@ -7,7 +8,8 @@ import type { SimpleFinConfig } from "./config"
 
 // SimpleFIN sync (#51): reads accounts and posted transactions since the stored cursor, in windows
 // no larger than the configured range, and stores each window as one transaction with the cursor
-// moved to its end. Upserts on id make a re-read of the same window change nothing.
+// moved to its end. Upserts on id make a re-read of the same window change nothing. After the
+// windows, new debits are matched to the obligations they paid (`linkPayments`, #576).
 
 const DAY_SECONDS = 86_400
 /** Re-read this much before the cursor: a bank can post a transaction days after it happened. */
@@ -32,6 +34,8 @@ export interface SimpleFinSyncResult {
   unassignedAccounts: number
   /** Transactions with a malformed amount or a missing field, each rejected and counted. */
   rejectedTransactions: number
+  /** `pays` links stored by this run between debits and the obligations they paid. */
+  paymentsLinked: number
   /** Unix seconds: the end of the last stored window. */
   cursor: number
   /** Health messages for the connector: unassigned accounts and SimpleFIN's own errors. */
@@ -212,10 +216,12 @@ export async function syncSimpleFin(
     for (const error of read.errors) errors.add(error)
     start = end
   }
+  const paymentsLinked = await linkPayments(db)
   return {
     windows,
     accounts,
     transactionsStored,
+    paymentsLinked,
     unassignedAccounts: unassigned.size,
     rejectedTransactions,
     cursor: end,

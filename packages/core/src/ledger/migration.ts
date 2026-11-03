@@ -18,7 +18,8 @@ import { TRIAGE_SCHEMA_SQL } from "../triage/schema"
  *     stored under v1 as they are.
  * v3 adds injection provenance to obligations; v4 adds conversation storage and search; v5 adds
  *     resumable digest section and final digest caches; the `briefs` table (#53) comes next, then obligation
- *     `updated_at` (#481), and the last migration adds the `events` table of proactive triage (#52).
+ *     `updated_at` (#481), the `events` table of proactive triage (#52), editable extraction fields (#47), and
+ *     the last migration rebuilds `links` for the txn: endpoint and the pays kind (#576).
  */
 export const LEDGER_MIGRATIONS: readonly string[] = [
   `
@@ -245,6 +246,41 @@ WHEN NEW.id IS NOT OLD.id OR NEW.doc_id IS NOT OLD.doc_id OR NEW.schema IS NOT O
   OR NEW.status IS NOT OLD.status
   OR NEW.model IS NOT OLD.model OR NEW.created_at IS NOT OLD.created_at
 BEGIN SELECT RAISE(ABORT, 'extractions are immutable except confirmed_at and fields_json'); END;
+`,
+  `
+-- A bank transaction pays an obligation (#576): links gain the txn:<transactions.id> endpoint and
+-- the pays kind. Column CHECKs cannot change in place, so the table is rebuilt with its rows,
+-- index and triggers.
+CREATE TABLE links_next (
+  src TEXT NOT NULL CHECK (src GLOB 'doc:?*' OR src GLOB 'obl:?*' OR src GLOB 'ent:?*' OR src GLOB 'party:?*' OR src GLOB 'txn:?*'),
+  dst TEXT NOT NULL CHECK (dst GLOB 'doc:?*' OR dst GLOB 'obl:?*' OR dst GLOB 'ent:?*' OR dst GLOB 'party:?*' OR dst GLOB 'txn:?*'),
+  kind TEXT NOT NULL CHECK (kind IN ('thread', 'reply_to', 'attachment_of', 'references', 'supersedes', 'about_party', 'pays')),
+  confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+  origin TEXT NOT NULL CHECK (
+    (origin GLOB 'header:?*' AND confidence = 1) OR (origin = 'match' AND confidence < 1)
+  ),
+  CHECK (kind <> 'pays' OR (src GLOB 'txn:?*' AND dst GLOB 'obl:?*')),
+  PRIMARY KEY (src, dst, kind)
+);
+INSERT INTO links_next (src, dst, kind, confidence, origin)
+  SELECT src, dst, kind, confidence, origin FROM links;
+DROP TABLE links;
+ALTER TABLE links_next RENAME TO links;
+CREATE INDEX links_dst ON links(dst);
+CREATE TRIGGER links_endpoints_exist BEFORE INSERT ON links
+WHEN (NEW.src GLOB 'doc:*' AND NOT EXISTS (SELECT 1 FROM documents WHERE sha256 = substr(NEW.src, 5)))
+  OR (NEW.dst GLOB 'doc:*' AND NOT EXISTS (SELECT 1 FROM documents WHERE sha256 = substr(NEW.dst, 5)))
+  OR (NEW.src GLOB 'obl:*' AND NOT EXISTS (
+    SELECT 1 FROM obligations WHERE id = CAST(substr(NEW.src, 5) AS INTEGER) AND 'obl:' || id = NEW.src))
+  OR (NEW.dst GLOB 'obl:*' AND NOT EXISTS (
+    SELECT 1 FROM obligations WHERE id = CAST(substr(NEW.dst, 5) AS INTEGER) AND 'obl:' || id = NEW.dst))
+  OR (NEW.src GLOB 'ent:*' AND NOT EXISTS (SELECT 1 FROM entities WHERE id = substr(NEW.src, 5)))
+  OR (NEW.dst GLOB 'ent:*' AND NOT EXISTS (SELECT 1 FROM entities WHERE id = substr(NEW.dst, 5)))
+  OR (NEW.src GLOB 'txn:*' AND NOT EXISTS (SELECT 1 FROM transactions WHERE id = substr(NEW.src, 5)))
+  OR (NEW.dst GLOB 'txn:*' AND NOT EXISTS (SELECT 1 FROM transactions WHERE id = substr(NEW.dst, 5)))
+BEGIN SELECT RAISE(ABORT, 'link endpoint does not exist'); END;
+CREATE TRIGGER links_immutable BEFORE UPDATE ON links
+BEGIN SELECT RAISE(ABORT, 'links are immutable'); END;
 `,
 ]
 

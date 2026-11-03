@@ -10,6 +10,7 @@ import {
   lastYear,
   NOW,
   page,
+  paidBill,
   rent,
 } from "./fixtures/transactions"
 
@@ -108,6 +109,7 @@ describe("TransactionsView", () => {
       "Amount",
       "Account",
       "Entity",
+      "Linked obligation",
     ])
     for (const th of ths) expect(th.getAttribute("scope")).toBe("col")
 
@@ -120,6 +122,7 @@ describe("TransactionsView", () => {
       "−$84.12",
       "Card",
       "Personal",
+      "—",
     ])
     expect(container.textContent).toContain("+$2,000.00")
   })
@@ -130,6 +133,33 @@ describe("TransactionsView", () => {
     const li = container.querySelector("ul > li")
     expect(li?.querySelector("p")?.textContent).toBe("Oct 17 · Personal · Card")
     expect(li?.textContent).toContain("−$84.12")
+  })
+
+  test("a linked transaction opens its obligation on the ledger; an unlinked one links nowhere", async () => {
+    stubCore(() => ok(page([paidBill, groceries])))
+    await render()
+    const [linked, unlinked] = Array.from(
+      container.querySelectorAll("tbody tr")
+    )
+    const cell = linked?.querySelector("td:last-child a")
+    expect(cell?.textContent).toBe("Lorem ipsum dolor")
+    expect(cell?.getAttribute("href")).toBe(
+      `/ledger?entity=${ENTITY_PROPERTY.id}`
+    )
+    expect(unlinked?.querySelector("a")).toBeNull()
+  })
+
+  test("a linked phone row is a link to its obligation and names it on the second line", async () => {
+    stubCore(() => ok(page([paidBill, groceries])))
+    await render()
+    const [linked, unlinked] = Array.from(container.querySelectorAll("ul > li"))
+    expect(linked?.querySelector("a")?.getAttribute("href")).toBe(
+      `/ledger?entity=${ENTITY_PROPERTY.id}`
+    )
+    expect(linked?.querySelector("p")?.textContent).toBe(
+      "Oct 12 · Property · Checking · Lorem ipsum dolor"
+    )
+    expect(unlinked?.querySelector("a")).toBeNull()
   })
 
   test("offers no control that edits or moves money", async () => {

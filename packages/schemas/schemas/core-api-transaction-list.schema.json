@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "CoreApiTransactionList",
-  "description": "Response of GET /transactions?entity=&account=&limit=&offset=. Stored bank transactions, newest first. `amountCents` is a signed integer in the minor unit of `currency`; negative is money out. `accounts` lists every account that has stored transactions, whatever the filters, so a filter can offer them all. `nextOffset` is the offset of the next page, or null on the last page. Read only.",
+  "description": "Response of GET /transactions?entity=&account=&limit=&offset=. Stored bank transactions, newest first. `amountCents` is a signed integer in the minor unit of `currency`; negative is money out. `accounts` lists every account that has stored transactions, whatever the filters, so a filter can offer them all. `linkedObligation` is the obligation the transaction paid, when core matched one (#576), or null. `nextOffset` is the offset of the next page, or null on the last page. Read only.",
   "type": "object",
   "properties": {
     "transactions": {
@@ -32,6 +32,20 @@
             },
             "required": ["id", "name", "tag"],
             "additionalProperties": false
+          },
+          "linkedObligation": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "integer", "minimum": 1 },
+                  "action": { "type": "string", "minLength": 1 }
+                },
+                "required": ["id", "action"],
+                "additionalProperties": false
+              },
+              { "type": "null" }
+            ]
           }
         },
         "required": [
@@ -41,7 +55,8 @@
           "amountCents",
           "currency",
           "account",
-          "entity"
+          "entity",
+          "linkedObligation"
         ],
         "additionalProperties": false
       }

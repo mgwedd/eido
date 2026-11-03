@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest"
 import {
   formatAmount,
   formatPostedDate,
+  linkedObligationUrl,
   loadTransactions,
   summarizeTransactions,
   transactionsPageUrl,
@@ -72,6 +73,12 @@ describe("loadTransactions", () => {
       vi.fn().mockRejectedValue(new DOMException("aborted", "AbortError"))
     )
     await expect(loadTransactions(signal)).rejects.toThrow("aborted")
+  })
+})
+
+describe("linkedObligationUrl", () => {
+  test("escapes the entity id in the ledger query", () => {
+    expect(linkedObligationUrl("a&b c")).toBe("/ledger?entity=a%26b+c")
   })
 })
 
