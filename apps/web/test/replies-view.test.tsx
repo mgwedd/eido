@@ -659,6 +659,8 @@ describe("RepliesView", () => {
           { status: 201, headers: { "content-type": "application/json" } }
         )
       )
+    const requestBody = (init: RequestInit | undefined): string =>
+      typeof init?.body === "string" ? init.body : ""
     const draftCalls = (fetchMock: ReturnType<typeof stubFetch>) =>
       fetchMock.mock.calls.filter(([url]) =>
         toUrlString(url).includes(DRAFT_ROUTE)
@@ -765,7 +767,7 @@ describe("RepliesView", () => {
       const calls = draftCalls(fetchMock)
       expect(calls).toHaveLength(1)
       expect(calls[0]?.[1]?.method).toBe("POST")
-      expect(JSON.parse(String(calls[0]?.[1]?.body))).toEqual({
+      expect(JSON.parse(requestBody(calls[0]?.[1]))).toEqual({
         obligationId: 2,
       })
       expect(
