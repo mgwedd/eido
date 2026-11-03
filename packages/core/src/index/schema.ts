@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 10
+export const SCHEMA_VERSION = 11
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -181,6 +181,16 @@ CREATE TRIGGER mail_message_signals_no_update BEFORE UPDATE ON mail_message_sign
 BEGIN SELECT RAISE(ABORT, 'mail message signals are immutable'); END;
 CREATE TRIGGER mail_message_signals_no_delete BEFORE DELETE ON mail_message_signals
 BEGIN SELECT RAISE(ABORT, 'mail message signals are immutable'); END;
+`,
+  // v11: where each stored page sits in `document_text.body`, so a page is a verified range of the
+  // body. Pages stored before this have no offsets (NULL); nothing is inferred for them.
+  `
+ALTER TABLE document_pages ADD COLUMN start_offset INTEGER CHECK (start_offset >= 0);
+ALTER TABLE document_pages ADD COLUMN end_offset INTEGER;
+CREATE TRIGGER document_pages_offsets_valid BEFORE INSERT ON document_pages
+WHEN (NEW.start_offset IS NULL) <> (NEW.end_offset IS NULL)
+  OR NEW.end_offset <= NEW.start_offset
+BEGIN SELECT RAISE(ABORT, 'document page offsets must be a non-empty range'); END;
 `,
 ]
 
