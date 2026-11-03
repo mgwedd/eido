@@ -9,6 +9,7 @@ export default defineConfig({
       include: [
         "tailscale/**/*.ts",
         "stack/**/*.ts",
+        "backup/**/*.ts",
         "bridge/**/*.ts",
         "llama/**/*.ts",
         "host/**/*.ts",
@@ -18,6 +19,8 @@ export default defineConfig({
         "tailscale/bin.ts", // entry point: hands process.argv and the real tailscale CLI to main()
         "bridge/bin.ts", // entry point: hands process.argv, real launchctl, files and TCP to main()
         "stack/bin.ts", // entry point: hands process.argv and real processes, signals and files to main()
+        "backup/test-support.ts", // helpers for the backup tests
+        "backup/bin.ts", // entry point: hands process.argv, the restic binary and the clock to main()
         "llama/bin.ts", // entry point: hands process.argv and real files, processes, launchctl, signals and fetch to main()
         "host/bin.ts", // entry point: hands process.argv and the real fdesetup and tailscale to main()
       ],
