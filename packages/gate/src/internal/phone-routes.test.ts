@@ -1,5 +1,11 @@
 import { createECDH, createHash, randomBytes } from "node:crypto"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -37,6 +43,8 @@ import { propose } from "./intents"
 import { revokeCredential } from "./credentials"
 import { issueEnrolmentCode } from "./enrolment"
 import { matchRoute, phoneHandler, routePath } from "./phone-routes"
+import { readReviewedManifest } from "./repin"
+import { DATA_DIR_ENV, placeReviewedManifest } from "../reviewed-manifest"
 import type { ExecutionResult } from "./executor"
 import { preparePushRegistration } from "./push-subscriptions"
 import type { PhoneState } from "./phone-routes"
@@ -1899,6 +1907,28 @@ describe("phoneHandler: connector re-pin (#97)", () => {
     const { row } = await files()
     expect(row).toMatchObject({ enabled: false, manifestHash: pinnedHash })
     expect(row.drift).toEqual({ added: ["bulk_move"], removed: ["trash_file"] })
+  })
+
+  it("prepares a re-pin from the file the reviewed-manifest command writes", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "eido-placed-"))
+    try {
+      const pinnedHash = drift()
+      const code = placeReviewedManifest(
+        ["reviewed.json"],
+        { [DATA_DIR_ENV]: dataDir },
+        () => JSON.stringify(reviewed()),
+        { out: () => undefined, err: () => undefined }
+      )
+      expect(code).toBe(0)
+      state.reviewedManifest = (name) => readReviewedManifest(dataDir, name)
+      enrol(auth)
+      const { cookie } = await files()
+      const prepared = await prepare(cookie)
+      expect(prepared.payloadHash).toBe(manifestHash(reviewed()))
+      expect((await files()).row.manifestHash).toBe(pinnedHash)
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
   })
 
   it("keeps the old pin and the connector disabled when the signature is over another challenge", async () => {
