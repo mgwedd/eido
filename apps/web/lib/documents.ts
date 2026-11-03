@@ -1,8 +1,12 @@
 import {
   validateCoreApiDocumentList,
+  validateCoreApiDocumentType,
   validateGatePendingIntentList,
   validateGateProposeResult,
   type CoreApiDocumentList,
+  type CoreApiDocumentType,
+  type CoreApiDocumentTypeRequest,
+  type DocumentTypeLabel,
 } from "@eido/schemas"
 
 export type DocumentItem = CoreApiDocumentList["documents"][number]
@@ -266,4 +270,33 @@ export async function loadPendingTrashKeys(
     // Ignore network error on pending check
   }
   return keys
+}
+
+export type SetDocumentTypeResult =
+  { ok: true; body: CoreApiDocumentType } | { ok: false }
+
+/** Sets the owner's type for a document: core answers 400 for a type outside the set, 404 when it is gone. */
+export async function setDocumentType(
+  sha256: string,
+  type: DocumentTypeLabel,
+  signal?: AbortSignal
+): Promise<SetDocumentTypeResult> {
+  try {
+    const request: CoreApiDocumentTypeRequest = { type }
+    const response = await fetch(`${DOCUMENTS_URL}/${sha256}/type`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(request),
+      signal,
+    })
+    if (!response.ok) return { ok: false }
+    const parsed = validateCoreApiDocumentType(
+      await response.json().catch(() => null)
+    )
+    if (!parsed.ok || parsed.value.sha256 !== sha256) return { ok: false }
+    return { ok: true, body: parsed.value }
+  } catch {
+    return { ok: false }
+  }
 }

@@ -610,3 +610,34 @@ describe("DocumentsView", () => {
     )
   })
 })
+
+describe("DocumentsView type marker", () => {
+  test("marks a type set by the owner in the table and the card, and no other", async () => {
+    const documents = [
+      { ...sampleDocuments[0]!, type: "Quote", typeSource: "user" as const },
+      sampleDocuments[1]!,
+    ]
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((req: RequestInfo | URL) => {
+        const url = toUrlString(req)
+        if (url.includes("/api/core/entities")) {
+          return Promise.resolve(Response.json({ entities: sampleEntities }))
+        }
+        return Promise.resolve(Response.json({ documents, nextOffset: null }))
+      })
+    )
+    await renderDocuments()
+    const marked = Array.from(container.querySelectorAll("span")).filter(
+      (el) => el.textContent === "Set by you"
+    )
+    // One in the desktop table row and one in the phone card of the same document.
+    expect(marked).toHaveLength(2)
+    for (const el of marked) {
+      expect(el.closest("tr, li, article, div")?.textContent).toContain("Quote")
+      expect(el.closest("tr, li, article, div")?.textContent).not.toContain(
+        "Proton Mail"
+      )
+    }
+  })
+})
