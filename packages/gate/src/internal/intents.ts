@@ -636,11 +636,14 @@ export function intentStatus(
     : { state: intent.state, tier: intent.tier }
 }
 
-/** One intent as the intent API shows it: kind, tier, state and edited_from; no payload. */
+/**
+ * One intent as the intent API shows it: kind, tier, state and edited_from; no payload. The API
+ * adds `discarded` (draftDiscarded in draft-discard.ts).
+ */
 export function intentSummary(
   db: DatabaseSync,
   intentId: string
-): GateIntentStatus | undefined {
+): Omit<GateIntentStatus, "discarded"> | undefined {
   const row = db
     .prepare(
       "SELECT id, kind, tier, state, edited_from FROM intents WHERE id = ?"

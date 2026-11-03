@@ -28,6 +28,7 @@ import { issueNonce } from "./approvals"
 import { beginLogin, login, SESSION_COOKIE } from "./sessions"
 import { phoneHandler } from "./phone-routes"
 import {
+  validateGateIntentStatus,
   validateGatePrepareApproval,
   validateGateProposeResult,
 } from "@eido/schemas"
@@ -1838,6 +1839,109 @@ describe("Gmail draft discard through the phone approval flow", () => {
       f.db.prepare("SELECT id FROM intents WHERE kind='email.trash'").all()
     ).toEqual([])
   })
+})
+
+describe("a draft's discarded status (#549)", () => {
+  async function discarded(f: Awaited<ReturnType<typeof draftDiscardFixture>>) {
+    const response = await dataPlaneHandler(() => ({
+      db: f.db,
+      policy: f.policy,
+    }))({
+      method: "GET",
+      path: `/intents/${f.draft.intentId}`,
+      query: new URLSearchParams(),
+      headers: {},
+      body: () => Promise.resolve({ ok: true, text: "" }),
+    })
+    const status = validateGateIntentStatus(response.body)
+    if (!status.ok) throw new Error("invalid status response")
+    return status.value.discarded
+  }
+
+  async function proposedDiscard(
+    f: Awaited<ReturnType<typeof draftDiscardFixture>>
+  ) {
+    const proposed = validateGateProposeResult((await f.call()).body)
+    if (!proposed.ok) throw new Error("invalid proposal")
+    return proposed.value.id
+  }
+
+  it("is false while the discard is pending, and true once it executed", async () => {
+    const f = await draftDiscardFixture()
+    expect(await discarded(f)).toBe(false)
+    const trash = await proposedDiscard(f)
+    expect(await discarded(f)).toBe(false)
+    approve(f, trash)
+    expect((await f.executor.execute(trash)).ok).toBe(true)
+    expect(await discarded(f)).toBe(true)
+  })
+
+  it("is false when the discard was rejected or failed", async () => {
+    const f = await draftDiscardFixture()
+    const trash = await proposedDiscard(f)
+    for (const state of ["rejected", "failed"]) {
+      f.db.prepare("UPDATE intents SET state=? WHERE id=?").run(state, trash)
+      expect(await discarded(f)).toBe(false)
+    }
+  })
+
+  it("is false again once the discarded draft was restored from Trash", async () => {
+    const f = await draftDiscardFixture()
+    const trash = await proposedDiscard(f)
+    approve(f, trash)
+    expect((await f.executor.execute(trash)).ok).toBe(true)
+    const restored = validateGateProposeResult(
+      (
+        await dataPlaneHandler(() => ({ db: f.db, policy: f.policy }))({
+          method: "POST",
+          path: `/intents/${trash}/restore`,
+          query: new URLSearchParams(),
+          headers: {},
+          body: () => Promise.resolve({ ok: true, text: "{}" }),
+        })
+      ).body
+    )
+    if (!restored.ok) throw new Error("invalid restore proposal")
+    expect(await discarded(f)).toBe(true)
+    approve(f, restored.value.id)
+    expect((await f.executor.execute(restored.value.id)).ok).toBe(true)
+    expect(f.gmail.labels("message-1")).toEqual(["DRAFT"])
+    expect(await discarded(f)).toBe(false)
+  })
+
+  it("ignores a trash of another message", async () => {
+    const f = await draftDiscardFixture()
+    const other = proposeIntent(f, {
+      kind: "email.trash",
+      connector: "gmail",
+      args: { messageIds: ["unrelated"] },
+    })
+    approve(f, other.intentId)
+    expect((await f.executor.execute(other.intentId)).ok).toBe(true)
+    expect(await discarded(f)).toBe(false)
+  })
+
+  it.each(["not_executed", "wrong_kind", "missing_message"])(
+    "is false for a %s source even after its message was trashed",
+    async (scenario) => {
+      const f = await draftDiscardFixture(
+        scenario === "missing_message" ? { id: "draft-1" } : undefined
+      )
+      const trash = proposeIntent(f, {
+        kind: "email.trash",
+        connector: "gmail",
+        args: { messageIds: ["message-1"] },
+      })
+      approve(f, trash.intentId)
+      expect((await f.executor.execute(trash.intentId)).ok).toBe(true)
+      const id = f.draft.intentId
+      if (scenario === "not_executed")
+        f.db.prepare("UPDATE intents SET state='failed' WHERE id=?").run(id)
+      if (scenario === "wrong_kind")
+        f.db.prepare("UPDATE intents SET kind='email.send' WHERE id=?").run(id)
+      expect(await discarded(f)).toBe(false)
+    }
+  )
 })
 
 describe("gmailProbe", () => {
