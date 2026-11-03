@@ -92,6 +92,8 @@ export interface ApiDeps {
   draftReply?: ReplyDrafter
   /** Proposes a validated intent through the gate; absent when the gate client is unavailable. */
   propose?: IntentClient["propose"]
+  /** The gate's intent status, read for `hasDraftIntent` on `/obligations`; absent, no row has a draft. */
+  intentStatus?: IntentClient["status"]
   /** Local obligation state changes (#104). When absent, `/obligations/...` is not served. */
   obligations?: ObligationStateStore
   /** The data DB the Documents list and viewer, Today due-soon and morning brief read. When absent, none of them is served. */
@@ -433,7 +435,11 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
 
     if (path === "/obligations" && deps.documents !== undefined) {
       if (method !== "GET") return notAllowed("GET")
-      const result = listObligationsRoute(deps.documents.db, url.searchParams)
+      const result = await listObligationsRoute(
+        deps.documents.db,
+        url.searchParams,
+        deps.intentStatus
+      )
       if (result.ok) return json(result.body)
       return failure(result.code, result.message, { fields: result.fields })
     }

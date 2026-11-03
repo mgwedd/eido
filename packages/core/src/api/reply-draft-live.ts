@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite"
 import { GateRequestError } from "@eido/gate"
 import type { IntentClient, IntentStatus } from "@eido/gate"
 
@@ -26,4 +27,54 @@ export async function liveDraftStatus(
     if (error instanceof GateRequestError && error.status === 404) return null
     throw error
   }
+}
+
+/**
+ * The stored draft intent id of each of these threads that has one in `reply_drafts`. The table
+ * is created by the first draft, so a database without it has none.
+ */
+export function storedDraftIntentIds(
+  db: DatabaseSync,
+  threadKeys: readonly string[]
+): Map<string, string> {
+  const ids = new Map<string, string>()
+  if (threadKeys.length === 0) return ids
+  const table = db
+    .prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'reply_drafts'"
+    )
+    .get()
+  if (table === undefined) return ids
+  const rows = db
+    .prepare(
+      "SELECT thread_key, intent_id FROM reply_drafts WHERE thread_key IN (SELECT value FROM json_each(?))"
+    )
+    .all(JSON.stringify(threadKeys))
+  for (const row of rows) {
+    ids.set(String(row["thread_key"]), String(row["intent_id"]))
+  }
+  return ids
+}
+
+/**
+ * The threads among these whose stored draft is still live (see liveDraftStatus). When the gate
+ * cannot answer for a stored draft (unreachable, or an error other than 404), the draft counts
+ * as live: it was live when stored, and a list read must not fail because the gate is down.
+ */
+export async function threadsWithLiveDraft(
+  db: DatabaseSync,
+  gate: Pick<IntentClient, "status">,
+  threadKeys: readonly string[]
+): Promise<Set<string>> {
+  const stored = [...storedDraftIntentIds(db, threadKeys)]
+  const live = await Promise.all(
+    stored.map(async ([, intentId]) => {
+      try {
+        return (await liveDraftStatus(gate, intentId)) !== null
+      } catch {
+        return true
+      }
+    })
+  )
+  return new Set(stored.filter((_, i) => live[i]).map(([thread]) => thread))
 }
