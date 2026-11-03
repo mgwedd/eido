@@ -217,7 +217,7 @@ function searchMatch(
   const rows = index
     .prepare(
       `SELECT kind, conversation_id, turn_id,
-              snippet(passages, 0, '[', ']', '...', 16) AS snippet,
+              snippet(passages, 0, '\uE000', '\uE001', '...', 16) AS snippet,
               -bm25(passages) AS score
        FROM passages WHERE ${where}
        ORDER BY score DESC, kind, conversation_id, seq, part LIMIT ?`

@@ -16,6 +16,7 @@ import type {
   SourceTag,
 } from "./types"
 
+export type { SearchKind }
 export type SearchOptions = { limit?: number; kind?: SearchKind | "any" }
 
 export type ContextHit = ConversationDigest & { score: number }
