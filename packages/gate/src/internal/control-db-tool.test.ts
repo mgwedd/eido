@@ -26,17 +26,21 @@ afterEach(() => {
 })
 
 describe("the control DB test tool", () => {
-  it("seeds the mail connector, so a send is approval tier", { timeout: DISK_TIMEOUT_MS }, () => {
-    expect(runTool(["seed", path])).toBe(JSON.stringify({ seeded: path }))
-    const db = openControlDb(path)
-    const options = { dataDir: dir, ownerAddresses: [], allowedRoots: [] }
-    const result = propose(db, loadPolicy(db, options).policy, {
-      intent: sample("email.send"),
-      origin: "reactive",
-    })
-    db.close()
-    expect(result).toMatchObject({ ok: true, tier: "approval" })
-  })
+  it(
+    "seeds the mail connector, so a send is approval tier",
+    { timeout: DISK_TIMEOUT_MS },
+    () => {
+      expect(runTool(["seed", path])).toBe(JSON.stringify({ seeded: path }))
+      const db = openControlDb(path)
+      const options = { dataDir: dir, ownerAddresses: [], allowedRoots: [] }
+      const result = propose(db, loadPolicy(db, options).policy, {
+        intent: sample("email.send"),
+        origin: "reactive",
+      })
+      db.close()
+      expect(result).toMatchObject({ ok: true, tier: "approval" })
+    }
+  )
 
   it("lists audit rows and intent ids", { timeout: DISK_TIMEOUT_MS }, () => {
     runTool(["seed", path])
@@ -47,26 +51,30 @@ describe("the control DB test tool", () => {
     })
   })
 
-  it("rejects a pending intent as the owner", { timeout: DISK_TIMEOUT_MS }, () => {
-    runTool(["seed", path])
-    const db = openControlDb(path)
-    const options = { dataDir: dir, ownerAddresses: [], allowedRoots: [] }
-    const result = propose(db, loadPolicy(db, options).policy, {
-      intent: sample("email.send"),
-      origin: "reactive",
-    })
-    db.close()
-    const id = result.ok ? result.intentId : ""
-    expect(JSON.parse(runTool(["reject", path, id]))).toEqual({
-      ok: true,
-      intentId: id,
-      state: "rejected",
-    })
-    expect(JSON.parse(runTool(["reject", path, id]))).toEqual({
-      ok: false,
-      code: "not_pending",
-    })
-  })
+  it(
+    "rejects a pending intent as the owner",
+    { timeout: DISK_TIMEOUT_MS },
+    () => {
+      runTool(["seed", path])
+      const db = openControlDb(path)
+      const options = { dataDir: dir, ownerAddresses: [], allowedRoots: [] }
+      const result = propose(db, loadPolicy(db, options).policy, {
+        intent: sample("email.send"),
+        origin: "reactive",
+      })
+      db.close()
+      const id = result.ok ? result.intentId : ""
+      expect(JSON.parse(runTool(["reject", path, id]))).toEqual({
+        ok: true,
+        intentId: id,
+        state: "rejected",
+      })
+      expect(JSON.parse(runTool(["reject", path, id]))).toEqual({
+        ok: false,
+        code: "not_pending",
+      })
+    }
+  )
 
   it("refuses an unknown command or a missing path", () => {
     expect(() => runTool(["drop", path])).toThrow("unknown command drop")
