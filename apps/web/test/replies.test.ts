@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import type { Connector } from "@/lib/connectors"
 import type { ObligationItem } from "@/lib/ledger"
 import {
+  getPartialCoverageNotice,
   getRepliesUrl,
   getReplySubject,
   partitionReplies,
+  requestDraftReply,
   sortReplies,
 } from "@/lib/replies"
 
@@ -168,6 +171,180 @@ describe("lib/replies", () => {
 
     it("returns /ledger/replies?entity=... with entity", () => {
       expect(getRepliesUrl("ent-prop")).toBe("/ledger/replies?entity=ent-prop")
+    })
+  })
+
+  describe("requestDraftReply", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    const DRAFT_BODY = {
+      intentId: "intent-9",
+      tier: "auto",
+      state: "approved",
+      activityHref: "/activity?intent=intent-9",
+    }
+
+    function stubDraftFetch(status: number, body: unknown) {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          new Response(typeof body === "string" ? body : JSON.stringify(body), {
+            status,
+            headers: { "content-type": "application/json" },
+          })
+        )
+      )
+      vi.stubGlobal("fetch", fetchMock)
+      return fetchMock
+    }
+
+    it("POSTs the obligation id to core's draft route through the proxy", async () => {
+      const fetchMock = stubDraftFetch(201, { ...DRAFT_BODY, created: true })
+
+      await requestDraftReply(7)
+
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [
+        string,
+        RequestInit,
+      ]
+      expect(url).toBe("/api/core/replies/draft")
+      expect(init.method).toBe("POST")
+      expect(
+        JSON.parse(typeof init.body === "string" ? init.body : "")
+      ).toEqual({ obligationId: 7 })
+    })
+
+    it("201 is a new saved draft linking to its Activity entry", async () => {
+      stubDraftFetch(201, { ...DRAFT_BODY, created: true })
+      expect(await requestDraftReply(7)).toEqual({
+        status: "saved",
+        activityHref: "/activity?intent=intent-9",
+        created: true,
+      })
+    })
+
+    it("200 is the thread's existing draft, not a second one", async () => {
+      stubDraftFetch(200, { ...DRAFT_BODY, created: false })
+      expect(await requestDraftReply(7)).toEqual({
+        status: "saved",
+        activityHref: "/activity?intent=intent-9",
+        created: false,
+      })
+    })
+
+    it.each([
+      [404, "not_found"],
+      [422, "invalid"],
+      [409, "invalid_transition"],
+      [409, "connector_paused"],
+      [422, "no_draft"],
+      [503, "busy"],
+      [503, "gate_unavailable"],
+    ] as const)(
+      "%i %s is a failure carrying core's code",
+      async (status, code) => {
+        stubDraftFetch(status, { error: { code, message: "core's words" } })
+        expect(await requestDraftReply(7)).toEqual({
+          status: "failed",
+          reason: code,
+        })
+      }
+    )
+
+    it("401 is unauthenticated", async () => {
+      stubDraftFetch(401, { error: "Unauthorized" })
+      expect(await requestDraftReply(7)).toEqual({
+        status: "failed",
+        reason: "unauthenticated",
+      })
+    })
+
+    it("a network failure is not a saved draft", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => Promise.reject(new TypeError("network")))
+      )
+      expect(await requestDraftReply(7)).toEqual({
+        status: "failed",
+        reason: "network",
+      })
+    })
+
+    it("a 2xx body that is not a reply-draft response is not a saved draft", async () => {
+      stubDraftFetch(201, { id: "intent-9" })
+      expect(await requestDraftReply(7)).toEqual({
+        status: "failed",
+        reason: "unreadable",
+      })
+    })
+
+    it("an error status with an unreadable body is a failure", async () => {
+      stubDraftFetch(502, "<html>bad gateway</html>")
+      expect(await requestDraftReply(7)).toEqual({
+        status: "failed",
+        reason: "unreadable",
+      })
+    })
+  })
+
+  describe("getPartialCoverageNotice", () => {
+    const makeConnector = (partial: Partial<Connector>): Connector => ({
+      name: "proton-mail",
+      enabled: true,
+      pinnedAt: "2026-01-01T00:00:00Z",
+      scopes: [],
+      health: "healthy",
+      consecutiveFailures: 0,
+      manifestHash: "abc",
+      ...partial,
+    })
+
+    it("returns null when no connectors or all healthy", () => {
+      expect(getPartialCoverageNotice([])).toBeNull()
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "proton-mail", health: "healthy" }),
+          makeConnector({ name: "gmail", health: "healthy" }),
+        ])
+      ).toBeNull()
+    })
+
+    it("returns notice when proton-mail is paused or unhealthy", () => {
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "proton-mail", health: "open" }),
+        ])
+      ).toBe("Proton Mail paused: its threads are not included.")
+
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "proton-mail", health: "degraded" }),
+        ])
+      ).toBe("Proton Mail paused: its threads are not included.")
+
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "proton-mail", enabled: false }),
+        ])
+      ).toBe("Proton Mail paused: its threads are not included.")
+    })
+
+    it("returns notice when gmail is paused or disabled", () => {
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "gmail", health: "open" }),
+        ])
+      ).toBe("Gmail paused: its threads are not included.")
+    })
+
+    it("ignores non-mail connectors", () => {
+      expect(
+        getPartialCoverageNotice([
+          makeConnector({ name: "drive", health: "open" }),
+        ])
+      ).toBeNull()
     })
   })
 })

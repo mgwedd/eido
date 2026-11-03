@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
 import { Button, buttonVariants } from "@eido/ui/components/button"
 import {
@@ -20,12 +21,17 @@ import {
   TableRow,
 } from "@eido/ui/components/table"
 import { cn } from "@eido/ui/lib/utils"
+import { DraftReplyAction } from "@/components/draft-reply-action"
+import { loadConnectors, type Connector } from "@/lib/connectors"
 import { loadLedgerObligations, type ObligationItem } from "@/lib/ledger"
 import {
+  getPartialCoverageNotice,
   getRepliesUrl,
   getReplySubject,
   partitionReplies,
+  requestDraftReply,
   sortReplies,
+  type DraftReplyState,
 } from "@/lib/replies"
 import {
   formatDueText,
@@ -37,6 +43,8 @@ import { buildViewerUrl } from "@/lib/viewer-url"
 export interface RepliesViewProps {
   initialEntity?: string
   now?: Date
+  initialConnectors?: readonly Connector[]
+  isOffline?: boolean
 }
 
 function EntityFilter({
@@ -103,16 +111,56 @@ function EntityBadge({ entity }: { entity: ObligationItem["entity"] }) {
   )
 }
 
+function subscribeOnline(onChange: () => void): () => void {
+  window.addEventListener("online", onChange)
+  window.addEventListener("offline", onChange)
+  return () => {
+    window.removeEventListener("online", onChange)
+    window.removeEventListener("offline", onChange)
+  }
+}
+
 export function RepliesView({
   initialEntity = "all",
   now = new Date(),
+  initialConnectors,
+  isOffline: initialIsOffline,
 }: RepliesViewProps) {
   const [activeEntity, setActiveEntity] = React.useState<string>(initialEntity)
   const [entities, setEntities] = React.useState<FilterEntity[]>([])
   const [obligations, setObligations] = React.useState<ObligationItem[]>([])
+  const [connectors, setConnectors] = React.useState<readonly Connector[]>(
+    initialConnectors ?? []
+  )
   const [loading, setLoading] = React.useState<boolean>(true)
   const [error, setError] = React.useState<string | null>(null)
   const [reloadToken, setReloadToken] = React.useState<number>(0)
+
+  const browserOffline = React.useSyncExternalStore(
+    subscribeOnline,
+    () => !navigator.onLine,
+    () => false
+  )
+  const isOffline = initialIsOffline ?? browserOffline
+
+  const [drafts, setDrafts] = React.useState<Record<number, DraftReplyState>>(
+    {}
+  )
+  // Rows with a request in flight. A ref, so a second click in the same tick finds it.
+  const inFlight = React.useRef<Set<number>>(new Set())
+
+  // Load connectors
+  React.useEffect(() => {
+    if (initialConnectors !== undefined) return
+    const controller = new AbortController()
+    void (async () => {
+      const res = await loadConnectors(controller.signal)
+      if (res.status === "ready") {
+        setConnectors(res.connectors)
+      }
+    })()
+    return () => controller.abort()
+  }, [initialConnectors])
 
   // Load entities
   React.useEffect(() => {
@@ -166,6 +214,30 @@ export function RepliesView({
   const handleRetry = React.useCallback(() => {
     setReloadToken((prev) => prev + 1)
   }, [])
+
+  const handleDraftReply = React.useCallback(
+    async (row: ObligationItem) => {
+      if (isOffline || row.hasDraftIntent || inFlight.current.has(row.id)) {
+        return
+      }
+      inFlight.current.add(row.id)
+      setDrafts((prev) => ({ ...prev, [row.id]: { status: "pending" } }))
+      const outcome = await requestDraftReply(row.id)
+      inFlight.current.delete(row.id)
+      setDrafts((prev) => ({
+        ...prev,
+        [row.id]:
+          outcome.status === "saved"
+            ? { status: "saved", activityHref: outcome.activityHref }
+            : { status: "failed", reason: outcome.reason },
+      }))
+    },
+    [isOffline]
+  )
+
+  const partialCoverageNotice = React.useMemo(() => {
+    return getPartialCoverageNotice(connectors)
+  }, [connectors])
 
   const currentRepliesUrl = getRepliesUrl(activeEntity)
   const isFiltered = activeEntity !== "all"
@@ -310,6 +382,13 @@ export function RepliesView({
         </Card>
       ) : (
         <div className="flex flex-col gap-6">
+          {/* Partial coverage notice */}
+          {partialCoverageNotice ? (
+            <Alert role="status" className="border-border/60 bg-muted/40">
+              <AlertDescription>{partialCoverageNotice}</AlertDescription>
+            </Alert>
+          ) : null}
+
           {/* Two groups: side-by-side on desktop, stacking under lg (900px) and on phone */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             {/* Owed: You must reply */}
@@ -358,6 +437,12 @@ export function RepliesView({
                           >
                             Waiting
                           </TableHead>
+                          <TableHead
+                            scope="col"
+                            className="px-4 py-2.5 text-right text-xs"
+                          >
+                            <span className="sr-only">Action</span>
+                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -398,6 +483,15 @@ export function RepliesView({
                               >
                                 {dueInfo.text}
                               </TableCell>
+                              <TableCell className="px-4 py-3 text-right">
+                                <DraftReplyAction
+                                  state={drafts[row.id]}
+                                  hasDraftIntent={row.hasDraftIntent === true}
+                                  isOffline={isOffline}
+                                  size="desktop"
+                                  onDraft={() => void handleDraftReply(row)}
+                                />
+                              </TableCell>
                             </TableRow>
                           )
                         })}
@@ -423,30 +517,41 @@ export function RepliesView({
 
                       return (
                         <li key={row.id} className="min-h-[44px] px-4 py-3">
-                          <Link
-                            href={sourceViewerUrl}
-                            className="flex min-h-[44px] flex-col justify-center gap-1 text-foreground"
-                          >
-                            <span className="text-sm font-semibold">
-                              {row.party ?? "Unknown"}
-                            </span>
-                            <span className="line-clamp-2 text-sm text-foreground/90">
-                              {subject}
-                            </span>
-                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                              <span>{row.entity.name}</span>
-                              <span>·</span>
-                              <span
-                                className={cn(
-                                  "tabular-nums",
-                                  dueInfo.isOverdue &&
-                                    "font-semibold text-red-500 dark:text-red-400"
-                                )}
-                              >
-                                waiting {dueInfo.text}
+                          <div className="flex items-center justify-between gap-3">
+                            <Link
+                              href={sourceViewerUrl}
+                              className="flex min-h-[44px] flex-1 flex-col justify-center gap-1 text-foreground"
+                            >
+                              <span className="text-sm font-semibold">
+                                {row.party ?? "Unknown"}
                               </span>
+                              <span className="line-clamp-2 text-sm text-foreground/90">
+                                {subject}
+                              </span>
+                              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <span>{row.entity.name}</span>
+                                <span>·</span>
+                                <span
+                                  className={cn(
+                                    "tabular-nums",
+                                    dueInfo.isOverdue &&
+                                      "font-semibold text-red-500 dark:text-red-400"
+                                  )}
+                                >
+                                  waiting {dueInfo.text}
+                                </span>
+                              </div>
+                            </Link>
+                            <div className="flex shrink-0 items-center">
+                              <DraftReplyAction
+                                state={drafts[row.id]}
+                                hasDraftIntent={row.hasDraftIntent === true}
+                                isOffline={isOffline}
+                                size="phone"
+                                onDraft={() => void handleDraftReply(row)}
+                              />
                             </div>
-                          </Link>
+                          </div>
                         </li>
                       )
                     })}
@@ -606,12 +711,6 @@ export function RepliesView({
               )}
             </Card>
           </div>
-
-          {/* Footer note */}
-          <p className="text-xs text-muted-foreground">
-            Draft reply asks Eido for a draft. It lands in the queue; nothing is
-            sent until you approve it.
-          </p>
         </div>
       )}
     </div>
