@@ -216,9 +216,9 @@ describe("SimpleFIN backfill", () => {
       ],
     ])
     expect(pendingBackfillAccounts(db)).toEqual([])
-    expect(
-      db.prepare("SELECT entity_id FROM transactions").all()
-    ).toEqual([{ entity_id: "ent_a" }])
+    expect(db.prepare("SELECT entity_id FROM transactions").all()).toEqual([
+      { entity_id: "ent_a" },
+    ])
   })
 
   it("logs no account id, name or balance from a sync or a backfill", async () => {

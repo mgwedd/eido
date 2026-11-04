@@ -75,12 +75,12 @@ export async function assignSimpleFinAccount(
 ): Promise<AssignResult> {
   return writeQueueFor(db).run((): AssignResult => {
     const current = db
-      .prepare(
-        `SELECT ${COLUMNS} FROM accounts WHERE id = ? AND connector = ?`
-      )
+      .prepare(`SELECT ${COLUMNS} FROM accounts WHERE id = ? AND connector = ?`)
       .get(accountId, SIMPLEFIN_CONNECTOR)
     if (current === undefined) return { status: "unknown_account" }
-    const known = db.prepare("SELECT 1 FROM entities WHERE id = ?").get(entityId)
+    const known = db
+      .prepare("SELECT 1 FROM entities WHERE id = ?")
+      .get(entityId)
     if (known === undefined) return { status: "unknown_entity" }
     const account = toAccount(current)
     if (account.entityId === entityId) return { status: "assigned", account }

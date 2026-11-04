@@ -472,7 +472,9 @@ describe("an account assigned in Settings", () => {
           "SELECT id, entity_id, amount_cents FROM transactions WHERE account_id = 'acc_sav'"
         )
         .all()
-    ).toEqual([{ id: "acc_sav:tx_9", entity_id: "ent_home", amount_cents: 10000 }])
+    ).toEqual([
+      { id: "acc_sav:tx_9", entity_id: "ent_home", amount_cents: 10000 },
+    ])
     expect(listSimpleFinAccounts(db).map((a) => a.backfillPending)).toEqual([
       false,
       false,

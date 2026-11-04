@@ -162,7 +162,11 @@ function storeAccount(
 }
 
 function emptyCounts(): WindowCounts {
-  return { transactionsStored: 0, rejectedTransactions: 0, unassigned: new Set() }
+  return {
+    transactionsStored: 0,
+    rejectedTransactions: 0,
+    unassigned: new Set(),
+  }
 }
 
 function storeWindow(
@@ -175,7 +179,8 @@ function storeWindow(
   const sql = statements(db)
   db.exec("BEGIN IMMEDIATE")
   try {
-    for (const account of accounts) storeAccount(sql, account, ingestedAt, counts)
+    for (const account of accounts)
+      storeAccount(sql, account, ingestedAt, counts)
     db.prepare(
       `INSERT INTO cursors (connector, stream, cursor, updated_at)
        VALUES (?, 'transactions', ?, ?)
@@ -261,7 +266,12 @@ export async function backfillSimpleFin(
   const { db, client } = options
   const pending = pendingBackfillAccounts(db)
   if (pending.length === 0) {
-    return { accounts: 0, transactionsStored: 0, rejectedTransactions: 0, paymentsLinked: 0 }
+    return {
+      accounts: 0,
+      transactionsStored: 0,
+      rejectedTransactions: 0,
+      paymentsLinked: 0,
+    }
   }
   const { maxDateRangeDays } = resolveSimpleFinConfig(options.config)
   const nowMs = (options.now ?? Date.now)()
@@ -282,7 +292,8 @@ export async function backfillSimpleFin(
     db.exec("BEGIN IMMEDIATE")
     try {
       for (const account of read.accounts) {
-        if (wanted.has(account.id)) storeAccount(sql, account, ingestedAt, counts)
+        if (wanted.has(account.id))
+          storeAccount(sql, account, ingestedAt, counts)
       }
       for (const id of pending) done.run(id)
       db.exec("COMMIT")

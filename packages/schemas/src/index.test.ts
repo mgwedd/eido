@@ -993,9 +993,9 @@ describe("core API SimpleFIN account schemas", () => {
   })
 
   test("a list holds accounts and nothing else", () => {
-    expect(validateCoreApiSimpleFinAccountList({ accounts: [account] }).ok).toBe(
-      true
-    )
+    expect(
+      validateCoreApiSimpleFinAccountList({ accounts: [account] }).ok
+    ).toBe(true)
     expect(
       validateCoreApiSimpleFinAccountList({ accounts: [], total: 0 }).ok
     ).toBe(false)
