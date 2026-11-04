@@ -3,11 +3,12 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Loader2, ScanFace } from "lucide-react"
+import { Loader2 } from "lucide-react"
 
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent } from "@eido/ui/components/card"
+import { AuthenticatorIcon } from "@/components/authenticator-icon"
 import { enrolUrl } from "@/lib/enrol"
 import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
 import {
@@ -159,7 +160,7 @@ function UnlockCard({
               disabled={waiting}
               className="h-12 rounded-xl"
             >
-              <ScanFace aria-hidden />
+              <AuthenticatorIcon />
               {copy.unlockWith}
             </Button>
           ) : null}
