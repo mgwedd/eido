@@ -4,6 +4,7 @@ import {
   extractionCandidatesJsonSchema,
 } from "@eido/schemas"
 import { COMPACTION_LEGEND } from "../context/compact"
+import { SECTION_SYSTEM } from "../digest/build"
 import { SECTION_TASK } from "../digest/sections"
 import {
   EXTRACTION_SYSTEM_PROMPT,
@@ -68,16 +69,7 @@ export const UNFENCED_PROPOSE_SYSTEM = [
   INTENT_PROMPT_TEXT,
 ].join("\n\n")
 
-export const FENCED_DIGEST_SYSTEM = [
-  [
-    "You summarize one section of a source into short factual lines.",
-    'Each message or page is one material block with a ref attribute such as ref="m1" or ref="3"; a block with a part attribute is one piece of a longer message or page.',
-    "Every line must cite the refs it comes from, using only refs that appear in the section.",
-    "You see only part of the source, so never state that something was not discussed or did not happen.",
-    'Reply as JSON: {"lines":[{"text":string,"cites":[string]}]}.',
-  ].join(" "),
-  MATERIAL_RULES,
-].join("\n")
+export const FENCED_DIGEST_SYSTEM = SECTION_SYSTEM
 
 export const UNFENCED_DIGEST_SYSTEM = [
   "You summarize one section of a source into short factual lines.",

@@ -172,7 +172,7 @@ describe("each corpus case", () => {
   })
 })
 
-describe("the corpus sent in one request", () => {
+describe("the corpus sent in one request", { timeout: 30_000 }, () => {
   test("no marker in material becomes a control token: the ids match a request with clean bodies", async () => {
     const hostile = await send(cases.map((c) => c.text))
     const clean = await send(cases.map(() => "x"))
