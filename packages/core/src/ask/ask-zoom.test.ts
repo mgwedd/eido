@@ -118,7 +118,7 @@ describe("a broad question over a thread with a digest", () => {
     const result = await ask(
       "Was the deposit ever mentioned?",
       // Room for the passage but not for the passage and the line together.
-      deps(model, storedDigest(never, "z-m0"), { budgetTokens: 900 })
+      deps(model, storedDigest(never, "z-m0"), { budgetTokens: 1100 })
     )
     expect(result.status).toBe("answered")
     const prompt = answerPrompt(model)
