@@ -294,6 +294,7 @@ describe("Ask citation injection flag", () => {
           onSubmit={() => {}}
           onRetry={() => {}}
           onPropose={() => {}}
+          onOpenSearch={() => {}}
         />
       )
     })
@@ -338,6 +339,7 @@ describe("Ask citation injection flag", () => {
           onSubmit={() => {}}
           onRetry={() => {}}
           onPropose={() => {}}
+          onOpenSearch={() => {}}
         />
       )
     })

@@ -21,6 +21,7 @@ function render(
       onSubmit={() => {}}
       onRetry={() => {}}
       onPropose={() => {}}
+      onOpenSearch={() => {}}
     />
   )
 }
