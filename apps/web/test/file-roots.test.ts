@@ -186,9 +186,20 @@ describe("prepareFileRoots", () => {
       false,
     ],
     [
-      "a folder the host cannot identify",
+      "a prepare the gate refused without naming a folder",
       { [PREPARE]: apiError(400, "invalid_request") },
       "The host couldn't identify every folder. Nothing was changed.",
+      false,
+    ],
+    [
+      "the folder the host cannot identify, by its id",
+      {
+        [PREPARE]: json(
+          { code: "root_missing", rootId: "studio", message: "missing" },
+          422
+        ),
+      },
+      "studio doesn't exist on the host. Remove it or fix the path.",
       false,
     ],
     [

@@ -2,6 +2,7 @@ import {
   validateGateApiError,
   validateGateFileRootsPrepared,
   validateGateFileRootsSaved,
+  type GateApiError,
   type GateFileRoot,
   type GateFileRoots,
   type GateFileRootsCompletion,
@@ -62,6 +63,10 @@ export const FILE_ROOTS_MESSAGES = {
   noWebAuthn: "The gate can't check signatures right now. Nothing was changed.",
 } as const
 
+/** The folder the host could not identify, named by the id it was asked for under. */
+export const folderMissingMessage = (id: string) =>
+  `${id} doesn't exist on the host. Remove it or fix the path.`
+
 const fail = (message: string, unreachable = false): FileRootsFailure => ({
   ok: false,
   unreachable,
@@ -108,7 +113,7 @@ export function challengeCode(challenge: Uint8Array): string {
 async function post(
   url: string,
   body: unknown,
-  errorFor: (status: number) => string,
+  errorFor: (error: GateApiError, status: number) => string,
   signal?: AbortSignal
 ): Promise<
   { ok: true; json: unknown } | { ok: false; outcome: FileRootsFailure }
@@ -129,8 +134,12 @@ async function post(
     return { ok: false, outcome: { ok: false, expired: true } }
   if (!response.ok) {
     const json: unknown = await response.json().catch(() => undefined)
-    if (validateGateApiError(json).ok)
-      return { ok: false, outcome: fail(errorFor(response.status)) }
+    const error = validateGateApiError(json)
+    if (error.ok)
+      return {
+        ok: false,
+        outcome: fail(errorFor(error.value, response.status)),
+      }
     // Tailscale serve answers 502 or 504 itself when the gate on the host is down.
     const gateDown = response.status === 502 || response.status === 504
     return {
@@ -201,10 +210,12 @@ export async function prepareFileRoots(
   const prepare = await post(
     FILE_ROOTS_PREPARE_URL,
     request,
-    (status) =>
-      status === 503
-        ? FILE_ROOTS_MESSAGES.noHelper
-        : FILE_ROOTS_MESSAGES.unidentified,
+    (error, status) =>
+      error.code === "root_missing"
+        ? folderMissingMessage(error.rootId)
+        : status === 503
+          ? FILE_ROOTS_MESSAGES.noHelper
+          : FILE_ROOTS_MESSAGES.unidentified,
     signal
   )
   if (!prepare.ok) return prepare.outcome
@@ -256,10 +267,13 @@ export async function signFileRoots(
       assertion,
     },
   }
-  const complete = await post(FILE_ROOTS_COMPLETE_URL, completion, (status) =>
-    status === 503
-      ? FILE_ROOTS_MESSAGES.noWebAuthn
-      : FILE_ROOTS_MESSAGES.refused
+  const complete = await post(
+    FILE_ROOTS_COMPLETE_URL,
+    completion,
+    (_, status) =>
+      status === 503
+        ? FILE_ROOTS_MESSAGES.noWebAuthn
+        : FILE_ROOTS_MESSAGES.refused
   )
   if (!complete.ok) return complete.outcome
   return validateGateFileRootsSaved(complete.json).ok

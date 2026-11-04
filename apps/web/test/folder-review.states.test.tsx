@@ -4,7 +4,8 @@ import {
   FolderReviewView,
   type FolderReviewState,
 } from "../components/folder-review-view"
-import { reviewedFolders } from "./fixtures/file-roots"
+import { vi } from "vitest"
+import { reviewedFolders, signedRoots } from "./fixtures/file-roots"
 import { describeStates } from "./render-states"
 
 const body = (state: FolderReviewState) => () => (
@@ -17,8 +18,31 @@ const body = (state: FolderReviewState) => () => (
   />
 )
 
+<<<<<<< HEAD
 // Folder missing and changed since review have no rows: the gate cannot tell them apart yet
 // (#584, #585). Too many and bad id are the editor's rows (folder-editor.states.test.tsx).
+=======
+/** The signed list reads back, then the host cannot identify `missing` when asked again. */
+function folderMissing(missing: string) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string) =>
+      Promise.resolve(
+        input === "/api/gate/file-roots"
+          ? Response.json(signedRoots)
+          : Response.json(
+              { code: "root_missing", rootId: missing, message: "missing" },
+              { status: 422 }
+            )
+      )
+    )
+  )
+  return <FolderReviewView />
+}
+
+// Changed since review, too many and bad id have no rows: the gate cannot tell the first apart
+// yet (#585) and only a list editor can produce the last two (#583).
+>>>>>>> 4ac5abe47baa27f6272122798bcb62a379968c9f
 describeStates("Allowed folders review", [
   {
     state: "preparing",
@@ -62,6 +86,12 @@ describeStates("Allowed folders review", [
     render: body({ status: "empty" }),
     role: "status",
     message: "No allowed folders are signed.",
+  },
+  {
+    state: "folder missing",
+    render: () => folderMissing("studio"),
+    role: "alert",
+    message: "studio doesn't exist on the host. Remove it or fix the path.",
   },
   {
     state: "gate unreachable",
