@@ -36,7 +36,7 @@ describe("the no-network preload", () => {
       "a dns.promises.Resolver",
       () => new dns.promises.Resolver().resolveTxt("example.invalid"),
     ],
-  ])("blocks %s", (_, call) => {
+  ])("isolation: the preload blocks %s", (_, call) => {
     expect(call).toThrow(NetworkBlockedError)
   })
 

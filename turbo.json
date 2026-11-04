@@ -87,6 +87,10 @@
     "//#check:invariants": {
       "inputs": [
         "scripts/check-invariant-tests.ts",
+        "packages/core/src/parsers/no-network.test.ts",
+        "packages/core/src/parsers/parse-document.test.ts",
+        "packages/core/src/planes/planes.test.ts",
+        "packages/gate/src/internal/api.test.ts",
         "packages/gate/src/internal/approvals.test.ts",
         "packages/gate/src/internal/audit.test.ts",
         "packages/gate/src/internal/connectors.test.ts",

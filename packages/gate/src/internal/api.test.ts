@@ -718,7 +718,7 @@ describe("the read routes", () => {
 })
 
 describe("everything else on the data-plane listener", () => {
-  it("answers 404 and leaves the control database unchanged", async () => {
+  it("isolation: every write-ish or control route answers 404 and leaves the control database unchanged", async () => {
     const { id } = await client.propose(proposal)
     const before = dump(s.db)
     const requests: [string, string][] = [
@@ -738,6 +738,10 @@ describe("everything else on the data-plane listener", () => {
       ["GET", "/intents?state=approved"],
       ["GET", "/intents?state=pending&limit=1"],
       ["GET", `/intents/${id}/payload`],
+      // Control-listener writes added after #42 (connector connect, file roots): never on the data plane.
+      ["POST", "/connectors/mail/connected"],
+      ["POST", "/file-roots/prepare"],
+      ["POST", "/file-roots/complete"],
       ["GET", "/"],
     ]
     for (const [method, path] of requests) {
