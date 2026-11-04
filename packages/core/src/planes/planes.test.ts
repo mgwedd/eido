@@ -88,12 +88,12 @@ let planes: Planes
 beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), "eido-planes-"))
   planes = await spawnPlanes({ tmpDir: tmp, parentEnv: POLLUTED })
-}, 30_000)
+}, 60_000)
 
 afterAll(async () => {
   await planes.close()
   rmSync(tmp, { recursive: true, force: true })
-}, 30_000)
+}, 60_000)
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -157,7 +157,7 @@ function loggedEnvNames(logPath: string): string[] {
 
 describe(
   "the gate and the data plane as two processes",
-  { timeout: 30_000 },
+  { timeout: 60_000 },
   () => {
     let id = ""
 

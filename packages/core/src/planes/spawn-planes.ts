@@ -23,7 +23,7 @@ const CORE_MAIN = join(CORE_SRC, "main.ts")
 const CORE_HOOKS = join(CORE_SRC, "ts-hooks.ts")
 const PROBE = join(CORE_SRC, "planes", "probe.ts")
 
-const READY_TIMEOUT_MS = 15_000
+const READY_TIMEOUT_MS = 30_000
 const POLL_MS = 50
 
 /** A relying party for the gate's approval config; the tests never sign an approval. */

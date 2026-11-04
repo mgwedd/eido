@@ -11,6 +11,7 @@ import {
   passageMessage,
 } from "../extraction/prompt"
 import { PROPOSE_SYSTEM_PROMPT } from "../propose/prompt"
+import { ANSWER_SYSTEM } from "../ask/ask"
 import { MATERIAL_RULES, fence, toMaterial } from "../inference/fence"
 import type { InferenceRequest } from "../inference/types"
 import type { PromptBuilderName } from "./injection-types"
@@ -37,13 +38,7 @@ export const LINES_SCHEMA = {
   required: ["lines"],
 } as const
 
-export const FENCED_ASK_SYSTEM = [
-  "You answer the owner's question from the messages below, and from nothing else.",
-  "Each message has a tag line such as [M1] before its material block. Cite the messages you use by their tag, for example [M2].",
-  "Never write a count of messages. Write {matches} for the number of matching messages, {read} for the number you can read, and {searched} for the number searched.",
-  'If the messages do not answer the question, say "no match found". Never say that something did not happen or does not exist.',
-  MATERIAL_RULES,
-].join("\n")
+export const FENCED_ASK_SYSTEM = ANSWER_SYSTEM
 
 export const UNFENCED_ASK_SYSTEM = [
   "You answer the owner's question from the messages below, and from nothing else.",
