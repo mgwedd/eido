@@ -4,8 +4,11 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { FolderReviewView } from "../components/folder-review-view"
 import type { FileRootsDevice } from "@/lib/file-roots"
+import { clearDraft, readDraft, saveDraft } from "@/lib/file-roots-draft"
 import {
   challengeHex,
+  firstFolderIdentified,
+  firstFolderRequest,
   identifiedRoots,
   preparedFor,
   signedRoots,
@@ -79,6 +82,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   container.remove()
+  clearDraft()
   vi.unstubAllGlobals()
 })
 
@@ -272,5 +276,62 @@ describe("cancelling", () => {
     await click(button(/^Cancel$/))
     expect(status()).toBe("Not signed. The allowed folders are unchanged.")
     expect(urls).toEqual([LIST, PREPARE])
+  })
+})
+
+describe("an edited list", () => {
+  const openedFromEditor = (replace = vi.fn()) => {
+    vi.stubGlobal("location", {
+      ...window.location,
+      replace,
+      pathname: "/settings/folders/review",
+      search: "?list=edited",
+    })
+    return replace
+  }
+
+  test("an owner with no signed folders signs the first folder from the editor", async () => {
+    saveDraft(firstFolderRequest)
+    openedFromEditor()
+    const urls = gate({
+      [PREPARE]: json(preparedFor(firstFolderIdentified)),
+      [COMPLETE]: json({ saved: true }),
+    })
+    const { device, approve } = prompt()
+    await render(device)
+    const sent = vi.mocked(fetch).mock.calls[0]?.[1]?.body
+    expect(JSON.parse(String(sent))).toEqual(firstFolderRequest)
+    expect(status()).toBe(
+      "1 folder · check each one as the host sees it, then sign."
+    )
+    await click(button(/Sign with/))
+    await act(async () => {
+      approve()
+      await settle()
+    })
+    await vi.waitFor(async () => {
+      await act(settle)
+      expect(status()).toBe("Allowed folders updated.")
+    })
+    expect(urls).toEqual([PREPARE, COMPLETE])
+    expect(readDraft()).toBeUndefined()
+  })
+
+  test("with no list kept, sends the owner back to the editor and asks for nothing", async () => {
+    const replace = openedFromEditor()
+    const urls = gate(reviewable)
+    await render(undefined, false)
+    expect(replace).toHaveBeenCalledWith("/settings/folders/edit")
+    expect(urls).toEqual([])
+  })
+
+  test("Cancel drops the kept list", async () => {
+    saveDraft(firstFolderRequest)
+    openedFromEditor()
+    gate({ [PREPARE]: json(preparedFor(firstFolderIdentified)) })
+    await render(prompt().device)
+    await click(button(/^Cancel$/))
+    expect(status()).toBe("Not signed. The allowed folders are unchanged.")
+    expect(readDraft()).toBeUndefined()
   })
 })

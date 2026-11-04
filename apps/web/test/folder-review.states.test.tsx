@@ -17,8 +17,8 @@ const body = (state: FolderReviewState) => () => (
   />
 )
 
-// Folder missing, changed since review, too many and bad id have no rows: the gate cannot
-// tell them apart yet (#584, #585) and only a list editor can produce the last two (#583).
+// Folder missing and changed since review have no rows: the gate cannot tell them apart yet
+// (#584, #585). Too many and bad id are the editor's rows (folder-editor.states.test.tsx).
 describeStates("Allowed folders review", [
   {
     state: "preparing",
