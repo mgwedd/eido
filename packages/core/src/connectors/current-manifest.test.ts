@@ -16,7 +16,7 @@ describe("currentManifest", () => {
   it("refuses a connector it has no manifest for, naming the ones it has", () => {
     expect(currentManifest("toString", ENV)).toEqual({
       ok: false,
-      error: `unknown connector "toString"; choose one of files, drive, gmail, simplefin, proton-mail, proton-calendar`,
+      error: `unknown connector "toString"; choose one of files, things, drive, gmail, simplefin, proton-mail, proton-calendar`,
     })
   })
 

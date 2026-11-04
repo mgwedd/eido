@@ -21,7 +21,9 @@
             "unavailable",
             "busy",
             "handshake_failed",
-            "auth_failed"
+            "auth_failed",
+            "things_unavailable",
+            "automation_denied"
           ],
           "maxLength": 32
         },

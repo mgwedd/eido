@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ThingsCancelTodoIntent",
+  "description": "Mark a to-do in Things as canceled.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "things.cancel_todo"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["sensitive"],
+      "maxLength": 20,
+      "description": "When 'sensitive', core's classifier flagged the text as sensitive. Inside the hashed payload."
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Things to-do ID"
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}
