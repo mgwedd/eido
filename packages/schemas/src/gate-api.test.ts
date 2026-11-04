@@ -1041,6 +1041,30 @@ describe("Proton mail read routes", () => {
     ).toBe(true)
   })
 
+  test("root_missing names the folder by its request id and nothing else", () => {
+    const missing = {
+      code: "root_missing",
+      rootId: "rental",
+      message: "the file helper could not identify this folder",
+    }
+    expect(validateGateApiError(missing).ok).toBe(true)
+    // Without the id the web app cannot say which folder; a path is never an id.
+    expect(
+      validateGateApiError({ code: missing.code, message: missing.message }).ok
+    ).toBe(false)
+    expect(
+      validateGateApiError({ ...missing, rootId: "/Users/x/Rental" }).ok
+    ).toBe(false)
+    // Only root_missing carries a root id.
+    expect(
+      validateGateApiError({
+        code: "invalid_request",
+        rootId: "rental",
+        message: "x",
+      }).ok
+    ).toBe(false)
+  })
+
   test("the error codes include the Bridge failures", () => {
     for (const code of ["handshake_failed", "auth_failed"]) {
       expect(validateGateApiError({ code, message: "Bridge" }).ok).toBe(true)

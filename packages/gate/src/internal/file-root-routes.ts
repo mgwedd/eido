@@ -1,8 +1,12 @@
 import { validateGateFileRoots } from "@eido/schemas"
-import type { GateFileRoots } from "@eido/schemas"
+import type { GateApiError, GateFileRoots } from "@eido/schemas"
 import { apiError } from "./http"
 import type { GateRequest, Reply } from "./http"
-import { prepareFileRoots, setFileRoots } from "./files/file-roots"
+import {
+  FileRootUnidentified,
+  prepareFileRoots,
+  setFileRoots,
+} from "./files/file-roots"
 import type { FileHelper } from "./files/file-helper"
 import type { WebAuthnConfig } from "./webauthn"
 
@@ -34,7 +38,8 @@ async function readJson(
 
 /**
  * Prepare: captures each requested root's canonical path and identity with the gate-side helper
- * and returns them with the challenge. The caller's paths are never echoed back.
+ * and returns them with the challenge. The caller's paths are never echoed back. A root the
+ * helper cannot identify is refused as `root_missing`, naming the request's id for it.
  */
 export async function prepareFileRootsRoute(
   request: GateRequest,
@@ -66,7 +71,16 @@ export async function prepareFileRootsRoute(
         roots,
       },
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof FileRootUnidentified) {
+      // The request's own id only: never the path or the helper's text (ADR 0006).
+      const body: GateApiError = {
+        code: "root_missing",
+        rootId: error.rootId,
+        message: "the file helper could not identify this folder",
+      }
+      return { status: 422, body }
+    }
     return apiError(400, "invalid_request", "file roots could not be prepared")
   }
 }
