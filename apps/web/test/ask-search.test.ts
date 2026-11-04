@@ -22,7 +22,7 @@ import {
 afterEach(() => vi.unstubAllGlobals())
 
 function stubFetch(response: Response | Error) {
-  const fetchMock = vi.fn(() =>
+  const fetchMock = vi.fn<typeof fetch>(() =>
     response instanceof Error
       ? Promise.reject(response)
       : Promise.resolve(response)
