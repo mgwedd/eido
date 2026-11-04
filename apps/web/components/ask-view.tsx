@@ -21,6 +21,7 @@ import {
 } from "@eido/ui/components/input-group"
 import { Separator } from "@eido/ui/components/separator"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import { InjectionFlag } from "@/components/injection-flag"
 import { ASK_INPUT_ID, consumeAskFocus } from "@/lib/shortcuts"
 import {
   actionableFollowUps,
@@ -57,12 +58,19 @@ function SourceList({ result }: { result: CoreApiAskResponse }) {
                 className="flex flex-col gap-2 break-words"
               >
                 {index > 0 && <Separator />}
-                <span
-                  className="font-mono text-xs"
-                  aria-label={`Source ${citation.tag}`}
-                >
-                  [{citation.tag}]
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="font-mono text-xs"
+                    aria-label={`Source ${citation.tag}`}
+                  >
+                    [{citation.tag}]
+                  </span>
+                  <InjectionFlag
+                    variant="button"
+                    injectionSuspected={citation.injectionSuspected}
+                    reasons={citation.injectionReasons}
+                  />
+                </div>
                 <p>{citation.title || citation.sourceRef}</p>
                 <p className="text-xs text-muted-foreground">
                   {citation.source}

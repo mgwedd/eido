@@ -2,7 +2,11 @@
 
 import Link from "next/link"
 import * as React from "react"
-import type { CoreApiDocumentType, CoreApiDocumentView } from "@eido/schemas"
+import type {
+  CoreApiDocumentType,
+  CoreApiDocumentView,
+  GateIntentInjection,
+} from "@eido/schemas"
 import { validateCoreApiDocumentView } from "@eido/schemas"
 import { Badge } from "@eido/ui/components/badge"
 import { Button, buttonVariants } from "@eido/ui/components/button"
@@ -14,6 +18,7 @@ import {
 } from "@eido/ui/components/card"
 import { Separator } from "@eido/ui/components/separator"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import { InjectionFlag } from "@/components/injection-flag"
 import { DocumentTypeControl } from "@/components/document-type-control"
 import {
   isLocalFile,
@@ -41,6 +46,9 @@ export interface DocumentViewerProps {
   page?: number
   line?: number
   from?: string
+  injectionSuspected?: boolean
+  injectionReasons?: readonly string[]
+  injection?: GateIntentInjection | { reasons?: readonly string[] } | null
 }
 
 type ViewerState =
@@ -123,6 +131,9 @@ export function DocumentViewer({
   start,
   end,
   from,
+  injectionSuspected,
+  injectionReasons,
+  injection,
 }: DocumentViewerProps) {
   const [state, setState] = React.useState<ViewerState>({ status: "loading" })
   const [pendingTrash, setPendingTrash] = React.useState(false)
@@ -385,7 +396,14 @@ export function DocumentViewer({
         ) : null}
 
         <div className="flex flex-col gap-2">
-          <h1 className="text-xl font-semibold tracking-tight">{docTitle}</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight">{docTitle}</h1>
+            <InjectionFlag
+              injection={injection}
+              injectionSuspected={injectionSuspected}
+              reasons={injectionReasons}
+            />
+          </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <Badge variant="outline">{doc.source}</Badge>
             {doc.entity ? (

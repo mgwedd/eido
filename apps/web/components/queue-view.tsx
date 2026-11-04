@@ -20,6 +20,7 @@ import {
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { QueueContextUsed } from "@/components/queue-context-used"
 import { QueueEditSheet } from "@/components/queue-edit-sheet"
+import { InjectionFlag } from "@/components/injection-flag"
 import { ShortcutKeys } from "@/components/shortcuts-provider"
 import { useKeydown } from "@/hooks/use-keydown"
 import { shortHash } from "@/lib/approval/challenge"
@@ -549,16 +550,25 @@ function ApprovalCard({
               {label}
             </p>
           ) : null}
-          <h2
-            id={`card-${intent.id}`}
-            ref={heading}
-            tabIndex={-1}
-            className="text-lg font-semibold outline-none"
-          >
-            {confirmData
-              ? `Confirm ${confirmData.documentTitle ? `${confirmData.documentTitle} ` : ""}${formatFieldLabel(confirmData.field)}`
-              : (view?.title ?? describeKind(intent.kind))}
-          </h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2
+              id={`card-${intent.id}`}
+              ref={heading}
+              tabIndex={-1}
+              className="text-lg font-semibold outline-none"
+            >
+              {confirmData
+                ? `Confirm ${confirmData.documentTitle ? `${confirmData.documentTitle} ` : ""}${formatFieldLabel(confirmData.field)}`
+                : (view?.title ?? describeKind(intent.kind))}
+            </h2>
+            <InjectionFlag
+              injection={
+                (card.status === "ready"
+                  ? card.prepared.injection
+                  : undefined) ?? intent.injection
+              }
+            />
+          </div>
           {card.status === "loading" ? (
             <>
               <p role="status" className="sr-only">
