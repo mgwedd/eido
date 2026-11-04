@@ -25,7 +25,9 @@ import { cn } from "@eido/ui/lib/utils"
 import {
   formatAmount,
   formatPostedDate,
+  formatStoredTimestamp,
   linkedObligationUrl,
+  loadCachedTransactions,
   loadTransactions,
   summarizeTransactions,
   TRANSACTIONS_PAGE_SIZE,
@@ -38,12 +40,15 @@ import { loadEntities, type FilterEntity } from "@/lib/today-due-soon"
 export type TransactionsState =
   | { status: "loading" }
   | { status: "error" }
+  | { status: "offline" }
   | {
       status: "ready"
       rows: readonly TransactionItem[]
       nextOffset: number | null
       /** Loading the next page: idle, in flight, or failed (the rows already shown stay). */
       more: "idle" | "loading" | "error"
+      /** Set when the displayed rows are read from the device's offline cache. */
+      storedAt?: string
     }
 
 export interface TransactionsViewProps {
@@ -328,6 +333,18 @@ export function TransactionsBody({
       </div>
     )
   }
+  if (state.status === "offline") {
+    return (
+      <div
+        className="flex flex-col items-center gap-3 rounded-lg border border-border p-6 text-center"
+        data-testid="transactions-offline"
+      >
+        <p role="status" className="text-sm text-muted-foreground">
+          Offline. Transactions are not stored on this device.
+        </p>
+      </div>
+    )
+  }
   if (state.rows.length === 0) {
     return (
       <div className="flex flex-col items-center gap-3 rounded-lg border border-border p-6 text-center">
@@ -351,6 +368,22 @@ export function TransactionsBody({
   }
   return (
     <div className="flex flex-col gap-4">
+      {state.storedAt ? (
+        <div
+          className="flex items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-2.5 text-xs text-muted-foreground"
+          data-testid="transactions-offline-cached"
+        >
+          <span role="status">
+            Offline · Stored {formatStoredTimestamp(state.storedAt)}
+          </span>
+          <Badge
+            variant="outline"
+            className="text-[10px] font-semibold tracking-wider uppercase"
+          >
+            Cached
+          </Badge>
+        </div>
+      ) : null}
       <TransactionsTable rows={state.rows} now={now} />
       <TransactionsList rows={state.rows} now={now} />
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -362,7 +395,7 @@ export function TransactionsBody({
             Could not load more transactions.
           </p>
         ) : null}
-        {state.nextOffset !== null ? (
+        {state.storedAt === undefined && state.nextOffset !== null ? (
           <Button
             variant="outline"
             onClick={onLoadMore}
@@ -395,7 +428,25 @@ export function TransactionsView({
     const controller = new AbortController()
     void (async () => {
       const res = await loadEntities(controller.signal)
-      if (res.status === "ok") setEntities(res.entities)
+      if (res.status === "ok") {
+        setEntities(res.entities)
+      } else {
+        const cached = loadCachedTransactions()
+        if (cached) {
+          const map = new Map<string, FilterEntity>()
+          for (const t of cached.data.transactions) {
+            if (!map.has(t.entity.id)) {
+              map.set(t.entity.id, {
+                id: t.entity.id,
+                name: t.entity.name,
+                kind: t.entity.tag,
+                tag: t.entity.tag,
+              })
+            }
+          }
+          if (map.size > 0) setEntities(Array.from(map.values()))
+        }
+      }
     })()
     return () => controller.abort()
   }, [])
@@ -417,6 +468,27 @@ export function TransactionsView({
           nextOffset: res.data.nextOffset,
           more: "idle",
         })
+      } else if (res.status === "offline") {
+        const cached = loadCachedTransactions()
+        if (cached && cached.data.transactions.length > 0) {
+          setAccounts(cached.data.accounts)
+          let rows = cached.data.transactions
+          if (entity !== "all") {
+            rows = rows.filter((r) => r.entity.id === entity)
+          }
+          if (account !== "all") {
+            rows = rows.filter((r) => r.account.id === account)
+          }
+          setState({
+            status: "ready",
+            rows,
+            nextOffset: null,
+            more: "idle",
+            storedAt: cached.storedAt,
+          })
+        } else {
+          setState({ status: "offline" })
+        }
       } else {
         setState({ status: "error" })
       }

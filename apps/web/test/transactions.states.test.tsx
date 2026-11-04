@@ -52,6 +52,12 @@ describeStates("Transactions", [
     message: "Oct 1 – Oct 17 · 2 transactions",
   },
   {
+    state: "offline",
+    render: body({ status: "offline" }),
+    role: "status",
+    message: "Offline. Transactions are not stored on this device.",
+  },
+  {
     state: "error",
     render: body({ status: "error" }),
     role: "alert",

@@ -8,6 +8,74 @@ export type TransactionAccount = CoreApiTransactionList["accounts"][number]
 
 export const TRANSACTIONS_URL = "/api/core/transactions"
 export const TRANSACTIONS_PAGE_SIZE = 50
+export const TRANSACTIONS_CACHE_KEY = "eido.transactions.cache"
+
+export interface CachedTransactions {
+  storedAt: string
+  data: CoreApiTransactionList
+}
+
+export function loadCachedTransactions(): CachedTransactions | null {
+  if (typeof window === "undefined" || !window.localStorage) return null
+  try {
+    const raw = window.localStorage.getItem(TRANSACTIONS_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as unknown
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "storedAt" in parsed &&
+      typeof parsed.storedAt === "string" &&
+      "data" in parsed
+    ) {
+      const validated = validateCoreApiTransactionList(parsed.data)
+      if (validated.ok) {
+        return {
+          storedAt: parsed.storedAt,
+          data: validated.value,
+        }
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+export function saveCachedTransactions(
+  data: CoreApiTransactionList,
+  now: Date = new Date()
+): void {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    const entry: CachedTransactions = {
+      storedAt: now.toISOString(),
+      data,
+    }
+    window.localStorage.setItem(TRANSACTIONS_CACHE_KEY, JSON.stringify(entry))
+  } catch {
+    // Storage quota or permissions
+  }
+}
+
+export function clearCachedTransactions(): void {
+  if (typeof window === "undefined" || !window.localStorage) return
+  try {
+    window.localStorage.removeItem(TRANSACTIONS_CACHE_KEY)
+  } catch {
+    // Storage disabled
+  }
+}
+
+/** Formats a stored timestamp for display, e.g. "Oct 17, 2026, 9:04 AM". */
+export function formatStoredTimestamp(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date)
+}
 
 export interface LoadTransactionsOptions {
   entity?: string
@@ -18,6 +86,7 @@ export interface LoadTransactionsOptions {
 
 export type TransactionsLoadResult =
   | { status: "ok"; data: CoreApiTransactionList }
+  | { status: "offline" }
   | { status: "unauthenticated" }
   | { status: "error"; message: string }
 
@@ -62,10 +131,23 @@ export async function loadTransactions(
         message: `Invalid schema: ${parsed.errors.join("; ")}`,
       }
     }
+    if (
+      (options.entity === undefined || options.entity === "all") &&
+      (options.account === undefined || options.account === "all") &&
+      (options.offset === undefined || options.offset === 0)
+    ) {
+      saveCachedTransactions(parsed.value)
+    }
     return { status: "ok", data: parsed.value }
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw error
+    }
+    if (
+      (typeof navigator !== "undefined" && navigator.onLine === false) ||
+      error instanceof TypeError
+    ) {
+      return { status: "offline" }
     }
     return {
       status: "error",
