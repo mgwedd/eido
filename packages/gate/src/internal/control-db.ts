@@ -226,6 +226,14 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
   // health.rateLimit use them.
   `ALTER TABLE connectors ADD COLUMN quota_day TEXT;
    ALTER TABLE connectors ADD COLUMN quota_requests INTEGER NOT NULL DEFAULT 0;`,
+  // The owner-signed sensitivity configuration overrides (#304). Loaded only after its
+  // policy.set approval on target sensitivity, its audit row and the chain verify.
+  `CREATE TABLE approved_sensitivity (
+     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+     payload_json TEXT NOT NULL,
+     payload_hash TEXT NOT NULL,
+     approval_id TEXT NOT NULL REFERENCES control_approvals(id)
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

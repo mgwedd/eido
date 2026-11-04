@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "patterns": {
+    "email": "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+    "phone": "(?:\\+?\\d{1,3}[-.\\s]?)?\\(?\\d{3}\\)?[-.\\s]?\\d{3}[-.\\s]?\\d{4}",
+    "longDigits": "\\b\\d{12,}\\b"
+  },
+  "terms": {
+    "health": [
+      "doctor",
+      "hospital",
+      "clinic",
+      "physician",
+      "diagnosis",
+      "prescription",
+      "medication",
+      "therapy",
+      "psychiatrist",
+      "psychologist",
+      "medical",
+      "treatment",
+      "surgery",
+      "biopsy",
+      "oncology",
+      "patient",
+      "symptom",
+      "blood test"
+    ],
+    "legal": [
+      "lawyer",
+      "attorney",
+      "lawsuit",
+      "subpoena",
+      "court",
+      "litigation",
+      "deposition",
+      "indictment",
+      "settlement",
+      "affidavit",
+      "contract",
+      "nda",
+      "prosecutor",
+      "defendant",
+      "plaintiff"
+    ],
+    "money": [
+      "salary",
+      "bank account",
+      "routing number",
+      "credit card",
+      "wire transfer",
+      "social security",
+      "ssn",
+      "tax return",
+      "mortgage",
+      "compensation",
+      "payroll",
+      "invoice",
+      "debt",
+      "loan"
+    ]
+  }
+}

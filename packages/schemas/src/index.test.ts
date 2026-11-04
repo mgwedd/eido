@@ -425,6 +425,7 @@ const VALID: Record<string, unknown> = {
   "calendar.edit": { eventUid: "uid-1", title: "Dentist (moved)", start: ISO },
   "calendar.delete": { eventUid: "uid-1" },
   "reminder.create": { list: "Home", title: "Call back", due: ISO, notes: "n" },
+  "things.add_todo": { title: "Buy milk" },
   "file.create": { root: "docs", path: "a/b.txt", content: "x" },
   "file.rename": { root: "docs", path: "a/b.txt", newName: "c.txt" },
   "file.move": { root: "docs", path: "a/b.txt", toPath: "d/b.txt" },
@@ -541,14 +542,14 @@ describe("verbs", () => {
 
   test("one schema file per verb, named intent-<area>-<verb>.schema.json", () => {
     const files = readdirSync(schemaDir).filter((f) =>
-      /^intent-[a-z]+-[A-Za-z]+\.schema\.json$/.test(f)
+      /^intent-[a-z]+-[A-Za-z_]+\.schema\.json$/.test(f)
     )
     const kinds = files.map((f) => {
       const schema = JSON.parse(readFileSync(join(schemaDir, f), "utf8")) as {
         properties: { kind: { const: string } }
       }
       const [, area, verb] =
-        /^intent-([a-z]+)-([A-Za-z]+)\.schema\.json$/.exec(f) ?? []
+        /^intent-([a-z]+)-([A-Za-z_]+)\.schema\.json$/.exec(f) ?? []
       expect(schema.properties.kind.const).toBe(`${area}.${verb}`)
       return schema.properties.kind.const
     })

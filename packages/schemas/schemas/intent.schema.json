@@ -43,6 +43,9 @@
       "$ref": "intent-reminder-create.schema.json"
     },
     {
+      "$ref": "intent-things-add_todo.schema.json"
+    },
+    {
       "$ref": "intent-file-create.schema.json"
     },
     {

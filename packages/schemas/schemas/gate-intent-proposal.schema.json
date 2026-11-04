@@ -45,6 +45,12 @@
       "maxLength": 2000,
       "description": "The agent's note on why it proposes the intent, shown on the approval card. Stored next to the intent, never in the payload or its hash."
     },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["sensitive"],
+      "maxLength": 20,
+      "description": "Escalation flag from core's classifier: when 'sensitive', escalates an auto write to approval. Absence means not flagged; 'normal' is not allowed."
+    },
     "injection": {
       "$ref": "gate-intent-injection.schema.json"
     }

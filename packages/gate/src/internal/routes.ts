@@ -136,6 +136,9 @@ async function proposeRoute(
     ...(proposal.injection === undefined
       ? {}
       : { injection: proposal.injection }),
+    ...(proposal.sensitivity === undefined
+      ? {}
+      : { sensitivity: proposal.sensitivity }),
   })
   if (result.ok) {
     if (result.state === "pending") gate.notifyPending?.()
