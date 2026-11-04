@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ThingsScheduleTodoIntent",
+  "description": "Schedule a to-do in Things for a date.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "things.schedule_todo"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["sensitive"],
+      "maxLength": 20,
+      "description": "When 'sensitive', core's classifier flagged the text as sensitive. Inside the hashed payload."
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Things to-do ID"
+        },
+        "when": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Date to schedule for (e.g. yyyy-mm-dd or today/tomorrow)"
+        }
+      },
+      "required": ["id", "when"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

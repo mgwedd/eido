@@ -125,6 +125,11 @@ export const FILE_OPS: readonly Op[] = [
 
 export const THINGS_OPS: readonly Op[] = [
   op("add_todo", "things.add_todo", "reversible", "auto"),
+  op("update_todo", "things.update_todo", "irreversible", "approval"),
+  op("schedule_todo", "things.schedule_todo", "irreversible", "approval"),
+  op("complete_todo", "things.complete_todo", "irreversible", "approval"),
+  op("cancel_todo", "things.cancel_todo", "irreversible", "approval"),
+  op("add_project", "things.add_project", "irreversible", "approval"),
 ]
 
 const ARGS = {
@@ -170,6 +175,11 @@ const ARGS = {
   "calendar.delete": { eventUid: "evt-1" },
   "reminder.create": { list: "Inbox", title: BODY_MARKER },
   "things.add_todo": { title: BODY_MARKER },
+  "things.update_todo": { id: "todo-1", title: BODY_MARKER },
+  "things.schedule_todo": { id: "todo-1", when: "today" },
+  "things.complete_todo": { id: "todo-1" },
+  "things.cancel_todo": { id: "todo-1" },
+  "things.add_project": { title: BODY_MARKER },
   "file.create": { root: ALLOWED_ROOT, path: "a.txt", content: BODY_MARKER },
   "file.rename": { root: ALLOWED_ROOT, path: "a.txt", newName: "b.txt" },
   "file.move": { root: ALLOWED_ROOT, path: "a.txt", toPath: "old/a.txt" },

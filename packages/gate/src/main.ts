@@ -18,6 +18,12 @@ import type {
 } from "./internal/connector-connect"
 import { egressProbe, startEgressProxy } from "./internal/egress"
 import { GMAIL_CONNECTOR, GMAIL_WRITERS } from "./internal/gmail-writers"
+import { THINGS_CONNECTOR } from "./internal/things/things-routes"
+import { createThingsReads } from "./internal/things/things-adapter"
+import {
+  THINGS_WRITERS,
+  createThingsTransport,
+} from "./internal/things/things-writers"
 import { openControlDb } from "./internal/control-db"
 import { createExecutor } from "./internal/executor"
 import {
@@ -563,9 +569,11 @@ export async function runGate(
       mail === undefined
         ? () => Promise.reject(new Error("Bridge is not configured"))
         : bridgeTransport(mail)
+    const things = createThingsReads()
+    const thingsTransport = createThingsTransport()
     const executor = createExecutor(
       db,
-      [...BRIDGE_WRITERS, ...GMAIL_WRITERS],
+      [...BRIDGE_WRITERS, ...GMAIL_WRITERS, ...THINGS_WRITERS],
       (request) =>
         request.connector === GMAIL_CONNECTOR
           ? gmail === undefined
@@ -574,13 +582,15 @@ export async function runGate(
           : request.connector === PROTON_CONNECTOR ||
               request.connector === PROTON_CALENDAR_CONNECTOR
             ? protonTransport(request)
-            : Promise.reject(new Error("no write transport for connector")),
+            : request.connector === THINGS_CONNECTOR
+              ? thingsTransport(request)
+              : Promise.reject(new Error("no write transport for connector")),
       nativeFiles
     )
     const execute = (id: string) => executor.execute(id)
     const dataPlane = createGateServer(
       "data-plane",
-      dataPlaneHandler(state, mail, execute),
+      dataPlaneHandler(state, mail, execute, things),
       log
     )
     const control = createGateServer("control", controlHandler(state, now), log)

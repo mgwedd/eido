@@ -25,6 +25,8 @@ import { listPasskeys, revokeByFingerprint } from "./credentials"
 import { issueEnrolmentCode } from "./enrolment"
 import { mailRoute } from "./bridge/mail-routes"
 import type { MailReads } from "./bridge/mail-routes"
+import { thingsRoute } from "./things/things-routes"
+import type { ThingsReads } from "./things/things-adapter"
 import { payloadHash } from "./canonical"
 import { apiError, NOT_FOUND } from "./http"
 import type { GateRequest, Handler, Reply } from "./http"
@@ -425,7 +427,8 @@ function readRoute(request: GateRequest, gate: GateState): Reply | undefined {
 export function dataPlaneHandler(
   gate: () => GateState,
   mail?: MailReads,
-  execute?: (id: string) => Promise<ExecutionResult>
+  execute?: (id: string) => Promise<ExecutionResult>,
+  things?: ThingsReads
 ): Handler {
   return async (request) => {
     const state = gate()
@@ -439,6 +442,11 @@ export function dataPlaneHandler(
     if (request.method === "POST" && request.path === "/audit") {
       return auditRoute(request, state)
     }
+    const thingsReply =
+      things === undefined
+        ? undefined
+        : await thingsRoute(request, state.db, things)
+    if (thingsReply !== undefined) return thingsReply
     const mailReply =
       mail === undefined ? undefined : mailRoute(request, state.db, mail)
     return (

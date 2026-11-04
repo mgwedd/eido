@@ -46,6 +46,21 @@
       "$ref": "intent-things-add_todo.schema.json"
     },
     {
+      "$ref": "intent-things-update_todo.schema.json"
+    },
+    {
+      "$ref": "intent-things-schedule_todo.schema.json"
+    },
+    {
+      "$ref": "intent-things-complete_todo.schema.json"
+    },
+    {
+      "$ref": "intent-things-cancel_todo.schema.json"
+    },
+    {
+      "$ref": "intent-things-add_project.schema.json"
+    },
+    {
       "$ref": "intent-file-create.schema.json"
     },
     {

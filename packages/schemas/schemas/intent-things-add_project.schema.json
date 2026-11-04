@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ThingsAddProjectIntent",
+  "description": "Create a new project in Things.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "things.add_project"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["sensitive"],
+      "maxLength": 20,
+      "description": "When 'sensitive', core's classifier flagged the text as sensitive. Inside the hashed payload."
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "Project title"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 20000,
+          "description": "Project notes"
+        },
+        "when": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "When"
+        },
+        "deadline": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Deadline"
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "area": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Area title or ID"
+        }
+      },
+      "required": ["title"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

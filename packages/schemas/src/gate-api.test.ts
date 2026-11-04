@@ -33,6 +33,11 @@ import {
   validateGateFileRootsCompletion,
   validateGateFileRootsSaved,
   validateGateSession,
+  validateGateThingsAreaList,
+  validateGateThingsProjectList,
+  validateGateThingsTagList,
+  validateGateThingsTodoItem,
+  validateGateThingsTodoList,
   gateAuditDisplayActor,
 } from "./index"
 import type { ValidationResult } from "./index"
@@ -478,7 +483,7 @@ describe("decision result and error", () => {
     expect(
       errorsOf(validateGateApiError({ code: "teapot", message: "x" }))
     ).toEqual([
-      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable", "busy", "handshake_failed", "auth_failed"',
+      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable", "busy", "handshake_failed", "auth_failed", "things_unavailable", "automation_denied"',
     ])
     expect(
       errorsOf(validateGateApiError({ code: "not_found", message: "" }))
@@ -1273,5 +1278,47 @@ describe("allowed folders signing", () => {
   test("a saved result is only saved: true", () => {
     expect(validateGateFileRootsSaved({ saved: true }).ok).toBe(true)
     expect(validateGateFileRootsSaved({ saved: false }).ok).toBe(false)
+  })
+})
+
+describe("Things gate schemas", () => {
+  const item = {
+    id: "item-1",
+    name: "Clean desk",
+    status: "open",
+    notes: "Dust monitor",
+    tags: ["Home"],
+    area: "Personal",
+    project: null,
+    dueDate: "2026-11-10",
+    activationDate: null,
+    modificationDate: "2026-11-03",
+    creationDate: "2026-11-01",
+  }
+
+  test("validates a to-do item and list", () => {
+    expect(validateGateThingsTodoItem(item).ok).toBe(true)
+    expect(validateGateThingsTodoList({ items: [item] }).ok).toBe(true)
+    expect(validateGateThingsTodoItem({ ...item, status: "unknown" }).ok).toBe(
+      false
+    )
+  })
+
+  test("validates project, area and tag lists", () => {
+    const project = {
+      id: "proj-1",
+      name: "Q4 Goals",
+      area: "Work",
+      status: "open",
+      headings: ["Launch", "Wrap up"],
+      todoCount: 5,
+    }
+    expect(validateGateThingsProjectList({ projects: [project] }).ok).toBe(true)
+    expect(
+      validateGateThingsAreaList({ areas: [{ id: "area-1", name: "Work" }] }).ok
+    ).toBe(true)
+    expect(validateGateThingsTagList({ tags: ["Urgent", "Later"] }).ok).toBe(
+      true
+    )
   })
 })
