@@ -6,7 +6,7 @@ import { useTheme } from "next-themes"
 import * as React from "react"
 
 import { Badge } from "@eido/ui/components/badge"
-import { Button } from "@eido/ui/components/button"
+import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { Switch } from "@eido/ui/components/switch"
@@ -26,9 +26,11 @@ import {
   aboutInfo,
   chainReason,
   chainSummary,
+  folderCount,
   isRevoked,
   loadAuditChain,
   loadBackupStatus,
+  loadFileRoots,
   loadPasskeys,
   loadPermissions,
   reasonLabel,
@@ -37,6 +39,7 @@ import {
   type AboutInfo,
   type BackupStatus,
   type ChainStatus,
+  type FileRoots,
   type Passkey,
   type PermissionList,
   type SectionLoad,
@@ -49,6 +52,7 @@ type SettingsData = {
   permissions: Settled<PermissionList>
   backup: Settled<BackupStatus>
   chain: Settled<ChainStatus>
+  fileRoots: Settled<FileRoots>
 }
 
 type SettingsState =
@@ -65,13 +69,15 @@ function useSettings(): { state: SettingsState; retry: () => void } {
       loadPermissions(controller.signal),
       loadBackupStatus(controller.signal),
       loadAuditChain(controller.signal),
-    ]).then(([passkeys, permissions, backup, chain]) => {
+      loadFileRoots(controller.signal),
+    ]).then(([passkeys, permissions, backup, chain, fileRoots]) => {
       if (controller.signal.aborted) return
       if (
         passkeys.status === "unauthenticated" ||
         permissions.status === "unauthenticated" ||
         backup.status === "unauthenticated" ||
-        chain.status === "unauthenticated"
+        chain.status === "unauthenticated" ||
+        fileRoots.status === "unauthenticated"
       ) {
         window.location.replace(
           expiredUnlockUrl(window.location.pathname + window.location.search)
@@ -87,6 +93,7 @@ function useSettings(): { state: SettingsState; retry: () => void } {
         permissions,
         backup,
         chain,
+        fileRoots,
       })
     })
     return () => controller.abort()
@@ -428,7 +435,37 @@ function PermissionsSection({ load }: { load: SettingsData["permissions"] }) {
   )
 }
 
-function DataSection({ load }: { load: SettingsData["backup"] }) {
+function AllowedFoldersRow({ load }: { load: SettingsData["fileRoots"] }) {
+  if (load.status !== "ready")
+    return <SectionError load={load} what="Allowed folder list" />
+  const count = load.value.roots.length
+  return (
+    <div className="flex min-h-11 items-center justify-between gap-3">
+      <span className="flex min-w-0 flex-col">
+        <span className="text-sm">Allowed folders</span>
+        <span className="text-xs text-muted-foreground">
+          {folderCount(count)}
+        </span>
+      </span>
+      {count > 0 ? (
+        <Link
+          href="/settings/folders/review"
+          className={`${buttonVariants({ variant: "outline" })} min-h-11`}
+        >
+          Review
+        </Link>
+      ) : null}
+    </div>
+  )
+}
+
+function DataSection({
+  load,
+  fileRoots,
+}: {
+  load: SettingsData["backup"]
+  fileRoots: SettingsData["fileRoots"]
+}) {
   return (
     <Section
       id="data"
@@ -472,6 +509,7 @@ function DataSection({ load }: { load: SettingsData["backup"] }) {
       ) : (
         <SectionError load={load} what="Backup status" />
       )}
+      <AllowedFoldersRow load={fileRoots} />
     </Section>
   )
 }
@@ -569,6 +607,7 @@ function SettingsBody({
     state.permissions,
     state.backup,
     state.chain,
+    state.fileRoots,
   ].some((s) => s.status === "offline" || s.status === "error")
   return (
     <>
@@ -577,7 +616,7 @@ function SettingsBody({
       <NotificationsSection key="notifications" device={pushDevice} />
       <PasskeysSection load={state.passkeys} />
       <PermissionsSection load={state.permissions} />
-      <DataSection load={state.backup} />
+      <DataSection load={state.backup} fileRoots={state.fileRoots} />
       <SecuritySection load={state.chain} />
       {about ? <AboutSection info={about} /> : null}
       {failed ? (
