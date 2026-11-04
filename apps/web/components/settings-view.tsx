@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useTheme } from "next-themes"
 import * as React from "react"
 
+import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
 import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
@@ -711,9 +712,9 @@ function SimpleFinAccountsSection() {
           </p>
         )}
         {failedName === null ? null : (
-          <p role="alert" className="text-sm text-destructive">
-            {saveErrorMessage(failedName)}
-          </p>
+          <Alert variant="destructive">
+            <AlertDescription>{saveErrorMessage(failedName)}</AlertDescription>
+          </Alert>
         )}
         <div
           aria-hidden
