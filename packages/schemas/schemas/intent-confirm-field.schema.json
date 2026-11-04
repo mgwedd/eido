@@ -7,6 +7,12 @@
     "kind": {
       "const": "confirm.field"
     },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["sensitive"],
+      "maxLength": 20,
+      "description": "When 'sensitive', core's classifier flagged the text as sensitive. Inside the hashed payload."
+    },
     "args": {
       "type": "object",
       "properties": {

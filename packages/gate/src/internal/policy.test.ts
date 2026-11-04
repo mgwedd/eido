@@ -8,6 +8,7 @@ import { payloadHash } from "./canonical"
 import { checkDrift } from "./connectors"
 import {
   OVERLAY_FILE,
+  SENSITIVITY_OVERLAY_FILE,
   ownerConfigOwnershipError,
   ownershipError,
   SHIPPED_DEFAULT_PATH,
@@ -28,6 +29,7 @@ import {
   setup,
   signedFileRoots,
   signedPolicy,
+  signedSensitivity,
   signedPin,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
@@ -116,6 +118,7 @@ describe("the default tier table", () => {
     ["file.rename", "auto"],
     ["file.move", "auto"],
     ["file.delete", "approval"],
+    ["things.add_todo", "auto"],
   ]
   it.each(rows)("%s is %s", async (kind, tier) => {
     const { db, policy } = fresh()
@@ -594,5 +597,258 @@ describe("invalid overlays are rejected, not applied, and audited", () => {
     expect(() => loadPolicy(s.db, { ...s.options, shippedPath })).toThrow(
       "invalid shipped permission table: permissions.default.json: version must be a positive integer"
     )
+  })
+})
+
+describe("the sensitivity guard", () => {
+  it("escalates an auto write with sensitivity: 'sensitive' to approval; without it gets policy tier", () => {
+    const s = fresh()
+    const normalTodo = {
+      kind: "things.add_todo" as const,
+      args: { title: "buy printer paper" },
+    }
+    const sensitiveTodo = {
+      ...normalTodo,
+      sensitivity: "sensitive" as const,
+    }
+    expect(intentTier(s.db, s.policy, normalTodo)).toEqual({ tier: "auto" })
+    expect(intentTier(s.db, s.policy, sensitiveTodo)).toEqual({
+      tier: "approval",
+    })
+  })
+
+  it("escalates another auto write with sensitivity: 'sensitive' to approval", async () => {
+    const s = fresh()
+    await signedFileRoots(s.db, {
+      roots: [
+        {
+          id: "notes",
+          root: {
+            path: "/srv/example/notes",
+            dev: "2a",
+            ino: "1001",
+            trashDir: "trash",
+          },
+        },
+      ],
+    })
+    const normalFile = sample("file.create")
+    const sensitiveFile = {
+      ...normalFile,
+      sensitivity: "sensitive" as const,
+    }
+    expect(intentTier(s.db, s.policy, normalFile)).toEqual({ tier: "auto" })
+    expect(intentTier(s.db, s.policy, sensitiveFile)).toEqual({
+      tier: "approval",
+    })
+  })
+
+  describe("gate deterministic check on free text", () => {
+    it.each([
+      ["email address", "Email team at contact@example.com for update"],
+      ["phone number", "Call reception at 555-123-4567"],
+      ["phone number with parens", "Call (555) 234-5678 today"],
+      ["12-digit number", "Billing reference 123456789012"],
+      ["health term (doctor)", "Book doctor appointment"],
+      ["health term (medical)", "Review medical diagnosis"],
+      ["health term (prescription)", "Pick up prescription at pharmacy"],
+      ["legal term (lawyer)", "Consult lawyer regarding agreement"],
+      ["legal term (lawsuit)", "Prepare lawsuit documents"],
+      ["money term (salary)", "Discuss annual salary increase"],
+      ["money term (mortgage)", "Send mortgage payment"],
+    ])(
+      "escalates auto to-do containing %s to approval with no core flag",
+      (_label, title) => {
+        const s = fresh()
+        const intent = {
+          kind: "things.add_todo" as const,
+          args: { title },
+        }
+        expect(intentTier(s.db, s.policy, intent)).toEqual({ tier: "approval" })
+      }
+    )
+
+    it("checks free text across notes, text, and checklist items", () => {
+      const s = fresh()
+      const withNotes = {
+        kind: "things.add_todo" as const,
+        args: {
+          title: "Buy groceries",
+          notes: "Doctor said to avoid sugar",
+        },
+      }
+      const withChecklist = {
+        kind: "things.add_todo" as const,
+        args: {
+          title: "Errands",
+          checklist: ["Apples", "Call 555-987-6543"],
+        },
+      }
+      expect(intentTier(s.db, s.policy, withNotes)).toEqual({
+        tier: "approval",
+      })
+      expect(intentTier(s.db, s.policy, withChecklist)).toEqual({
+        tier: "approval",
+      })
+    })
+
+    it("leaves ordinary synthetic to-do text ('buy printer paper') as auto", () => {
+      const s = fresh()
+      const intent = {
+        kind: "things.add_todo" as const,
+        args: { title: "buy printer paper" },
+      }
+      expect(intentTier(s.db, s.policy, intent)).toEqual({ tier: "auto" })
+    })
+
+    it("leaves ordinary multi-field to-do text as auto", () => {
+      const s = fresh()
+      const intent = {
+        kind: "things.add_todo" as const,
+        args: {
+          title: "clean garage",
+          notes: "reorganize shelves and sweep floor",
+          checklist: ["boxes", "brooms", "tools"],
+        },
+      }
+      expect(intentTier(s.db, s.policy, intent)).toEqual({ tier: "auto" })
+    })
+  })
+
+  describe("tier invariants (cannot lower below policy table)", () => {
+    it("never lowers approval tier to auto even with benign text and no sensitivity", () => {
+      const s = fresh()
+      const emailSend = sample("email.send")
+      expect(intentTier(s.db, s.policy, emailSend)).toEqual({
+        tier: "approval",
+      })
+      const confirmField = sample("confirm.field")
+      expect(intentTier(s.db, s.policy, confirmField)).toEqual({
+        tier: "approval",
+      })
+    })
+
+    it("never lowers forbidden tier to auto or approval", () => {
+      const s = fresh()
+      const badRoot = {
+        kind: "file.create" as const,
+        args: {
+          root: "unauthorized_root",
+          path: "/unauthorized/path/file.txt",
+          content: "Hello",
+        },
+        sensitivity: "sensitive" as const,
+      }
+      expect(intentTier(s.db, s.policy, badRoot)).toEqual({
+        tier: "forbidden",
+        reason: "root_not_allowed",
+      })
+    })
+  })
+
+  describe("signed sensitivity overlay", () => {
+    it("extends terms and patterns with a signed overlay", () => {
+      const s = fresh()
+      const customTodo = {
+        kind: "things.add_todo" as const,
+        args: { title: "Work on Project Alpha" },
+      }
+      // Before overlay, Project Alpha is auto
+      expect(intentTier(s.db, s.policy, customTodo)).toEqual({ tier: "auto" })
+
+      // Sign and apply overlay with custom term
+      const overlay = {
+        version: 1,
+        terms: {
+          internal: ["Project Alpha"],
+        },
+      }
+      s.writeSensitivityOverlay(overlay)
+      signedSensitivity(s.db, overlay)
+      const { policy } = loadPolicy(s.db, s.options, s.policy)
+      expect(policy.sensitivity.terms["internal"]).toEqual(["Project Alpha"])
+      expect(intentTier(s.db, policy, customTodo)).toEqual({ tier: "approval" })
+    })
+
+    it("rejects an invalid sensitivity overlay file and keeps prior config", () => {
+      const s = fresh()
+      const validOverlay = {
+        version: 1,
+        terms: {
+          internal: ["custom_term_a"],
+        },
+      }
+      s.writeSensitivityOverlay(validOverlay)
+      signedSensitivity(s.db, validOverlay)
+      const applied = loadPolicy(s.db, s.options, s.policy).policy
+
+      // Now write invalid overlay with bad regex
+      s.writeSensitivityOverlay({
+        version: 1,
+        patterns: { broken: "(unclosed" },
+      })
+      const { policy, errors } = loadPolicy(s.db, s.options, applied)
+      expect(errors).toContain(
+        'sensitivity.json: pattern "broken" is not a valid regex'
+      )
+      expect(policy).toBe(applied)
+    })
+
+    it("rejects non-JSON sensitivity overlay", () => {
+      const s = fresh()
+      writeFileSync(
+        join(s.dataDir, SENSITIVITY_OVERLAY_FILE),
+        "not valid json {{{"
+      )
+      const { policy, errors } = loadPolicy(s.db, s.options)
+      expect(errors).toContain("sensitivity.json: not valid JSON")
+      expect(policy.sensitivity).toBeDefined()
+    })
+
+    it("rejects directory sensitivity overlay", () => {
+      const s = fresh()
+      mkdirSync(join(s.dataDir, SENSITIVITY_OVERLAY_FILE))
+      const { policy, errors } = loadPolicy(s.db, s.options)
+      expect(errors).toContain("sensitivity.json: not a regular file")
+      expect(policy.sensitivity).toBeDefined()
+    })
+
+    it.each([
+      [
+        "not an object",
+        [],
+        "sensitivity.json: expected an object with version and optional patterns or terms",
+      ],
+      [
+        "missing version",
+        {},
+        "sensitivity.json: version must be a positive integer",
+      ],
+      [
+        "non-object patterns",
+        { version: 1, patterns: "bad" },
+        "sensitivity.json: patterns must be an object of regex strings",
+      ],
+      [
+        "empty pattern",
+        { version: 1, patterns: { empty: "" } },
+        'sensitivity.json: pattern "empty" must be a non-empty string',
+      ],
+      [
+        "non-object terms",
+        { version: 1, terms: "bad" },
+        "sensitivity.json: terms must be an object of string arrays",
+      ],
+      [
+        "non-array term category",
+        { version: 1, terms: { cat: "bad" } },
+        'sensitivity.json: terms category "cat" must be an array of non-empty strings',
+      ],
+    ])("rejects sensitivity overlay %s", (_name, overlay, error) => {
+      const s = fresh()
+      s.writeSensitivityOverlay(overlay)
+      const { errors } = loadPolicy(s.db, s.options)
+      expect(errors).toContain(error)
+    })
   })
 })

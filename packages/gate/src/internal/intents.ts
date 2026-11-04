@@ -37,6 +37,8 @@ export type ProposeInput = {
   rationale?: string
   /** Why core flagged the source material; stored next to the intent, never hashed with it. */
   injection?: GateIntentInjection
+  /** When 'sensitive', core's classifier flagged the text as sensitive. Inside the hashed payload. */
+  sensitivity?: "sensitive"
 }
 
 export type ProposeResult =
@@ -410,6 +412,10 @@ function applyTier(db: DatabaseSync, id: string, decision: TierDecision): void {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 /** Validates, hashes and tiers a proposal, stores it and applies the first transition. */
 export function propose(
   db: DatabaseSync,
@@ -418,7 +424,14 @@ export function propose(
 ): ProposeResult {
   const contextPackId = input.contextPackId ?? null
   const documentIds = input.documentIds ?? []
-  const validated = check(input.intent)
+  const rawIntent = input.intent
+  const intentToValidate =
+    input.sensitivity === "sensitive" &&
+    isRecord(rawIntent) &&
+    !("sensitivity" in rawIntent)
+      ? { ...rawIntent, sensitivity: "sensitive" }
+      : rawIntent
+  const validated = check(intentToValidate)
   const checked = validated.ok ? bindConnector(db, validated) : validated
   if (!checked.ok) {
     append(db, {

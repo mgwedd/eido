@@ -17,6 +17,7 @@
     "file.rename": "auto",
     "file.move": "auto",
     "file.delete": "approval",
+    "things.add_todo": "auto",
     "confirm.field": "approval"
   }
 }

@@ -25,7 +25,10 @@ import {
   loadPolicy,
   OVERLAY_FILE,
   preparePolicyChange,
+  prepareSensitivityChange,
   setPolicyOverrides,
+  setSensitivityOverrides,
+  SENSITIVITY_OVERLAY_FILE,
 } from "./policy"
 import type {
   IntentKind,
@@ -120,6 +123,10 @@ export const FILE_OPS: readonly Op[] = [
   op("trash_file", "file.delete", "reversible", "approval"),
 ]
 
+export const THINGS_OPS: readonly Op[] = [
+  op("add_todo", "things.add_todo", "reversible", "auto"),
+]
+
 const ARGS = {
   "email.draft": {
     to: ["someone@example.com"],
@@ -162,6 +169,7 @@ const ARGS = {
   "calendar.edit": { eventUid: "evt-1", title: BODY_MARKER },
   "calendar.delete": { eventUid: "evt-1" },
   "reminder.create": { list: "Inbox", title: BODY_MARKER },
+  "things.add_todo": { title: BODY_MARKER },
   "file.create": { root: ALLOWED_ROOT, path: "a.txt", content: BODY_MARKER },
   "file.rename": { root: ALLOWED_ROOT, path: "a.txt", newName: "b.txt" },
   "file.move": { root: ALLOWED_ROOT, path: "a.txt", toPath: "old/a.txt" },
@@ -205,6 +213,7 @@ export type Setup = {
   options: PolicyOptions
   policy: Policy
   writeOverlay: (value: unknown) => void
+  writeSensitivityOverlay: (value: unknown) => void
   cleanup: () => void
 }
 
@@ -219,7 +228,7 @@ export function attendeeRecord(
 }
 
 /**
- * A control DB with the mail, calendar and files fixtures pinned, and the policy loaded. The
+ * A control DB with the mail, calendar, files and things fixtures pinned, and the policy loaded. The
  * sample event `evt-1` is stored with the owner as its only attendee.
  */
 export function setup(
@@ -227,6 +236,7 @@ export function setup(
     manifest("mail", MAIL_OPS),
     manifest("calendar", CALENDAR_OPS),
     manifest("files", FILE_OPS),
+    manifest("things", THINGS_OPS),
   ],
   storedAttendees: StoredAttendees = attendeeRecord({ "evt-1": [OWNER] })
 ): Setup {
@@ -247,6 +257,12 @@ export function setup(
     writeOverlay: (value) =>
       writeFileSync(
         join(dataDir, OVERLAY_FILE),
+        typeof value === "string" ? value : JSON.stringify(value),
+        { mode: 0o600 }
+      ),
+    writeSensitivityOverlay: (value) =>
+      writeFileSync(
+        join(dataDir, SENSITIVITY_OVERLAY_FILE),
         typeof value === "string" ? value : JSON.stringify(value),
         { mode: 0o600 }
       ),
@@ -461,6 +477,22 @@ export function signedPolicy(
   const authorization = controlAuthorization(db, prepared)
   try {
     setPolicyOverrides(db, value, actor, authorization)
+  } finally {
+    db.prepare("DELETE FROM credentials WHERE credential_id = ?").run(
+      authorization.credentialId
+    )
+  }
+}
+
+export function signedSensitivity(
+  db: DatabaseSync,
+  value: unknown,
+  actor = "owner"
+): void {
+  const prepared = prepareSensitivityChange(db, value)
+  const authorization = controlAuthorization(db, prepared)
+  try {
+    setSensitivityOverrides(db, value, actor, authorization)
   } finally {
     db.prepare("DELETE FROM credentials WHERE credential_id = ?").run(
       authorization.credentialId

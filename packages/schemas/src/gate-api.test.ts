@@ -676,6 +676,17 @@ describe("intent proposal", () => {
         sources: { contextPackId: "p-1", documentIds: ["d-1"] },
       }).ok
     ).toBe(true)
+    expect(
+      validateGateIntentProposal({ ...proposal, sensitivity: "sensitive" }).ok
+    ).toBe(true)
+  })
+
+  test("rejects sensitivity value other than sensitive", () => {
+    expect(
+      errorsOf(
+        validateGateIntentProposal({ ...proposal, sensitivity: "normal" })
+      )
+    ).toEqual(['$.sensitivity: must be one of "sensitive"'])
   })
 
   test("rejects a missing origin, an intent that is not an object and a caller hash", () => {
