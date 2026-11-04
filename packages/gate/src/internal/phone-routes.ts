@@ -16,6 +16,7 @@ import type {
   GateAuditPage,
   GateConnectorSettings,
   GateCredentialStatus,
+  GateFileRoots,
   GateDecisionResult,
   GateEnrolOptions,
   GateIntentHistory,
@@ -56,6 +57,12 @@ import { checkEnrolmentCode } from "./enrolment"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
 import { applyRepin, prepareRepin } from "./repin"
+import {
+  completeFileRootsRoute,
+  prepareFileRootsRoute,
+} from "./file-root-routes"
+import { approvedFileRoots } from "./files/file-roots"
+import type { FileHelper } from "./files/file-helper"
 import type { RepinRefusal } from "./repin"
 import {
   checkedSubscription,
@@ -80,7 +87,9 @@ import type { WebAuthnConfig } from "./webauthn"
 // passkey and to list, prepare, edit and decide approvals. It answers only the Host headers it
 // is given (421 otherwise) and only below its base path. Every route outside the table below is
 // 404 before any session check, so the admin routes (issuing enrolment codes, revocation,
-// policy; #78) and the data plane's routes do not exist here, signed in or not. Credential
+// policy; #78) and the data plane's routes do not exist here, signed in or not. The one
+// exception is the allowed-folder list (`GET /file-roots`, #574), served beside the signed
+// ceremony that changes it; file reads (`POST /files`) stay on the data plane. Credential
 // status, login and enrolment need no session: enrolment needs a single-use code the owner
 // issued on the Mac instead (#202). Every other route needs the session cookie (401 without
 // it). Every POST must be application/json (415 otherwise): a browser sends that cross-origin
@@ -95,6 +104,8 @@ export type PhoneState = {
   backupStampPath?: string
   /** The owner's re-reviewed manifest for a drifted connector (#97); undefined when none is placed. */
   reviewedManifest?: (connector: string) => unknown
+  /** The gate-side native helper that identifies a requested file root (#574); never the phone's. */
+  fileHelper?: FileHelper
 }
 
 export type PhoneRoute = {
@@ -135,6 +146,9 @@ export const PHONE_ROUTES = [
   { method: "POST", path: "/push/prepare", session: true },
   { method: "POST", path: "/push/subscriptions", session: true },
   { method: "POST", path: "/push/:id/remove", session: true },
+  { method: "GET", path: "/file-roots", session: true },
+  { method: "POST", path: "/file-roots/prepare", session: true },
+  { method: "POST", path: "/file-roots/complete", session: true },
 ] as const satisfies readonly PhoneRoute[]
 
 type RoutePath = (typeof PHONE_ROUTES)[number]["path"]
@@ -943,6 +957,17 @@ function route(
     case "/push/:id/remove":
       removePushSubscription(state.db, matched.id)
       return { status: 200, body: { id: matched.id } }
+    case "/file-roots": {
+      const roots: GateFileRoots = approvedFileRoots(state.db) ?? { roots: [] }
+      return { status: 200, body: roots }
+    }
+    // Allowed folders (#574): the control socket's signed policy.set ceremony. The phone sends
+    // only `{id, path, trashDir}` per root; the gate's own helper captures the canonical path and
+    // identity, and only a fresh owner passkey assertion over them stores the roots.
+    case "/file-roots/prepare":
+      return prepareFileRootsRoute(request, state)
+    case "/file-roots/complete":
+      return completeFileRootsRoute(request, state)
   }
 }
 

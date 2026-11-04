@@ -21,8 +21,13 @@ import {
   validateIntentResult,
   validateCoreApiAskResponse,
   validateCoreApiObligationList,
+  validateCoreApiTransactionList,
   validateCoreApiReplyDraftRequest,
   validateCoreApiReplyDraftResponse,
+  validateCoreApiSimpleFinSync,
+  validateCoreApiSimpleFinAccount,
+  validateCoreApiSimpleFinAccountList,
+  validateCoreApiSimpleFinAssignmentRequest,
   validateCoreApiError,
   validateCoreApiConversationSearch,
   validateCoreApiConversationGet,
@@ -289,6 +294,87 @@ describe("core API obligation list schema", () => {
   })
 })
 
+describe("validateCoreApiTransactionList", () => {
+  const item = {
+    id: "acct-1:txn-1",
+    postedAt: "2026-10-17T00:00:00.000Z",
+    description: "Example Power Co.",
+    amountCents: -8412,
+    currency: "USD",
+    account: { id: "acct-1", name: "Checking" },
+    entity: { id: "ent-1", name: "Rental", tag: "RENT" },
+    linkedObligation: null,
+  }
+
+  test("accepts a page and the empty list", () => {
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [item],
+        accounts: [{ id: "acct-1", name: "Checking" }],
+        nextOffset: 50,
+      }).ok
+    ).toBe(true)
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [],
+        accounts: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test("rejects an amount that is not whole cents", () => {
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [{ ...item, amountCents: -84.12 }],
+        accounts: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(false)
+  })
+
+  test("accepts a transaction linked to the obligation it paid (#576)", () => {
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [
+          { ...item, linkedObligation: { id: 3, action: "Lorem ipsum" } },
+        ],
+        accounts: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test.each([
+    ["left out", undefined],
+    ["without an action", { id: 3 }],
+    ["with an empty action", { id: 3, action: "" }],
+    ["with a fractional id", { id: 3.5, action: "Lorem ipsum" }],
+  ])("rejects a linked obligation %s", (_, linkedObligation) => {
+    const row: Record<string, unknown> = { ...item, linkedObligation }
+    if (linkedObligation === undefined) delete row["linkedObligation"]
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [row],
+        accounts: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(false)
+  })
+
+  test("rejects a transaction with no account", () => {
+    const noAccount: Record<string, unknown> = { ...item }
+    delete noAccount["account"]
+    expect(
+      validateCoreApiTransactionList({
+        transactions: [noAccount],
+        accounts: [],
+        nextOffset: null,
+      }).ok
+    ).toBe(false)
+  })
+})
+
 // Synthetic payloads: example.com addresses and fake ids only.
 const VALID: Record<string, unknown> = {
   "email.draft": {
@@ -339,6 +425,12 @@ const VALID: Record<string, unknown> = {
   "calendar.edit": { eventUid: "uid-1", title: "Dentist (moved)", start: ISO },
   "calendar.delete": { eventUid: "uid-1" },
   "reminder.create": { list: "Home", title: "Call back", due: ISO, notes: "n" },
+  "things.add_todo": { title: "Buy milk" },
+  "things.update_todo": { id: "todo-1", title: "Buy oat milk" },
+  "things.schedule_todo": { id: "todo-1", when: "today" },
+  "things.complete_todo": { id: "todo-1" },
+  "things.cancel_todo": { id: "todo-1" },
+  "things.add_project": { title: "House renovation" },
   "file.create": { root: "docs", path: "a/b.txt", content: "x" },
   "file.rename": { root: "docs", path: "a/b.txt", newName: "c.txt" },
   "file.move": { root: "docs", path: "a/b.txt", toPath: "d/b.txt" },
@@ -455,14 +547,14 @@ describe("verbs", () => {
 
   test("one schema file per verb, named intent-<area>-<verb>.schema.json", () => {
     const files = readdirSync(schemaDir).filter((f) =>
-      /^intent-[a-z]+-[A-Za-z]+\.schema\.json$/.test(f)
+      /^intent-[a-z]+-[A-Za-z_]+\.schema\.json$/.test(f)
     )
     const kinds = files.map((f) => {
       const schema = JSON.parse(readFileSync(join(schemaDir, f), "utf8")) as {
         properties: { kind: { const: string } }
       }
       const [, area, verb] =
-        /^intent-([a-z]+)-([A-Za-z]+)\.schema\.json$/.exec(f) ?? []
+        /^intent-([a-z]+)-([A-Za-z_]+)\.schema\.json$/.exec(f) ?? []
       expect(schema.properties.kind.const).toBe(`${area}.${verb}`)
       return schema.properties.kind.const
     })
@@ -834,5 +926,102 @@ describe("validate keywords no verb uses today", () => {
     expect(validate(both, "abc")).toEqual(["$: matches more than one variant"])
     expect(validate(both, "abcdefgh")).toEqual([])
     expect(validate(both, 1)).toEqual(["$: expected string, got number"])
+  })
+})
+
+describe("core API SimpleFIN sync schema", () => {
+  test("a synced response carries the next scheduled sync", () => {
+    expect(
+      validateCoreApiSimpleFinSync({
+        status: "synced",
+        nextSyncAt: "2026-07-02T06:30:00.000Z",
+      }).ok
+    ).toBe(true)
+  })
+
+  test("a refusal names one of the three reasons", () => {
+    expect(
+      validateCoreApiSimpleFinSync({
+        status: "refused",
+        reason: "daily_limit",
+        nextSyncAt: "2026-07-02T00:00:00.000Z",
+      }).ok
+    ).toBe(true)
+    expect(
+      validateCoreApiSimpleFinSync({ status: "refused", reason: "other" }).ok
+    ).toBe(false)
+    expect(validateCoreApiSimpleFinSync({ reason: "sync_failed" }).ok).toBe(
+      false
+    )
+  })
+})
+
+describe("core API SimpleFIN account schemas", () => {
+  const ENTITY = "00000000-0000-4000-8000-000000000001"
+  const account = {
+    id: "acc_1",
+    name: "Lorem",
+    currency: "USD",
+    balanceCents: -1250,
+    balanceAt: "2026-02-20T12:00:00.000Z",
+    entityId: ENTITY,
+    backfillPending: false,
+  }
+
+  test("an account may have no entity, balance or balance time yet", () => {
+    expect(
+      validateCoreApiSimpleFinAccount({
+        ...account,
+        balanceCents: null,
+        balanceAt: null,
+        entityId: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test("an account balance is whole minor units", () => {
+    expect(
+      validateCoreApiSimpleFinAccount({ ...account, balanceCents: 12.5 }).ok
+    ).toBe(false)
+  })
+
+  test("an account carries its backfill state", () => {
+    expect(
+      validateCoreApiSimpleFinAccount({
+        id: account.id,
+        name: account.name,
+        currency: account.currency,
+        balanceCents: account.balanceCents,
+        balanceAt: account.balanceAt,
+        entityId: account.entityId,
+      }).ok
+    ).toBe(false)
+  })
+
+  test("a list holds accounts and nothing else", () => {
+    expect(
+      validateCoreApiSimpleFinAccountList({ accounts: [account] }).ok
+    ).toBe(true)
+    expect(
+      validateCoreApiSimpleFinAccountList({ accounts: [], total: 0 }).ok
+    ).toBe(false)
+  })
+
+  test("an assignment names an account and an entity id", () => {
+    expect(
+      validateCoreApiSimpleFinAssignmentRequest({
+        accountId: "acc_1",
+        entityId: ENTITY,
+      }).ok
+    ).toBe(true)
+    expect(
+      validateCoreApiSimpleFinAssignmentRequest({ accountId: "acc_1" })
+    ).toEqual({ ok: false, errors: ["$.entityId: required"] })
+    expect(
+      validateCoreApiSimpleFinAssignmentRequest({
+        accountId: "",
+        entityId: ENTITY,
+      }).ok
+    ).toBe(false)
   })
 })

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateThingsTagList",
+  "description": "Response of GET /things/tags on data-plane listener.",
+  "type": "object",
+  "properties": {
+    "tags": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "type": "string", "maxLength": 100 }
+    }
+  },
+  "required": ["tags"],
+  "additionalProperties": false
+}

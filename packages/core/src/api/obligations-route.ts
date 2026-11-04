@@ -6,11 +6,13 @@ import type {
   SourceSpan,
 } from "@eido/schemas"
 import { validateCoreApiObligationList } from "@eido/schemas"
+import type { IntentClient } from "@eido/gate"
 import { LedgerError } from "../ledger/errors"
 import type {
   ObligationChange,
   ObligationStateStore,
 } from "../ledger/obligation-state"
+import { threadsWithLiveDraft } from "./reply-draft-live"
 
 /** POST /obligations/:id/done, /resolve and /reopen (#104). */
 export const OBLIGATION_CHANGE_PATH =
@@ -41,12 +43,15 @@ const ID = /^[1-9][0-9]{0,15}$/
 const DIGITS = /^\d+$/
 
 /** A query parameter with surrounding whitespace removed; empty means absent. */
-function param(params: URLSearchParams, name: string): string | undefined {
+export function param(
+  params: URLSearchParams,
+  name: string
+): string | undefined {
   const value = params.get(name)?.trim()
   return value === undefined || value === "" ? undefined : value
 }
 
-function readCount(
+export function readCount(
   params: URLSearchParams,
   name: string,
   min: number,
@@ -66,8 +71,16 @@ function readCount(
   return value
 }
 
+/** The thread an owed-reply row drafts into, else null: only owed replies get a draft. */
+function draftThread(row: Record<string, unknown>): string | null {
+  return row["direction"] === "owed" && typeof row["thread_id"] === "string"
+    ? row["thread_id"]
+    : null
+}
+
 function toObligationEntry(
-  row: Record<string, unknown>
+  row: Record<string, unknown>,
+  hasDraftIntent: boolean
 ): CoreApiObligationList["obligations"][number] {
   const id = Number(row["id"])
   const action = String(row["action"])
@@ -93,7 +106,7 @@ function toObligationEntry(
     dueAt,
     status,
     direction,
-    hasDraftIntent: false,
+    hasDraftIntent,
     updatedAt,
     entity: {
       id: String(row["entity_id"]),
@@ -109,12 +122,15 @@ function toObligationEntry(
 }
 
 /**
- * Serves GET /obligations?entity=&status=&limit=&offset= from the ledger.
+ * Serves GET /obligations?id=&entity=&status=&direction=&limit=&offset= from the ledger. An owed
+ * reply has `hasDraftIntent` when its thread has a live stored draft (#548); without the gate's
+ * `status`, no row has one.
  */
-export function listObligationsRoute(
+export async function listObligationsRoute(
   db: DatabaseSync,
-  params: URLSearchParams
-): ObligationsListResult {
+  params: URLSearchParams,
+  intentStatus?: IntentClient["status"]
+): Promise<ObligationsListResult> {
   const errors: { field: string; message: string }[] = []
   const limit = readCount(params, "limit", 1, MAX_LIMIT, DEFAULT_LIMIT, errors)
   const offset = readCount(
@@ -156,6 +172,16 @@ export function listObligationsRoute(
     }
   }
 
+  const rawId = param(params, "id")
+  let id: number | undefined
+  if (rawId !== undefined) {
+    if (ID.test(rawId) && Number.isSafeInteger(Number(rawId))) {
+      id = Number(rawId)
+    } else {
+      errors.push({ field: "id", message: "must be a positive integer" })
+    }
+  }
+
   if (errors.length > 0) {
     return {
       ok: false,
@@ -167,6 +193,11 @@ export function listObligationsRoute(
 
   const conditions: string[] = []
   const values: SQLInputValue[] = []
+
+  if (id !== undefined) {
+    conditions.push("o.id = ?")
+    values.push(id)
+  }
 
   const entity = param(params, "entity")
   if (entity !== undefined) {
@@ -189,7 +220,7 @@ export function listObligationsRoute(
   const rows = db
     .prepare(
       `SELECT o.id, o.action, o.party, o.due_at, o.status, o.direction, o.updated_at,
-              o.source_span, o.doc_id,
+              o.source_span, o.doc_id, o.thread_id,
               e.id AS entity_id, e.name AS entity_name, e.tag AS entity_tag,
               dt.title AS document_title
        FROM obligations o
@@ -205,8 +236,17 @@ export function listObligationsRoute(
   const more = rows.length > limit
   const selected = rows.slice(0, limit)
 
+  const threads = selected.flatMap((row) => draftThread(row) ?? [])
+  const drafted =
+    intentStatus === undefined
+      ? new Set<string>()
+      : await threadsWithLiveDraft(db, { status: intentStatus }, threads)
+
   const body: CoreApiObligationList = {
-    obligations: selected.map(toObligationEntry),
+    obligations: selected.map((row) => {
+      const thread = draftThread(row)
+      return toObligationEntry(row, thread !== null && drafted.has(thread))
+    }),
     nextOffset: more ? offset + limit : null,
   }
 

@@ -20,6 +20,7 @@ export {
   createIntentClient,
   createFileClient,
   createProtonMailClient,
+  createThingsClient,
 } from "./internal/client"
 export type {
   AuditClient,
@@ -28,6 +29,7 @@ export type {
   IntentClientOptions,
   IntentProposal,
   ProtonMailClient,
+  ThingsClient,
 } from "./internal/client"
 
 export type IntentKind = Intent["kind"]

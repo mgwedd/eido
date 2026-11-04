@@ -23,6 +23,15 @@ const detail = (hash: string, ref: string) =>
 
 const ABSOLUTE = /^(?:\/|[A-Za-z]:\\)/
 
+/** The helper answered that it cannot identify this requested root. Carries the id only. */
+export class FileRootUnidentified extends Error {
+  readonly rootId: string
+  constructor(rootId: string) {
+    super("file root cannot be identified")
+    this.rootId = rootId
+  }
+}
+
 /** Schema-checked, with unique ids, unique directories and absolute canonical paths. */
 export function checkedFileRoots(value: unknown): GateFileRoots {
   const checked = validateGateFileRoots(value)
@@ -53,8 +62,9 @@ export async function prepareFileRoots(
   const roots: GateFileRoots["roots"] = []
   for (const requested of request.value.roots) {
     const identified = await helper({ op: "identify", path: requested.path })
-    if (!identified.ok || identified.op !== "identify")
-      throw new Error("file root cannot be identified")
+    if (!identified.ok) throw new FileRootUnidentified(requested.id)
+    if (identified.op !== "identify")
+      throw new Error("file helper answered another operation")
     roots.push({
       id: requested.id,
       root: {
@@ -73,6 +83,30 @@ export async function prepareFileRoots(
     payload
   )
   return { ...prepared, challenge: controlApprovalChallenge(prepared) }
+}
+
+/**
+ * Asks the helper to identify each root again and returns the id of the first one whose
+ * canonical path, dev or ino differs from the captured values, or that it can no longer
+ * identify. Undefined when every root is unchanged. A helper fault throws.
+ */
+export async function changedFileRoot(
+  helper: FileHelper,
+  roots: GateFileRoots
+): Promise<string | undefined> {
+  for (const { id, root } of roots.roots) {
+    const identified = await helper({ op: "identify", path: root.path })
+    if (!identified.ok) return id
+    if (identified.op !== "identify")
+      throw new Error("file helper answered another operation")
+    if (
+      identified.canonicalPath !== root.path ||
+      identified.dev !== root.dev ||
+      identified.ino !== root.ino
+    )
+      return id
+  }
+  return undefined
 }
 
 /** Stores the roots only inside a verified, single-use owner approval of this exact payload. */

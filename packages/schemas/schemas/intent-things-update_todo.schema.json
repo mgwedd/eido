@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ThingsUpdateTodoIntent",
+  "description": "Update an existing to-do in Things.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "things.update_todo"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["sensitive"],
+      "maxLength": 20,
+      "description": "When 'sensitive', core's classifier flagged the text as sensitive. Inside the hashed payload."
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Things to-do ID"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "To-do title"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 20000,
+          "description": "Notes"
+        },
+        "when": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "When"
+        },
+        "deadline": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Deadline"
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "list": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Target list name"
+        },
+        "project": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Target project name or ID"
+        },
+        "area": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Target area name or ID"
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

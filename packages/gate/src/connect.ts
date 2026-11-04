@@ -22,6 +22,8 @@ import {
 } from "./internal/connect/oauth"
 import type { CallbackResult, ExchangeResult } from "./internal/connect/oauth"
 import { promptHidden } from "./internal/connect/prompt"
+import { claimSimpleFin } from "./internal/connect/simplefin-claim"
+import type { ClaimResult } from "./internal/connect/simplefin-claim"
 import { GMAIL_CONNECTOR } from "./internal/gmail-writers"
 import type { Vault, VaultClient, VaultKey } from "./internal/vault/vault"
 import {
@@ -29,6 +31,7 @@ import {
   DRIVE_CLIENT_ID_ENV,
   DRIVE_CONNECTOR,
   GMAIL_READ_CLIENT_ID_ENV,
+  SIMPLEFIN_CONNECTOR,
   vaultConfig,
 } from "./main"
 
@@ -36,7 +39,8 @@ import {
 // or reconnect a connector (#98). Gmail's compose client, Gmail's read client (`gmail-read`,
 // #529) and Drive's read client (#516) sign in through Google in the browser (OAuth for native apps, RFC 8252: a one-shot loopback listener on
 // 127.0.0.1, PKCE S256 and a state check); the
-// Proton connectors take the Bridge password at a no-echo prompt. The credential goes to the
+// Proton connectors take the Bridge password at a no-echo prompt. SimpleFIN (#51) takes a setup
+// token at a no-echo prompt and claims the access URL from bridge.simplefin.org. The credential goes to the
 // gate vault and nowhere else: it is never printed, logged, passed in argv or env, or written to
 // a file. Then the running gate checks the connector over its control socket, audits the
 // connect with hashes only, and this prints the connector's health. The runbook is
@@ -51,6 +55,7 @@ const TARGETS = [
   DRIVE_CONNECTOR,
   PROTON_CONNECTOR,
   PROTON_CALENDAR_CONNECTOR,
+  SIMPLEFIN_CONNECTOR,
 ] as const
 type Target = (typeof TARGETS)[number]
 const USAGE = `usage: pnpm --filter @eido/gate connect <${TARGETS.join("|")}>`
@@ -231,6 +236,42 @@ async function connectBridge(vault: Vault, io: ConnectIo): Promise<Step> {
   return { ok: true }
 }
 
+const CLAIM_MESSAGES = {
+  invalid_token: "That is not a SimpleFIN setup token",
+  host_refused:
+    "The setup token points somewhere other than bridge.simplefin.org, so it was refused",
+  claim_unreachable: "SimpleFIN Bridge could not be reached",
+  claim_refused:
+    "SimpleFIN Bridge refused the setup token; it may have been claimed already",
+  invalid_access_url: "SimpleFIN Bridge did not answer with an access URL",
+} as const satisfies Record<
+  Extract<ClaimResult, { ok: false }>["reason"],
+  string
+>
+
+async function connectSimpleFin(
+  vault: Vault,
+  io: ConnectIo,
+  deps: ConnectDeps
+): Promise<Step> {
+  const token = await io.prompt("SimpleFIN setup token (not shown): ")
+  if (token === undefined || token.trim() === "") {
+    io.err("No setup token was given. Nothing was stored.")
+    return { ok: false, status: 1 }
+  }
+  const claimed = await claimSimpleFin(token, deps.fetch ?? fetch)
+  if (!claimed.ok) {
+    io.err(`${CLAIM_MESSAGES[claimed.reason]}. Nothing was stored.`)
+    return { ok: false, status: 1 }
+  }
+  await vault.set(
+    { connector: SIMPLEFIN_CONNECTOR, kind: "api_key", client: "read" },
+    claimed.accessUrl
+  )
+  io.out("Stored the SimpleFIN access credential in the gate vault.")
+  return { ok: true }
+}
+
 function selectVault(
   env: Readonly<Record<string, string | undefined>>,
   io: ConnectIo
@@ -295,9 +336,11 @@ export async function connect(
     return 1
   }
   const stored =
-    google === undefined
-      ? await connectBridge(vault, io)
-      : await connectGoogle(google, env, vault, io, deps)
+    google !== undefined
+      ? await connectGoogle(google, env, vault, io, deps)
+      : target === SIMPLEFIN_CONNECTOR
+        ? await connectSimpleFin(vault, io, deps)
+        : await connectBridge(vault, io)
   if (!stored.ok) return stored.status
   try {
     const checked = await client.connected(name)

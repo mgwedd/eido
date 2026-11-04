@@ -16,7 +16,23 @@ describe("currentManifest", () => {
   it("refuses a connector it has no manifest for, naming the ones it has", () => {
     expect(currentManifest("toString", ENV)).toEqual({
       ok: false,
-      error: `unknown connector "toString"; choose one of files, drive, gmail, proton-mail, proton-calendar`,
+      error: `unknown connector "toString"; choose one of files, things, drive, gmail, simplefin, proton-mail, proton-calendar`,
+    })
+  })
+
+  it("declares the SimpleFIN daily budget from the environment, refusing a bad one", () => {
+    const result = currentManifest("simplefin", {
+      EIDO_SIMPLEFIN_REQUESTS_PER_DAY: "6",
+    })
+    expect(result.ok && result.manifest.health.rateLimit).toEqual({
+      requestsPerDay: 6,
+    })
+    expect(
+      currentManifest("simplefin", { EIDO_SIMPLEFIN_REQUESTS_PER_DAY: "0" })
+    ).toEqual({
+      ok: false,
+      error:
+        "EIDO_SIMPLEFIN_REQUESTS_PER_DAY must be an integer from 1 to 100000",
     })
   })
 

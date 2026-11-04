@@ -12,11 +12,14 @@ pnpm install:file-helper /absolute/gate-owned/bin
 
 The script runs `cargo build --release --locked`, copies the binary there (mode 0700 directory, refused if group or others can write) and prints the two settings below. Re-run it after every upgrade and update the pin. Configure the printed absolute path in `EIDO_FILE_HELPER_PATH` and the lowercase SHA-256 in `EIDO_FILE_HELPER_SHA256`. Both settings are required together. The gate checks the pin before every dispatch. An upgrade requires a new pin. POSIX startup rejects non-executable or linked helper files, untrusted owners and writable install ancestors, except root-owned sticky temporary ancestors. Windows mode bits cannot prove ACL isolation: the install directory and binary must have gate/admin-only write ACLs. The install step itself is not run on the live host by this change; that remains the owner's step under #463.
 
-Pin the `filesManifest()` connector through the ordinary signed manifest ceremony. Prepare allowed roots on the **local control socket**, not the phone or data-plane listener:
+Pin the `filesManifest()` connector through the ordinary signed manifest ceremony. Allowed roots are prepared and signed through the same `policy.set` ceremony on target `file-roots`, served by the local control socket and, behind the phone session, by the phone listener (`/api/gate/file-roots/...`, #574). The data-plane socket cannot change roots.
 
-- `POST /file-roots/prepare`: `{ "roots": [{ "id": "notes", "path": "/absolute/owner-selected/notes", "trashDir": ".eido-trash" }] }`.
+- `POST /file-roots/prepare`: `{ "roots": [{ "id": "notes", "path": "/absolute/owner-selected/notes", "trashDir": ".eido-trash" }] }`. The request carries only `id`, `path` and `trashDir` per root; the gate's own native helper captures each canonical path and directory identity. A root the helper cannot identify is refused with `422 {"code": "root_missing", "rootId": <its id>}`; the error names the id only, never the path or the helper's text.
 - Review the returned canonical root paths, identities, `payloadHash` and `challenge`. Sign that exact challenge with an enrolled owner passkey.
-- `POST /file-roots/complete`: `{ "roots": <returned roots object>, "authorization": { "id": <approval id>, "nonce": <nonce>, "assertion": <WebAuthn assertion> } }`.
+- `POST /file-roots/complete`: `{ "roots": <returned roots object>, "authorization": { "id": <approval id>, "nonce": <nonce>, "assertion": <WebAuthn assertion> } }`. The gate first asks the helper to identify every root again; a root whose canonical path, `dev` or `ino` changed since prepare, or that is gone, is refused with `409 {"code": "root_changed", "rootId": <its id>}`, and nothing is stored or consumed. Without the helper, or when it fails, complete answers `503 unavailable`.
+- `GET /file-roots` (phone listener, session required): the currently approved roots, re-verified against their signed approval and audit row; `{ "roots": [] }` when none verify.
+
+On the phone listener a valid session is necessary but never sufficient: only a fresh owner WebAuthn assertion over the prepared challenge stores roots, exactly as on the control socket.
 
 Create the root and its trash directory before approval. A replaced directory no longer matches its signed identity; it must be explicitly reapproved. Unsigned, replayed, changed and cross-target authorizations are refused. Root signing UI design is tracked in #467; no automatic signing is provided.
 

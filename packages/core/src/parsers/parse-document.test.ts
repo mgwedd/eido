@@ -288,7 +288,7 @@ describe("the parse child's fences", { timeout: CHILD_TIMEOUT }, () => {
     await new Promise((resolve) => server.close(resolve))
   })
 
-  it("cannot open a network connection or resolve a name", async () => {
+  it("isolation: the parse child cannot open a network connection or resolve a name", async () => {
     const outcome = await runInChild({
       entry: join(HOSTILE, "network.test-support.ts"),
       payload: { port },
@@ -323,7 +323,7 @@ describe("the parse child's fences", { timeout: CHILD_TIMEOUT }, () => {
     expect(connections).toBe(0)
   })
 
-  it("starts with no credential, proxy or token variable, even when the parent has them", async () => {
+  it("isolation: the parse child starts with no credential, proxy or token variable, even when the parent has them", async () => {
     const planted = {
       GMAIL_REFRESH_TOKEN: "synthetic-refresh",
       EIDO_KEYCHAIN_SECRET: "synthetic-secret",

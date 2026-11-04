@@ -60,6 +60,15 @@ export function legendGroups(
       ],
     },
     {
+      title: "Replies owed",
+      items: [
+        { keys: ["j"], label: "Next reply" },
+        { keys: ["k"], label: "Previous reply" },
+        { keys: ["Enter"], label: "Open the thread" },
+        { keys: ["d"], label: "Draft reply" },
+      ],
+    },
+    {
       title: "Ask",
       items: [{ keys: ["⌘", "↵"], label: "Send question" }],
     },

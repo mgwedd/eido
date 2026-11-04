@@ -18,6 +18,12 @@ import type {
 } from "./internal/connector-connect"
 import { egressProbe, startEgressProxy } from "./internal/egress"
 import { GMAIL_CONNECTOR, GMAIL_WRITERS } from "./internal/gmail-writers"
+import { THINGS_CONNECTOR } from "./internal/things/things-routes"
+import { createThingsReads } from "./internal/things/things-adapter"
+import {
+  THINGS_WRITERS,
+  createThingsTransport,
+} from "./internal/things/things-writers"
 import { openControlDb } from "./internal/control-db"
 import { createExecutor } from "./internal/executor"
 import {
@@ -100,14 +106,30 @@ export const READ_CONNECTORS = [
     probeUrl: "https://www.googleapis.com/drive/v3/changes/startPageToken",
   },
 ] as const
+export const SIMPLEFIN_CONNECTOR = "simplefin"
+export const SIMPLEFIN_ENV = "EIDO_GATE_SIMPLEFIN"
+/**
+ * The read connectors whose credential is an access URL in the vault (`auth: basic-url`, #51):
+ * the variable that turns each on (set to 1), and the pinned read its health probe makes. The
+ * probe asks for balances only, one request of the connector's daily budget.
+ */
+export const BASIC_URL_READ_CONNECTORS = [
+  {
+    connector: SIMPLEFIN_CONNECTOR,
+    enableEnv: SIMPLEFIN_ENV,
+    probeUrl: "https://bridge.simplefin.org/simplefin/accounts?balances-only=1",
+  },
+] as const
 export const EGRESS_PORT_ENV = "EIDO_GATE_EGRESS_PORT"
 
 export type EgressProxyConfig = {
   vault: VaultConfig
   /** 0 picks a free port. */
   port: number
-  /** Each configured read connector's OAuth client id; at least one. */
+  /** Each configured read connector's OAuth client id. */
   clientIds: Readonly<Record<string, string>>
+  /** The configured basic-url read connectors. With clientIds, at least one read connector. */
+  basicUrlConnectors?: readonly string[]
 }
 
 export type PhoneListenerConfig = {
@@ -262,14 +284,26 @@ export function gateConfig(
       return id === "" ? [] : [[connector, id]]
     })
   )
+  const basicUrlConnectors = BASIC_URL_READ_CONNECTORS.flatMap(
+    ({ connector, enableEnv }) => {
+      const value = env[enableEnv] ?? ""
+      if (value !== "" && value !== "1")
+        throw new Error(`${enableEnv} must be 1 or unset`)
+      return value === "1" ? [connector] : []
+    }
+  )
   const egressPort = env[EGRESS_PORT_ENV] ?? ""
-  const hasReadClient = Object.keys(readClientIds).length > 0
+  const hasReadClient =
+    Object.keys(readClientIds).length > 0 || basicUrlConnectors.length > 0
   if (egressPort !== "" && !hasReadClient)
     throw new Error(
-      `${EGRESS_PORT_ENV} needs a read client id: ${READ_CONNECTORS.map((read) => read.clientIdEnv).join(" or ")}`
+      `${EGRESS_PORT_ENV} needs a read connector: ${[
+        ...READ_CONNECTORS.map((read) => read.clientIdEnv),
+        ...BASIC_URL_READ_CONNECTORS.map((read) => `${read.enableEnv}=1`),
+      ].join(" or ")}`
     )
   if (hasReadClient && egressPort === "")
-    throw new Error(`a read connector's client id needs ${EGRESS_PORT_ENV}`)
+    throw new Error(`a read connector needs ${EGRESS_PORT_ENV}`)
   const positive = (name: string, fallback: number): number => {
     const value = env[name]
     if (value === undefined || value === "") return fallback
@@ -300,6 +334,7 @@ export function gateConfig(
             vault: requireVault("The read egress proxy"),
             port: portNumber(EGRESS_PORT_ENV, egressPort),
             clientIds: readClientIds,
+            ...(basicUrlConnectors.length === 0 ? {} : { basicUrlConnectors }),
           },
         }
       : {}),
@@ -489,6 +524,15 @@ export async function runGate(
               egressProbe(egressOptions, connector, probeUrl),
             ])
           )
+    const basicUrlConnectors = config.egress?.basicUrlConnectors ?? []
+    if (egressOptions !== undefined)
+      for (const { connector, probeUrl } of BASIC_URL_READ_CONNECTORS)
+        if (basicUrlConnectors.includes(connector))
+          readProbes[connector] = egressProbe(
+            egressOptions,
+            connector,
+            probeUrl
+          )
     const gmailProbes = [
       ...(gmailOptions === undefined ? [] : [gmailProbe(gmailOptions)]),
       ...(readProbes[GMAIL_CONNECTOR] === undefined
@@ -539,9 +583,11 @@ export async function runGate(
       mail === undefined
         ? () => Promise.reject(new Error("Bridge is not configured"))
         : bridgeTransport(mail, { tracker })
+    const things = createThingsReads()
+    const thingsTransport = createThingsTransport()
     const executor = createExecutor(
       db,
-      [...BRIDGE_WRITERS, ...GMAIL_WRITERS],
+      [...BRIDGE_WRITERS, ...GMAIL_WRITERS, ...THINGS_WRITERS],
       (request) =>
         request.connector === GMAIL_CONNECTOR
           ? gmail === undefined
@@ -550,13 +596,15 @@ export async function runGate(
           : request.connector === PROTON_CONNECTOR ||
               request.connector === PROTON_CALENDAR_CONNECTOR
             ? protonTransport(request)
-            : Promise.reject(new Error("no write transport for connector")),
+            : request.connector === THINGS_CONNECTOR
+              ? thingsTransport(request)
+              : Promise.reject(new Error("no write transport for connector")),
       nativeFiles
     )
     const execute = (id: string) => executor.execute(id)
     const dataPlane = createGateServer(
       "data-plane",
-      dataPlaneHandler(state, mail, execute),
+      dataPlaneHandler(state, mail, execute, things),
       log
     )
     const control = createGateServer("control", controlHandler(state, now), log)

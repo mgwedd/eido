@@ -15,8 +15,10 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@eido/ui/components/sidebar"
+import { QueuePill, useQueueCount } from "@/components/queue-count"
 import { ShortcutKeys, useOpenLegend } from "@/components/shortcuts-provider"
 import { isActive, NAV_ITEMS } from "@/lib/nav"
+import { queueLinkName } from "@/lib/queue/badge"
 import { keysOf } from "@/lib/shortcuts"
 
 function BrandBlock() {
@@ -35,6 +37,7 @@ function BrandBlock() {
 
 function AppSidebar() {
   const pathname = usePathname()
+  const queue = useQueueCount()
   const openLegend = useOpenLegend()
 
   return (
@@ -50,31 +53,39 @@ function AppSidebar() {
           <SidebarGroupContent>
             <nav aria-label="Primary">
               <SidebarMenu>
-                {NAV_ITEMS.map(({ href, label, icon: Icon, shortcut }) => {
-                  const active = isActive(pathname, href)
-                  return (
-                    <SidebarMenuItem key={href}>
-                      <SidebarMenuButton
-                        isActive={active}
-                        className="min-h-10"
-                        render={
-                          <Link
-                            href={href}
-                            aria-current={active ? "page" : undefined}
-                          />
-                        }
-                      >
-                        <Icon aria-hidden />
-                        <span>{label}</span>
-                        {shortcut ? (
-                          <span className="ml-auto">
-                            <ShortcutKeys keys={keysOf(shortcut)} />
-                          </span>
-                        ) : null}
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  )
-                })}
+                {NAV_ITEMS.map(
+                  ({ href, label, icon: Icon, shortcut, badge }) => {
+                    const active = isActive(pathname, href)
+                    return (
+                      <SidebarMenuItem key={href}>
+                        <SidebarMenuButton
+                          isActive={active}
+                          className="min-h-10"
+                          render={
+                            <Link
+                              href={href}
+                              aria-current={active ? "page" : undefined}
+                              aria-label={
+                                badge === "queue"
+                                  ? queueLinkName(label, queue)
+                                  : undefined
+                              }
+                            />
+                          }
+                        >
+                          <Icon aria-hidden />
+                          <span>{label}</span>
+                          {badge === "queue" && <QueuePill queue={queue} />}
+                          {shortcut ? (
+                            <span className={badge ? "ml-2" : "ml-auto"}>
+                              <ShortcutKeys keys={keysOf(shortcut)} />
+                            </span>
+                          ) : null}
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )
+                  }
+                )}
               </SidebarMenu>
             </nav>
           </SidebarGroupContent>

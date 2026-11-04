@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateIntentStatus",
-  "description": "Response of GET /intents/:id (#42): one intent's kind, tier and state. No payload body, signature or nonce. edited_from is the id of the intent this one replaced, or null.",
+  "description": "Response of GET /intents/:id (#42): one intent's kind, tier and state. No payload body, signature or nonce. edited_from is the id of the intent this one replaced, or null. discarded is true for an executed email.draft whose Gmail message an executed email.trash moved to Trash (the draft discard, #549) and no executed email.untrash restored; false otherwise.",
   "type": "object",
   "properties": {
     "id": {
@@ -31,8 +31,11 @@
           "type": "null"
         }
       ]
+    },
+    "discarded": {
+      "type": "boolean"
     }
   },
-  "required": ["id", "kind", "tier", "state", "edited_from"],
+  "required": ["id", "kind", "tier", "state", "edited_from", "discarded"],
   "additionalProperties": false
 }

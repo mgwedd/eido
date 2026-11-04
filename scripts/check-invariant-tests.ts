@@ -63,6 +63,40 @@ export const REQUIRED_TESTS: [path: string, name: string][] = [
   ],
 ]
 
+// The portable Wave 1 isolation tests (#56): the data plane's environment and config, the
+// data-plane listener's 404s, and the parse child's network and environment fences. The fourth
+// group, the dependency boundary, is the //#check:deps and //#check:deps-fixture tasks.
+export const ISOLATION_TESTS: [path: string, name: string][] = [
+  [
+    "packages/core/src/planes/planes.test.ts",
+    "isolation: the data plane gets only its allowlisted variables and no control DB path",
+  ],
+  [
+    "packages/core/src/planes/planes.test.ts",
+    "isolation: the long-lived data plane runs without the variables its parent held",
+  ],
+  [
+    "packages/core/src/planes/planes.test.ts",
+    "isolation: the data-plane source has no handle to, or path for, the gate's control DB",
+  ],
+  [
+    "packages/gate/src/internal/api.test.ts",
+    "isolation: every write-ish or control route answers 404 and leaves the control database unchanged",
+  ],
+  [
+    "packages/core/src/parsers/parse-document.test.ts",
+    "isolation: the parse child cannot open a network connection or resolve a name",
+  ],
+  [
+    "packages/core/src/parsers/parse-document.test.ts",
+    "isolation: the parse child starts with no credential, proxy or token variable, even when the parent has them",
+  ],
+  [
+    "packages/core/src/parsers/no-network.test.ts",
+    "isolation: the preload blocks %s",
+  ],
+]
+
 /** Returns "path: name" for every required test whose name is not quoted in its source file. */
 export function findMissingTests(
   required: [path: string, name: string][],
@@ -78,17 +112,20 @@ export function findMissingTests(
 }
 
 function main(): void {
-  const missing = findMissingTests(REQUIRED_TESTS, (path) =>
+  const required = [...REQUIRED_TESTS, ...ISOLATION_TESTS]
+  const missing = findMissingTests(required, (path) =>
     readFileSync(path, "utf8")
   )
   if (missing.length > 0) {
     console.error(
-      "FAIL: required named invariant tests are missing or renamed:\n" +
+      "FAIL: required named invariant or isolation tests are missing or renamed:\n" +
         missing.map((name) => `  - ${name}`).join("\n")
     )
     process.exit(1)
   }
-  console.log(`ok: found all ${REQUIRED_TESTS.length} named invariant tests`)
+  console.log(
+    `ok: found all ${String(REQUIRED_TESTS.length)} named invariant tests and ${String(ISOLATION_TESTS.length)} isolation tests`
+  )
 }
 
 if (import.meta.main) main()

@@ -43,7 +43,7 @@ export type Log = (
 
 export function apiError(
   status: number,
-  code: GateApiError["code"],
+  code: Exclude<GateApiError, { rootId: string }>["code"],
   message: string
 ): Reply {
   const body: GateApiError = { code, message }

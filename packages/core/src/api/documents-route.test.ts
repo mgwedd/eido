@@ -280,6 +280,26 @@ describe("GET /documents", () => {
     expect(error.fields?.map((f) => f.field)).toEqual([field])
   })
 
+  test("ids narrows the list to those documents", async () => {
+    const body = await list(`?ids=${invoice},${pdf}`)
+    expect(shas(body)).toEqual([pdf, invoice])
+  })
+
+  test("ids skips a hash that names no live document", async () => {
+    const body = await list(`?ids=${"0".repeat(64)},${quote}`)
+    expect(shas(body)).toEqual([quote])
+  })
+
+  test.each([
+    ["?ids=not-a-hash"],
+    [`?ids=${"a".repeat(64)},`],
+    [`?ids=${Array.from({ length: 201 }, () => "a".repeat(64)).join(",")}`],
+  ])("rejects ids %#", async (query) => {
+    const error = await errorOf(await get(`/documents${query}`))
+    expect(error).toMatchObject({ status: 422, code: "invalid" })
+    expect(error.fields?.map((f) => f.field)).toEqual(["ids"])
+  })
+
   test("only GET is allowed", async () => {
     const response = await handle(
       new Request("http://core.test/api/core/documents", { method: "POST" })

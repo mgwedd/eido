@@ -16,6 +16,7 @@ import {
 import { cn } from "@eido/ui/lib/utils"
 import {
   loadLedgerObligations,
+  parseObligationParam,
   type ObligationItem,
   type ObligationStatusFilter,
 } from "@/lib/ledger"
@@ -31,6 +32,8 @@ import { buildViewerUrl } from "@/lib/viewer-url"
 export interface LedgerViewProps {
   initialEntity?: string
   initialStatus?: string
+  /** The `obligation` address parameter: the row to scroll to and mark. */
+  initialObligation?: string
   now?: Date
 }
 
@@ -167,8 +170,16 @@ function StatusFilter({
   )
 }
 
-function getLedgerUrl(entity: string, status: ObligationStatusFilter): string {
+/** Ring and tint of the row the address points at, as the focused rows on Replies owed. */
+const FOCUSED_ROW_CLASS = "bg-muted/60 ring-2 ring-ring ring-inset"
+
+function getLedgerUrl(
+  entity: string,
+  status: ObligationStatusFilter,
+  obligation: string | undefined
+): string {
   const params = new URLSearchParams()
+  if (obligation !== undefined) params.set("obligation", obligation)
   if (entity && entity !== "all") params.set("entity", entity)
   if (status && status !== "all") params.set("status", status)
   const query = params.toString()
@@ -178,8 +189,18 @@ function getLedgerUrl(entity: string, status: ObligationStatusFilter): string {
 export function LedgerView({
   initialEntity = "all",
   initialStatus = "all",
+  initialObligation,
   now = new Date(),
 }: LedgerViewProps) {
+  const focusId = parseObligationParam(initialObligation)
+  // The obligation the address points at. undefined while it is looked up, null when it does
+  // not exist (so the page says so); a failed lookup leaves the list unmarked.
+  const [focusItem, setFocusItem] = React.useState<
+    ObligationItem | null | undefined
+  >(focusId === null ? null : undefined)
+  const [focusLookupDone, setFocusLookupDone] = React.useState<boolean>(
+    typeof focusId !== "number"
+  )
   const [activeEntity, setActiveEntity] = React.useState<string>(initialEntity)
   const [activeStatus, setActiveStatus] =
     React.useState<ObligationStatusFilter>(
@@ -205,8 +226,25 @@ export function LedgerView({
     return () => controller.abort()
   }, [])
 
+  // Look the focused obligation up by id, so it is found whatever page the list holds it on
+  React.useEffect(() => {
+    if (typeof focusId !== "number") return
+    const controller = new AbortController()
+    void (async () => {
+      const res = await loadLedgerObligations(controller.signal, {
+        id: focusId,
+      })
+      if (res.status === "ok") {
+        setFocusItem(res.data.obligations[0] ?? null)
+      }
+      setFocusLookupDone(true)
+    })()
+    return () => controller.abort()
+  }, [focusId])
+
   // Fetch obligations whenever filters or refreshKey change
   React.useEffect(() => {
+    if (!focusLookupDone) return
     const controller = new AbortController()
 
     void (async () => {
@@ -220,8 +258,30 @@ export function LedgerView({
       })
 
       if (res.status === "ok") {
-        setObligations(res.data.obligations)
-        setNextOffset(res.data.nextOffset)
+        let rows = res.data.obligations
+        let next = res.data.nextOffset
+        // Page on until the focused row is loaded, when the filters let it appear at all
+        const target = focusItem
+        if (target) {
+          const listed = (list: readonly ObligationItem[]) =>
+            list.some((row) => row.id === target.id)
+          const reachable =
+            (activeEntity === "all" || activeEntity === target.entity.id) &&
+            (activeStatus === "all" || activeStatus === target.status)
+          while (reachable && next !== null && !listed(rows)) {
+            const more = await loadLedgerObligations(controller.signal, {
+              entity: activeEntity,
+              status: activeStatus,
+              limit: 50,
+              offset: next,
+            })
+            if (more.status !== "ok") break
+            rows = [...rows, ...more.data.obligations]
+            next = more.data.nextOffset
+          }
+        }
+        setObligations(rows)
+        setNextOffset(next)
       } else if (res.status === "unauthenticated") {
         setError("Unauthenticated")
       } else {
@@ -231,7 +291,7 @@ export function LedgerView({
     })()
 
     return () => controller.abort()
-  }, [activeEntity, activeStatus, refreshKey])
+  }, [activeEntity, activeStatus, refreshKey, focusLookupDone, focusItem])
 
   const handleSelectEntity = React.useCallback((entityId: string) => {
     setActiveEntity(entityId)
@@ -280,7 +340,30 @@ export function LedgerView({
     setLoadingMore(false)
   }, [activeEntity, activeStatus, nextOffset, loadingMore])
 
-  const currentLedgerUrl = getLedgerUrl(activeEntity, activeStatus)
+  const currentLedgerUrl = getLedgerUrl(
+    activeEntity,
+    activeStatus,
+    initialObligation
+  )
+  const focusedRowId =
+    focusItem && obligations.some((row) => row.id === focusItem.id)
+      ? focusItem.id
+      : null
+  const focusMissing = focusId !== undefined && focusItem === null
+
+  // Bring the focused row on screen once it is rendered. Both the table and the phone list
+  // carry the id; the hidden one is a no-op.
+  const scrolledTo = React.useRef<number | null>(null)
+  React.useEffect(() => {
+    if (loading || focusedRowId === null || scrolledTo.current === focusedRowId)
+      return
+    scrolledTo.current = focusedRowId
+    for (const el of document.querySelectorAll(
+      `[data-obligation-row="${focusedRowId}"]`
+    )) {
+      el.scrollIntoView?.({ block: "center" })
+    }
+  }, [loading, focusedRowId])
   const isFiltered = activeEntity !== "all" || activeStatus !== "all"
 
   return (
@@ -305,6 +388,15 @@ export function LedgerView({
               )}
             >
               Replies owed
+            </Link>
+            <Link
+              href="/ledger/transactions"
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "min-h-[44px] px-3 font-medium"
+              )}
+            >
+              Transactions
             </Link>
             <Link
               href="/documents"
@@ -343,6 +435,15 @@ export function LedgerView({
             Replies owed
           </Link>
           <Link
+            href="/ledger/transactions"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "sm" }),
+              "h-8 px-3 text-xs"
+            )}
+          >
+            Transactions
+          </Link>
+          <Link
             href="/documents"
             className={cn(
               buttonVariants({ variant: "ghost", size: "sm" }),
@@ -366,6 +467,15 @@ export function LedgerView({
           onSelectStatus={handleSelectStatus}
         />
       </div>
+
+      {focusMissing && !loading ? (
+        <p
+          role="status"
+          className="rounded-lg border border-border p-3 text-sm text-muted-foreground"
+        >
+          That obligation was not found.
+        </p>
+      ) : null}
 
       {/* Content States */}
       {loading ? (
@@ -439,7 +549,16 @@ export function LedgerView({
                   )
 
                   return (
-                    <TableRow key={row.id}>
+                    <TableRow
+                      key={row.id}
+                      data-obligation-row={row.id}
+                      aria-current={
+                        row.id === focusedRowId ? "true" : undefined
+                      }
+                      className={cn(
+                        row.id === focusedRowId && FOCUSED_ROW_CLASS
+                      )}
+                    >
                       <TableCell className="px-4 py-3 font-medium text-foreground">
                         <div className="flex flex-col">
                           <span>{row.action}</span>
@@ -503,7 +622,12 @@ export function LedgerView({
                 return (
                   <li
                     key={row.id}
-                    className="flex min-h-[44px] flex-col justify-center gap-1.5 py-3 first:pt-1 last:pb-1"
+                    data-obligation-row={row.id}
+                    aria-current={row.id === focusedRowId ? "true" : undefined}
+                    className={cn(
+                      "flex min-h-[44px] flex-col justify-center gap-1.5 px-2 py-3 first:pt-1 last:pb-1",
+                      row.id === focusedRowId && FOCUSED_ROW_CLASS
+                    )}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <span className="text-sm leading-snug font-medium text-foreground">

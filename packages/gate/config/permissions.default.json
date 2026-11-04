@@ -17,6 +17,12 @@
     "file.rename": "auto",
     "file.move": "auto",
     "file.delete": "approval",
+    "things.add_todo": "auto",
+    "things.update_todo": "approval",
+    "things.schedule_todo": "approval",
+    "things.complete_todo": "approval",
+    "things.cancel_todo": "approval",
+    "things.add_project": "approval",
     "confirm.field": "approval"
   }
 }

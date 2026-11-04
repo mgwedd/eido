@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateThingsTodoList",
+  "description": "Response of GET /things/lists/:list on data-plane listener.",
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "gate-things-todo-item.schema.json" }
+    }
+  },
+  "required": ["items"],
+  "additionalProperties": false
+}

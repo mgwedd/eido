@@ -72,6 +72,7 @@ export type CoreApiOptions = {
   /** The drafter behind `POST /replies/draft`; unset without a local model. */
   draftReply?: ReplyDrafter
   propose?: IntentClient["propose"]
+  intentStatus?: IntentClient["status"]
   obligations?: ObligationStateStore
   /** The data DB behind `/documents`. */
   documents?: DocumentsDeps
@@ -106,6 +107,7 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
       ask: options.ask,
       draftReply: options.draftReply,
       propose: options.propose,
+      intentStatus: options.intentStatus,
       obligations: options.obligations,
       documents: options.documents,
       conversations: options.conversations,

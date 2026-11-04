@@ -176,6 +176,7 @@ describe(
         tier: "approval",
         state: "pending",
         edited_from: null,
+        discarded: false,
       })
       expect(settledValue(await planes.probe("pending"))).toMatchObject([
         { id, kind: "email.send", tier: "approval" },
@@ -198,7 +199,7 @@ describe(
       expect(proposedRows).toHaveLength(1)
     })
 
-    it("gives the data plane only its allowlisted variables and no control DB path", async () => {
+    it("isolation: the data plane gets only its allowlisted variables and no control DB path", async () => {
       const view = await planes.probe("env")
       const names = field(view, "env")
       if (!Array.isArray(names)) throw new Error("no env names")
@@ -215,7 +216,7 @@ describe(
       expect(config).not.toContain(planes.paths.controlSocket)
     })
 
-    it("re-runs the long-lived data plane without the variables its parent held", () => {
+    it("isolation: the long-lived data plane runs without the variables its parent held", () => {
       expect(Object.keys(planes.dataPlaneStartEnv)).toEqual(
         expect.arrayContaining(Object.keys(POLLUTED))
       )
@@ -459,7 +460,7 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe("the data-plane source tree", () => {
-  it("has no handle to, or path for, the gate's control DB", () => {
+  it("isolation: the data-plane source has no handle to, or path for, the gate's control DB", () => {
     const hits = sourceFiles(CORE_SRC)
       .filter((path) => relative(CORE_SRC, path) !== HARNESS)
       .flatMap((path) => {

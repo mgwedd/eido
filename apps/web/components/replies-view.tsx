@@ -2,6 +2,8 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
 import { Button, buttonVariants } from "@eido/ui/components/button"
 import {
@@ -20,13 +22,24 @@ import {
   TableRow,
 } from "@eido/ui/components/table"
 import { cn } from "@eido/ui/lib/utils"
+import { DraftReplyAction } from "@/components/draft-reply-action"
+import { ResolveAction } from "@/components/resolve-action"
+import { useKeydown } from "@/hooks/use-keydown"
+import { loadConnectors, type Connector } from "@/lib/connectors"
 import { loadLedgerObligations, type ObligationItem } from "@/lib/ledger"
 import {
+  getPartialCoverageNotice,
   getRepliesUrl,
   getReplySubject,
+  moveRowFocus,
   partitionReplies,
+  requestDraftReply,
+  requestResolveObligation,
   sortReplies,
+  type DraftReplyState,
+  type ResolveState,
 } from "@/lib/replies"
+import { isInteractiveTarget, isShortcutEvent } from "@/lib/shortcuts"
 import {
   formatDueText,
   loadEntities,
@@ -37,6 +50,8 @@ import { buildViewerUrl } from "@/lib/viewer-url"
 export interface RepliesViewProps {
   initialEntity?: string
   now?: Date
+  initialConnectors?: readonly Connector[]
+  isOffline?: boolean
 }
 
 function EntityFilter({
@@ -103,16 +118,63 @@ function EntityBadge({ entity }: { entity: ObligationItem["entity"] }) {
   )
 }
 
+function subscribeOnline(onChange: () => void): () => void {
+  window.addEventListener("online", onChange)
+  window.addEventListener("offline", onChange)
+  return () => {
+    window.removeEventListener("online", onChange)
+    window.removeEventListener("offline", onChange)
+  }
+}
+
 export function RepliesView({
   initialEntity = "all",
   now = new Date(),
+  initialConnectors,
+  isOffline: initialIsOffline,
 }: RepliesViewProps) {
   const [activeEntity, setActiveEntity] = React.useState<string>(initialEntity)
   const [entities, setEntities] = React.useState<FilterEntity[]>([])
   const [obligations, setObligations] = React.useState<ObligationItem[]>([])
+  const [connectors, setConnectors] = React.useState<readonly Connector[]>(
+    initialConnectors ?? []
+  )
   const [loading, setLoading] = React.useState<boolean>(true)
   const [error, setError] = React.useState<string | null>(null)
   const [reloadToken, setReloadToken] = React.useState<number>(0)
+
+  const browserOffline = React.useSyncExternalStore(
+    subscribeOnline,
+    () => !navigator.onLine,
+    () => false
+  )
+  const isOffline = initialIsOffline ?? browserOffline
+
+  const [drafts, setDrafts] = React.useState<Record<number, DraftReplyState>>(
+    {}
+  )
+  const [resolves, setResolves] = React.useState<Record<number, ResolveState>>(
+    {}
+  )
+  const resolving = React.useRef<Set<number>>(new Set())
+
+  const router = useRouter()
+  const [focusedId, setFocusedId] = React.useState<number | null>(null)
+  // Rows with a request in flight. A ref, so a second click in the same tick finds it.
+  const inFlight = React.useRef<Set<number>>(new Set())
+
+  // Load connectors
+  React.useEffect(() => {
+    if (initialConnectors !== undefined) return
+    const controller = new AbortController()
+    void (async () => {
+      const res = await loadConnectors(controller.signal)
+      if (res.status === "ready") {
+        setConnectors(res.connectors)
+      }
+    })()
+    return () => controller.abort()
+  }, [initialConnectors])
 
   // Load entities
   React.useEffect(() => {
@@ -167,6 +229,59 @@ export function RepliesView({
     setReloadToken((prev) => prev + 1)
   }, [])
 
+  const handleDraftReply = React.useCallback(
+    async (row: ObligationItem) => {
+      if (
+        isOffline ||
+        row.hasDraftIntent ||
+        drafts[row.id]?.status === "saved" ||
+        inFlight.current.has(row.id)
+      ) {
+        return
+      }
+      inFlight.current.add(row.id)
+      setDrafts((prev) => ({ ...prev, [row.id]: { status: "pending" } }))
+      const outcome = await requestDraftReply(row.id)
+      inFlight.current.delete(row.id)
+      setDrafts((prev) => ({
+        ...prev,
+        [row.id]:
+          outcome.status === "saved"
+            ? { status: "saved", activityHref: outcome.activityHref }
+            : { status: "failed", reason: outcome.reason },
+      }))
+    },
+    [isOffline, drafts]
+  )
+
+  const handleResolve = React.useCallback(
+    async (row: ObligationItem) => {
+      if (isOffline || resolving.current.has(row.id)) return
+      resolving.current.add(row.id)
+      setResolves((prev) => ({ ...prev, [row.id]: { status: "pending" } }))
+      const outcome = await requestResolveObligation(row.id)
+      resolving.current.delete(row.id)
+      if (outcome.status === "resolved") {
+        setObligations((prev) => prev.filter((o) => o.id !== row.id))
+        setResolves((prev) => {
+          const rest = { ...prev }
+          delete rest[row.id]
+          return rest
+        })
+      } else {
+        setResolves((prev) => ({
+          ...prev,
+          [row.id]: { status: "failed", reason: outcome.reason },
+        }))
+      }
+    },
+    [isOffline]
+  )
+
+  const partialCoverageNotice = React.useMemo(() => {
+    return getPartialCoverageNotice(connectors)
+  }, [connectors])
+
   const currentRepliesUrl = getRepliesUrl(activeEntity)
   const isFiltered = activeEntity !== "all"
 
@@ -178,6 +293,48 @@ export function RepliesView({
       waiting: sortReplies(partitioned.waiting, now),
     }
   }, [obligations, now])
+
+  // The focused row only counts while it is still listed (the entity filter can remove it).
+  const focusedRow = owed.find((row) => row.id === focusedId) ?? null
+
+  useKeydown((event) => {
+    if (loading || error !== null || !isShortcutEvent(event)) return
+    if (event.key === "j" || event.key === "k") {
+      event.preventDefault()
+      setFocusedId(
+        moveRowFocus(
+          owed.map((row) => row.id),
+          focusedRow?.id ?? null,
+          event.key === "j" ? "next" : "previous"
+        )
+      )
+    } else if (event.repeat || focusedRow === null) {
+      return
+    } else if (event.key === "d") {
+      event.preventDefault()
+      void handleDraftReply(focusedRow)
+    } else if (event.key === "Enter" && !isInteractiveTarget(event.target)) {
+      event.preventDefault()
+      router.push(
+        buildViewerUrl(
+          focusedRow.source.documentId,
+          focusedRow.source.span,
+          currentRepliesUrl
+        )
+      )
+    }
+  })
+
+  // Keep the focused row on screen. Both the table and phone list rows carry the id; the
+  // hidden one is a no-op.
+  React.useEffect(() => {
+    if (focusedId === null) return
+    for (const el of document.querySelectorAll(
+      `[data-owed-row="${focusedId}"]`
+    )) {
+      el.scrollIntoView?.({ block: "nearest" })
+    }
+  }, [focusedId])
 
   return (
     <div className="flex flex-col gap-6">
@@ -238,6 +395,15 @@ export function RepliesView({
             )}
           >
             Replies owed
+          </Link>
+          <Link
+            href="/ledger/transactions"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "sm" }),
+              "h-8 px-3 text-xs"
+            )}
+          >
+            Transactions
           </Link>
           <Link
             href="/documents"
@@ -310,6 +476,13 @@ export function RepliesView({
         </Card>
       ) : (
         <div className="flex flex-col gap-6">
+          {/* Partial coverage notice */}
+          {partialCoverageNotice ? (
+            <Alert role="status" className="border-border/60 bg-muted/40">
+              <AlertDescription>{partialCoverageNotice}</AlertDescription>
+            </Alert>
+          ) : null}
+
           {/* Two groups: side-by-side on desktop, stacking under lg (900px) and on phone */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             {/* Owed: You must reply */}
@@ -358,6 +531,12 @@ export function RepliesView({
                           >
                             Waiting
                           </TableHead>
+                          <TableHead
+                            scope="col"
+                            className="px-4 py-2.5 text-right text-xs"
+                          >
+                            <span className="sr-only">Action</span>
+                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -373,7 +552,17 @@ export function RepliesView({
                           )
 
                           return (
-                            <TableRow key={row.id}>
+                            <TableRow
+                              key={row.id}
+                              data-owed-row={row.id}
+                              aria-current={
+                                row.id === focusedRow?.id ? "true" : undefined
+                              }
+                              className={cn(
+                                row.id === focusedRow?.id &&
+                                  "bg-muted/60 ring-2 ring-ring ring-inset"
+                              )}
+                            >
                               <TableCell className="px-4 py-3 text-sm font-medium text-foreground">
                                 {row.party ?? "Unknown"}
                               </TableCell>
@@ -397,6 +586,15 @@ export function RepliesView({
                                 )}
                               >
                                 {dueInfo.text}
+                              </TableCell>
+                              <TableCell className="px-4 py-3 text-right">
+                                <DraftReplyAction
+                                  state={drafts[row.id]}
+                                  hasDraftIntent={row.hasDraftIntent === true}
+                                  isOffline={isOffline}
+                                  size="desktop"
+                                  onDraft={() => void handleDraftReply(row)}
+                                />
                               </TableCell>
                             </TableRow>
                           )
@@ -422,31 +620,53 @@ export function RepliesView({
                       )
 
                       return (
-                        <li key={row.id} className="min-h-[44px] px-4 py-3">
-                          <Link
-                            href={sourceViewerUrl}
-                            className="flex min-h-[44px] flex-col justify-center gap-1 text-foreground"
-                          >
-                            <span className="text-sm font-semibold">
-                              {row.party ?? "Unknown"}
-                            </span>
-                            <span className="line-clamp-2 text-sm text-foreground/90">
-                              {subject}
-                            </span>
-                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                              <span>{row.entity.name}</span>
-                              <span>·</span>
-                              <span
-                                className={cn(
-                                  "tabular-nums",
-                                  dueInfo.isOverdue &&
-                                    "font-semibold text-red-500 dark:text-red-400"
-                                )}
-                              >
-                                waiting {dueInfo.text}
+                        <li
+                          key={row.id}
+                          data-owed-row={row.id}
+                          aria-current={
+                            row.id === focusedRow?.id ? "true" : undefined
+                          }
+                          className={cn(
+                            "min-h-[44px] px-4 py-3",
+                            row.id === focusedRow?.id &&
+                              "bg-muted/60 ring-2 ring-ring ring-inset"
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <Link
+                              href={sourceViewerUrl}
+                              className="flex min-h-[44px] flex-1 flex-col justify-center gap-1 text-foreground"
+                            >
+                              <span className="text-sm font-semibold">
+                                {row.party ?? "Unknown"}
                               </span>
+                              <span className="line-clamp-2 text-sm text-foreground/90">
+                                {subject}
+                              </span>
+                              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <span>{row.entity.name}</span>
+                                <span>·</span>
+                                <span
+                                  className={cn(
+                                    "tabular-nums",
+                                    dueInfo.isOverdue &&
+                                      "font-semibold text-red-500 dark:text-red-400"
+                                  )}
+                                >
+                                  waiting {dueInfo.text}
+                                </span>
+                              </div>
+                            </Link>
+                            <div className="flex shrink-0 items-center">
+                              <DraftReplyAction
+                                state={drafts[row.id]}
+                                hasDraftIntent={row.hasDraftIntent === true}
+                                isOffline={isOffline}
+                                size="phone"
+                                onDraft={() => void handleDraftReply(row)}
+                              />
                             </div>
-                          </Link>
+                          </div>
                         </li>
                       )
                     })}
@@ -501,6 +721,12 @@ export function RepliesView({
                           >
                             Since
                           </TableHead>
+                          <TableHead
+                            scope="col"
+                            className="px-4 py-2.5 text-right text-xs"
+                          >
+                            <span className="sr-only">Action</span>
+                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -540,6 +766,14 @@ export function RepliesView({
                                 )}
                               >
                                 {dueInfo.text}
+                              </TableCell>
+                              <TableCell className="px-4 py-3 text-right">
+                                <ResolveAction
+                                  state={resolves[row.id]}
+                                  isOffline={isOffline}
+                                  size="desktop"
+                                  onResolve={() => void handleResolve(row)}
+                                />
                               </TableCell>
                             </TableRow>
                           )
@@ -591,12 +825,20 @@ export function RepliesView({
                                 </span>
                               </div>
                             </Link>
-                            <Badge
-                              variant="outline"
-                              className="border-blue-500/30 bg-blue-500/10 text-xs font-medium text-blue-600 dark:text-blue-400"
-                            >
-                              Waiting
-                            </Badge>
+                            <div className="flex shrink-0 flex-col items-end gap-1">
+                              <Badge
+                                variant="outline"
+                                className="border-blue-500/30 bg-blue-500/10 text-xs font-medium text-blue-600 dark:text-blue-400"
+                              >
+                                Waiting
+                              </Badge>
+                              <ResolveAction
+                                state={resolves[row.id]}
+                                isOffline={isOffline}
+                                size="phone"
+                                onResolve={() => void handleResolve(row)}
+                              />
+                            </div>
                           </div>
                         </li>
                       )
@@ -606,12 +848,6 @@ export function RepliesView({
               )}
             </Card>
           </div>
-
-          {/* Footer note */}
-          <p className="text-xs text-muted-foreground">
-            Draft reply asks Eido for a draft. It lands in the queue; nothing is
-            sent until you approve it.
-          </p>
         </div>
       )}
     </div>

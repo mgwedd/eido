@@ -1,5 +1,4 @@
 import type { DatabaseSync } from "node:sqlite"
-import { GateRequestError } from "@eido/gate"
 import type { IntentClient } from "@eido/gate"
 import type { CoreApiError, CoreApiReplyDraftResponse } from "@eido/schemas"
 import { GMAIL_CONNECTOR } from "../connectors/gmail/routes"
@@ -9,12 +8,17 @@ import type { InferenceQueue } from "../inference/queue"
 import type { ProposalLimiter } from "../propose/limiter"
 import { proposeIntents } from "../propose/propose"
 import type { ProposalResult, ProposedIntent } from "../propose/propose"
+import {
+  draftStateIsLive,
+  liveDraftStatus,
+  storedDraftIntentIds,
+} from "./reply-draft-live"
 
 // POST /replies/draft (#540): draft one reply for the thread of an open owed-reply obligation.
 // The model is offered email.draft and nothing else, at most one intent is kept, and the intent
 // goes to the gate pinned to the connector the thread came from. One live draft intent per
 // thread: a repeat call returns the stored one, and concurrent calls for a thread run one at a
-// time, so the second sees the first one's draft.
+// time, so the second sees the first one's draft. A discarded draft (#549) no longer counts.
 
 export const REPLY_DRAFT_PATH = "/replies/draft"
 
@@ -30,9 +34,6 @@ const DRAFT_CONNECTORS: Readonly<Record<string, string>> = {
   gmail: GMAIL_CONNECTOR,
   proton: PROTON_MANIFEST_NAME,
 }
-
-/** Gate states after which the thread has no draft: refused, or the write failed. */
-const DEAD_STATES = new Set(["rejected", "failed"])
 
 const CREATE_TABLE = `
 CREATE TABLE IF NOT EXISTS reply_drafts (
@@ -97,40 +98,21 @@ export function activityHref(intentId: string): string {
   return `/activity?intent=${encodeURIComponent(intentId)}`
 }
 
-function storedIntentId(db: DatabaseSync, threadKey: string): string | null {
-  const table = db
-    .prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'reply_drafts'"
-    )
-    .get()
-  if (table === undefined) return null
-  const row = db
-    .prepare("SELECT intent_id FROM reply_drafts WHERE thread_key = ?")
-    .get(threadKey)
-  return row === undefined ? null : String(row["intent_id"])
-}
-
 /** The stored draft intent for the thread while the gate still holds it live, else null. */
 async function liveDraft(
   deps: ReplyDraftDeps,
   threadKey: string
 ): Promise<CoreApiReplyDraftResponse | null> {
-  const id = storedIntentId(deps.db, threadKey)
-  if (id === null) return null
-  try {
-    const status = await deps.gate.status(id)
-    if (DEAD_STATES.has(status.state)) return null
-    return {
-      intentId: status.id,
-      tier: status.tier,
-      state: status.state,
-      activityHref: activityHref(status.id),
-      created: false,
-    }
-  } catch (error) {
-    // The gate no longer knows the intent (its store was reset): the thread has no draft.
-    if (error instanceof GateRequestError && error.status === 404) return null
-    throw error
+  const id = storedDraftIntentIds(deps.db, [threadKey]).get(threadKey)
+  if (id === undefined) return null
+  const status = await liveDraftStatus(deps.gate, id)
+  if (status === null) return null
+  return {
+    intentId: status.id,
+    tier: status.tier,
+    state: status.state,
+    activityHref: activityHref(status.id),
+    created: false,
   }
 }
 
@@ -198,8 +180,8 @@ async function draft(
       ...(deps.now === undefined ? {} : { now: deps.now }),
     }
   )
-  const stored: ProposedIntent | undefined = result.intents.find(
-    (i) => !DEAD_STATES.has(i.status)
+  const stored: ProposedIntent | undefined = result.intents.find((i) =>
+    draftStateIsLive(i.status)
   )
   if (stored === undefined) return noDraft(result)
 

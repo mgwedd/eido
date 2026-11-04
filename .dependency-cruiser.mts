@@ -65,6 +65,14 @@ const config: IConfiguration = {
       to: { path: "(^|/)(packages|apps)/", pathNot: "(^|/)packages/schemas/" },
     },
     {
+      name: "core-things-no-child-process",
+      comment:
+        "packages/core/src/connectors/things must not import child_process (AC 6 of #302). Things automation is gate-only.",
+      severity: "error",
+      from: { path: "(^|/)packages/core/src/connectors/things/" },
+      to: { path: "^(node:)?child_process$" },
+    },
+    {
       name: "ui-imports-nothing",
       comment:
         "packages/ui is presentational and imports no other workspace package.",

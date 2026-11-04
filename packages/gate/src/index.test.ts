@@ -9,5 +9,6 @@ it("exports only the intent API, audit and read-only mail/file clients", () => {
     "createFileClient",
     "createIntentClient",
     "createProtonMailClient",
+    "createThingsClient",
   ])
 })

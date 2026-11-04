@@ -101,6 +101,8 @@ async function owedThread(
 type Gate = ReturnType<typeof fakeGate> &
   Pick<IntentClient, "status"> & {
     states: Map<string, GateIntentStatus["state"] | GateRequestError>
+    /** Intents whose discard (a separate email.trash) the gate reports executed. */
+    discarded: Set<string>
     statusCalls: string[]
   }
 
@@ -108,10 +110,12 @@ type Gate = ReturnType<typeof fakeGate> &
 function gateWith(script: GateAnswer[] = []): Gate {
   const base = fakeGate(script)
   const states = new Map<string, GateIntentStatus["state"] | GateRequestError>()
+  const discarded = new Set<string>()
   const statusCalls: string[] = []
   return {
     ...base,
     states,
+    discarded,
     statusCalls,
     status: (id: string) => {
       statusCalls.push(id)
@@ -123,6 +127,7 @@ function gateWith(script: GateAnswer[] = []): Gate {
         tier: "auto",
         state,
         edited_from: null,
+        discarded: discarded.has(id),
       })
     },
   }
@@ -331,6 +336,31 @@ describe("POST /replies/draft", () => {
     expect(gate.proposals).toHaveLength(3)
     expect(storedDrafts()).toEqual([
       { thread_key: "key-t-1", obligation_id: id, intent_id: "int_3" },
+    ])
+  })
+
+  test("an executed draft whose discard executed is replaced by a new one", async () => {
+    const id = await owedThread()
+    const gate = gateWith()
+    const handle = handlerFor(
+      await drafterDeps([reply([DRAFT]), reply([DRAFT])], gate)
+    )
+    await post(handle, { obligationId: id })
+    gate.states.set("int_1", "executed")
+    // The discard is pending or was rejected: the gate does not report it, the draft holds.
+    const held = await post(handle, { obligationId: id })
+    expect(held.status).toBe(200)
+    expect(((await held.json()) as { intentId: string }).intentId).toBe("int_1")
+    gate.discarded.add("int_1")
+    const replaced = await post(handle, { obligationId: id })
+    expect(replaced.status).toBe(201)
+    expect(await replaced.json()).toMatchObject({
+      intentId: "int_2",
+      created: true,
+    })
+    expect(gate.proposals).toHaveLength(2)
+    expect(storedDrafts()).toEqual([
+      { thread_key: "key-t-1", obligation_id: id, intent_id: "int_2" },
     ])
   })
 

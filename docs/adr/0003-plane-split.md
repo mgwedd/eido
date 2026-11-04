@@ -26,6 +26,7 @@ Two processes, two SQLite files, one narrow API between them.
     - `POST /audit` appends one hash-only `audit.profile.*` row for a profile change in core (#181), or `audit.ledger.*` row for a local obligation state change (#104). See "How the data plane uses the client".
     - `GET /connector-health` returns only each connector's health, consecutive failure count, bounded error code and next attempt time. Health changes are written only by the gate after observing an upstream read; core cannot set health or clear an open breaker.
     - When Proton Bridge is configured (#195): `GET /mail/proton/folders`, `GET /mail/proton/folders/:folder/state` and `GET /mail/proton/folders/:folder/messages?fromUid=&limit=`. See "Proton mail reads".
+    - When Things 3 is configured (#302): `GET /things/lists/:list`, `GET /things/items/:id`, `GET /things/projects`, `GET /things/areas`, `GET /things/tags`. See "Things reads".
     - An open connector admits one read probe after its persisted backoff. The gate reserves it atomically and closes the breaker only after that read succeeds; failed probes reopen with a longer backoff. Writes stay refused while the connector is open.
     - Every other method or path returns 404.
     - Request bodies are capped at 1 MiB (413 above it). Malformed JSON gets 400 with no echo of the body. A schema-invalid intent gets 422 with field paths only. A forbidden intent is stored as rejected and answered with 403.
@@ -75,6 +76,14 @@ An [RFC 9497](https://www.rfc-editor.org/rfc/rfc9497.html) OPRF or VOPRF could b
 - Each call writes one audit row (actor `data-plane`, target `proton-mail`) whose detail hash covers counts only: folders, messages, skipped and bytes. Folder names, subjects and bodies are never in the audit log.
 - The client's fetch call allows 60 s; the other calls keep the 2 s timeout.
 - Writes do not use these routes. Approved mail intents run through the executor's Bridge writers (`packages/gate/src/internal/bridge/writers.ts`), which accept only the pinned `proton-mail` connector with password auth and no HTTP egress.
+
+## Things reads (#302)
+
+- The gate reads Things 3 over macOS AppleScript using `osascript` on fixed script templates with parameters passed strictly through `argv`; core receives structured JSON items and projects. The gate never interpolates user input into script sources.
+- When Things is not running, the gate returns 502 with code `things_unavailable`. When macOS Automation permission is denied, the gate returns 502 with code `automation_denied` and disables the connector (no retry).
+- Each call writes one audit row (actor `data-plane`, target `things`) whose detail hash covers counts only: items, projects, areas, tags. To-do titles, notes, and project names are never in the audit log or gate logs.
+- Writes do not use data-plane routes. Approved Things intents run through the executor's Things writers (`packages/gate/src/internal/things/things-writers.ts`), which accept only the pinned `things` connector with `macos-automation` auth and no HTTP egress.
+- Launchd automation grant attribution: when the gate runs as a launchd service (`launchd.plist`), macOS attributes the AppleEvents automation permission to the launching executable (`node` or a dedicated wrapper). To scope the grant strictly to Eido rather than all node scripts, production packaging runs the gate via a dedicated signed wrapper binary.
 
 ## Proton Bridge TLS pin (#218)
 

@@ -116,6 +116,23 @@ describe("DEFAULT_CORE_PORT", () => {
 })
 
 describe("dataPlaneConfig", () => {
+  it("turns SimpleFIN sync on with a loopback proxy URL, passing its settings through", () => {
+    const base = { EIDO_DATA_DIR: "/d", EIDO_GATE_SOCKET: "/s/gate.sock" }
+    expect(dataPlaneConfig(base).simplefin).toBeUndefined()
+    const env = {
+      ...base,
+      EIDO_SIMPLEFIN_PROXY_URL: "http://127.0.0.1:7801",
+      EIDO_SIMPLEFIN_MAX_RANGE_DAYS: "30",
+      EIDO_SIMPLEFIN_SYNC_TIME: "06:30",
+    }
+    expect(dataPlaneConfig(env).simplefin).toEqual({
+      proxyUrl: "http://127.0.0.1:7801",
+      config: { maxDateRangeDays: 30 },
+      syncTime: { hour: 6, minute: 30 },
+    })
+    expect(outsideAllowlist(env)).toEqual([])
+  })
+
   it("opts in to local file indexing with a scrubbed nonsecret flag", () => {
     const base = { EIDO_DATA_DIR: "/d", EIDO_GATE_SOCKET: "/s/gate.sock" }
     expect(dataPlaneConfig({ ...base, EIDO_FILES_SYNC: "1" }).filesSync).toBe(
