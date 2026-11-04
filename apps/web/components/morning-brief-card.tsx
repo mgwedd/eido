@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { ChevronRight } from "lucide-react"
 import type { CoreApiBrief } from "@eido/schemas"
 import { Button } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
@@ -8,6 +9,10 @@ import { Skeleton } from "@eido/ui/components/skeleton"
 import {
   filterRenderableBriefLines,
   formatBriefHeaderMeta,
+  isDeferredObligationLine,
+  ledgerObligationUrl,
+  type BriefDeferredLine,
+  type BriefLine,
   type BriefState,
 } from "@/lib/today-brief"
 import { documentSpanUrl } from "@/lib/today-due-soon"
@@ -29,6 +34,11 @@ export function MorningBriefCard({
     ? filterRenderableBriefLines(readyBrief.lines)
     : []
   const hasContent = renderableLines.length > 0
+  const bodyLines = renderableLines.filter(
+    (line): line is Exclude<BriefLine, BriefDeferredLine> =>
+      line.kind !== "deferred"
+  )
+  const deferredLines = renderableLines.filter(isDeferredObligationLine)
 
   const headerMeta = readyBrief ? formatBriefHeaderMeta(readyBrief, now) : null
 
@@ -79,53 +89,78 @@ export function MorningBriefCard({
 
         {state.status === "ready" && hasContent && readyBrief && (
           <>
-            <p className="text-sm leading-relaxed text-foreground">
-              {renderableLines.map((line, idx) => {
-                if (line.kind === "more") {
-                  return (
-                    <span key={`more-${idx}`} className="inline">
-                      {" "}
-                      <a
-                        href="/ledger"
-                        className="font-medium underline underline-offset-4 hover:text-primary"
-                      >
-                        {line.text}
-                      </a>
-                    </span>
-                  )
-                }
+            {bodyLines.length > 0 ? (
+              <p className="text-sm leading-relaxed text-foreground">
+                {bodyLines.map((line, idx) => {
+                  if (line.kind === "more") {
+                    return (
+                      <span key={`more-${idx}`} className="inline">
+                        {" "}
+                        <a
+                          href="/ledger"
+                          className="font-medium underline underline-offset-4 hover:text-primary"
+                        >
+                          {line.text}
+                        </a>
+                      </span>
+                    )
+                  }
 
-                if (line.kind === "deferred") {
+                  const spanUrl = documentSpanUrl(
+                    line.source.documentId,
+                    line.source.span
+                  )
+
                   return (
                     <React.Fragment
                       key={`${line.ledger.type}-${line.ledger.id}-${idx}`}
                     >
-                      <span>{line.text}</span>{" "}
+                      <span>{line.text}</span>
+                      <a
+                        href={spanUrl}
+                        aria-label={`Source citation for: ${line.text}`}
+                        className="mx-1 inline-flex items-center rounded border border-border bg-muted/60 px-1 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      >
+                        [{idx + 1}]
+                      </a>{" "}
                     </React.Fragment>
                   )
-                }
-
-                const spanUrl = documentSpanUrl(
-                  line.source.documentId,
-                  line.source.span
-                )
-
-                return (
-                  <React.Fragment
-                    key={`${line.ledger.type}-${line.ledger.id}-${idx}`}
-                  >
-                    <span>{line.text}</span>
-                    <a
-                      href={spanUrl}
-                      aria-label={`Source citation for: ${line.text}`}
-                      className="mx-1 inline-flex items-center rounded border border-border bg-muted/60 px-1 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                })}
+              </p>
+            ) : null}
+            {deferredLines.length > 0 ? (
+              <section
+                aria-labelledby="morning-brief-deferred-heading"
+                className="flex flex-col gap-1"
+              >
+                <h3
+                  id="morning-brief-deferred-heading"
+                  className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
+                >
+                  Deferred
+                </h3>
+                <ul className="flex flex-col">
+                  {deferredLines.map((line) => (
+                    <li
+                      key={line.ledger.id}
+                      className="border-b border-border/60 last:border-b-0"
                     >
-                      [{idx + 1}]
-                    </a>{" "}
-                  </React.Fragment>
-                )
-              })}
-            </p>
+                      <a
+                        href={ledgerObligationUrl(line.ledger.id)}
+                        aria-label={`Open in Ledger: ${line.text}`}
+                        className="flex items-center gap-3 py-2 text-xs text-foreground hover:text-primary"
+                      >
+                        <span className="min-w-0 flex-1">{line.text}</span>
+                        <ChevronRight
+                          aria-hidden="true"
+                          className="size-3.5 shrink-0 text-muted-foreground"
+                        />
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
             {readyBrief.coverageLine ? (
               <p className="text-xs text-muted-foreground">
                 {readyBrief.coverageLine}
