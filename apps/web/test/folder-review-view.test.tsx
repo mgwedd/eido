@@ -300,7 +300,9 @@ describe("an edited list", () => {
     const { device, approve } = prompt()
     await render(device)
     const sent = vi.mocked(fetch).mock.calls[0]?.[1]?.body
-    expect(JSON.parse(String(sent))).toEqual(firstFolderRequest)
+    expect(typeof sent === "string" ? JSON.parse(sent) : sent).toEqual(
+      firstFolderRequest
+    )
     expect(status()).toBe(
       "1 folder · check each one as the host sees it, then sign."
     )

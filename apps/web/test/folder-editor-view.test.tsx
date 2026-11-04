@@ -88,12 +88,11 @@ const inputs = (row: number) => [
 
 async function type(input: HTMLInputElement | undefined, value: string) {
   if (input === undefined) throw new Error("no input")
-  const setter = Object.getOwnPropertyDescriptor(
-    HTMLInputElement.prototype,
-    "value"
-  )?.set
   await act(async () => {
-    setter?.call(input, value)
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value"
+    )?.set?.call(input, value)
     input.dispatchEvent(new Event("input", { bubbles: true }))
     await settle()
   })
