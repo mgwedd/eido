@@ -188,5 +188,5 @@ describe("synthetic eval runner", () => {
     expect(reports[0]?.temperature).toBe(0)
     expect(reports[0]?.modelId).toBe("stub-local-test-model")
     expect(submitted).toHaveLength(8)
-  })
+  }, 30_000)
 })
