@@ -1,6 +1,12 @@
 "use client"
 
-import { ChevronRight, UserRound, WifiOff } from "lucide-react"
+import {
+  ChevronRight,
+  Loader2,
+  RefreshCw,
+  UserRound,
+  WifiOff,
+} from "lucide-react"
 import Link from "next/link"
 import { useTheme } from "next-themes"
 import * as React from "react"
@@ -62,6 +68,21 @@ import {
   type SimpleFinAccount,
   type SimpleFinAccountsLoad,
 } from "@/lib/simplefin-accounts"
+import {
+  budgetSpent,
+  dailyLimitMessage,
+  loadSimpleFinHealth,
+  REQUEST_FAILED_MESSAGE,
+  runSimpleFinSync,
+  SYNC_FAILED_MESSAGE,
+  SYNC_OFFLINE_LINE,
+  SYNCING_MESSAGE,
+  syncedMessage,
+  syncLine,
+  UNAVAILABLE_MESSAGE,
+  type SimpleFinHealthLoad,
+  type SimpleFinSyncOutcome,
+} from "@/lib/simplefin-sync"
 
 type Settled<T> = Exclude<SectionLoad<T>, { status: "unauthenticated" }>
 
@@ -617,6 +638,130 @@ function SimpleFinAccountRow({
   )
 }
 
+/**
+ * The sync row at the top of the SimpleFIN section: the next scheduled sync, today's request
+ * count and a Sync now button. One click sends one request; the button is disabled while it is in
+ * flight, while the daily budget is spent and while the host cannot be reached. After every
+ * response the counts are read again, and after a synced one `onSynced` re-reads the accounts.
+ */
+function SimpleFinSyncRow({ onSynced }: { onSynced?: () => void }) {
+  const [health, setHealth] = React.useState<SimpleFinHealthLoad | null>(null)
+  const [syncing, setSyncing] = React.useState(false)
+  const [outcome, setOutcome] = React.useState<SimpleFinSyncOutcome | null>(
+    null
+  )
+  const mounted = React.useRef(true)
+  const inFlight = React.useRef(false)
+
+  React.useEffect(() => {
+    mounted.current = true
+    const controller = new AbortController()
+    void loadSimpleFinHealth(controller.signal).then((next) => {
+      if (!controller.signal.aborted) setHealth(next)
+    })
+    return () => {
+      mounted.current = false
+      controller.abort()
+    }
+  }, [])
+
+  const sync = () => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setSyncing(true)
+    setOutcome(null)
+    void (async () => {
+      const result = await runSimpleFinSync()
+      const next = await loadSimpleFinHealth(new AbortController().signal)
+      inFlight.current = false
+      if (!mounted.current) return
+      setOutcome(result)
+      setHealth(next)
+      setSyncing(false)
+      if (result.status === "synced") onSynced?.()
+    })()
+  }
+
+  if (health === null) return <Skeleton className="h-8 w-full" />
+
+  const offline = health.status === "offline"
+  const spent =
+    (health.status === "ready" && budgetSpent(health.health)) ||
+    (outcome?.status === "refused" && outcome.reason === "daily_limit")
+  const line =
+    health.status === "ready" ? syncLine(health.health) : SYNC_OFFLINE_LINE
+  const lastError =
+    health.status === "ready" ? health.health.lastError : undefined
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {offline ? (
+          <p role="status" className="text-xs text-muted-foreground">
+            {SYNC_OFFLINE_LINE}
+          </p>
+        ) : line !== "" ? (
+          <p className="text-xs text-muted-foreground tabular-nums">{line}</p>
+        ) : (
+          <span />
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-11"
+          disabled={syncing || offline || spent}
+          onClick={sync}
+        >
+          {syncing ? (
+            <Loader2 aria-hidden className="size-4 animate-spin" />
+          ) : (
+            <RefreshCw aria-hidden className="size-4" />
+          )}
+          {syncing ? "Syncing…" : "Sync now"}
+        </Button>
+      </div>
+      {syncing ? (
+        <p role="status" className="sr-only">
+          {SYNCING_MESSAGE}
+        </p>
+      ) : null}
+      {outcome?.status === "synced" ? (
+        <p role="status" className="text-sm">
+          {syncedMessage(outcome.nextSyncAt)}
+        </p>
+      ) : null}
+      {outcome?.status === "refused" && outcome.reason === "daily_limit" ? (
+        <Alert>
+          <AlertDescription>
+            {dailyLimitMessage(outcome.nextSyncAt)}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      {outcome?.status === "refused" &&
+      outcome.reason === "connector_unavailable" ? (
+        <Alert variant="destructive">
+          <AlertDescription>{UNAVAILABLE_MESSAGE}</AlertDescription>
+        </Alert>
+      ) : null}
+      {outcome?.status === "refused" && outcome.reason === "sync_failed" ? (
+        <Alert variant="destructive">
+          <AlertDescription>
+            {SYNC_FAILED_MESSAGE}
+            {lastError === undefined ? null : (
+              <span className="block text-xs">{lastError}</span>
+            )}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      {outcome?.status === "failed" ? (
+        <Alert variant="destructive">
+          <AlertDescription>{REQUEST_FAILED_MESSAGE}</AlertDescription>
+        </Alert>
+      ) : null}
+    </div>
+  )
+}
+
 /** Shown only when core has SimpleFIN configured; choosing an entity saves at once. */
 function SimpleFinAccountsSection() {
   const [load, setLoad] = React.useState<SimpleFinAccountsLoad | null>(null)
@@ -632,6 +777,12 @@ function SimpleFinAccountsSection() {
       if (!controller.signal.aborted) setLoad(next)
     })
     return () => controller.abort()
+  }, [])
+
+  const refreshAccounts = React.useCallback(() => {
+    void loadSimpleFinAccounts(new AbortController().signal).then((next) => {
+      if (next.status === "ready") setLoad(next)
+    })
   }, [])
 
   if (load?.status === "not_configured") return null
@@ -746,6 +897,9 @@ function SimpleFinAccountsSection() {
       title="SimpleFIN accounts"
       tip="Transactions of an account with no entity are not stored."
     >
+      {load?.status === "ready" ? (
+        <SimpleFinSyncRow onSynced={refreshAccounts} />
+      ) : null}
       {body()}
     </Section>
   )
@@ -890,5 +1044,6 @@ export {
   SettingsBody,
   SettingsView,
   SimpleFinAccountsSection,
+  SimpleFinSyncRow,
 }
 export type { SettingsState }
