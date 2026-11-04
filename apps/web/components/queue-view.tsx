@@ -18,6 +18,7 @@ import {
   SheetTitle,
 } from "@eido/ui/components/sheet"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import { QueueContextUsed } from "@/components/queue-context-used"
 import { QueueEditSheet } from "@/components/queue-edit-sheet"
 import { ShortcutKeys } from "@/components/shortcuts-provider"
 import { useKeydown } from "@/hooks/use-keydown"
@@ -672,12 +673,8 @@ function ApprovalCard({
                 <p className="text-xs text-muted-foreground">
                   Context sources: {confirmData.contextSources.join(", ")}
                 </p>
-              ) : card.status === "ready" &&
-                card.prepared.documentIds.length > 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  Context used · {card.prepared.documentIds.length} linked
-                  sources
-                </p>
+              ) : card.status === "ready" ? (
+                <QueueContextUsed documentIds={card.prepared.documentIds} />
               ) : null}
             </div>
           ) : view ? (
@@ -699,12 +696,8 @@ function ApprovalCard({
             </dl>
           ) : null}
 
-          {card.status === "ready" &&
-          !confirmData &&
-          card.prepared.documentIds.length > 0 ? (
-            <p className="text-xs text-muted-foreground">
-              Context used · {card.prepared.documentIds.length} linked sources
-            </p>
+          {card.status === "ready" && !confirmData ? (
+            <QueueContextUsed documentIds={card.prepared.documentIds} />
           ) : null}
           {card.status === "ready" && card.prepared.rationale ? (
             <section className="flex flex-col gap-1 border-t border-dashed pt-3">
