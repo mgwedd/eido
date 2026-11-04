@@ -10,6 +10,7 @@ import {
 import Link from "next/link"
 import * as React from "react"
 
+import type { GateFileRootsRequest } from "@eido/schemas"
 import { Alert, AlertDescription, AlertTitle } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
 import { Button } from "@eido/ui/components/button"
@@ -43,6 +44,13 @@ import {
   type PreparedFolders,
   type ReviewFolder,
 } from "@/lib/file-roots"
+import {
+  clearDraft,
+  FOLDER_EDITOR_URL,
+  FOLDERS_READ_FAILED,
+  readDraft,
+  reviewsEditedList,
+} from "@/lib/file-roots-draft"
 import { loadFileRoots } from "@/lib/settings"
 
 type FolderReviewState =
@@ -53,8 +61,6 @@ type FolderReviewState =
   | { status: "cancelled" }
   | { status: "saved" }
   | { status: "failed"; message: string; unreachable: boolean }
-
-const READ_FAILED = "Could not read the allowed folders from the gate."
 
 const toUnlock = () =>
   window.location.replace(
@@ -76,27 +82,36 @@ function useFolderReview(device?: FileRootsDevice) {
     const settle = (next: FolderReviewState) => {
       if (!controller.signal.aborted) setState(next)
     }
-    void (async () => {
+    /** The edited list the editor kept, else the signed list; undefined once settled. */
+    const requested = async (): Promise<GateFileRootsRequest | undefined> => {
+      if (reviewsEditedList(window.location.search)) {
+        const edited = readDraft()
+        if (edited === undefined) window.location.replace(FOLDER_EDITOR_URL)
+        return edited
+      }
       const signed = await loadFileRoots(controller.signal)
-      if (controller.signal.aborted) return
-      if (signed.status === "unauthenticated") return toUnlock()
+      if (controller.signal.aborted) return undefined
+      if (signed.status === "unauthenticated") return void toUnlock()
       if (signed.status === "offline")
-        return settle({
+        return void settle({
           status: "failed",
           message: FILE_ROOTS_MESSAGES.unreachable,
           unreachable: true,
         })
       if (signed.status === "error")
-        return settle({
+        return void settle({
           status: "failed",
-          message: READ_FAILED,
+          message: FOLDERS_READ_FAILED,
           unreachable: false,
         })
-      if (signed.value.roots.length === 0) return settle({ status: "empty" })
-      const prepared = await prepareFileRoots(
-        requestFromSigned(signed.value),
-        controller.signal
-      )
+      if (signed.value.roots.length === 0)
+        return void settle({ status: "empty" })
+      return requestFromSigned(signed.value)
+    }
+    void (async () => {
+      const request = await requested()
+      if (request === undefined) return
+      const prepared = await prepareFileRoots(request, controller.signal)
       if (controller.signal.aborted) return
       if (prepared.ok) settle({ status: "review", folders: prepared.value })
       else if (prepared.expired) toUnlock()
@@ -122,8 +137,10 @@ function useFolderReview(device?: FileRootsDevice) {
       device ?? browserFileRootsDevice(),
       controller.signal
     ).then((outcome) => {
-      if (outcome.ok) setState({ status: "saved" })
-      else if (outcome.expired) toUnlock()
+      if (outcome.ok) {
+        clearDraft()
+        setState({ status: "saved" })
+      } else if (outcome.expired) toUnlock()
       else if ("cancelled" in outcome) setState({ status: "cancelled" })
       else
         setState({
@@ -135,6 +152,7 @@ function useFolderReview(device?: FileRootsDevice) {
   }, [state, device])
 
   const cancel = React.useCallback(() => {
+    clearDraft()
     // While the passkey prompt is open, aborting it ends in "cancelled" through sign().
     if (state.status === "waiting") signing.current?.abort()
     else setState({ status: "cancelled" })

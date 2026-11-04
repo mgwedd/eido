@@ -447,14 +447,22 @@ function AllowedFoldersRow({ load }: { load: SettingsData["fileRoots"] }) {
           {folderCount(count)}
         </span>
       </span>
-      {count > 0 ? (
+      <span className="flex shrink-0 gap-2">
         <Link
-          href="/settings/folders/review"
+          href="/settings/folders/edit"
           className={`${buttonVariants({ variant: "outline" })} min-h-11`}
         >
-          Review
+          Edit
         </Link>
-      ) : null}
+        {count > 0 ? (
+          <Link
+            href="/settings/folders/review"
+            className={`${buttonVariants({ variant: "outline" })} min-h-11`}
+          >
+            Review
+          </Link>
+        ) : null}
+      </span>
     </div>
   )
 }
