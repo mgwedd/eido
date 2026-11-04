@@ -1041,7 +1041,7 @@ describe("Proton mail read routes", () => {
     ).toBe(true)
   })
 
-  test("root_missing names the folder by its request id and nothing else", () => {
+  test("the file-root errors name the folder by its request id and nothing else", () => {
     const missing = {
       code: "root_missing",
       rootId: "rental",
@@ -1055,7 +1055,10 @@ describe("Proton mail read routes", () => {
     expect(
       validateGateApiError({ ...missing, rootId: "/Users/x/Rental" }).ok
     ).toBe(false)
-    // Only root_missing carries a root id.
+    expect(validateGateApiError({ ...missing, code: "root_changed" }).ok).toBe(
+      true
+    )
+    // Only the file-root errors carry a root id.
     expect(
       validateGateApiError({
         code: "invalid_request",
