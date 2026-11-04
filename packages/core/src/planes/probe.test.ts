@@ -12,6 +12,7 @@ const STATUS = {
   tier: "approval",
   state: "pending",
   edited_from: null,
+  discarded: false,
 } as const
 
 function client(overrides: Partial<IntentClient> = {}): IntentClient {

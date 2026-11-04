@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiSimpleFinAssignmentRequest",
+  "description": "Request body of PUT /connectors/simplefin/assignments (#545): the entity a SimpleFIN account's transactions are stored under. Local configuration: no gate, no approval. Changing the entity re-tags the account's stored transactions; a first assignment queues a read of its older transactions. The response is the account (CoreApiSimpleFinAccount).",
+  "type": "object",
+  "properties": {
+    "accountId": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "entityId": { "type": "string", "minLength": 36, "maxLength": 36 }
+  },
+  "required": ["accountId", "entityId"],
+  "additionalProperties": false
+}

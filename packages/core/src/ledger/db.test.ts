@@ -248,6 +248,60 @@ describe("migrations", () => {
     db.close()
   })
 
+  test("the links rebuild keeps stored links and their checks (#576)", async () => {
+    const path = tempPath()
+    const old = openIndex(path)
+    const profile = createProfileStore(old, { audit: () => Promise.resolve() })
+    const a = await profile.createEntity({
+      kind: "property",
+      name: "A",
+      tag: "A",
+    })
+    const [first = "", second = ""] = addDocs(old, [
+      testDoc("one", { entityId: a.id }),
+      testDoc("two", { entityId: a.id }),
+    ])
+    for (const [i, sql] of LEDGER_MIGRATIONS.slice(0, -1).entries()) {
+      old.exec(sql)
+      old
+        .prepare(
+          `INSERT INTO ledger_schema (id, version) VALUES (1, ?)
+           ON CONFLICT (id) DO UPDATE SET version = excluded.version`
+        )
+        .run(i + 1)
+    }
+    old
+      .prepare(
+        "INSERT INTO links (src, dst, kind, confidence, origin) VALUES (?, ?, 'reply_to', 1, 'header:in-reply-to')"
+      )
+      .run(`doc:${second}`, `doc:${first}`)
+    expect(() =>
+      old
+        .prepare(
+          "INSERT INTO links (src, dst, kind, confidence, origin) VALUES ('txn:acc:1', ?, 'pays', 0.9, 'match')"
+        )
+        .run(`doc:${first}`)
+    ).toThrow(/CHECK/)
+    old.close()
+
+    const db = openDataDb(path)
+    expect(ledgerVersion(db)).toBe(LEDGER_SCHEMA_VERSION)
+    expect(db.prepare("SELECT src, dst, kind FROM links").all()).toEqual([
+      { src: `doc:${second}`, dst: `doc:${first}`, kind: "reply_to" },
+    ])
+    expect(() => db.prepare("UPDATE links SET confidence = 0.5").run()).toThrow(
+      /links are immutable/
+    )
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO links (src, dst, kind, confidence, origin) VALUES (?, 'doc:missing', 'thread', 1, 'header:thread-id')"
+        )
+        .run(`doc:${first}`)
+    ).toThrow(/link endpoint does not exist/)
+    db.close()
+  })
+
   test("the backfill trigger allows only entity_id NULL -> known entity", async () => {
     const path = tempPath()
     databaseAtIssue19Schema(path)

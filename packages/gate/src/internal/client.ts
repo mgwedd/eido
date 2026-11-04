@@ -20,6 +20,12 @@ import {
   validateGatePendingIntentList,
   validateGateProposeRefusal,
   validateGateProposeResult,
+  validateGateThingsAreaList,
+  validateGateThingsProjectItem,
+  validateGateThingsProjectList,
+  validateGateThingsTagList,
+  validateGateThingsTodoItem,
+  validateGateThingsTodoList,
 } from "@eido/schemas"
 import type {
   GateAuditRecordRequest,
@@ -33,6 +39,9 @@ import type {
   GatePasskeyList,
   GatePendingIntentList,
   GateProposeResult,
+  GateThingsAreaItem,
+  GateThingsProjectItem,
+  GateThingsTodoItem,
   ValidationResult,
 } from "@eido/schemas"
 
@@ -342,6 +351,88 @@ export function createProtonMailClient(
         skipped: page.skipped,
       }
     },
+  }
+}
+
+export interface ThingsClient {
+  listTodos: (listName: string) => Promise<GateThingsTodoItem[]>
+  listByDeadline: (daysAhead: number) => Promise<GateThingsTodoItem[]>
+  getItem: (id: string) => Promise<GateThingsTodoItem | GateThingsProjectItem>
+  listProjects: (area?: string) => Promise<GateThingsProjectItem[]>
+  listAreas: () => Promise<GateThingsAreaItem[]>
+  listTags: () => Promise<string[]>
+}
+
+/** A client for the Things read routes on the gate's data-plane listener at `socketPath`. */
+export function createThingsClient(options: IntentClientOptions): ThingsClient {
+  const quick = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  }
+  return {
+    listTodos: async (listName: string) =>
+      expect(
+        await call(
+          quick,
+          "GET",
+          `/things/lists/${encodeURIComponent(listName)}`
+        ),
+        [200],
+        validateGateThingsTodoList,
+        "GateThingsTodoList"
+      ).items,
+    listByDeadline: async (daysAhead: number) =>
+      expect(
+        await call(
+          quick,
+          "GET",
+          `/things/lists/deadline?daysAhead=${encodeURIComponent(String(daysAhead))}`
+        ),
+        [200],
+        validateGateThingsTodoList,
+        "GateThingsTodoList"
+      ).items,
+    getItem: async (id: string) =>
+      expect(
+        await call(quick, "GET", `/things/items/${encodeURIComponent(id)}`),
+        [200],
+        (val): ValidationResult<GateThingsTodoItem | GateThingsProjectItem> => {
+          const todoCheck = validateGateThingsTodoItem(val)
+          if (todoCheck.ok) return todoCheck
+          const projCheck = validateGateThingsProjectItem(val)
+          if (projCheck.ok) return projCheck
+          return {
+            ok: false,
+            errors: [...todoCheck.errors, ...projCheck.errors],
+          }
+        },
+        "GateThingsTodoItem | GateThingsProjectItem"
+      ),
+    listProjects: async (area?: string) =>
+      expect(
+        await call(
+          quick,
+          "GET",
+          `/things/projects${area ? `?area=${encodeURIComponent(area)}` : ""}`
+        ),
+        [200],
+        validateGateThingsProjectList,
+        "GateThingsProjectList"
+      ).projects,
+    listAreas: async () =>
+      expect(
+        await call(quick, "GET", "/things/areas"),
+        [200],
+        validateGateThingsAreaList,
+        "GateThingsAreaList"
+      ).areas,
+    listTags: async () =>
+      expect(
+        await call(quick, "GET", "/things/tags"),
+        [200],
+        validateGateThingsTagList,
+        "GateThingsTagList"
+      ).tags,
   }
 }
 

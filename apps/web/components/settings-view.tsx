@@ -5,9 +5,17 @@ import Link from "next/link"
 import { useTheme } from "next-themes"
 import * as React from "react"
 
+import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
-import { Button } from "@eido/ui/components/button"
+import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@eido/ui/components/select"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { Switch } from "@eido/ui/components/switch"
 import { TooltipProvider } from "@eido/ui/components/tooltip"
@@ -26,9 +34,11 @@ import {
   aboutInfo,
   chainReason,
   chainSummary,
+  folderCount,
   isRevoked,
   loadAuditChain,
   loadBackupStatus,
+  loadFileRoots,
   loadPasskeys,
   loadPermissions,
   reasonLabel,
@@ -37,10 +47,21 @@ import {
   type AboutInfo,
   type BackupStatus,
   type ChainStatus,
+  type FileRoots,
   type Passkey,
   type PermissionList,
   type SectionLoad,
 } from "@/lib/settings"
+import {
+  balanceLine,
+  loadSimpleFinAccounts,
+  saveErrorMessage,
+  saveSimpleFinEntity,
+  unassignedSummary,
+  type EntityOption,
+  type SimpleFinAccount,
+  type SimpleFinAccountsLoad,
+} from "@/lib/simplefin-accounts"
 
 type Settled<T> = Exclude<SectionLoad<T>, { status: "unauthenticated" }>
 
@@ -49,6 +70,7 @@ type SettingsData = {
   permissions: Settled<PermissionList>
   backup: Settled<BackupStatus>
   chain: Settled<ChainStatus>
+  fileRoots: Settled<FileRoots>
 }
 
 type SettingsState =
@@ -65,13 +87,15 @@ function useSettings(): { state: SettingsState; retry: () => void } {
       loadPermissions(controller.signal),
       loadBackupStatus(controller.signal),
       loadAuditChain(controller.signal),
-    ]).then(([passkeys, permissions, backup, chain]) => {
+      loadFileRoots(controller.signal),
+    ]).then(([passkeys, permissions, backup, chain, fileRoots]) => {
       if (controller.signal.aborted) return
       if (
         passkeys.status === "unauthenticated" ||
         permissions.status === "unauthenticated" ||
         backup.status === "unauthenticated" ||
-        chain.status === "unauthenticated"
+        chain.status === "unauthenticated" ||
+        fileRoots.status === "unauthenticated"
       ) {
         window.location.replace(
           expiredUnlockUrl(window.location.pathname + window.location.search)
@@ -87,6 +111,7 @@ function useSettings(): { state: SettingsState; retry: () => void } {
         permissions,
         backup,
         chain,
+        fileRoots,
       })
     })
     return () => controller.abort()
@@ -104,16 +129,19 @@ function Section({
   id,
   title,
   tip,
+  anchor,
   children,
 }: {
   id: string
   title: string
   tip?: string
+  /** The element id a link such as /settings#simplefin scrolls to. */
+  anchor?: string
   children: React.ReactNode
 }) {
   const headingId = `settings-${id}`
   return (
-    <Card role="group" aria-labelledby={headingId}>
+    <Card id={anchor} role="group" aria-labelledby={headingId}>
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
           <h2 id={headingId} className="text-base font-semibold">
@@ -428,7 +456,45 @@ function PermissionsSection({ load }: { load: SettingsData["permissions"] }) {
   )
 }
 
-function DataSection({ load }: { load: SettingsData["backup"] }) {
+function AllowedFoldersRow({ load }: { load: SettingsData["fileRoots"] }) {
+  if (load.status !== "ready")
+    return <SectionError load={load} what="Allowed folder list" />
+  const count = load.value.roots.length
+  return (
+    <div className="flex min-h-11 items-center justify-between gap-3">
+      <span className="flex min-w-0 flex-col">
+        <span className="text-sm">Allowed folders</span>
+        <span className="text-xs text-muted-foreground">
+          {folderCount(count)}
+        </span>
+      </span>
+      <span className="flex shrink-0 gap-2">
+        <Link
+          href="/settings/folders/edit"
+          className={`${buttonVariants({ variant: "outline" })} min-h-11`}
+        >
+          Edit
+        </Link>
+        {count > 0 ? (
+          <Link
+            href="/settings/folders/review"
+            className={`${buttonVariants({ variant: "outline" })} min-h-11`}
+          >
+            Review
+          </Link>
+        ) : null}
+      </span>
+    </div>
+  )
+}
+
+function DataSection({
+  load,
+  fileRoots,
+}: {
+  load: SettingsData["backup"]
+  fileRoots: SettingsData["fileRoots"]
+}) {
   return (
     <Section
       id="data"
@@ -472,6 +538,215 @@ function DataSection({ load }: { load: SettingsData["backup"] }) {
       ) : (
         <SectionError load={load} what="Backup status" />
       )}
+      <AllowedFoldersRow load={fileRoots} />
+    </Section>
+  )
+}
+
+const WARN_BADGE =
+  "border-amber-500/40 text-amber-600 dark:border-amber-400/40 dark:text-amber-400"
+
+function SimpleFinAccountRow({
+  account,
+  entities,
+  saving,
+  onChoose,
+}: {
+  account: SimpleFinAccount
+  entities: EntityOption[]
+  saving: string | null
+  onChoose: (entityId: string) => void
+}) {
+  const labelId = React.useId()
+  const shown = saving ?? account.entityId
+  const shownName = entities.find((e) => e.id === shown)?.name
+  return (
+    <li className="flex flex-col gap-2 py-3 md:grid md:grid-cols-[minmax(0,1fr)_auto_14rem] md:items-center md:gap-4 md:py-2">
+      <div className="flex min-w-0 items-baseline justify-between gap-3 md:flex-col md:items-start md:gap-0.5">
+        <span className="min-w-0 truncate text-sm">{account.name}</span>
+        {account.backfillPending ? (
+          <span className="hidden text-xs text-muted-foreground md:inline">
+            Older transactions pending
+          </span>
+        ) : null}
+        <span className="shrink-0 text-xs text-muted-foreground tabular-nums md:hidden">
+          {balanceLine(account)}
+        </span>
+      </div>
+      <span className="hidden text-sm text-muted-foreground tabular-nums md:inline">
+        {balanceLine(account)}
+      </span>
+      {entities.length > 0 ? (
+        <div className="flex flex-col gap-1">
+          <span
+            id={labelId}
+            className="text-xs font-medium text-muted-foreground md:sr-only"
+          >
+            Entity<span className="sr-only"> for {account.name}</span>
+          </span>
+          <Select
+            value={shown}
+            disabled={saving !== null}
+            onValueChange={(value) => {
+              if (typeof value === "string" && value !== account.entityId)
+                onChoose(value)
+            }}
+          >
+            <SelectTrigger
+              aria-labelledby={labelId}
+              className={`min-h-11 w-full ${shown === null ? WARN_BADGE : ""}`}
+            >
+              <SelectValue>{shownName ?? "Choose entity"}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {entities.map((entity) => (
+                <SelectItem key={entity.id} value={entity.id}>
+                  {entity.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
+      {account.backfillPending ? (
+        <span className="text-xs text-muted-foreground md:hidden">
+          Older transactions pending
+        </span>
+      ) : null}
+    </li>
+  )
+}
+
+/** Shown only when core has SimpleFIN configured; choosing an entity saves at once. */
+function SimpleFinAccountsSection() {
+  const [load, setLoad] = React.useState<SimpleFinAccountsLoad | null>(null)
+  const [saving, setSaving] = React.useState<{
+    accountId: string
+    entityId: string
+  } | null>(null)
+  const [failedName, setFailedName] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    const controller = new AbortController()
+    void loadSimpleFinAccounts(controller.signal).then((next) => {
+      if (!controller.signal.aborted) setLoad(next)
+    })
+    return () => controller.abort()
+  }, [])
+
+  if (load?.status === "not_configured") return null
+
+  const choose = (account: SimpleFinAccount, entityId: string) => {
+    if (saving !== null) return
+    setSaving({ accountId: account.id, entityId })
+    setFailedName(null)
+    void saveSimpleFinEntity(account.id, entityId).then((saved) => {
+      setSaving(null)
+      if (saved === null) {
+        setFailedName(account.name)
+        return
+      }
+      setLoad((current) =>
+        current?.status === "ready"
+          ? {
+              ...current,
+              accounts: current.accounts.map((a) =>
+                a.id === saved.id ? saved : a
+              ),
+            }
+          : current
+      )
+    })
+  }
+
+  const body = () => {
+    if (load === null)
+      return (
+        <>
+          <p role="status" className="sr-only">
+            Loading SimpleFIN accounts…
+          </p>
+          <Skeleton className="h-11 w-full" />
+          <Skeleton className="h-11 w-full" />
+        </>
+      )
+    if (load.status === "offline")
+      return (
+        <p role="status" className="flex items-center gap-2 text-sm">
+          <WifiOff aria-hidden className="size-4 shrink-0" />
+          Offline. SimpleFIN accounts are not stored on this device.
+        </p>
+      )
+    if (load.status !== "ready")
+      return (
+        <p role="alert" className="text-sm">
+          Could not read SimpleFIN accounts from core.
+        </p>
+      )
+    if (load.accounts.length === 0)
+      return (
+        <p role="status" className="text-sm text-muted-foreground">
+          No SimpleFIN accounts yet.
+        </p>
+      )
+    const summary = unassignedSummary(load.accounts)
+    return (
+      <>
+        {load.entities.length === 0 ? (
+          <p role="status" className="text-sm">
+            Add an entity on{" "}
+            <Link href="/profile" className="underline underline-offset-4">
+              Profile
+            </Link>{" "}
+            first.
+          </p>
+        ) : (
+          <p role="status" className="text-sm text-muted-foreground">
+            {summary.unassigned === 0 ? (
+              summary.label
+            ) : (
+              <Badge variant="outline" className={WARN_BADGE}>
+                {summary.label}
+              </Badge>
+            )}
+          </p>
+        )}
+        {failedName === null ? null : (
+          <Alert variant="destructive">
+            <AlertDescription>{saveErrorMessage(failedName)}</AlertDescription>
+          </Alert>
+        )}
+        <div
+          aria-hidden
+          className="hidden grid-cols-[minmax(0,1fr)_auto_14rem] gap-4 text-xs text-muted-foreground md:grid"
+        >
+          <span>Account</span>
+          <span>Balance</span>
+          <span>Entity</span>
+        </div>
+        <ul className="flex flex-col divide-y divide-border">
+          {load.accounts.map((account) => (
+            <SimpleFinAccountRow
+              key={account.id}
+              account={account}
+              entities={load.entities}
+              saving={saving?.accountId === account.id ? saving.entityId : null}
+              onChoose={(entityId) => choose(account, entityId)}
+            />
+          ))}
+        </ul>
+      </>
+    )
+  }
+
+  return (
+    <Section
+      id="simplefin"
+      anchor="simplefin"
+      title="SimpleFIN accounts"
+      tip="Transactions of an account with no entity are not stored."
+    >
+      {body()}
     </Section>
   )
 }
@@ -560,6 +835,7 @@ function SettingsBody({
         <Skeleton className="h-32 w-full" />
         <Skeleton className="h-32 w-full" />
         <Skeleton className="h-20 w-full" />
+        <SimpleFinAccountsSection key="simplefin" />
         <Skeleton className="h-24 w-full" />
         {about ? <AboutSection info={about} /> : null}
       </>
@@ -569,6 +845,7 @@ function SettingsBody({
     state.permissions,
     state.backup,
     state.chain,
+    state.fileRoots,
   ].some((s) => s.status === "offline" || s.status === "error")
   return (
     <>
@@ -577,7 +854,8 @@ function SettingsBody({
       <NotificationsSection key="notifications" device={pushDevice} />
       <PasskeysSection load={state.passkeys} />
       <PermissionsSection load={state.permissions} />
-      <DataSection load={state.backup} />
+      <DataSection load={state.backup} fileRoots={state.fileRoots} />
+      <SimpleFinAccountsSection key="simplefin" />
       <SecuritySection load={state.chain} />
       {about ? <AboutSection info={about} /> : null}
       {failed ? (
@@ -607,5 +885,10 @@ function SettingsView() {
   )
 }
 
-export { NotificationsSection, SettingsBody, SettingsView }
+export {
+  NotificationsSection,
+  SettingsBody,
+  SettingsView,
+  SimpleFinAccountsSection,
+}
 export type { SettingsState }

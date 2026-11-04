@@ -7,6 +7,7 @@ import {
   chainOk,
   permissions,
 } from "./fixtures/settings"
+import { signedRoots } from "./fixtures/file-roots"
 import { fakeBrowser } from "./push-device"
 import { describeStates } from "./render-states"
 
@@ -18,6 +19,7 @@ const loaded = (
   permissions: { status: "ready", value: permissions },
   backup: { status: "ready", value: backupFresh },
   chain: { status: "ready", value: chainOk },
+  fileRoots: { status: "ready", value: signedRoots },
   ...over,
 })
 const body =

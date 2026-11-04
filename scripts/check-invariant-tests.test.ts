@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest"
-import { REQUIRED_TESTS, findMissingTests } from "./check-invariant-tests.ts"
+import {
+  ISOLATION_TESTS,
+  REQUIRED_TESTS,
+  findMissingTests,
+} from "./check-invariant-tests.ts"
 
 describe("findMissingTests", () => {
   test("passes when every required name is quoted in its file", () => {
@@ -34,6 +38,13 @@ describe("findMissingTests", () => {
     for (const [path, name] of REQUIRED_TESTS) {
       expect(path).toMatch(/^packages\/gate\/.*\.test\.ts$/)
       expect(name).toMatch(/^invariant: /)
+    }
+  })
+
+  test("lists the isolation tests in the gate and the data plane", () => {
+    for (const [path, name] of ISOLATION_TESTS) {
+      expect(path).toMatch(/^packages\/(gate|core)\/.*\.test\.ts$/)
+      expect(name).toMatch(/^isolation: /)
     }
   })
 })

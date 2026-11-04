@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import type { CoreApiEntityList, CoreApiObligationList } from "@eido/schemas"
 import { RepliesView, type RepliesViewProps } from "../components/replies-view"
 
+const router = vi.hoisted(() => ({ push: vi.fn() }))
+vi.mock("next/navigation", () => ({ useRouter: () => router }))
+
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true
@@ -38,6 +41,7 @@ async function click(btn: HTMLElement | null | undefined) {
 }
 
 beforeEach(() => {
+  router.push.mockClear()
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -139,10 +143,23 @@ function stubFetch(
     obligations?: CoreApiObligationList
     entities?: CoreApiEntityList
     obligationsStatus?: number
+    /** Answers POST /api/core/replies/draft; absent, the route is not stubbed. */
+    draft?: (init: RequestInit | undefined) => Promise<Response>
+    /** Answers POST /api/core/obligations/:id/resolve; absent, the route is not stubbed. */
+    resolve?: (id: string) => Promise<Response>
   } = {}
 ) {
-  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const urlStr = toUrlString(input)
+    if (urlStr.includes("/api/core/replies/draft") && options.draft) {
+      return options.draft(init)
+    }
+    const resolveMatch = /\/api\/core\/obligations\/(\d+)\/resolve$/.exec(
+      urlStr
+    )
+    if (resolveMatch?.[1] && options.resolve) {
+      return options.resolve(resolveMatch[1])
+    }
     if (urlStr.includes("/api/core/entities")) {
       return Promise.resolve(
         new Response(
@@ -206,10 +223,12 @@ describe("RepliesView", () => {
       "About",
       "Entity",
       "Waiting",
+      "Action",
       "Who",
       "About",
       "Entity",
       "Since",
+      "Action",
     ])
     for (const th of ths) {
       expect(th.getAttribute("scope")).toBe("col")
@@ -450,5 +469,517 @@ describe("RepliesView", () => {
     await renderReplies()
 
     expect(container.textContent).toContain("Sign in required to view replies.")
+  })
+
+  describe("Draft reply", () => {
+    const DRAFT_ROUTE = "/api/core/replies/draft"
+    const json = (status: number, body: unknown) =>
+      Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        })
+      )
+    const savedBody = (created: boolean) => ({
+      intentId: "intent-9",
+      tier: "auto",
+      state: "approved",
+      activityHref: "/activity?intent=intent-9",
+      created,
+    })
+    const requestBody = (init: RequestInit | undefined): string =>
+      typeof init?.body === "string" ? init.body : ""
+    const draftCalls = (fetchMock: ReturnType<typeof stubFetch>) =>
+      fetchMock.mock.calls.filter(([url]) =>
+        toUrlString(url).includes(DRAFT_ROUTE)
+      )
+    const draftButtons = () =>
+      Array.from(container.querySelectorAll("button")).filter((b) =>
+        /^(Draft reply|Drafting…)$/.test(b.textContent?.trim() ?? "")
+      )
+    const savedLinks = () =>
+      Array.from(container.querySelectorAll("a")).filter(
+        (a) => a.textContent?.trim() === "Draft saved"
+      )
+
+    test("one click makes one POST for that obligation and shows Draft saved on that row only", async () => {
+      const fetchMock = stubFetch({ draft: () => json(201, savedBody(true)) })
+      await renderReplies()
+      // Two owed rows, each rendered in the desktop table and the phone list.
+      expect(draftButtons()).toHaveLength(4)
+
+      await click(draftButtons()[0])
+
+      const calls = draftCalls(fetchMock)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.[1]?.method).toBe("POST")
+      expect(JSON.parse(requestBody(calls[0]?.[1]))).toEqual({
+        obligationId: 1,
+      })
+      // Desktop and phone render of the saved row link to the Activity entry.
+      expect(savedLinks().map((a) => a.getAttribute("href"))).toEqual([
+        "/activity?intent=intent-9",
+        "/activity?intent=intent-9",
+      ])
+      // The other owed row still offers the button.
+      expect(draftButtons()).toHaveLength(2)
+      // Nothing but the draft route was written to.
+      const writes = fetchMock.mock.calls.filter(
+        ([, init]) => init?.method === "POST"
+      )
+      expect(writes).toHaveLength(1)
+    })
+
+    test("a second click while pending makes no second request and the button is disabled", async () => {
+      let resolve: (r: Response) => void = () => undefined
+      const pending = new Promise<Response>((r) => {
+        resolve = r
+      })
+      const fetchMock = stubFetch({ draft: () => pending })
+      await renderReplies()
+
+      const first = draftButtons()[0]
+      await click(first)
+      await click(first)
+
+      expect(draftCalls(fetchMock)).toHaveLength(1)
+      const busy = Array.from(container.querySelectorAll("button")).find(
+        (b) => b.textContent?.trim() === "Drafting…"
+      )
+      expect(busy?.hasAttribute("disabled")).toBe(true)
+      expect(busy?.getAttribute("aria-busy")).toBe("true")
+
+      await act(async () => {
+        resolve(
+          new Response(JSON.stringify(savedBody(true)), {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          })
+        )
+        await flush()
+      })
+      expect(savedLinks()).toHaveLength(2)
+    })
+
+    test("a 200 for a thread that already has a draft shows Draft saved", async () => {
+      stubFetch({ draft: () => json(200, savedBody(false)) })
+      await renderReplies()
+
+      await click(draftButtons()[0])
+
+      expect(savedLinks()[0]?.getAttribute("href")).toBe(
+        "/activity?intent=intent-9"
+      )
+    })
+
+    test("a row the list says has a draft intent shows Draft saved linking to Activity, with no button", async () => {
+      const [first, ...rest] = sampleObligations
+      if (!first) throw new Error("fixture")
+      stubFetch({
+        obligations: {
+          obligations: [{ ...first, hasDraftIntent: true }, ...rest],
+          nextOffset: null,
+        },
+      })
+      await renderReplies()
+
+      expect(savedLinks().map((a) => a.getAttribute("href"))).toEqual([
+        "/activity",
+        "/activity",
+      ])
+      expect(draftButtons()).toHaveLength(2)
+    })
+
+    test("a failed draft says why, stays retryable, and a retry can save", async () => {
+      let answer = () =>
+        json(409, { error: { code: "connector_paused", message: "paused" } })
+      const fetchMock = stubFetch({ draft: () => answer() })
+      await renderReplies()
+
+      await click(draftButtons()[0])
+
+      const alert = container.querySelector('[role="alert"]')
+      expect(alert?.textContent).toBe(
+        "Mail connector paused. Nothing was drafted. Open Connectors"
+      )
+      expect(alert?.querySelector("a")?.getAttribute("href")).toBe(
+        "/connectors"
+      )
+      expect(savedLinks()).toHaveLength(0)
+      const retry = draftButtons()[0]
+      expect(retry?.hasAttribute("disabled")).toBe(false)
+
+      answer = () => json(201, savedBody(true))
+      await click(retry)
+
+      expect(draftCalls(fetchMock)).toHaveLength(2)
+      expect(savedLinks()).toHaveLength(2)
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+    })
+
+    test("offline disables every button with a reason and a click makes no request", async () => {
+      const fetchMock = stubFetch({ draft: () => json(201, savedBody(true)) })
+      await renderReplies({ isOffline: true })
+
+      const buttons = draftButtons()
+      expect(buttons).toHaveLength(4)
+      expect(buttons.every((b) => b.hasAttribute("disabled"))).toBe(true)
+      expect(buttons[0]?.getAttribute("title")).toBe("Unavailable offline")
+      await click(buttons[0])
+      expect(draftCalls(fetchMock)).toHaveLength(0)
+    })
+
+    test("a paused Gmail connector is shown on the page", async () => {
+      stubFetch()
+      await renderReplies({
+        initialConnectors: [
+          {
+            name: "gmail",
+            enabled: false,
+            pinnedAt: "2026-01-01T00:00:00Z",
+            scopes: [],
+            health: "healthy",
+            consecutiveFailures: 0,
+            manifestHash: "abc",
+          },
+        ],
+      })
+
+      expect(
+        Array.from(container.querySelectorAll('[role="status"]')).map((el) =>
+          el.textContent?.trim()
+        )
+      ).toContain("Gmail paused: its threads are not included.")
+    })
+  })
+
+  describe("keyboard shortcuts", () => {
+    const DRAFT_ROUTE = "/api/core/replies/draft"
+    const draftResponse = () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            intentId: "intent-9",
+            tier: "auto",
+            state: "approved",
+            activityHref: "/activity?intent=intent-9",
+            created: true,
+          }),
+          { status: 201, headers: { "content-type": "application/json" } }
+        )
+      )
+    const requestBody = (init: RequestInit | undefined): string =>
+      typeof init?.body === "string" ? init.body : ""
+    const draftCalls = (fetchMock: ReturnType<typeof stubFetch>) =>
+      fetchMock.mock.calls.filter(([url]) =>
+        toUrlString(url).includes(DRAFT_ROUTE)
+      )
+
+    async function press(key: string, target: EventTarget = document.body) {
+      await act(async () => {
+        target.dispatchEvent(
+          new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
+        )
+        await flush()
+      })
+    }
+    /** The party names of the rows marked as focused, one per desktop and phone render. */
+    const focusedParties = () =>
+      Array.from(container.querySelectorAll('[aria-current="true"]')).map(
+        (row) => row.textContent ?? ""
+      )
+
+    test("j and k move a visible focus between owed rows and stop at the ends", async () => {
+      stubFetch()
+      await renderReplies()
+      expect(focusedParties()).toEqual([])
+
+      await press("j")
+      expect(focusedParties().every((t) => t.includes("Tenant, Unit 2"))).toBe(
+        true
+      )
+      expect(focusedParties()).toHaveLength(2)
+
+      await press("j")
+      expect(focusedParties().every((t) => t.includes("Accountant"))).toBe(true)
+
+      // Past the last owed row: the Waiting on row is not part of the walk.
+      await press("j")
+      expect(focusedParties().every((t) => t.includes("Accountant"))).toBe(true)
+
+      await press("k")
+      expect(focusedParties().every((t) => t.includes("Tenant, Unit 2"))).toBe(
+        true
+      )
+    })
+
+    test("focus is dropped when the focused row leaves the list", async () => {
+      stubFetch()
+      await renderReplies()
+      await press("j")
+      await press("j")
+      expect(focusedParties()).toHaveLength(2)
+
+      // Filtering to the entity that has only the first owed row removes the second.
+      stubFetch({
+        obligations: {
+          obligations: sampleObligations.slice(0, 1),
+          nextOffset: null,
+        },
+      })
+      await click(
+        Array.from(container.querySelectorAll("button")).find(
+          (b) => b.textContent?.trim() === "Rental"
+        )
+      )
+      expect(focusedParties()).toEqual([])
+    })
+
+    test("Enter opens the focused row's source in the viewer, and does nothing with no focus", async () => {
+      stubFetch()
+      await renderReplies()
+
+      await press("Enter")
+      expect(router.push).not.toHaveBeenCalled()
+
+      await press("j")
+      await press("Enter")
+      expect(router.push).toHaveBeenCalledTimes(1)
+      const url = new URL(String(router.push.mock.calls[0]?.[0]), "http://x")
+      expect(url.pathname).toBe(`/documents/${"a".repeat(64)}`)
+      expect(url.searchParams.get("start")).toBe("10")
+      expect(url.searchParams.get("end")).toBe("50")
+      expect(url.searchParams.get("from")).toBe("/ledger/replies")
+    })
+
+    test("Enter on a focused link keeps the link's own behaviour", async () => {
+      stubFetch()
+      await renderReplies()
+      await press("j")
+      const link = container.querySelector("a[href*='/documents/']")
+      await press("Enter", link ?? document.body)
+      expect(router.push).not.toHaveBeenCalled()
+    })
+
+    test("d drafts the focused row with one POST, shows Draft saved, and a second d adds none", async () => {
+      const fetchMock = stubFetch({ draft: draftResponse })
+      await renderReplies()
+
+      await press("d")
+      expect(draftCalls(fetchMock)).toHaveLength(0)
+
+      await press("j")
+      await press("j")
+      await press("d")
+      await press("d")
+
+      const calls = draftCalls(fetchMock)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.[1]?.method).toBe("POST")
+      expect(JSON.parse(requestBody(calls[0]?.[1]))).toEqual({
+        obligationId: 2,
+      })
+      expect(
+        Array.from(container.querySelectorAll("a"))
+          .filter((a) => a.textContent?.trim() === "Draft saved")
+          .map((a) => a.getAttribute("href"))
+      ).toEqual(["/activity?intent=intent-9", "/activity?intent=intent-9"])
+    })
+
+    test("d while a draft is pending makes no second request", async () => {
+      let resolve: (r: Response) => void = () => undefined
+      const fetchMock = stubFetch({
+        draft: () =>
+          new Promise<Response>((r) => {
+            resolve = r
+          }),
+      })
+      await renderReplies()
+      await press("j")
+      await press("d")
+      await press("d")
+      expect(draftCalls(fetchMock)).toHaveLength(1)
+      await act(async () => {
+        resolve(await draftResponse())
+        await flush()
+      })
+    })
+
+    test("d shows the same failure as the button and can retry", async () => {
+      let answer: () => Promise<Response> = () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { code: "busy", message: "limit" } }),
+            { status: 429, headers: { "content-type": "application/json" } }
+          )
+        )
+      const fetchMock = stubFetch({ draft: () => answer() })
+      await renderReplies()
+      await press("j")
+      await press("d")
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+        "Too many drafts this hour. Try again later."
+      )
+
+      answer = draftResponse
+      await press("d")
+      expect(draftCalls(fetchMock)).toHaveLength(2)
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+    })
+
+    test("d is inert offline", async () => {
+      const fetchMock = stubFetch({ draft: draftResponse })
+      await renderReplies({ isOffline: true })
+      await press("j")
+      await press("d")
+      expect(draftCalls(fetchMock)).toHaveLength(0)
+    })
+
+    test.each(["j", "k", "d", "Enter"])(
+      "%s does nothing while typing in a field",
+      async (key) => {
+        const fetchMock = stubFetch({ draft: draftResponse })
+        await renderReplies()
+        await press("j")
+        const before = focusedParties()
+        const input = document.createElement("input")
+        document.body.append(input)
+        input.focus()
+
+        await press(key, input)
+        input.remove()
+
+        expect(focusedParties()).toEqual(before)
+        expect(draftCalls(fetchMock)).toHaveLength(0)
+        expect(router.push).not.toHaveBeenCalled()
+      }
+    )
+
+    test("the keys do nothing while the list is loading or failed", async () => {
+      const fetchMock = stubFetch({
+        obligationsStatus: 500,
+        draft: draftResponse,
+      })
+      await renderReplies()
+      await press("j")
+      await press("d")
+      expect(draftCalls(fetchMock)).toHaveLength(0)
+    })
+  })
+
+  describe("Mark resolved", () => {
+    const resolved = (id: string) =>
+      Promise.resolve(
+        new Response(JSON.stringify({ id: Number(id), status: "done" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      )
+    const resolveCalls = (fetchMock: ReturnType<typeof stubFetch>) =>
+      fetchMock.mock.calls.filter(([url]) =>
+        /\/obligations\/\d+\/resolve$/.test(toUrlString(url))
+      )
+    const resolveButtons = () =>
+      Array.from(container.querySelectorAll("button")).filter((b) =>
+        /^(Mark resolved|Marking…)$/.test(b.textContent?.trim() ?? "")
+      )
+
+    test("each waiting row offers the button, in the table and the phone list", async () => {
+      stubFetch({ resolve: resolved })
+      await renderReplies()
+      // One waiting row, rendered twice; owed rows have no such button.
+      expect(resolveButtons()).toHaveLength(2)
+    })
+
+    test("one click makes one POST to that obligation's route and the row leaves the list", async () => {
+      const fetchMock = stubFetch({ resolve: resolved })
+      await renderReplies()
+      expect(container.textContent).toContain("Example Roofing Co.")
+
+      await click(resolveButtons()[0])
+
+      const calls = resolveCalls(fetchMock)
+      expect(calls).toHaveLength(1)
+      expect(toUrlString(calls[0]?.[0] as RequestInfo)).toBe(
+        "/api/core/obligations/3/resolve"
+      )
+      expect(calls[0]?.[1]?.method).toBe("POST")
+      expect(container.textContent).not.toContain("Example Roofing Co.")
+      expect(container.textContent).toContain("Nothing waiting on others.")
+      // The owed rows are untouched.
+      expect(container.textContent).toContain("Tenant, Unit 2")
+    })
+
+    test("a second click while pending makes no second request and the button is disabled", async () => {
+      let resolve: (r: Response) => void = () => undefined
+      const fetchMock = stubFetch({
+        resolve: () =>
+          new Promise<Response>((r) => {
+            resolve = r
+          }),
+      })
+      await renderReplies()
+
+      const first = resolveButtons()[0]
+      await click(first)
+      await click(first)
+
+      expect(resolveCalls(fetchMock)).toHaveLength(1)
+      const busy = resolveButtons()[0]
+      expect(busy?.textContent?.trim()).toBe("Marking…")
+      expect(busy?.hasAttribute("disabled")).toBe(true)
+      expect(busy?.getAttribute("aria-busy")).toBe("true")
+
+      await act(async () => {
+        resolve(await resolved("3"))
+        await flush()
+      })
+      expect(container.textContent).not.toContain("Example Roofing Co.")
+    })
+
+    test("a failed request keeps the row, says why, and a retry can resolve it", async () => {
+      let answer: (id: string) => Promise<Response> = () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: { code: "invalid_transition", message: "for logs" },
+            }),
+            { status: 409, headers: { "content-type": "application/json" } }
+          )
+        )
+      const fetchMock = stubFetch({ resolve: (id) => answer(id) })
+      await renderReplies()
+
+      await click(resolveButtons()[0])
+
+      expect(container.textContent).toContain("Example Roofing Co.")
+      const alerts = Array.from(
+        container.querySelectorAll('[role="alert"]')
+      ).map((el) => el.textContent)
+      expect(alerts).toEqual([
+        "This thread is no longer open. Reload the page.",
+        "This thread is no longer open. Reload the page.",
+      ])
+      expect(resolveButtons()[0]?.hasAttribute("disabled")).toBe(false)
+
+      answer = resolved
+      await click(resolveButtons()[0])
+
+      expect(resolveCalls(fetchMock)).toHaveLength(2)
+      expect(container.textContent).not.toContain("Example Roofing Co.")
+      expect(container.querySelector('[role="alert"]')).toBeNull()
+    })
+
+    test("offline disables the button with a reason and a click makes no request", async () => {
+      const fetchMock = stubFetch({ resolve: resolved })
+      await renderReplies({ isOffline: true })
+
+      const buttons = resolveButtons()
+      expect(buttons).toHaveLength(2)
+      expect(buttons.every((b) => b.hasAttribute("disabled"))).toBe(true)
+      expect(buttons[0]?.getAttribute("title")).toBe("Unavailable offline")
+      await click(buttons[0])
+      expect(resolveCalls(fetchMock)).toHaveLength(0)
+    })
   })
 })

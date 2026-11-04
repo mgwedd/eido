@@ -33,6 +33,18 @@ import {
   intentBindings,
   pinnedOperation,
 } from "./connectors"
+import {
+  SENSITIVITY_DEFAULT_PATH,
+  SENSITIVITY_OVERLAY_FILE,
+  approvedSensitivityOverlay,
+  isIntentSensitive,
+  mergeSensitivity,
+  readSensitivityOverlayFile,
+  readShippedSensitivity,
+  prepareSensitivityChange,
+  setSensitivityOverrides,
+} from "./sensitivity"
+import type { SensitivityConfig, SensitivityOverlay } from "./sensitivity"
 
 // The permission table. The gate ships a versioned default; a signed owner override
 // changes the tier of single kinds. Effective tier: overlay entry, else shipped entry,
@@ -73,6 +85,8 @@ export type PolicyOptions = {
   storedAttendees?: StoredAttendees
   /** The shipped default table; tests point this at a fixture. */
   shippedPath?: string | URL
+  /** The shipped sensitivity config; tests point this at a fixture. */
+  sensitivityShippedPath?: string | URL
 }
 
 export type Policy = {
@@ -82,6 +96,7 @@ export type Policy = {
   allowedRoots: readonly string[]
   ownerConfigHash?: string
   storedAttendees: StoredAttendees | undefined
+  sensitivity: SensitivityConfig
 }
 
 export type ForbiddenReason =
@@ -252,35 +267,51 @@ export function intentTier(
     "connector" in intent ? intent.connector : undefined
   )
   if (decision.tier === "forbidden") return decision
+  let guarded: TierDecision = decision
   switch (intent.kind) {
     case "file.create":
     case "file.rename":
     case "file.move":
     case "file.delete":
-      return approvedFileRoot(db, intent.args.root) !== undefined
-        ? decision
-        : forbidden("root_not_allowed")
+      if (approvedFileRoot(db, intent.args.root) === undefined) {
+        return forbidden("root_not_allowed")
+      }
+      break
     case "calendar.create":
-      return hasOtherGuest(intent.args.guests, policy.ownerAddresses)
-        ? { tier: "approval" }
-        : decision
+      if (hasOtherGuest(intent.args.guests, policy.ownerAddresses)) {
+        guarded = { tier: "approval" }
+      }
+      break
     case "calendar.edit":
-      return changesEventWithGuests(
+      guarded = changesEventWithGuests(
         policy,
         intent.args.eventUid,
         intent.args.guests,
         decision
       )
+      if (guarded.tier === "forbidden") return guarded
+      break
     case "calendar.delete":
-      return changesEventWithGuests(
+      guarded = changesEventWithGuests(
         policy,
         intent.args.eventUid,
         undefined,
         decision
       )
+      if (guarded.tier === "forbidden") return guarded
+      break
     default:
-      return decision
+      break
   }
+  // Sensitivity guard: auto-tier write kinds carrying free text (first: things.add_todo,
+  // or any auto write with free text). It can only raise auto to approval, never lower a tier.
+  if (
+    guarded.tier === "auto" &&
+    isIntentSensitive(intent, policy.sensitivity)
+  ) {
+    return { tier: "approval" }
+  }
+  return guarded
 }
 
 /**
@@ -684,6 +715,47 @@ export function loadPolicy(
       ownerConfigHash = previous.ownerConfigHash
     }
   }
+  const shippedSensitivity = readShippedSensitivity(
+    options.sensitivityShippedPath ?? SENSITIVITY_DEFAULT_PATH
+  )
+  const approvedSensitivityOver = approvedSensitivityOverlay(db)
+  const sensitivityPath = join(options.dataDir, SENSITIVITY_OVERLAY_FILE)
+  const sensitivityRead = readSensitivityOverlayFile(sensitivityPath)
+  if (sensitivityRead.status === "rejected") {
+    errors.push(...sensitivityRead.errors)
+    append(db, {
+      actor: "system",
+      action: "policy.sensitivity.rejected",
+      target: sensitivityPath,
+      detailHash: payloadHash({
+        file_hash: sensitivityRead.fileHash,
+        errors: sensitivityRead.errors,
+      }),
+    })
+  } else if (
+    sensitivityRead.status === "ok" &&
+    payloadHash(sensitivityRead.overlay) !==
+      payloadHash(approvedSensitivityOver ?? null)
+  ) {
+    errors.push(
+      `${SENSITIVITY_OVERLAY_FILE}: a changed proposal requires a signed approval`
+    )
+    append(db, {
+      actor: "system",
+      action: "policy.sensitivity.rejected",
+      target: sensitivityPath,
+      detailHash: payloadHash({
+        file_hash: payloadHash(sensitivityRead.overlay),
+        errors: [
+          `${SENSITIVITY_OVERLAY_FILE}: a changed proposal requires a signed approval`,
+        ],
+      }),
+    })
+  }
+  const sensitivity = mergeSensitivity(
+    shippedSensitivity,
+    approvedSensitivityOver
+  )
   const policy: Policy = {
     shipped,
     overlay,
@@ -691,6 +763,7 @@ export function loadPolicy(
     allowedRoots: [...allowedRoots],
     ...(ownerConfigHash === undefined ? {} : { ownerConfigHash }),
     storedAttendees: options.storedAttendees,
+    sensitivity,
   }
   if (previous === undefined)
     append(db, {
@@ -709,3 +782,11 @@ export function loadPolicy(
     errors,
   }
 }
+
+export {
+  SENSITIVITY_DEFAULT_PATH,
+  SENSITIVITY_OVERLAY_FILE,
+  prepareSensitivityChange,
+  setSensitivityOverrides,
+}
+export type { SensitivityConfig, SensitivityOverlay }

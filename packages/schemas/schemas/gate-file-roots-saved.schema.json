@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateFileRootsSaved",
+  "description": "Response of POST /file-roots/complete on the phone listener (#574): the signed roots replaced the allowed list.",
+  "type": "object",
+  "properties": {
+    "saved": { "const": true }
+  },
+  "required": ["saved"],
+  "additionalProperties": false
+}

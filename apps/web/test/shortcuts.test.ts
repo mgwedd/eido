@@ -135,6 +135,18 @@ describe("the key map", () => {
   })
 })
 
+test("the legend lists the Replies owed keys", () => {
+  const replies = legendGroups().find((group) => group.title === "Replies owed")
+  expect(
+    replies?.items.map((item) => `${item.keys.join(" ")}: ${item.label}`)
+  ).toEqual([
+    "j: Next reply",
+    "k: Previous reply",
+    "Enter: Open the thread",
+    "d: Draft reply",
+  ])
+})
+
 describe("ask focus request", () => {
   test("is consumed once", () => {
     expect(consumeAskFocus()).toBe(false)

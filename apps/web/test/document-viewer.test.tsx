@@ -622,3 +622,46 @@ describe("DocumentViewer states", () => {
     expect(trashBtn).toBeUndefined()
   })
 })
+
+describe("DocumentViewer type control", () => {
+  test("a saved type shows in the viewer marked as set by the owner", async () => {
+    const SAVED_SHA = SAMPLE_VIEW.document.sha256
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "PUT") {
+          return Promise.resolve(
+            Response.json({
+              sha256: SAVED_SHA,
+              type: "Receipt",
+              typeSource: "user",
+            })
+          )
+        }
+        if (toUrlString(url).includes("/api/gate/approvals")) {
+          return Promise.resolve(Response.json({ intents: [] }))
+        }
+        return Promise.resolve(Response.json(SAMPLE_VIEW))
+      })
+    )
+    const view = await renderViewer({ sha256: SHA256 })
+    const valueSlot = () =>
+      view.querySelector('[data-slot="select-value"]')?.textContent
+    expect(valueSlot()).toBe("invoice")
+    expect(view.textContent).not.toContain("Set by you")
+    await act(async () => {
+      view.querySelector<HTMLElement>('[role="combobox"]')?.click()
+      await flush()
+    })
+    const option = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="option"]')
+    ).find((o) => o.textContent === "Receipt")
+    await act(async () => {
+      option?.click()
+      await flush()
+      await flush()
+    })
+    expect(valueSlot()).toBe("Receipt")
+    expect(view.textContent).toContain("Set by you")
+  })
+})

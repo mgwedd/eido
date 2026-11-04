@@ -5,6 +5,8 @@ export type { LedgerErrorCode } from "./errors"
 export { deriveHeaderLinks } from "./links"
 export type { HeaderLinkMessage, HeaderLinkResolver } from "./links"
 export { LEDGER_SCHEMA_VERSION } from "./migration"
+export { linkPayments, matchPayments } from "./payments"
+export type { PayableObligation, PaymentTransaction } from "./payments"
 export {
   MAX_OBLIGATION_CALLS,
   createObligationStateStore,

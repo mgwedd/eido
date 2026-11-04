@@ -16,6 +16,8 @@ import {
   permissionsNoForbidden,
   revokedPasskey,
 } from "./fixtures/settings"
+import { signedRoots } from "./fixtures/file-roots"
+import { accountList, checking, household } from "./fixtures/simplefin-accounts"
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -71,6 +73,9 @@ const healthy: Routes = {
   "/api/gate/permissions": ok(permissions),
   "/api/gate/backup/status": ok(backupFresh),
   "/api/gate/audit/chain": ok(chainOk),
+  "/api/gate/file-roots": ok(signedRoots),
+  "/api/core/connectors/simplefin/accounts": ok(accountList(checking)),
+  "/api/core/entities": ok({ entities: [household] }),
 }
 
 async function render() {
@@ -98,9 +103,21 @@ test("shows the sections in the issue's order", async () => {
     "Devices and passkeys",
     "Assistant behaviour",
     "Data",
+    "SimpleFIN accounts",
     "Security",
     "About",
   ])
+})
+
+test("hides the SimpleFIN section when core has no SimpleFIN connector", async () => {
+  gate({
+    ...healthy,
+    "/api/core/connectors/simplefin/accounts": () =>
+      new Response("{}", { status: 404 }),
+  })
+  await render()
+  expect(text()).not.toContain("SimpleFIN accounts")
+  expect(container.querySelector("#simplefin")).toBeNull()
 })
 
 test("profile is reached by row, not an h2 section", async () => {
@@ -250,7 +267,8 @@ test("no control revokes a passkey or edits permissions", async () => {
     (b) => b.getAttribute("aria-label") ?? b.textContent ?? ""
   )
   expect(labels.join("|")).not.toMatch(/^(remove|revoke|edit|delete)/i)
-  // The only controls that change anything are the theme radios and the push switch.
+  // The only controls that change anything are the theme radios, the push switch and the
+  // SimpleFIN entity pickers.
   // The switch mirrors its state into an aria-hidden checkbox input, which is not a
   // control of its own.
   const controls = [
@@ -260,7 +278,7 @@ test("no control revokes a passkey or edits permissions", async () => {
   ]
     .filter((control) => control.getAttribute("aria-hidden") !== "true")
     .map((control) => [
-      control.closest("[aria-labelledby]")?.getAttribute("aria-labelledby"),
+      control.closest('[role="group"]')?.getAttribute("aria-labelledby"),
       control.getAttribute("role") ?? control.tagName.toLowerCase(),
       control.getAttribute("aria-label") ?? control.textContent,
     ])
@@ -269,6 +287,7 @@ test("no control revokes a passkey or edits permissions", async () => {
     ["settings-appearance", "radio", "Light"],
     ["settings-appearance", "radio", "System"],
     ["settings-notifications", "switch", "Push on this device"],
+    ["settings-simplefin", "combobox", "Household▼"],
   ])
   // No write requests were made either.
   const fn = vi.mocked(fetch)
@@ -297,7 +316,7 @@ test("a section whose read fails says so; the others still render; retry reloads
     retry.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
-  expect(fn.mock.calls.length).toBe(before + 4)
+  expect(fn.mock.calls.length).toBe(before + 5)
 })
 
 test("an expired session sends the user to unlock", async () => {
@@ -356,4 +375,46 @@ test("how-it-works tooltip opens from a tap on its focusable trigger", async () 
   expect(document.body.textContent).toContain(
     "enrolled and removed from the Mac"
   )
+})
+
+test("data lists the signed folder count and links to Review", async () => {
+  gate(healthy)
+  await render()
+  const data = container.querySelector('[aria-labelledby="settings-data"]')
+  expect(data?.textContent).toContain("2 allowed folders")
+  const review = [...(data?.querySelectorAll("a") ?? [])].find(
+    (a) => a.textContent === "Review"
+  )
+  expect(review?.getAttribute("href")).toBe("/settings/folders/review")
+})
+
+test("data links to the folder editor whether or not folders are signed", async () => {
+  gate({ ...healthy, "/api/gate/file-roots": ok({ roots: [] }) })
+  await render()
+  const data = container.querySelector('[aria-labelledby="settings-data"]')
+  const edit = [...(data?.querySelectorAll("a") ?? [])].find(
+    (a) => a.textContent === "Edit"
+  )
+  expect(edit?.getAttribute("href")).toBe("/settings/folders/edit")
+})
+
+test("data with no signed folders offers no Review", async () => {
+  gate({ ...healthy, "/api/gate/file-roots": ok({ roots: [] }) })
+  await render()
+  const data = container.querySelector('[aria-labelledby="settings-data"]')
+  expect(data?.textContent).toContain("No allowed folders")
+  expect(
+    [...(data?.querySelectorAll("a") ?? [])].some(
+      (a) => a.textContent === "Review"
+    )
+  ).toBe(false)
+})
+
+test("a folder list the gate cannot read says so", async () => {
+  gate({
+    ...healthy,
+    "/api/gate/file-roots": () => new Response("{}", { status: 500 }),
+  })
+  await render()
+  expect(text()).toContain("Could not read allowed folder list from the gate.")
 })

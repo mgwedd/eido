@@ -8,6 +8,7 @@ pnpm --filter @eido/gate connect gmail-read
 pnpm --filter @eido/gate connect drive
 pnpm --filter @eido/gate connect proton-mail
 pnpm --filter @eido/gate connect proton-calendar
+pnpm --filter @eido/gate connect simplefin
 ```
 
 The same command connects a connector for the first time and reconnects one later. It exits 0 only when the gate reports the connector healthy.
@@ -32,6 +33,7 @@ The same command connects a connector for the first time and reconnects one late
 2. It takes the credential:
    - **Gmail and Drive:** a Google sign-in in the browser (below).
    - **Proton:** the Bridge password at a prompt.
+   - **SimpleFIN:** a setup token at a prompt, claimed for an access URL (below).
 3. It writes the credential to the gate vault. The credential is never printed, logged, passed in arguments or the environment, or written to a file.
 4. It asks the gate, over the control socket, to check the connector now:
    - a connector disabled because its credential was refused is re-enabled for the check;
@@ -125,6 +127,30 @@ Both Proton connectors use the one Bridge password, read with `info` in `bridge 
 
 Each connector is checked separately. After a new Bridge password, run the command for both `proton-mail` and `proton-calendar`, so that each is checked and, if it was disabled, re-enabled.
 
+## SimpleFIN
+
+SimpleFIN is a read-only bank connector (#51). Core reads accounts and transactions through the gate's egress proxy; nothing writes to the bank.
+
+1. In SimpleFIN Bridge (`bridge.simplefin.org`), create a setup token for Eido.
+2. Run `pnpm --filter @eido/gate connect simplefin` and paste the token at the prompt. It is not shown.
+   - The command claims the token once, from `bridge.simplefin.org` only, and stores the returned access URL in the gate vault. The access URL is the credential: only the gate reads it.
+   - A claimed token cannot be claimed again. If the claim fails after Bridge accepted it, create a new token.
+3. The gate turns the access URL into a Basic header on each pinned read, and counts the reads against the manifest's daily limit.
+
+Gate environment:
+
+- `EIDO_GATE_SIMPLEFIN=1` turns the connector on;
+- `EIDO_GATE_EGRESS_PORT`, the proxy's port, as for the other read connectors.
+
+Core environment:
+
+- `EIDO_SIMPLEFIN_PROXY_URL=http://127.0.0.1:<EIDO_GATE_EGRESS_PORT>`; without it core does not sync SimpleFIN;
+- `EIDO_SIMPLEFIN_MAX_RANGE_DAYS`, the longest window one read asks for (default 90).
+
+Assign each SimpleFIN account an entity in Settings, under SimpleFIN accounts. Until an account has one, none of its transactions are stored, and connector health says how many accounts need one. Assigning an entity to an account that has already synced reads its older transactions once (one request, back as far as `EIDO_SIMPLEFIN_MAX_RANGE_DAYS`), when the daily budget allows.
+
+SimpleFIN allows 24 requests a day and 90 days per request. The manifest's daily limit defaults to that; set `EIDO_SIMPLEFIN_REQUESTS_PER_DAY` when building the manifest (`connector-manifest simplefin`) to pin a lower one. When the limit is spent the proxy answers `daily_limit` and core waits for the next day.
+
 ## Reading the result
 
 - The command's last line is the gate's verdict.
@@ -141,5 +167,6 @@ These steps are the owner's, on the Mac:
 
 - a real Google consent, for the Gmail compose client, the Gmail read client and Drive;
 - a real Bridge password;
+- a real SimpleFIN setup token and read (#547);
 - the SSH port forward;
 - seeing the result on `/connectors`.

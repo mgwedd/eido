@@ -2,7 +2,11 @@
 
 import Link from "next/link"
 import * as React from "react"
-import type { CoreApiDocumentView, GateIntentInjection } from "@eido/schemas"
+import type {
+  CoreApiDocumentType,
+  CoreApiDocumentView,
+  GateIntentInjection,
+} from "@eido/schemas"
 import { validateCoreApiDocumentView } from "@eido/schemas"
 import { Badge } from "@eido/ui/components/badge"
 import { Button, buttonVariants } from "@eido/ui/components/button"
@@ -15,6 +19,7 @@ import {
 import { Separator } from "@eido/ui/components/separator"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { InjectionFlag } from "@/components/injection-flag"
+import { DocumentTypeControl } from "@/components/document-type-control"
 import {
   isLocalFile,
   loadPendingTrashKeys,
@@ -151,6 +156,24 @@ export function DocumentViewer({
     })
     return () => controller.abort()
   }, [state])
+
+  const handleTypeSaved = React.useCallback((saved: CoreApiDocumentType) => {
+    setState((current) =>
+      current.status === "ready"
+        ? {
+            ...current,
+            view: {
+              ...current.view,
+              document: {
+                ...current.view.document,
+                type: saved.type,
+                typeSource: saved.typeSource,
+              },
+            },
+          }
+        : current
+    )
+  }, [])
 
   const handleMoveToTrash = React.useCallback(async () => {
     if (state.status !== "ready") return
@@ -527,6 +550,12 @@ export function DocumentViewer({
                   No extracted fields.
                 </p>
               )}
+              <DocumentTypeControl
+                sha256={doc.sha256}
+                type={doc.type}
+                typeSource={doc.typeSource}
+                onSaved={handleTypeSaved}
+              />
             </CardContent>
           </Card>
         </div>

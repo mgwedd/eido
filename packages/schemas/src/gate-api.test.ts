@@ -29,7 +29,15 @@ import {
   validateGateRepinPrepared,
   validateGateRepinRequest,
   validateGateRepinResult,
+  validateGateFileRootsPrepared,
+  validateGateFileRootsCompletion,
+  validateGateFileRootsSaved,
   validateGateSession,
+  validateGateThingsAreaList,
+  validateGateThingsProjectList,
+  validateGateThingsTagList,
+  validateGateThingsTodoItem,
+  validateGateThingsTodoList,
   gateAuditDisplayActor,
 } from "./index"
 import type { ValidationResult } from "./index"
@@ -475,7 +483,7 @@ describe("decision result and error", () => {
     expect(
       errorsOf(validateGateApiError({ code: "teapot", message: "x" }))
     ).toEqual([
-      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable", "busy", "handshake_failed", "auth_failed"',
+      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable", "busy", "handshake_failed", "auth_failed", "things_unavailable", "automation_denied"',
     ])
     expect(
       errorsOf(validateGateApiError({ code: "not_found", message: "" }))
@@ -676,6 +684,17 @@ describe("intent proposal", () => {
         sources: { contextPackId: "p-1", documentIds: ["d-1"] },
       }).ok
     ).toBe(true)
+    expect(
+      validateGateIntentProposal({ ...proposal, sensitivity: "sensitive" }).ok
+    ).toBe(true)
+  })
+
+  test("rejects sensitivity value other than sensitive", () => {
+    expect(
+      errorsOf(
+        validateGateIntentProposal({ ...proposal, sensitivity: "normal" })
+      )
+    ).toEqual(['$.sensitivity: must be one of "sensitive"'])
   })
 
   test("rejects a missing origin, an intent that is not an object and a caller hash", () => {
@@ -709,6 +728,7 @@ describe("intent status", () => {
     tier: "approval",
     state: "pending",
     edited_from: null,
+    discarded: false,
   }
 
   test("accepts edited_from as null or an id", () => {
@@ -718,10 +738,16 @@ describe("intent status", () => {
     )
   })
 
-  test("requires edited_from and refuses a payload, signature or nonce", () => {
+  test("requires edited_from and discarded and refuses a payload, signature or nonce", () => {
     expect(
       errorsOf(validateGateIntentStatus(without(status, "edited_from")))
     ).toEqual(["$.edited_from: required"])
+    expect(
+      errorsOf(validateGateIntentStatus(without(status, "discarded")))
+    ).toEqual(["$.discarded: required"])
+    expect(
+      errorsOf(validateGateIntentStatus({ ...status, discarded: "yes" }))
+    ).toEqual(["$.discarded: expected boolean, got string"])
     expect(
       errorsOf(
         validateGateIntentStatus({
@@ -1031,6 +1057,33 @@ describe("Proton mail read routes", () => {
     ).toBe(true)
   })
 
+  test("the file-root errors name the folder by its request id and nothing else", () => {
+    const missing = {
+      code: "root_missing",
+      rootId: "rental",
+      message: "the file helper could not identify this folder",
+    }
+    expect(validateGateApiError(missing).ok).toBe(true)
+    // Without the id the web app cannot say which folder; a path is never an id.
+    expect(
+      validateGateApiError({ code: missing.code, message: missing.message }).ok
+    ).toBe(false)
+    expect(
+      validateGateApiError({ ...missing, rootId: "/Users/x/Rental" }).ok
+    ).toBe(false)
+    expect(validateGateApiError({ ...missing, code: "root_changed" }).ok).toBe(
+      true
+    )
+    // Only the file-root errors carry a root id.
+    expect(
+      validateGateApiError({
+        code: "invalid_request",
+        rootId: "rental",
+        message: "x",
+      }).ok
+    ).toBe(false)
+  })
+
   test("the error codes include the Bridge failures", () => {
     for (const code of ["handshake_failed", "auth_failed"]) {
       expect(validateGateApiError({ code, message: "Bridge" }).ok).toBe(true)
@@ -1134,5 +1187,138 @@ describe("connector re-pin", () => {
       validateGateRepinResult({ connector: "drive", manifestHash: HASH }).ok
     ).toBe(true)
     expect(validateGateRepinResult({ connector: "drive" }).ok).toBe(false)
+  })
+})
+
+describe("allowed folders signing", () => {
+  const roots = {
+    roots: [
+      {
+        id: "notes",
+        root: {
+          path: "/Users/owner.example/Notes",
+          dev: "1000004",
+          ino: "2a",
+          trashDir: ".eido-trash",
+        },
+      },
+    ],
+  }
+  const prepared = {
+    id: "ctl-1",
+    purpose: "policy.set",
+    target: "file-roots",
+    payloadHash: HASH,
+    nonce: NONCE,
+    challenge: NONCE,
+    roots,
+  }
+  const assertion = {
+    credentialId: "Y3JlZA",
+    authenticatorData: "YXV0aA",
+    clientDataJSON: "Y2xpZW50",
+    signature: "c2ln",
+  }
+
+  test("a prepared list is bound to policy.set on file-roots", () => {
+    expect(validateGateFileRootsPrepared(prepared).ok).toBe(true)
+    expect(
+      errorsOf(
+        validateGateFileRootsPrepared({ ...prepared, purpose: "manifest.pin" })
+      )
+    ).toEqual(['$.purpose: must be "policy.set"'])
+    expect(
+      validateGateFileRootsPrepared({ ...prepared, target: "drive" }).ok
+    ).toBe(false)
+  })
+
+  test("a prepared list refuses a malformed hash, nonce, challenge or root", () => {
+    expect(
+      validateGateFileRootsPrepared({ ...prepared, payloadHash: "abc" }).ok
+    ).toBe(false)
+    expect(
+      validateGateFileRootsPrepared({
+        ...prepared,
+        nonce: `${"A".repeat(42)}=`,
+      }).ok
+    ).toBe(false)
+    expect(
+      validateGateFileRootsPrepared({ ...prepared, challenge: "short" }).ok
+    ).toBe(false)
+    expect(
+      validateGateFileRootsPrepared({
+        ...prepared,
+        roots: { roots: [{ id: "Notes", root: roots.roots[0]?.root }] },
+      }).ok
+    ).toBe(false)
+    expect(
+      errorsOf(validateGateFileRootsPrepared(without(prepared, "roots")))
+    ).toEqual(["$.roots: required"])
+  })
+
+  test("a completion carries the roots and the signed authorization", () => {
+    const completion = {
+      roots,
+      authorization: { id: "ctl-1", nonce: NONCE, assertion },
+    }
+    expect(validateGateFileRootsCompletion(completion).ok).toBe(true)
+    expect(
+      errorsOf(
+        validateGateFileRootsCompletion({
+          roots,
+          authorization: { id: "ctl-1", nonce: NONCE },
+        })
+      )
+    ).toEqual(["$.authorization.assertion: required"])
+    expect(
+      errorsOf(validateGateFileRootsCompletion({ ...completion, extra: 1 }))
+    ).toEqual(["$.extra: unknown key"])
+  })
+
+  test("a saved result is only saved: true", () => {
+    expect(validateGateFileRootsSaved({ saved: true }).ok).toBe(true)
+    expect(validateGateFileRootsSaved({ saved: false }).ok).toBe(false)
+  })
+})
+
+describe("Things gate schemas", () => {
+  const item = {
+    id: "item-1",
+    name: "Clean desk",
+    status: "open",
+    notes: "Dust monitor",
+    tags: ["Home"],
+    area: "Personal",
+    project: null,
+    dueDate: "2026-11-10",
+    activationDate: null,
+    modificationDate: "2026-11-03",
+    creationDate: "2026-11-01",
+  }
+
+  test("validates a to-do item and list", () => {
+    expect(validateGateThingsTodoItem(item).ok).toBe(true)
+    expect(validateGateThingsTodoList({ items: [item] }).ok).toBe(true)
+    expect(validateGateThingsTodoItem({ ...item, status: "unknown" }).ok).toBe(
+      false
+    )
+  })
+
+  test("validates project, area and tag lists", () => {
+    const project = {
+      id: "proj-1",
+      name: "Q4 Goals",
+      area: "Work",
+      status: "open",
+      headings: ["Launch", "Wrap up"],
+      todoCount: 5,
+    }
+    expect(validateGateThingsProjectList({ projects: [project] }).ok).toBe(true)
+    expect(
+      validateGateThingsAreaList({ areas: [{ id: "area-1", name: "Work" }] }).ok
+    ).toBe(true)
+    expect(validateGateThingsTagList({ tags: ["Urgent", "Later"] }).ok).toBe(
+      true
+    )
   })
 })

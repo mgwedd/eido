@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiSimpleFinAccount",
+  "description": "A SimpleFIN account as core stores it (#545). `entityId` is the entity its transactions are stored under, or null while it has none: sync then stores none of them. `balanceCents` is a signed integer in the minor unit of `currency`, or null when SimpleFIN sent a malformed balance; `balanceAt` is when SimpleFIN measured it, or null. `backfillPending` is true from the account's first assignment until its older transactions have been read.",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "name": { "type": "string", "maxLength": 500 },
+    "currency": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "balanceCents": { "oneOf": [{ "type": "integer" }, { "type": "null" }] },
+    "balanceAt": {
+      "oneOf": [
+        { "type": "string", "format": "date-time", "maxLength": 40 },
+        { "type": "null" }
+      ]
+    },
+    "entityId": {
+      "oneOf": [
+        { "type": "string", "minLength": 36, "maxLength": 36 },
+        { "type": "null" }
+      ]
+    },
+    "backfillPending": { "type": "boolean" }
+  },
+  "required": [
+    "id",
+    "name",
+    "currency",
+    "balanceCents",
+    "balanceAt",
+    "entityId",
+    "backfillPending"
+  ],
+  "additionalProperties": false
+}

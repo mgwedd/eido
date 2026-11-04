@@ -17,6 +17,8 @@ export type NavItem = {
   icon: LucideIcon
   /** Shown in the phone tab bar. Entries without it appear only in the desktop sidebar. */
   phone: boolean
+  /** Carries the live pending count next to its label. */
+  badge?: "queue"
   /** Shown in phone header overflow links. False excludes it from phone header more links. */
   phoneHeader?: boolean
   /** The keyboard shortcut from the design: "g t" is a go-to sequence, "/" a single key. */
@@ -30,7 +32,14 @@ export type NavItem = {
  */
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/", label: "Today", icon: Sun, phone: true, shortcut: "g t" },
-  { href: "/queue", label: "Queue", icon: Inbox, phone: true, shortcut: "g q" },
+  {
+    href: "/queue",
+    label: "Queue",
+    icon: Inbox,
+    phone: true,
+    badge: "queue",
+    shortcut: "g q",
+  },
   {
     href: "/ask",
     label: "Ask",

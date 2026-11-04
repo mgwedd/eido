@@ -10,6 +10,7 @@
     "start": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/main.ts",
     "extraction-accuracy": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./scripts/extraction-accuracy.ts",
     "eval": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/eval/cli.ts",
+    "eval-injection": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/eval/injection-cli.ts",
     "connector-manifest": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./scripts/connector-manifest.ts",
     "lint": "eslint",
     "typecheck": "tsc -b",

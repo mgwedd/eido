@@ -8,6 +8,9 @@ import { resolveConfig as resolveProtonConfig } from "./proton/config"
 import { protonManifest } from "./proton/manifest"
 import { ProtonCalendarConfigError } from "./proton-calendar/config"
 import { protonCalendarManifest } from "./proton-calendar/manifest"
+import { simplefinManifestConfig } from "./simplefin/config"
+import { simplefinManifest } from "./simplefin/manifest"
+import { thingsManifest } from "./things/manifest"
 
 // The manifest each connector declares today, for the owner's re-pin flow (#497). The gate
 // cannot import this package, so `pnpm --filter @eido/core connector-manifest <connector>` prints
@@ -27,8 +30,13 @@ const BUILDERS: Readonly<
   Record<string, (env: Env) => ConnectorManifest | string>
 > = {
   files: () => filesManifest(),
+  things: () => thingsManifest(),
   drive: () => driveManifest(),
   gmail: () => gmailManifest(GMAIL_DEFAULTS),
+  simplefin: (env) => {
+    const config = simplefinManifestConfig(env)
+    return typeof config === "string" ? config : simplefinManifest(config)
+  },
   "proton-mail": (env) => {
     const username = env["EIDO_PROTON_USERNAME"] ?? ""
     if (username === "") return "EIDO_PROTON_USERNAME is not set"

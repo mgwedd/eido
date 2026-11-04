@@ -1,4 +1,5 @@
 import type { GateFileRoots } from "@eido/schemas"
+import type { FileHelper } from "./file-helper"
 import { describe, expect, it } from "vitest"
 import { verifyChain } from "../audit"
 import { canonicalize, payloadHash } from "../canonical"
@@ -13,6 +14,7 @@ import {
 import {
   approvedFileRoot,
   checkedFileRoots,
+  FileRootUnidentified,
   prepareFileRoots,
   setFileRoots,
 } from "./file-roots"
@@ -182,9 +184,12 @@ describe("signed file roots", () => {
   it("refuses to prepare a root the helper cannot identify", async () => {
     const db = openControlDb(":memory:")
     const helper = identifyingHelper({ roots: ROOTS.roots.slice(0, 1) })
-    await expect(prepareFileRoots(db, helper, REQUEST)).rejects.toThrow(
-      "file root cannot be identified"
+    // archive, the second root, is the one the helper cannot find: the error names it.
+    const missing = await prepareFileRoots(db, helper, REQUEST).catch(
+      (error: unknown) => error
     )
+    expect(missing).toBeInstanceOf(FileRootUnidentified)
+    expect(missing).toHaveProperty("rootId", "archive")
     await expect(
       prepareFileRoots(db, helper, {
         roots: [{ id: "Docs", path: "/x", trashDir: "t" }],
@@ -193,6 +198,18 @@ describe("signed file roots", () => {
     expect(
       db.prepare("SELECT COUNT(*) AS n FROM control_approvals").get()?.["n"]
     ).toBe(0)
+    db.close()
+  })
+
+  it("treats a helper reply for another operation as a helper fault, not a missing root", async () => {
+    const db = openControlDb(":memory:")
+    const wrongOp: FileHelper = () =>
+      Promise.resolve({ ok: true, op: "create" })
+    const fault = await prepareFileRoots(db, wrongOp, REQUEST).catch(
+      (error: unknown) => error
+    )
+    expect(fault).toBeInstanceOf(Error)
+    expect(fault).not.toBeInstanceOf(FileRootUnidentified)
     db.close()
   })
 

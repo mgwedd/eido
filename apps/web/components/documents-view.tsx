@@ -398,9 +398,16 @@ export function DocumentsView({
                         {doc.entity.name}
                       </TableCell>
                       <TableCell className="px-4 py-3">
-                        <Badge variant="outline" className="text-xs">
-                          {doc.type || doc.mime}
-                        </Badge>
+                        <div className="flex flex-col items-start gap-0.5">
+                          <Badge variant="outline" className="text-xs">
+                            {doc.type || doc.mime}
+                          </Badge>
+                          {doc.typeSource === "user" ? (
+                            <span className="text-[11px] text-muted-foreground">
+                              Set by you
+                            </span>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell className="px-4 py-3 text-sm text-muted-foreground">
                         <div className="flex flex-col">
@@ -506,12 +513,17 @@ export function DocumentsView({
                           doc.mime
                         )}
                       </span>
-                      <Badge
-                        variant="outline"
-                        className="px-1.5 py-0 text-[11px]"
-                      >
-                        {doc.type || doc.mime}
-                      </Badge>
+                      <span className="flex items-center gap-1.5">
+                        {doc.typeSource === "user" ? (
+                          <span className="text-[11px]">Set by you</span>
+                        ) : null}
+                        <Badge
+                          variant="outline"
+                          className="px-1.5 py-0 text-[11px]"
+                        >
+                          {doc.type || doc.mime}
+                        </Badge>
+                      </span>
                     </div>
                     {isPendingTrash ? (
                       <span

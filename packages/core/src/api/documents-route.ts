@@ -145,6 +145,18 @@ function listDocuments(
     0,
     errors
   )
+  const ids = param(params, "ids")?.split(",")
+  if (ids?.some((id) => !SHA256.test(id))) {
+    errors.push({
+      field: "ids",
+      message: "must be comma-separated sha256 hashes",
+    })
+  } else if (ids && ids.length > MAX_LIMIT) {
+    errors.push({
+      field: "ids",
+      message: `must name at most ${String(MAX_LIMIT)} documents`,
+    })
+  }
   if (errors.length > 0) {
     return {
       ok: false,
@@ -156,6 +168,10 @@ function listDocuments(
 
   const conditions = [LIVE_DOCUMENT_PREDICATE]
   const values: SQLInputValue[] = []
+  if (ids) {
+    conditions.push(`d.sha256 IN (${ids.map(() => "?").join(", ")})`)
+    values.push(...ids)
+  }
   for (const [name, column] of [
     ["entity", "d.entity_id"],
     ["type", "dt.type"],

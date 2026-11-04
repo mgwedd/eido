@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, test, vi } from "vitest"
-import { loadLedgerObligations } from "../lib/ledger"
+import { loadLedgerObligations, parseObligationParam } from "../lib/ledger"
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -75,5 +75,28 @@ describe("loadLedgerObligations", () => {
     expect(url).toContain("status=open")
     expect(url).toContain("limit=25")
     expect(url).toContain("offset=50")
+  })
+})
+
+describe("loadLedgerObligations id", () => {
+  test("sends the id of one obligation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: () => Promise.resolve({ obligations: [], nextOffset: null }),
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    await loadLedgerObligations(new AbortController().signal, { id: 7 })
+    expect(new URL(fetchMock.mock.calls[0]?.[0] as string).search).toBe("?id=7")
+  })
+})
+
+describe("parseObligationParam", () => {
+  test("absent stays absent, an id is a number, anything else cannot match", () => {
+    expect(parseObligationParam(undefined)).toBeUndefined()
+    expect(parseObligationParam("42")).toBe(42)
+    for (const bad of ["", "0", "-3", "1.5", "7abc", "99999999999999999999"]) {
+      expect(parseObligationParam(bad)).toBeNull()
+    }
   })
 })

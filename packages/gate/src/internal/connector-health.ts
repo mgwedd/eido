@@ -4,6 +4,11 @@ import type { GateConnectorHealth } from "@eido/schemas"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
 import { getPinnedManifest } from "./connectors"
+import {
+  dailyRequestLimit,
+  nextLocalMidnight,
+  requestsToday,
+} from "./connector-quota"
 
 /** A probe reservation expires if the gate process stops mid-request. */
 const PROBE_LEASE_MS = 60_000
@@ -18,25 +23,57 @@ export type ReadAttempt = {
   reason?: "connector_open" | "connector_backoff" | "connector_disabled"
 }
 
-/** The read-only projection served to the data plane and Today API. */
-export function getConnectorHealth(db: DatabaseSync): ConnectorHealth[] {
+/**
+ * The read-only projection served to the data plane and Today API. A connector whose manifest
+ * sets a daily rate limit also reports today's request count and limit; once the budget is spent
+ * it shows as degraded with "Daily limit" until the next local midnight (`nextSyncAt`).
+ */
+export function getConnectorHealth(
+  db: DatabaseSync,
+  now = Date.now()
+): ConnectorHealth[] {
   return db
     .prepare(
-      `SELECT name, health, consecutive_failures, next_attempt_at, last_error
+      `SELECT name, health, consecutive_failures, next_attempt_at, last_error,
+              quota_day, quota_requests
        FROM connectors ORDER BY name`
     )
     .all()
-    .map((row) => ({
-      name: String(row["name"]),
-      health: row["health"] as ConnectorHealth["health"],
-      consecutiveFailures: Number(row["consecutive_failures"]),
-      ...(typeof row["last_error"] === "string"
-        ? { lastError: row["last_error"] }
-        : {}),
-      ...(typeof row["next_attempt_at"] === "string"
-        ? { nextAttemptAt: row["next_attempt_at"] }
-        : {}),
-    }))
+    .map((row) => {
+      const name = String(row["name"])
+      const health = row["health"] as ConnectorHealth["health"]
+      const limit = dailyRequestLimit(db, name)
+      const used =
+        limit === undefined
+          ? 0
+          : requestsToday(
+              {
+                quota_day: row["quota_day"],
+                quota_requests: row["quota_requests"],
+              },
+              now
+            )
+      const spent = limit !== undefined && used >= limit && health !== "open"
+      return {
+        name,
+        health: spent ? "degraded" : health,
+        consecutiveFailures: Number(row["consecutive_failures"]),
+        ...(spent
+          ? { lastError: "Daily limit" }
+          : typeof row["last_error"] === "string"
+            ? { lastError: row["last_error"] }
+            : {}),
+        ...(typeof row["next_attempt_at"] === "string"
+          ? { nextAttemptAt: row["next_attempt_at"] }
+          : {}),
+        ...(limit === undefined
+          ? {}
+          : { requestsToday: used, requestLimit: limit }),
+        ...(spent
+          ? { nextSyncAt: new Date(nextLocalMidnight(now)).toISOString() }
+          : {}),
+      }
+    })
 }
 
 /**
