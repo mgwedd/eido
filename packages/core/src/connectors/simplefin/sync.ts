@@ -1,7 +1,8 @@
 import type { DatabaseSync } from "node:sqlite"
+import { writeQueueFor } from "../../db/write-queue"
 import { linkPayments } from "../../ledger/payments"
 import { parseAmountCents } from "./amounts"
-import type { AccountAssignments } from "./assignments"
+import { pendingBackfillAccounts } from "./accounts"
 import type { SimpleFinAccount, SimpleFinClient } from "./client"
 import { resolveSimpleFinConfig, SIMPLEFIN_CONNECTOR } from "./config"
 import type { SimpleFinConfig } from "./config"
@@ -10,6 +11,8 @@ import type { SimpleFinConfig } from "./config"
 // no larger than the configured range, and stores each window as one transaction with the cursor
 // moved to its end. Upserts on id make a re-read of the same window change nothing. After the
 // windows, new debits are matched to the obligations they paid (`linkPayments`, #576).
+// An account's entity is the one stored on it (`accounts.entity_id`, set in Settings, #545): a new
+// account is stored with none, and sync stores no transactions for it until it has one.
 
 const DAY_SECONDS = 86_400
 /** Re-read this much before the cursor: a bank can post a transaction days after it happened. */
@@ -21,7 +24,6 @@ const MAX_MESSAGE_LENGTH = 500
 export interface SimpleFinSyncOptions {
   db: DatabaseSync
   client: SimpleFinClient
-  assignments: AccountAssignments
   config?: Partial<SimpleFinConfig>
   now?: () => number
 }
@@ -38,6 +40,8 @@ export interface SimpleFinSyncResult {
   paymentsLinked: number
   /** Unix seconds: the end of the last stored window. */
   cursor: number
+  /** SimpleFIN's own errors from this run, scrubbed of URLs. */
+  errors: string[]
   /** Health messages for the connector: unassigned accounts and SimpleFIN's own errors. */
   messages: string[]
 }
@@ -50,15 +54,6 @@ function storedCursor(db: DatabaseSync): number | undefined {
     .get(SIMPLEFIN_CONNECTOR)
   const value = Number(row?.["cursor"])
   return row !== undefined && Number.isSafeInteger(value) ? value : undefined
-}
-
-function knownEntities(db: DatabaseSync): Set<string> {
-  return new Set(
-    db
-      .prepare("SELECT id FROM entities")
-      .all()
-      .map((row) => String(row["id"]))
-  )
 }
 
 export function healthMessages(
@@ -86,80 +81,101 @@ interface WindowCounts {
   unassigned: Set<string>
 }
 
+type Statement = ReturnType<DatabaseSync["prepare"]>
+
+interface Statements {
+  upsertAccount: Statement
+  entityOf: Statement
+  upsertTransaction: Statement
+}
+
+function statements(db: DatabaseSync): Statements {
+  return {
+    // The entity is never written here: it is the owner's assignment (#545).
+    upsertAccount: db.prepare(`
+      INSERT INTO accounts (id, connector, name, currency, entity_id, balance_cents, balance_at)
+      VALUES (?, ?, ?, ?, NULL, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        currency = excluded.currency,
+        balance_cents = excluded.balance_cents,
+        balance_at = excluded.balance_at`),
+    entityOf: db.prepare("SELECT entity_id FROM accounts WHERE id = ?"),
+    upsertTransaction: db.prepare(`
+      INSERT INTO transactions (
+        id, account_id, entity_id, posted_at, amount_cents, currency, description, raw_json, ingested_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        entity_id = excluded.entity_id,
+        posted_at = excluded.posted_at,
+        amount_cents = excluded.amount_cents,
+        currency = excluded.currency,
+        description = excluded.description,
+        raw_json = excluded.raw_json`),
+  }
+}
+
+/** Stores one account and, when it has an entity, its posted transactions. Runs inside a transaction. */
+function storeAccount(
+  sql: Statements,
+  account: SimpleFinAccount,
+  ingestedAt: string,
+  counts: WindowCounts
+): void {
+  const balance = parseAmountCents(account.balance)
+  sql.upsertAccount.run(
+    account.id,
+    SIMPLEFIN_CONNECTOR,
+    account.name,
+    account.currency,
+    balance.ok ? balance.cents : null,
+    account.balanceDate === undefined
+      ? null
+      : new Date(account.balanceDate * 1000).toISOString()
+  )
+  const entity = sql.entityOf.get(account.id)?.["entity_id"]
+  if (typeof entity !== "string") {
+    counts.unassigned.add(account.id)
+    return
+  }
+  counts.rejectedTransactions += account.rejected
+  for (const transaction of account.transactions) {
+    if (transaction.pending || transaction.posted === 0) continue
+    const amount = parseAmountCents(transaction.amount)
+    if (!amount.ok) {
+      counts.rejectedTransactions++
+      continue
+    }
+    sql.upsertTransaction.run(
+      `${account.id}:${transaction.id}`,
+      account.id,
+      entity,
+      new Date(transaction.posted * 1000).toISOString(),
+      amount.cents,
+      account.currency,
+      transaction.description,
+      JSON.stringify(transaction.raw),
+      ingestedAt
+    )
+    counts.transactionsStored++
+  }
+}
+
+function emptyCounts(): WindowCounts {
+  return { transactionsStored: 0, rejectedTransactions: 0, unassigned: new Set() }
+}
+
 function storeWindow(
   db: DatabaseSync,
   accounts: readonly SimpleFinAccount[],
-  entityOf: (account: string) => string | undefined,
   end: number,
   ingestedAt: string
 ): WindowCounts {
-  const counts: WindowCounts = {
-    transactionsStored: 0,
-    rejectedTransactions: 0,
-    unassigned: new Set(),
-  }
-  const upsertAccount = db.prepare(`
-    INSERT INTO accounts (id, connector, name, currency, entity_id, balance_cents, balance_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      currency = excluded.currency,
-      entity_id = excluded.entity_id,
-      balance_cents = excluded.balance_cents,
-      balance_at = excluded.balance_at`)
-  const upsertTransaction = db.prepare(`
-    INSERT INTO transactions (
-      id, account_id, entity_id, posted_at, amount_cents, currency, description, raw_json, ingested_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      entity_id = excluded.entity_id,
-      posted_at = excluded.posted_at,
-      amount_cents = excluded.amount_cents,
-      currency = excluded.currency,
-      description = excluded.description,
-      raw_json = excluded.raw_json`)
+  const counts = emptyCounts()
+  const sql = statements(db)
   db.exec("BEGIN IMMEDIATE")
   try {
-    for (const account of accounts) {
-      const entity = entityOf(account.id)
-      const balance = parseAmountCents(account.balance)
-      upsertAccount.run(
-        account.id,
-        SIMPLEFIN_CONNECTOR,
-        account.name,
-        account.currency,
-        entity ?? null,
-        balance.ok ? balance.cents : null,
-        account.balanceDate === undefined
-          ? null
-          : new Date(account.balanceDate * 1000).toISOString()
-      )
-      if (entity === undefined) {
-        counts.unassigned.add(account.id)
-        continue
-      }
-      counts.rejectedTransactions += account.rejected
-      for (const transaction of account.transactions) {
-        if (transaction.pending || transaction.posted === 0) continue
-        const amount = parseAmountCents(transaction.amount)
-        if (!amount.ok) {
-          counts.rejectedTransactions++
-          continue
-        }
-        upsertTransaction.run(
-          `${account.id}:${transaction.id}`,
-          account.id,
-          entity,
-          new Date(transaction.posted * 1000).toISOString(),
-          amount.cents,
-          account.currency,
-          transaction.description,
-          JSON.stringify(transaction.raw),
-          ingestedAt
-        )
-        counts.transactionsStored++
-      }
-    }
+    for (const account of accounts) storeAccount(sql, account, ingestedAt, counts)
     db.prepare(
       `INSERT INTO cursors (connector, stream, cursor, updated_at)
        VALUES (?, 'transactions', ?, ?)
@@ -191,11 +207,6 @@ export async function syncSimpleFin(
     cursor === undefined ? now - range : cursor - CURSOR_OVERLAP_SECONDS,
     now - 1
   )
-  const entities = knownEntities(db)
-  const entityOf = (account: string): string | undefined => {
-    const entity = options.assignments[account]
-    return entity !== undefined && entities.has(entity) ? entity : undefined
-  }
   const ingestedAt = new Date(nowMs).toISOString()
   const errors = new Set<string>()
   let windows = 0
@@ -207,7 +218,7 @@ export async function syncSimpleFin(
   while (end < now) {
     end = Math.min(start + range, now)
     const read = await client.getAccounts({ startDate: start, endDate: end })
-    const counts = storeWindow(db, read.accounts, entityOf, end, ingestedAt)
+    const counts = storeWindow(db, read.accounts, end, ingestedAt)
     windows++
     accounts = read.accounts.length
     transactionsStored += counts.transactionsStored
@@ -225,6 +236,65 @@ export async function syncSimpleFin(
     unassignedAccounts: unassigned.size,
     rejectedTransactions,
     cursor: end,
+    errors: [...errors],
     messages: healthMessages(unassigned.size, errors),
+  }
+}
+
+export interface SimpleFinBackfillResult {
+  /** Accounts the backfill read: those assigned an entity since their transactions were first read. */
+  accounts: number
+  transactionsStored: number
+  rejectedTransactions: number
+  paymentsLinked: number
+}
+
+/**
+ * Reads the older transactions of every account waiting for a backfill (#545) in one request over
+ * the configured maximum range, and stores them under the account's entity. The main cursor does
+ * not move. The accounts leave the backfill once the read is stored, including any SimpleFIN no
+ * longer returns, so a missing account cannot spend a request on every run.
+ */
+export async function backfillSimpleFin(
+  options: SimpleFinSyncOptions
+): Promise<SimpleFinBackfillResult> {
+  const { db, client } = options
+  const pending = pendingBackfillAccounts(db)
+  if (pending.length === 0) {
+    return { accounts: 0, transactionsStored: 0, rejectedTransactions: 0, paymentsLinked: 0 }
+  }
+  const { maxDateRangeDays } = resolveSimpleFinConfig(options.config)
+  const nowMs = (options.now ?? Date.now)()
+  const now = Math.floor(nowMs / 1000)
+  const read = await client.getAccounts({
+    startDate: now - maxDateRangeDays * DAY_SECONDS,
+    endDate: now,
+    accounts: pending,
+  })
+  const wanted = new Set(pending)
+  const counts = emptyCounts()
+  const ingestedAt = new Date(nowMs).toISOString()
+  await writeQueueFor(db).run(() => {
+    const sql = statements(db)
+    const done = db.prepare(
+      "UPDATE accounts SET backfill_pending = 0 WHERE id = ?"
+    )
+    db.exec("BEGIN IMMEDIATE")
+    try {
+      for (const account of read.accounts) {
+        if (wanted.has(account.id)) storeAccount(sql, account, ingestedAt, counts)
+      }
+      for (const id of pending) done.run(id)
+      db.exec("COMMIT")
+    } catch (error) {
+      db.exec("ROLLBACK")
+      throw error
+    }
+  })
+  return {
+    accounts: pending.length,
+    transactionsStored: counts.transactionsStored,
+    rejectedTransactions: counts.rejectedTransactions,
+    paymentsLinked: await linkPayments(db),
   }
 }

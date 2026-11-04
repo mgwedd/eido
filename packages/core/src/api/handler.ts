@@ -54,6 +54,13 @@ import { BRIEF_PATH, briefRoute } from "./brief-route"
 import { dueSoonRoute } from "./due-soon"
 import { SIMPLEFIN_SYNC_PATH, simplefinSyncRoute } from "./simplefin-sync-route"
 import type { SimpleFinSyncer } from "./simplefin-sync-route"
+import {
+  SIMPLEFIN_ACCOUNTS_PATH,
+  SIMPLEFIN_ASSIGNMENTS_PATH,
+  assignSimpleFinAccountRoute,
+  listSimpleFinAccountsRoute,
+} from "./simplefin-accounts-route"
+import type { SimpleFinAccountsDeps } from "./simplefin-accounts-route"
 import { REPLY_DRAFT_PATH } from "./reply-draft-route"
 import type { ReplyDraftResult, ReplyDrafter } from "./reply-draft-route"
 import {
@@ -69,6 +76,8 @@ export interface ApiDeps {
   connectorHealth?: () => Promise<GateConnectorHealth["connectors"]>
   /** A SimpleFIN sync on request (#546). When absent (SimpleFIN is not configured), the route is not served. */
   syncSimpleFin?: SimpleFinSyncer
+  /** SimpleFIN accounts and their entities (#545). When absent (SimpleFIN is not configured), the routes are not served. */
+  simplefinAccounts?: SimpleFinAccountsDeps
   /** Accounts the configured connectors have reported. Absent: none are configured. */
   connectorAccounts?: () => readonly KnownAccount[]
   /** The Proton account the assistant sends from. Absent: Proton is not configured. */
@@ -312,6 +321,33 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       if (method !== "POST") return notAllowed("POST")
       const { status, body } = await simplefinSyncRoute(deps.syncSimpleFin)
       return json(body, status)
+    }
+
+    if (
+      path === SIMPLEFIN_ACCOUNTS_PATH &&
+      deps.simplefinAccounts !== undefined
+    ) {
+      if (method !== "GET") return notAllowed("GET")
+      return json(listSimpleFinAccountsRoute(deps.simplefinAccounts))
+    }
+
+    if (
+      path === SIMPLEFIN_ASSIGNMENTS_PATH &&
+      deps.simplefinAccounts !== undefined
+    ) {
+      if (method !== "PUT") return notAllowed("PUT")
+      const result = await assignSimpleFinAccountRoute(
+        deps.simplefinAccounts,
+        await readJson(request)
+      )
+      if (result.ok) return json(result.body)
+      return failure(
+        result.code,
+        result.message,
+        result.issues === undefined
+          ? {}
+          : { fields: toFieldErrors(result.issues) }
+      )
     }
 
     if (path === "/connectors/accounts") {

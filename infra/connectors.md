@@ -145,8 +145,9 @@ Gate environment:
 Core environment:
 
 - `EIDO_SIMPLEFIN_PROXY_URL=http://127.0.0.1:<EIDO_GATE_EGRESS_PORT>`; without it core does not sync SimpleFIN;
-- `EIDO_SIMPLEFIN_ACCOUNTS_FILE`, a JSON object of SimpleFIN account id to entity id. It defaults to `simplefin-accounts.json` in core's data directory. An account with no entity is listed but none of its transactions are stored; connector health says how many accounts need one;
 - `EIDO_SIMPLEFIN_MAX_RANGE_DAYS`, the longest window one read asks for (default 90).
+
+Assign each SimpleFIN account an entity in Settings, under SimpleFIN accounts. Until an account has one, none of its transactions are stored, and connector health says how many accounts need one. Assigning an entity to an account that has already synced reads its older transactions once (one request, back as far as `EIDO_SIMPLEFIN_MAX_RANGE_DAYS`), when the daily budget allows.
 
 SimpleFIN allows 24 requests a day and 90 days per request. The manifest's daily limit defaults to that; set `EIDO_SIMPLEFIN_REQUESTS_PER_DAY` when building the manifest (`connector-manifest simplefin`) to pin a lower one. When the limit is spent the proxy answers `daily_limit` and core waits for the next day.
 

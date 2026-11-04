@@ -54,6 +54,15 @@ describe("SimpleFIN client", () => {
     })
   })
 
+  it("names each requested account as a repeated account parameter", async () => {
+    const { send, client } = clientAnswering(Response.json({ accounts: [] }))
+    await client.getAccounts({ startDate: 100, accounts: ["ACT-1", "ACT 2"] })
+    const headers = new Headers(send.mock.calls[0]?.[1]?.headers)
+    expect(headers.get("x-eido-target")).toBe(
+      "https://bridge.simplefin.org/simplefin/accounts?start-date=100&account=ACT-1&account=ACT+2"
+    )
+  })
+
   it("sends no query when no window is given", async () => {
     const { send, client } = clientAnswering(Response.json({ accounts: [] }))
     await client.getAccounts()

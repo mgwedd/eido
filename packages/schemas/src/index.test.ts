@@ -25,6 +25,9 @@ import {
   validateCoreApiReplyDraftRequest,
   validateCoreApiReplyDraftResponse,
   validateCoreApiSimpleFinSync,
+  validateCoreApiSimpleFinAccount,
+  validateCoreApiSimpleFinAccountList,
+  validateCoreApiSimpleFinAssignmentRequest,
   validateCoreApiError,
   validateCoreApiConversationSearch,
   validateCoreApiConversationGet,
@@ -944,5 +947,75 @@ describe("core API SimpleFIN sync schema", () => {
     expect(validateCoreApiSimpleFinSync({ reason: "sync_failed" }).ok).toBe(
       false
     )
+  })
+})
+
+describe("core API SimpleFIN account schemas", () => {
+  const ENTITY = "00000000-0000-4000-8000-000000000001"
+  const account = {
+    id: "acc_1",
+    name: "Lorem",
+    currency: "USD",
+    balanceCents: -1250,
+    balanceAt: "2026-02-20T12:00:00.000Z",
+    entityId: ENTITY,
+    backfillPending: false,
+  }
+
+  test("an account may have no entity, balance or balance time yet", () => {
+    expect(
+      validateCoreApiSimpleFinAccount({
+        ...account,
+        balanceCents: null,
+        balanceAt: null,
+        entityId: null,
+      }).ok
+    ).toBe(true)
+  })
+
+  test("an account balance is whole minor units", () => {
+    expect(
+      validateCoreApiSimpleFinAccount({ ...account, balanceCents: 12.5 }).ok
+    ).toBe(false)
+  })
+
+  test("an account carries its backfill state", () => {
+    expect(
+      validateCoreApiSimpleFinAccount({
+        id: account.id,
+        name: account.name,
+        currency: account.currency,
+        balanceCents: account.balanceCents,
+        balanceAt: account.balanceAt,
+        entityId: account.entityId,
+      }).ok
+    ).toBe(false)
+  })
+
+  test("a list holds accounts and nothing else", () => {
+    expect(validateCoreApiSimpleFinAccountList({ accounts: [account] }).ok).toBe(
+      true
+    )
+    expect(
+      validateCoreApiSimpleFinAccountList({ accounts: [], total: 0 }).ok
+    ).toBe(false)
+  })
+
+  test("an assignment names an account and an entity id", () => {
+    expect(
+      validateCoreApiSimpleFinAssignmentRequest({
+        accountId: "acc_1",
+        entityId: ENTITY,
+      }).ok
+    ).toBe(true)
+    expect(
+      validateCoreApiSimpleFinAssignmentRequest({ accountId: "acc_1" })
+    ).toEqual({ ok: false, errors: ["$.entityId: required"] })
+    expect(
+      validateCoreApiSimpleFinAssignmentRequest({
+        accountId: "",
+        entityId: ENTITY,
+      }).ok
+    ).toBe(false)
   })
 })

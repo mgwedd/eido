@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiSimpleFinAccountList",
+  "description": "Response of GET /connectors/simplefin/accounts (#545): every SimpleFIN account a sync has read, sorted by name. Served only when SimpleFIN sync is configured.",
+  "type": "object",
+  "properties": {
+    "accounts": {
+      "type": "array",
+      "items": { "$ref": "core-api-simplefin-account.schema.json" }
+    }
+  },
+  "required": ["accounts"],
+  "additionalProperties": false
+}

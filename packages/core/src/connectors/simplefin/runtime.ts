@@ -2,24 +2,24 @@ import type { DatabaseSync } from "node:sqlite"
 import type { GateConnectorHealth } from "@eido/schemas"
 import { createHealthAwareSync } from "../health-aware-sync"
 import type { ConnectorHealthReader } from "../health-aware-sync"
-import { readAccountAssignments } from "./assignments"
+import { countUnassignedAccounts, pendingBackfillAccounts } from "./accounts"
 import { scrubUrls, SimpleFinError } from "./client"
 import type { SimpleFinClient } from "./client"
 import { SIMPLEFIN_CONNECTOR } from "./config"
 import type { SimpleFinConfig, SyncTime } from "./config"
 import { nextLocalMidnight, nextSyncAtMs, syncDue } from "./schedule"
-import { syncSimpleFin } from "./sync"
+import { backfillSimpleFin, healthMessages, syncSimpleFin } from "./sync"
 
 // The data plane's scheduled SimpleFIN sync: skipped while the gate holds the connector open, and
 // when the last stored window is younger than the interval (so a restart does not spend a request).
-// Log fields carry short codes and counts only, never a response body or URL.
+// Log fields carry short codes and counts only, never a response body or URL, and never an
+// account id, name or balance. Accounts assigned an entity after their first read are backfilled
+// (#545) after a scheduled sync, or as soon as they are assigned, while the daily budget allows.
 
 export interface SimpleFinRuntimeOptions {
   db: DatabaseSync
   gate: ConnectorHealthReader
   client: SimpleFinClient
-  /** The local account-to-entity file; read on every run. */
-  accountsFile?: string
   config?: Partial<SimpleFinConfig>
   /** The local time of day to sync at; absent: every SIMPLEFIN_SYNC_INTERVAL_MS. */
   syncTime?: SyncTime
@@ -42,10 +42,20 @@ export interface SimpleFinRuntime {
   sync: () => Promise<void>
   /** A sync now, whatever the schedule. Counts against the daily budget; refused when it is spent. */
   syncNow: () => Promise<SimpleFinSyncNowResult>
-  /** Messages for `/connectors/health`: the last run's, or the reason it failed locally. */
+  /**
+   * Reads the older transactions of accounts assigned an entity since their first read, when
+   * any wait and the budget allows; after any sync in progress. Never rejects: failures are logged.
+   */
+  backfill: () => Promise<void>
+  /**
+   * Messages for `/connectors/health`: how many stored accounts need an entity (counted now, so an
+   * assignment shows at once) and the last run's SimpleFIN errors, or the reason it failed locally.
+   */
   messages: () => readonly string[]
   /** When the next scheduled sync starts (now, when one is due), as an ISO time. */
   nextSyncAt: () => string
+  /** Resolves once no sync or backfill is running. */
+  idle: () => Promise<void>
 }
 
 function lastStoredAt(db: DatabaseSync): number | undefined {
@@ -62,8 +72,10 @@ export function createSimpleFinRuntime(
   options: SimpleFinRuntimeOptions
 ): SimpleFinRuntime {
   const now = options.now ?? Date.now
-  let messages: readonly string[] = []
+  let errors: readonly string[] = []
+  let localFailure: string | undefined
   let running: Promise<SimpleFinSyncNowResult> | undefined
+  let backfilling: Promise<void> | undefined
   const healthAware = createHealthAwareSync(options.gate, now)
   const budgetSpent = async (): Promise<boolean> => {
     const record = (await options.gate.getConnectorHealth()).find(
@@ -88,14 +100,13 @@ export function createSimpleFinRuntime(
       nextSyncAtMs(now(), lastStoredAt(options.db), options.syncTime)
     ).toISOString()
   const run = async (): Promise<SimpleFinSyncNowResult> => {
+    await backfilling
     try {
       if (await budgetSpent()) return deferred()
-      const assignments = readAccountAssignments(options.accountsFile)
       const result = await healthAware(SIMPLEFIN_CONNECTOR, () =>
         syncSimpleFin({
           db: options.db,
           client: options.client,
-          assignments,
           ...(options.config === undefined ? {} : { config: options.config }),
           now,
         })
@@ -103,7 +114,8 @@ export function createSimpleFinRuntime(
       if (result.status === "skipped") {
         return { status: "refused", reason: "connector_unavailable" }
       }
-      messages = result.result.messages
+      errors = result.result.errors
+      localFailure = undefined
       options.log("simplefin_synced", {
         windows: String(result.result.windows),
         transactions: String(result.result.transactionsStored),
@@ -121,10 +133,58 @@ export function createSimpleFinRuntime(
       const reason = scrubUrls(
         error instanceof Error ? error.message : "unknown error"
       )
-      messages = [reason]
+      localFailure = reason
       options.log("simplefin_sync_failed", { reason })
       return { status: "refused", reason: "sync_failed" }
     }
+  }
+  const runBackfill = async (): Promise<void> => {
+    try {
+      await running
+      if (pendingBackfillAccounts(options.db).length === 0) return
+      if (await budgetSpent()) {
+        options.log("simplefin_backfill_deferred", { reason: "daily_limit" })
+        return
+      }
+      const result = await healthAware(SIMPLEFIN_CONNECTOR, () =>
+        backfillSimpleFin({
+          db: options.db,
+          client: options.client,
+          ...(options.config === undefined ? {} : { config: options.config }),
+          now,
+        })
+      )
+      if (result.status === "skipped") {
+        options.log("simplefin_backfill_deferred", {
+          reason: "connector_unavailable",
+        })
+        return
+      }
+      options.log("simplefin_backfilled", {
+        accounts: String(result.result.accounts),
+        transactions: String(result.result.transactionsStored),
+        linked: String(result.result.paymentsLinked),
+        rejected: String(result.result.rejectedTransactions),
+      })
+    } catch (error) {
+      const reason =
+        error instanceof SimpleFinError
+          ? error.code
+          : scrubUrls(error instanceof Error ? error.message : "unknown error")
+      options.log(
+        reason === "daily_limit"
+          ? "simplefin_backfill_deferred"
+          : "simplefin_backfill_failed",
+        { reason }
+      )
+    }
+  }
+  // One backfill at a time, after any sync in progress; a sync that starts meanwhile waits for it.
+  const backfill = (): Promise<void> => {
+    backfilling ??= runBackfill().finally(() => {
+      backfilling = undefined
+    })
+    return backfilling
   }
   // One run at a time: a call that arrives during a run shares its outcome.
   const start = (): Promise<SimpleFinSyncNowResult> => {
@@ -141,10 +201,19 @@ export function createSimpleFinRuntime(
       ) {
         await start()
       }
+      await backfill()
     },
     syncNow: start,
-    messages: () => messages,
+    backfill,
+    messages: () =>
+      localFailure === undefined
+        ? healthMessages(countUnassignedAccounts(options.db), errors)
+        : [localFailure],
     nextSyncAt,
+    idle: async () => {
+      await running
+      await backfilling
+    },
   }
 }
 

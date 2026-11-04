@@ -122,13 +122,11 @@ describe("dataPlaneConfig", () => {
     const env = {
       ...base,
       EIDO_SIMPLEFIN_PROXY_URL: "http://127.0.0.1:7801",
-      EIDO_SIMPLEFIN_ACCOUNTS_FILE: "/d/accounts.json",
       EIDO_SIMPLEFIN_MAX_RANGE_DAYS: "30",
       EIDO_SIMPLEFIN_SYNC_TIME: "06:30",
     }
     expect(dataPlaneConfig(env).simplefin).toEqual({
       proxyUrl: "http://127.0.0.1:7801",
-      accountsFile: "/d/accounts.json",
       config: { maxDateRangeDays: 30 },
       syncTime: { hour: 6, minute: 30 },
     })

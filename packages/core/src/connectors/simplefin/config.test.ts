@@ -23,35 +23,30 @@ describe("SimpleFIN configuration", () => {
 
 describe("simplefinPlaneConfig", () => {
   it("is off without a proxy URL", () => {
-    expect(simplefinPlaneConfig({}, "/d")).toBeUndefined()
+    expect(simplefinPlaneConfig({})).toBeUndefined()
     expect(
-      simplefinPlaneConfig({ EIDO_SIMPLEFIN_PROXY_URL: "" }, "/d")
+      simplefinPlaneConfig({ EIDO_SIMPLEFIN_PROXY_URL: "" })
     ).toBeUndefined()
   })
 
-  it("reads a loopback proxy, the accounts file and the date range", () => {
+  it("reads a loopback proxy and the date range", () => {
     expect(
       simplefinPlaneConfig(
-        { EIDO_SIMPLEFIN_PROXY_URL: "http://127.0.0.1:7801/" },
-        "/d"
+        { EIDO_SIMPLEFIN_PROXY_URL: "http://127.0.0.1:7801/" }
       )
     ).toEqual({
       proxyUrl: "http://127.0.0.1:7801",
-      accountsFile: "/d/simplefin-accounts.json",
       config: {},
     })
     expect(
       simplefinPlaneConfig(
         {
           EIDO_SIMPLEFIN_PROXY_URL: "http://127.0.0.1:7801",
-          EIDO_SIMPLEFIN_ACCOUNTS_FILE: "/etc/eido/accounts.json",
           EIDO_SIMPLEFIN_MAX_RANGE_DAYS: "30",
-        },
-        "/d"
+        }
       )
     ).toEqual({
       proxyUrl: "http://127.0.0.1:7801",
-      accountsFile: "/etc/eido/accounts.json",
       config: { maxDateRangeDays: 30 },
     })
   })
@@ -60,18 +55,16 @@ describe("simplefinPlaneConfig", () => {
     const proxy = "http://127.0.0.1:7801"
     expect(
       simplefinPlaneConfig(
-        { EIDO_SIMPLEFIN_PROXY_URL: proxy, EIDO_SIMPLEFIN_SYNC_TIME: "06:30" },
-        "/d"
+        { EIDO_SIMPLEFIN_PROXY_URL: proxy, EIDO_SIMPLEFIN_SYNC_TIME: "06:30" }
       )?.syncTime
     ).toEqual({ hour: 6, minute: 30 })
     expect(
-      simplefinPlaneConfig({ EIDO_SIMPLEFIN_PROXY_URL: proxy }, "/d")
+      simplefinPlaneConfig({ EIDO_SIMPLEFIN_PROXY_URL: proxy })
     ).not.toHaveProperty("syncTime")
     for (const bad of ["25:00", "6.30", "noon"]) {
       expect(() =>
         simplefinPlaneConfig(
-          { EIDO_SIMPLEFIN_PROXY_URL: proxy, EIDO_SIMPLEFIN_SYNC_TIME: bad },
-          "/d"
+          { EIDO_SIMPLEFIN_PROXY_URL: proxy, EIDO_SIMPLEFIN_SYNC_TIME: bad }
         )
       ).toThrow("EIDO_SIMPLEFIN_SYNC_TIME must be a 24-hour time, HH:MM")
     }
@@ -80,8 +73,7 @@ describe("simplefinPlaneConfig", () => {
   it("refuses a remote proxy and a bad range", () => {
     expect(() =>
       simplefinPlaneConfig(
-        { EIDO_SIMPLEFIN_PROXY_URL: "https://proxy.example.invalid" },
-        "/d"
+        { EIDO_SIMPLEFIN_PROXY_URL: "https://proxy.example.invalid" }
       )
     ).toThrow("EIDO_SIMPLEFIN_PROXY_URL must be a loopback HTTP URL")
     for (const range of ["0", "1.5", "-3", "3651"]) {
@@ -90,8 +82,7 @@ describe("simplefinPlaneConfig", () => {
           {
             EIDO_SIMPLEFIN_PROXY_URL: "http://127.0.0.1:7801",
             EIDO_SIMPLEFIN_MAX_RANGE_DAYS: range,
-          },
-          "/d"
+          }
         )
       ).toThrow(
         "EIDO_SIMPLEFIN_MAX_RANGE_DAYS must be an integer from 1 to 3650"

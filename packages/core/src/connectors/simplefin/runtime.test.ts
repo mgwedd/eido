@@ -1,9 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { GateConnectorHealth } from "@eido/schemas"
 import { openIndex } from "../../index/schema"
+import { assignSimpleFinAccount, pendingBackfillAccounts } from "./accounts"
 import { parseAccountSet, SimpleFinError } from "./client"
 import type { SimpleFinClient } from "./client"
 import { SIMPLEFIN_SYNC_INTERVAL_MS } from "./config"
@@ -20,6 +18,7 @@ const ACCOUNT_SET = {
       id: "acc_1",
       name: "Lorem",
       currency: "USD",
+      balance: "987.65",
       transactions: [
         {
           id: "t1",
@@ -32,25 +31,12 @@ const ACCOUNT_SET = {
   ],
 }
 
-const dirs: string[] = []
-afterEach(() => {
-  for (const dir of dirs.splice(0))
-    rmSync(dir, { recursive: true, force: true })
-})
-
-function accountsFile(text: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "eido-simplefin-"))
-  dirs.push(dir)
-  const path = join(dir, "accounts.json")
-  writeFileSync(path, text)
-  return path
-}
-
 function setup(
   options: {
     answer?: () => Promise<unknown>
     health?: GateConnectorHealth["connectors"]
-    accountsFile?: string
+    /** Assign acc_1 to ent_a before the first sync, as Settings would. */
+    assigned?: boolean
     syncTime?: SyncTime
     startMs?: number
   } = {}
@@ -59,19 +45,22 @@ function setup(
   db.exec(
     "INSERT INTO entities (id, kind, name, tag, created_at) VALUES ('ent_a', 'personal', 'A', 'A', '2026-01-01T00:00:00Z')"
   )
-  const answer = options.answer ?? (() => Promise.resolve(ACCOUNT_SET))
+  if (options.assigned === true) {
+    db.exec(
+      "INSERT INTO accounts (id, connector, name, currency, entity_id) VALUES ('acc_1', 'simplefin', 'Lorem', 'USD', 'ent_a')"
+    )
+  }
+  let answer = options.answer ?? (() => Promise.resolve(ACCOUNT_SET))
   const getAccounts = vi.fn(async () => parseAccountSet(await answer()))
   const client: SimpleFinClient = { getAccounts }
   const log =
     vi.fn<(event: string, fields?: Readonly<Record<string, string>>) => void>()
   let clock = options.startMs ?? NOW_MS
+  let health = options.health ?? []
   const runtime = createSimpleFinRuntime({
     db,
-    gate: { getConnectorHealth: () => Promise.resolve(options.health ?? []) },
+    gate: { getConnectorHealth: () => Promise.resolve(health) },
     client,
-    ...(options.accountsFile === undefined
-      ? {}
-      : { accountsFile: options.accountsFile }),
     ...(options.syncTime === undefined ? {} : { syncTime: options.syncTime }),
     log,
     now: () => clock,
@@ -87,14 +76,18 @@ function setup(
     set: (ms: number) => {
       clock = ms
     },
+    setHealth: (next: GateConnectorHealth["connectors"]) => {
+      health = next
+    },
+    setAnswer: (next: () => Promise<unknown>) => {
+      answer = next
+    },
   }
 }
 
 describe("SimpleFIN runtime", () => {
   it("syncs, logs counts only, and skips until the interval has passed", async () => {
-    const { runtime, getAccounts, log, advance } = setup({
-      accountsFile: accountsFile('{"acc_1":"ent_a"}'),
-    })
+    const { runtime, getAccounts, log, advance } = setup({ assigned: true })
     await runtime.sync()
     expect(log.mock.calls).toEqual([
       [
@@ -117,10 +110,8 @@ describe("SimpleFIN runtime", () => {
     expect(getAccounts).toHaveBeenCalledTimes(2)
   })
 
-  it("reports accounts without an entity when no accounts file exists", async () => {
-    const { runtime } = setup({
-      accountsFile: "/nonexistent/eido/accounts.json",
-    })
+  it("reports accounts without an entity", async () => {
+    const { runtime } = setup()
     await runtime.sync()
     expect(runtime.messages()).toEqual([
       "1 account needs an entity",
@@ -168,16 +159,163 @@ describe("SimpleFIN runtime", () => {
     expect(log).not.toHaveBeenCalled()
   })
 
-  it("surfaces a broken accounts file as a health message", async () => {
-    const { runtime, getAccounts, log } = setup({
-      accountsFile: accountsFile("[1]"),
-    })
+  it("surfaces a local failure as a health message", async () => {
+    const { runtime, db, log } = setup()
+    db.exec(`CREATE TRIGGER refuse BEFORE INSERT ON accounts
+      BEGIN SELECT RAISE(ABORT, 'disk refused'); END`)
     await runtime.sync()
-    const reason =
-      "the SimpleFIN accounts file must be a JSON object of account id to entity id"
-    expect(runtime.messages()).toEqual([reason])
-    expect(log.mock.calls).toEqual([["simplefin_sync_failed", { reason }]])
+    expect(runtime.messages()).toEqual(["disk refused"])
+    expect(log.mock.calls).toEqual([
+      ["simplefin_sync_failed", { reason: "disk refused" }],
+    ])
+  })
+
+  it("counts an account as assigned as soon as Settings stores its entity", async () => {
+    const { runtime, db } = setup()
+    await runtime.sync()
+    expect(runtime.messages()).toEqual([
+      "1 account needs an entity",
+      "Lorem notice",
+    ])
+    await assignSimpleFinAccount(db, "acc_1", "ent_a")
+    expect(runtime.messages()).toEqual(["Lorem notice"])
+  })
+})
+
+describe("SimpleFIN backfill", () => {
+  const spent: GateConnectorHealth["connectors"] = [
+    {
+      name: "simplefin",
+      health: "degraded",
+      consecutiveFailures: 0,
+      requestsToday: 24,
+      requestLimit: 24,
+    },
+  ]
+
+  /** A runtime that has synced once with acc_1 unassigned, then had acc_1 assigned. */
+  async function assignedAfterSync(
+    options: Parameters<typeof setup>[0] = {}
+  ): Promise<ReturnType<typeof setup>> {
+    const ready = setup(options)
+    await ready.runtime.syncNow()
+    await assignSimpleFinAccount(ready.db, "acc_1", "ent_a")
+    ready.log.mockClear()
+    ready.getAccounts.mockClear()
+    return ready
+  }
+
+  it("reads a newly assigned account's transactions and logs counts, never an id, name or balance", async () => {
+    const { runtime, getAccounts, log, db } = await assignedAfterSync()
+    await runtime.backfill()
+    expect(getAccounts).toHaveBeenCalledTimes(1)
+    expect(log.mock.calls).toEqual([
+      [
+        "simplefin_backfilled",
+        { accounts: "1", transactions: "1", linked: "0", rejected: "0" },
+      ],
+    ])
+    expect(pendingBackfillAccounts(db)).toEqual([])
+    expect(
+      db.prepare("SELECT entity_id FROM transactions").all()
+    ).toEqual([{ entity_id: "ent_a" }])
+  })
+
+  it("logs no account id, name or balance from a sync or a backfill", async () => {
+    const { runtime, log } = await assignedAfterSync()
+    await runtime.backfill()
+    await runtime.syncNow()
+    const logged = JSON.stringify(log.mock.calls)
+    expect(log.mock.calls.length).toBe(2)
+    for (const secret of ["acc_1", "Lorem", "987"])
+      expect(logged).not.toContain(secret)
+  })
+
+  it("runs after a scheduled sync even when no sync is due", async () => {
+    const { runtime, getAccounts, db } = await assignedAfterSync()
+    await runtime.sync()
+    expect(getAccounts).toHaveBeenCalledTimes(1)
+    expect(pendingBackfillAccounts(db)).toEqual([])
+  })
+
+  it("makes no request when nothing waits", async () => {
+    const { runtime, getAccounts, log } = setup({ assigned: true })
+    await runtime.backfill()
     expect(getAccounts).not.toHaveBeenCalled()
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  it("waits for the next day while the budget is spent", async () => {
+    const { runtime, getAccounts, log, db, setHealth } =
+      await assignedAfterSync()
+    setHealth(spent)
+    await runtime.backfill()
+    expect(getAccounts).not.toHaveBeenCalled()
+    expect(log.mock.calls).toEqual([
+      ["simplefin_backfill_deferred", { reason: "daily_limit" }],
+    ])
+    expect(pendingBackfillAccounts(db)).toEqual(["acc_1"])
+  })
+
+  it("waits while the gate holds the connector open", async () => {
+    const { runtime, getAccounts, log, db, setHealth } =
+      await assignedAfterSync()
+    setHealth([
+      {
+        name: "simplefin",
+        health: "open",
+        consecutiveFailures: 3,
+        nextAttemptAt: "2026-03-02T00:00:00.000Z",
+      },
+    ])
+    await runtime.backfill()
+    expect(getAccounts).not.toHaveBeenCalled()
+    expect(log.mock.calls).toEqual([
+      ["simplefin_backfill_deferred", { reason: "connector_unavailable" }],
+    ])
+    expect(pendingBackfillAccounts(db)).toEqual(["acc_1"])
+  })
+
+  it("waits when SimpleFIN reports the daily limit", async () => {
+    const { runtime, log, db, setAnswer } = await assignedAfterSync()
+    setAnswer(() => Promise.reject(new SimpleFinError("daily_limit", "limit")))
+    await runtime.backfill()
+    expect(log.mock.calls).toEqual([
+      ["simplefin_backfill_deferred", { reason: "daily_limit" }],
+    ])
+    expect(pendingBackfillAccounts(db)).toEqual(["acc_1"])
+  })
+
+  it("logs a refused read by its code", async () => {
+    const { runtime, log, db, setAnswer } = await assignedAfterSync()
+    setAnswer(() =>
+      Promise.reject(new SimpleFinError("unauthorized", "refused"))
+    )
+    await runtime.backfill()
+    expect(log.mock.calls).toEqual([
+      ["simplefin_backfill_failed", { reason: "unauthorized" }],
+    ])
+    expect(pendingBackfillAccounts(db)).toEqual(["acc_1"])
+  })
+
+  it("logs a local failure with any URL scrubbed", async () => {
+    const { runtime, log, setAnswer } = await assignedAfterSync()
+    setAnswer(() =>
+      Promise.reject(new Error("socket closed at https://user:pw@example.invalid/x"))
+    )
+    await runtime.backfill()
+    expect(log.mock.calls).toEqual([
+      ["simplefin_backfill_failed", { reason: "socket closed at [url]" }],
+    ])
+  })
+
+  it("shares one backfill between overlapping calls and settles before idle resolves", async () => {
+    const { runtime, getAccounts, db } = await assignedAfterSync()
+    void runtime.backfill()
+    void runtime.backfill()
+    await runtime.idle()
+    expect(getAccounts).toHaveBeenCalledTimes(1)
+    expect(pendingBackfillAccounts(db)).toEqual([])
   })
 })
 
