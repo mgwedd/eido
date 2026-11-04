@@ -1,9 +1,12 @@
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs"
 import { request } from "node:http"
 import { tmpdir } from "node:os"
@@ -22,7 +25,12 @@ import {
   BRIDGE_PASSWORD_KEY,
   MAX_MESSAGE_BYTES,
 } from "./internal/bridge/bridge"
-import { PROTON_CONNECTOR } from "./internal/bridge/config"
+import {
+  PROTON_CALENDAR_CONNECTOR,
+  PROTON_CONNECTOR,
+} from "./internal/bridge/config"
+import { createMemoryCalendarTracker } from "./internal/bridge/calendar"
+import { OWNER_CONFIG_FILE } from "./internal/policy"
 import { rawMessage, startFakeBridge } from "./internal/bridge/fake-bridge"
 import { createTestCertificate } from "./internal/bridge/test-certificate"
 import type { FakeBridge } from "./internal/bridge/fake-bridge"
@@ -35,7 +43,9 @@ import {
 } from "./internal/client"
 import { runningGate } from "./internal/runtime"
 import {
+  CALENDAR_OPS,
   MAIL_OPS,
+  OWNER,
   assertion,
   deviceChallenge,
   loggedText,
@@ -1623,6 +1633,125 @@ describe("runGate with Bridge", () => {
       "FileVault is for development only"
     )
     expect(() => runningGate()).toThrow("the gate is not started")
+  })
+
+  function pinCalendar(): void {
+    signedPin(runningGate().db, {
+      ...manifest(PROTON_CALENDAR_CONNECTOR, CALENDAR_OPS),
+      auth: { type: "password", scopes: ["write"] },
+      egress: { hosts: [] },
+    })
+    reloadPolicy()
+  }
+
+  function writeOwnerConfig(
+    dataDir: string,
+    ownerAddresses: readonly string[] = [OWNER]
+  ): void {
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 })
+    const path = join(dataDir, OWNER_CONFIG_FILE)
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ownerAddresses,
+        allowedRoots: [],
+      }),
+      { mode: 0o600 }
+    )
+    chmodSync(path, 0o600)
+  }
+
+  it("runGate wires calendar record: owner-only calendar.delete is auto and guest is approval through gate API", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    writeOwnerConfig(c.dataDir, [OWNER])
+    const tracker = createMemoryCalendarTracker()
+    tracker.set("evt-owner", {
+      sequence: 0,
+      lastMethod: "REQUEST",
+      event: {
+        title: "Solo Sync",
+        entity: "Astrea Labs LLC",
+        guests: [],
+      },
+    })
+    tracker.set("evt-guest", {
+      sequence: 0,
+      lastMethod: "REQUEST",
+      event: {
+        title: "Guest Meeting",
+        entity: "Astrea Labs LLC",
+        guests: ["guest@example.invalid"],
+      },
+    })
+    c.calendarTracker = tracker
+    const gate = await runGate(c)
+    try {
+      pinCalendar()
+      const client = createIntentClient({ socketPath: c.socketPath })
+
+      const ownerProposal = await client.propose({
+        intent: sample("calendar.delete", { eventUid: "evt-owner" }),
+        origin: "reactive",
+      })
+      expect(ownerProposal.tier).toBe("auto")
+      expect(ownerProposal.state).toBe("executed")
+
+      const guestProposal = await client.propose({
+        intent: sample("calendar.delete", { eventUid: "evt-guest" }),
+        origin: "reactive",
+      })
+      expect(guestProposal.tier).toBe("approval")
+      expect(guestProposal.state).toBe("pending")
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("shows a read failure of the calendar record gives approval through gate API", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    writeOwnerConfig(c.dataDir, [OWNER])
+    c.calendarTracker = {
+      get: () => {
+        throw new Error("ledger storage failure")
+      },
+      set: () => {},
+      has: () => false,
+    }
+    const gate = await runGate(c)
+    try {
+      pinCalendar()
+      const client = createIntentClient({ socketPath: c.socketPath })
+
+      const proposal = await client.propose({
+        intent: sample("calendar.delete", { eventUid: "evt-owner" }),
+        origin: "reactive",
+      })
+      expect(proposal.tier).toBe("approval")
+      expect(proposal.state).toBe("pending")
+    } finally {
+      await gate.close()
+    }
+  })
+
+  it("shows an unknown event in the calendar record gives approval through gate API", async () => {
+    const c = await bridged(BRIDGE_SECRET)
+    writeOwnerConfig(c.dataDir, [OWNER])
+    c.calendarTracker = createMemoryCalendarTracker()
+    const gate = await runGate(c)
+    try {
+      pinCalendar()
+      const client = createIntentClient({ socketPath: c.socketPath })
+
+      const proposal = await client.propose({
+        intent: sample("calendar.delete", { eventUid: "evt-unknown" }),
+        origin: "reactive",
+      })
+      expect(proposal.tier).toBe("approval")
+      expect(proposal.state).toBe("pending")
+    } finally {
+      await gate.close()
+    }
   })
 })
 

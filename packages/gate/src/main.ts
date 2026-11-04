@@ -49,7 +49,15 @@ import {
 import { controlHandler, dataPlaneHandler } from "./internal/routes"
 import type { Clock } from "./internal/sessions"
 import { runningGate, startGate, stopGate } from "./internal/runtime"
-import { OWNER_CONFIG_FILE } from "./internal/policy"
+import {
+  OWNER_CONFIG_FILE,
+  createStoredAttendeesReader,
+} from "./internal/policy"
+import type { StoredAttendees } from "./internal/policy"
+import {
+  globalCalendarTracker,
+  type CalendarTracker,
+} from "./internal/bridge/calendar"
 import { fileHelper } from "./internal/files/file-helper"
 import type { FileHelperConfig } from "./internal/files/file-helper"
 import { createFileReads } from "./internal/files/file-reads"
@@ -157,6 +165,10 @@ export type GateConfig = {
   /** Native helper binary and its pinned SHA-256, both required for file execution. */
   fileHelper?: FileHelperConfig
   backupStampPath?: string
+  /** The calendar connector's sent record tracker (#21, #290). */
+  calendarTracker?: CalendarTracker
+  /** Overrides the stored attendees reader for policy (#168, #290). */
+  storedAttendees?: StoredAttendees
 }
 
 export type BridgeListenerConfig = {
@@ -405,9 +417,10 @@ export async function runGate(
   let egressProxy: Awaited<ReturnType<typeof startEgressProxy>> | undefined
   try {
     // Owner addresses and allowed roots come from the gate-owned owner-config.json (#167).
-    // No stored-attendee reader
-    // is wired until the calendar connector's record exists (#21), so every calendar edit and
-    // delete needs approval.
+    // Stored attendees are read from the calendar connector's sent record (#21, #290).
+    const tracker = config.calendarTracker ?? globalCalendarTracker
+    const storedAttendees =
+      config.storedAttendees ?? createStoredAttendeesReader(tracker)
     const overlayErrors = startGate(
       db,
       {
@@ -415,6 +428,7 @@ export async function runGate(
         ownerAddresses: [],
         allowedRoots: [],
         ownerConfigPath: join(config.dataDir, OWNER_CONFIG_FILE),
+        storedAttendees,
       },
       config.webAuthn
     )
@@ -568,7 +582,7 @@ export async function runGate(
     const protonTransport =
       mail === undefined
         ? () => Promise.reject(new Error("Bridge is not configured"))
-        : bridgeTransport(mail)
+        : bridgeTransport(mail, { tracker })
     const things = createThingsReads()
     const thingsTransport = createThingsTransport()
     const executor = createExecutor(
