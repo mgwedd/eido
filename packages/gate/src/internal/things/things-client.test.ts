@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { createThingsClient } from "../client"
 import type { ThingsClient } from "../client"
+import { socketAddress } from "../test-fixtures"
 import type { GateThingsProjectItem, GateThingsTodoItem } from "@eido/schemas"
 
 describe("createThingsClient", () => {
@@ -42,7 +43,7 @@ describe("createThingsClient", () => {
 
   beforeAll(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), "things-client-test-"))
-    socketPath = join(tmpDir, "gate.sock")
+    socketPath = socketAddress(tmpDir, "gate.sock")
     server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://localhost")
       if (req.method === "GET" && url.pathname === "/things/lists/Inbox") {
