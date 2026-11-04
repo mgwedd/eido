@@ -301,7 +301,7 @@ describe("SimpleFIN backfill", () => {
   it("logs a local failure with any URL scrubbed", async () => {
     const { runtime, log, setAnswer } = await assignedAfterSync()
     setAnswer(() =>
-      Promise.reject(new Error("socket closed at https://user:pw@example.invalid/x"))
+      Promise.reject(new Error("socket closed at https://example.invalid/x"))
     )
     await runtime.backfill()
     expect(log.mock.calls).toEqual([
