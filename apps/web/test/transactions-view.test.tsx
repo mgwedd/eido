@@ -4,6 +4,11 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { TransactionsView } from "../components/transactions-view"
 import {
+  clearCachedTransactions,
+  formatStoredTimestamp,
+  saveCachedTransactions,
+} from "../lib/transactions"
+import {
   ENTITY_PERSONAL,
   ENTITY_PROPERTY,
   groceries,
@@ -85,6 +90,7 @@ const txnCalls = (fn: ReturnType<typeof vi.fn>) =>
     .filter((u) => u.pathname === "/api/core/transactions")
 
 beforeEach(() => {
+  clearCachedTransactions()
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -94,6 +100,7 @@ afterEach(() => {
   act(() => root.unmount())
   container.remove()
   vi.unstubAllGlobals()
+  clearCachedTransactions()
 })
 
 describe("TransactionsView", () => {
@@ -252,5 +259,43 @@ describe("TransactionsView", () => {
     )
     await click(button("Retry"))
     expect(container.textContent).toContain("Corner Market")
+  })
+
+  test("when offline with no cached data, shows offline message", async () => {
+    stubCore(() => Promise.reject(new TypeError("offline")))
+    await render()
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      "Offline. Transactions are not stored on this device."
+    )
+  })
+
+  test("when offline with cached transactions, shows cached rows and stored timestamp label", async () => {
+    const storedAt = "2026-10-17T12:00:00.000Z"
+    saveCachedTransactions(page([groceries]), new Date(storedAt))
+
+    stubCore(() => Promise.reject(new TypeError("offline")))
+    await render()
+
+    expect(container.textContent).toContain("Corner Market")
+    const banner = container.querySelector(
+      '[data-testid="transactions-offline-cached"]'
+    )
+    expect(banner).not.toBeNull()
+    expect(banner?.textContent).toContain(
+      `Offline · Stored ${formatStoredTimestamp(storedAt)}`
+    )
+    expect(banner?.textContent).toContain("Cached")
+    expect(button("Load more")).toBeUndefined()
+  })
+
+  test("when offline with cached data, filters work against cached rows", async () => {
+    const storedAt = "2026-10-17T12:00:00.000Z"
+    saveCachedTransactions(page([groceries, rent]), new Date(storedAt))
+
+    stubCore(() => Promise.reject(new TypeError("offline")))
+    await render({ initialEntity: ENTITY_PROPERTY.id })
+
+    expect(container.textContent).toContain("Tenant rent")
+    expect(container.textContent).not.toContain("Corner Market")
   })
 })

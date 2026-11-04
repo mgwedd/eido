@@ -1,15 +1,28 @@
-import { afterEach, describe, expect, test, vi } from "vitest"
+// @vitest-environment happy-dom
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import {
+  clearCachedTransactions,
   formatAmount,
   formatPostedDate,
+  formatStoredTimestamp,
   linkedObligationUrl,
+  loadCachedTransactions,
   loadTransactions,
+  saveCachedTransactions,
   summarizeTransactions,
+  TRANSACTIONS_CACHE_KEY,
   transactionsPageUrl,
 } from "../lib/transactions"
 import { groceries, lastYear, NOW, page, rent } from "./fixtures/transactions"
 
-afterEach(() => vi.unstubAllGlobals())
+beforeEach(() => {
+  clearCachedTransactions()
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  clearCachedTransactions()
+})
 
 const signal = new AbortController().signal
 
@@ -59,11 +72,25 @@ describe("loadTransactions", () => {
     expect(res.status).toBe("error")
   })
 
-  test("a network failure is an error", async () => {
+  test("a network failure is offline", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("down")))
+    expect(await loadTransactions(signal)).toEqual({ status: "offline" })
+  })
+
+  test("navigator.onLine false reports offline", async () => {
+    vi.stubGlobal("navigator", { onLine: false })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("network failure"))
+    )
+    expect(await loadTransactions(signal)).toEqual({ status: "offline" })
+  })
+
+  test("other runtime errors are reported as error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("custom boom")))
     expect(await loadTransactions(signal)).toEqual({
       status: "error",
-      message: "down",
+      message: "custom boom",
     })
   })
 
@@ -73,6 +100,13 @@ describe("loadTransactions", () => {
       vi.fn().mockRejectedValue(new DOMException("aborted", "AbortError"))
     )
     await expect(loadTransactions(signal)).rejects.toThrow("aborted")
+  })
+
+  test("saves successful unfiltered load to cache", async () => {
+    stub({ ok: true, status: 200, body: page([groceries]) })
+    const res = await loadTransactions(signal)
+    expect(res).toEqual({ status: "ok", data: page([groceries]) })
+    expect(loadCachedTransactions()?.data).toEqual(page([groceries]))
   })
 })
 
@@ -135,5 +169,62 @@ describe("summarizeTransactions", () => {
   })
   test("no rows gives the count alone", () => {
     expect(summarizeTransactions([], NOW)).toBe("0 transactions")
+  })
+})
+
+describe("cache helpers", () => {
+  beforeEach(() => {
+    clearCachedTransactions()
+  })
+
+  test("saveCachedTransactions and loadCachedTransactions round trip", () => {
+    const data = page([groceries])
+    const now = new Date("2026-10-17T12:00:00.000Z")
+    saveCachedTransactions(data, now)
+
+    const loaded = loadCachedTransactions()
+    expect(loaded).toEqual({
+      storedAt: "2026-10-17T12:00:00.000Z",
+      data,
+    })
+  })
+
+  test("loadCachedTransactions returns null when nothing is cached", () => {
+    expect(loadCachedTransactions()).toBeNull()
+  })
+
+  test("loadCachedTransactions returns null on corrupted JSON", () => {
+    window.localStorage.setItem(TRANSACTIONS_CACHE_KEY, "not json")
+    expect(loadCachedTransactions()).toBeNull()
+  })
+
+  test("loadCachedTransactions returns null when payload fails schema validation", () => {
+    window.localStorage.setItem(
+      TRANSACTIONS_CACHE_KEY,
+      JSON.stringify({
+        storedAt: "2026-10-17T00:00:00.000Z",
+        data: { invalid: true },
+      })
+    )
+    expect(loadCachedTransactions()).toBeNull()
+  })
+
+  test("clearCachedTransactions empties the store", () => {
+    saveCachedTransactions(page([groceries]))
+    expect(loadCachedTransactions()).not.toBeNull()
+    clearCachedTransactions()
+    expect(loadCachedTransactions()).toBeNull()
+  })
+})
+
+describe("formatStoredTimestamp", () => {
+  test("formats valid ISO timestamp", () => {
+    const formatted = formatStoredTimestamp("2026-10-17T12:00:00.000Z")
+    expect(formatted).toBeTruthy()
+    expect(formatted).not.toBe("2026-10-17T12:00:00.000Z")
+  })
+
+  test("returns invalid input as-is", () => {
+    expect(formatStoredTimestamp("not-a-date")).toBe("not-a-date")
   })
 })
