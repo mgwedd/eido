@@ -272,12 +272,19 @@ export async function signFileRoots(
   const complete = await post(
     FILE_ROOTS_COMPLETE_URL,
     completion,
+<<<<<<< HEAD
     (error, status) =>
       error.code === "root_changed"
         ? FILE_ROOTS_MESSAGES.changed
         : status === 503
           ? FILE_ROOTS_MESSAGES.cannotCheck
           : FILE_ROOTS_MESSAGES.refused
+=======
+    (_, status) =>
+      status === 503
+        ? FILE_ROOTS_MESSAGES.noWebAuthn
+        : FILE_ROOTS_MESSAGES.refused
+>>>>>>> 4ac5abe47baa27f6272122798bcb62a379968c9f
   )
   if (!complete.ok) return complete.outcome
   return validateGateFileRootsSaved(complete.json).ok
