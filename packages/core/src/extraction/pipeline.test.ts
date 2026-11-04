@@ -876,7 +876,7 @@ describe("token budget: refuse or skip, never truncate", () => {
   test("a passage over the model context is skipped whole and counted; the other is sent whole", async () => {
     const events: ExtractionLogEvent[] = []
     h = await harness(TWO, [NOTHING_FOUND], {
-      contextTokens: 1600,
+      contextTokens: 1800,
       deps: { log: (event) => events.push(event) },
     })
     const result = await h.extractor.extractDocument(h.docId)
@@ -901,7 +901,7 @@ describe("token budget: refuse or skip, never truncate", () => {
   })
 
   test("only passages over the context: refused_over_budget", async () => {
-    h = await harness(LONG, [NOTHING_FOUND], { contextTokens: 1600 })
+    h = await harness(LONG, [NOTHING_FOUND], { contextTokens: 1800 })
     const result = await h.extractor.extractDocument(h.docId)
     expect(result.status).toBe("refused_over_budget")
     expect(extractionRows(h)).toEqual([])
