@@ -1,3 +1,4 @@
+import { validateGateApiError } from "@eido/schemas"
 import type { GateFileRoot, GateFileRoots } from "@eido/schemas"
 import { describe, expect, it } from "vitest"
 import { openControlDb } from "./control-db"
@@ -60,26 +61,58 @@ describe("file root control routes", () => {
     db.close()
   })
 
-  it("refuses a root the helper cannot identify", async () => {
+  it("names the root the helper cannot identify by its id, never its path or the helper's text", async () => {
     const db = openControlDb(":memory:")
+    const twoRoots = {
+      roots: [
+        ...REQUEST.roots,
+        { id: "rental", path: "/caller/rental", trashDir: ".trash" },
+      ],
+    }
     const reply = await fileRootRoute(
-      request("POST", "/file-roots/prepare", REQUEST),
+      request("POST", "/file-roots/prepare", twoRoots),
       {
         db,
-        fileHelper: () =>
-          Promise.resolve({
-            ok: false,
-            code: "not_found",
-            message: "no such directory",
-          }),
+        fileHelper: (asked) =>
+          asked.op === "identify" && asked.path === "/caller/rental"
+            ? Promise.resolve({
+                ok: false,
+                code: "not_found",
+                message: "no such directory",
+              })
+            : helper(),
       }
     )
-    expect(reply?.status).toBe(400)
+    expect(reply).toEqual({
+      status: 422,
+      body: {
+        code: "root_missing",
+        rootId: "rental",
+        message: "the file helper could not identify this folder",
+      },
+    })
+    expect(validateGateApiError(reply?.body).ok).toBe(true)
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM control_approvals").get()?.[
         "count"
       ]
     ).toBe(0)
+    db.close()
+  })
+
+  it("answers a helper that fails outright with the generic refusal, naming no root", async () => {
+    const db = openControlDb(":memory:")
+    const reply = await fileRootRoute(
+      request("POST", "/file-roots/prepare", REQUEST),
+      { db, fileHelper: () => Promise.reject(new Error("file helper failed")) }
+    )
+    expect(reply).toEqual({
+      status: 400,
+      body: {
+        code: "invalid_request",
+        message: "file roots could not be prepared",
+      },
+    })
     db.close()
   })
 
