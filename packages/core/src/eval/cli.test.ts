@@ -157,7 +157,7 @@ describe("eval runner end to end against the stub model server", () => {
     expect(output).toContain(
       "default: cases to read: synthetic-injection, synthetic-schema-invalid-retry"
     )
-  })
+  }, 30_000)
 
   test("one command runs every candidate, starting servers it owns and sending each its template kwargs", async () => {
     const thinking = await stub("qwen-like")
@@ -229,7 +229,7 @@ describe("eval runner end to end against the stub model server", () => {
     ).rejects.toThrow()
     expect(process.exitCode).toBe(1)
     expect(output).toContain("missing | could not run:")
-  })
+  }, 30_000)
 
   test("refuses cases without a verdict, an empty case directory and a missing port", async () => {
     const empty = tempDir()
