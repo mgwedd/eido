@@ -340,9 +340,20 @@ describe("signFileRoots", () => {
       false,
     ],
     [
-      "no WebAuthn on the gate",
+      "no WebAuthn or file helper on the gate",
       { [COMPLETE]: apiError(503, "unavailable") },
-      "The gate can't check signatures right now. Nothing was changed.",
+      "The gate can't check the signature or the folders right now. Nothing was changed.",
+      false,
+    ],
+    [
+      "a folder that changed on the host since review",
+      {
+        [COMPLETE]: json(
+          { code: "root_changed", rootId: "studio", message: "changed" },
+          409
+        ),
+      },
+      "A folder changed on the host since you reviewed it. Review again.",
       false,
     ],
     [

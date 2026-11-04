@@ -16,7 +16,7 @@ Pin the `filesManifest()` connector through the ordinary signed manifest ceremon
 
 - `POST /file-roots/prepare`: `{ "roots": [{ "id": "notes", "path": "/absolute/owner-selected/notes", "trashDir": ".eido-trash" }] }`. The request carries only `id`, `path` and `trashDir` per root; the gate's own native helper captures each canonical path and directory identity. A root the helper cannot identify is refused with `422 {"code": "root_missing", "rootId": <its id>}`; the error names the id only, never the path or the helper's text.
 - Review the returned canonical root paths, identities, `payloadHash` and `challenge`. Sign that exact challenge with an enrolled owner passkey.
-- `POST /file-roots/complete`: `{ "roots": <returned roots object>, "authorization": { "id": <approval id>, "nonce": <nonce>, "assertion": <WebAuthn assertion> } }`.
+- `POST /file-roots/complete`: `{ "roots": <returned roots object>, "authorization": { "id": <approval id>, "nonce": <nonce>, "assertion": <WebAuthn assertion> } }`. The gate first asks the helper to identify every root again; a root whose canonical path, `dev` or `ino` changed since prepare, or that is gone, is refused with `409 {"code": "root_changed", "rootId": <its id>}`, and nothing is stored or consumed. Without the helper, or when it fails, complete answers `503 unavailable`.
 - `GET /file-roots` (phone listener, session required): the currently approved roots, re-verified against their signed approval and audit row; `{ "roots": [] }` when none verify.
 
 On the phone listener a valid session is necessary but never sufficient: only a fresh owner WebAuthn assertion over the prepared challenge stores roots, exactly as on the control socket.

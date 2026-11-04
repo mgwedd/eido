@@ -3,6 +3,7 @@ import type { GateApiError, GateFileRoots } from "@eido/schemas"
 import { apiError } from "./http"
 import type { GateRequest, Reply } from "./http"
 import {
+  changedFileRoot,
   FileRootUnidentified,
   prepareFileRoots,
   setFileRoots,
@@ -85,7 +86,11 @@ export async function prepareFileRootsRoute(
   }
 }
 
-/** Complete: stores the roots only inside a verified, single-use `policy.set` passkey assertion. */
+/**
+ * Complete: re-identifies every root with the helper and refuses one that changed since
+ * prepare as `root_changed`, naming its id; then stores the roots only inside a verified,
+ * single-use `policy.set` passkey assertion. A refusal stores nothing.
+ */
 export async function completeFileRootsRoute(
   request: GateRequest,
   state: FileRootRouteState
@@ -112,6 +117,26 @@ export async function completeFileRootsRoute(
     )
   if (state.webAuthn === undefined)
     return apiError(503, "unavailable", "WebAuthn is unavailable")
+  if (state.fileHelper === undefined)
+    return apiError(503, "unavailable", "the file helper is unavailable")
+  let changed: string | undefined
+  try {
+    changed = await changedFileRoot(state.fileHelper, roots.value)
+  } catch {
+    return apiError(
+      503,
+      "unavailable",
+      "the file helper could not identify the folders again"
+    )
+  }
+  if (changed !== undefined) {
+    const body: GateApiError = {
+      code: "root_changed",
+      rootId: changed,
+      message: "this folder changed on the host since it was prepared",
+    }
+    return { status: 409, body }
+  }
   try {
     setFileRoots(state.db, roots.value, {
       config: state.webAuthn,
