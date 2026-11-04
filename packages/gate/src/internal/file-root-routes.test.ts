@@ -5,6 +5,7 @@ import { openControlDb } from "./control-db"
 import { prepareControlApproval } from "./control-approvals"
 import { fileRootRoute } from "./file-root-routes"
 import type { GateRequest } from "./http"
+import type { FileHelper } from "./files/file-helper"
 import { controlAuthorization, WEBAUTHN } from "./test-fixtures"
 import { approvedFileRoot, prepareFileRoots } from "./files/file-roots"
 
@@ -146,7 +147,7 @@ describe("file root control routes", () => {
     const complete = (roots: unknown, authorization: unknown) =>
       fileRootRoute(
         request("POST", "/file-roots/complete", { roots, authorization }),
-        { db, webAuthn: WEBAUTHN }
+        { db, webAuthn: WEBAUTHN, fileHelper: helper }
       )
     expect((await complete(ROOTS, {}))?.status).toBe(409)
     const wrong = { ...ROOTS, roots: [{ id: "other", root: ROOT }] }
@@ -160,6 +161,147 @@ describe("file root control routes", () => {
     expect((await complete(ROOTS, auth.request))?.status).toBe(409)
     db.close()
   })
+  it.each([
+    ["moved to another canonical path", { canonicalPath: "/srv/safe/other" }],
+    ["replaced by another directory (dev)", { dev: "9" }],
+    ["replaced by another directory (ino)", { ino: "20" }],
+  ])(
+    "refuses a root %s since prepare, naming it, and stores nothing",
+    async (_name, changed) => {
+      const db = openControlDb(":memory:")
+      const prepared = await prepareFileRoots(db, helper, REQUEST)
+      const auth = controlAuthorization(db, prepared)
+      const reply = await fileRootRoute(
+        request("POST", "/file-roots/complete", {
+          roots: ROOTS,
+          authorization: auth.request,
+        }),
+        {
+          db,
+          webAuthn: WEBAUTHN,
+          fileHelper: async () => ({ ...(await helper()), ...changed }),
+        }
+      )
+      expect(reply).toEqual({
+        status: 409,
+        body: {
+          code: "root_changed",
+          rootId: "docs",
+          message: "this folder changed on the host since it was prepared",
+        },
+      })
+      expect(validateGateApiError(reply?.body).ok).toBe(true)
+      expect(approvedFileRoot(db, "docs")).toBeUndefined()
+      expect(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM control_approvals WHERE used_at IS NOT NULL"
+          )
+          .get()?.["n"]
+      ).toBe(0)
+      db.close()
+    }
+  )
+
+  it("re-identifies every root at complete and names the one gone since prepare", async () => {
+    const db = openControlDb(":memory:")
+    const second: GateFileRoot = { ...ROOT, path: "/srv/safe/scans", ino: "1a" }
+    const both: GateFileRoots = {
+      roots: [
+        { id: "docs", root: ROOT },
+        { id: "scans", root: second },
+      ],
+    }
+    const identify: FileHelper = (asked) => {
+      const found = both.roots.find(
+        (r) => asked.op === "identify" && r.root.path === asked.path
+      )?.root
+      return Promise.resolve(
+        found === undefined
+          ? { ok: false, code: "not_found", message: "no such directory" }
+          : {
+              ok: true,
+              op: "identify",
+              canonicalPath: found.path,
+              dev: found.dev,
+              ino: found.ino,
+            }
+      )
+    }
+    const prepared = await prepareFileRoots(db, identify, {
+      roots: both.roots.map(({ id, root }) => ({
+        id,
+        path: root.path,
+        trashDir: root.trashDir,
+      })),
+    })
+    const asked: string[] = []
+    const scansGone: FileHelper = (req) => {
+      if (req.op === "identify") asked.push(req.path)
+      return req.op === "identify" && req.path === second.path
+        ? Promise.resolve({
+            ok: false,
+            code: "not_found",
+            message: "no such directory",
+          })
+        : identify(req)
+    }
+    const reply = await fileRootRoute(
+      request("POST", "/file-roots/complete", {
+        roots: both,
+        authorization: controlAuthorization(db, prepared).request,
+      }),
+      { db, webAuthn: WEBAUTHN, fileHelper: scansGone }
+    )
+    expect(asked).toEqual([ROOT.path, second.path])
+    expect([reply?.status, reply?.body]).toMatchObject([
+      409,
+      { code: "root_changed", rootId: "scans" },
+    ])
+    expect(approvedFileRoot(db, "docs")).toBeUndefined()
+    db.close()
+  })
+
+  it("stores nothing when the helper fails or is missing at complete", async () => {
+    const db = openControlDb(":memory:")
+    const prepared = await prepareFileRoots(db, helper, REQUEST)
+    const auth = controlAuthorization(db, prepared)
+    const complete = (fileHelper?: FileHelper) =>
+      fileRootRoute(
+        request("POST", "/file-roots/complete", {
+          roots: ROOTS,
+          authorization: auth.request,
+        }),
+        fileHelper === undefined
+          ? { db, webAuthn: WEBAUTHN }
+          : { db, webAuthn: WEBAUTHN, fileHelper }
+      )
+    const failed = await complete(() =>
+      Promise.reject(new Error("file helper failed"))
+    )
+    expect([failed?.status, failed?.body]).toEqual([
+      503,
+      {
+        code: "unavailable",
+        message: "the file helper could not identify the folders again",
+      },
+    ])
+    const wrongOp = await complete(() =>
+      Promise.resolve({ ok: true, op: "create" })
+    )
+    expect(wrongOp?.status).toBe(503)
+    const missing = await complete()
+    expect([missing?.status, missing?.body]).toEqual([
+      503,
+      { code: "unavailable", message: "the file helper is unavailable" },
+    ])
+    expect(approvedFileRoot(db, "docs")).toBeUndefined()
+    // None of the refusals consumed the challenge: the unchanged roots still store once.
+    expect((await complete(helper))?.status).toBe(200)
+    expect(approvedFileRoot(db, "docs")).toEqual(ROOT)
+    db.close()
+  })
+
   it("refuses malformed or oversized bodies before any ceremony", async () => {
     const db = openControlDb(":memory:")
     const body = (text: string): GateRequest => ({
@@ -210,6 +352,7 @@ describe("file root control routes", () => {
       fileRootRoute(request("POST", "/file-roots/complete", value), {
         db,
         webAuthn: WEBAUTHN,
+        fileHelper: helper,
       })
     expect((await post("text"))?.status).toBe(400)
     expect((await post({ roots: ROOTS }))?.status).toBe(400)
