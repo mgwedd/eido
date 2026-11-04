@@ -14,7 +14,7 @@ The script runs `cargo build --release --locked`, copies the binary there (mode 
 
 Pin the `filesManifest()` connector through the ordinary signed manifest ceremony. Allowed roots are prepared and signed through the same `policy.set` ceremony on target `file-roots`, served by the local control socket and, behind the phone session, by the phone listener (`/api/gate/file-roots/...`, #574). The data-plane socket cannot change roots.
 
-- `POST /file-roots/prepare`: `{ "roots": [{ "id": "notes", "path": "/absolute/owner-selected/notes", "trashDir": ".eido-trash" }] }`. The request carries only `id`, `path` and `trashDir` per root; the gate's own native helper captures each canonical path and directory identity.
+- `POST /file-roots/prepare`: `{ "roots": [{ "id": "notes", "path": "/absolute/owner-selected/notes", "trashDir": ".eido-trash" }] }`. The request carries only `id`, `path` and `trashDir` per root; the gate's own native helper captures each canonical path and directory identity. A root the helper cannot identify is refused with `422 {"code": "root_missing", "rootId": <its id>}`; the error names the id only, never the path or the helper's text.
 - Review the returned canonical root paths, identities, `payloadHash` and `challenge`. Sign that exact challenge with an enrolled owner passkey.
 - `POST /file-roots/complete`: `{ "roots": <returned roots object>, "authorization": { "id": <approval id>, "nonce": <nonce>, "assertion": <WebAuthn assertion> } }`.
 - `GET /file-roots` (phone listener, session required): the currently approved roots, re-verified against their signed approval and audit row; `{ "roots": [] }` when none verify.
