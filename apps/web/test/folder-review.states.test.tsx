@@ -18,10 +18,7 @@ const body = (state: FolderReviewState) => () => (
   />
 )
 
-<<<<<<< HEAD
-// Folder missing and changed since review have no rows: the gate cannot tell them apart yet
-// (#584, #585). Too many and bad id are the editor's rows (folder-editor.states.test.tsx).
-=======
+// Too many and bad id are the editor's rows (folder-editor.states.test.tsx).
 /** The signed list reads back, then the host cannot identify `missing` when asked again. */
 function folderMissing(missing: string) {
   vi.stubGlobal(
@@ -42,7 +39,6 @@ function folderMissing(missing: string) {
 
 // Changed since review, too many and bad id have no rows: the gate cannot tell the first apart
 // yet (#585) and only a list editor can produce the last two (#583).
->>>>>>> 4ac5abe47baa27f6272122798bcb62a379968c9f
 describeStates("Allowed folders review", [
   {
     state: "preparing",
