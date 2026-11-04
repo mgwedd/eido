@@ -17,6 +17,7 @@ import {
   revokedPasskey,
 } from "./fixtures/settings"
 import { signedRoots } from "./fixtures/file-roots"
+import { accountList, checking, household } from "./fixtures/simplefin-accounts"
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -73,6 +74,8 @@ const healthy: Routes = {
   "/api/gate/backup/status": ok(backupFresh),
   "/api/gate/audit/chain": ok(chainOk),
   "/api/gate/file-roots": ok(signedRoots),
+  "/api/core/connectors/simplefin/accounts": ok(accountList(checking)),
+  "/api/core/entities": ok({ entities: [household] }),
 }
 
 async function render() {
@@ -100,9 +103,21 @@ test("shows the sections in the issue's order", async () => {
     "Devices and passkeys",
     "Assistant behaviour",
     "Data",
+    "SimpleFIN accounts",
     "Security",
     "About",
   ])
+})
+
+test("hides the SimpleFIN section when core has no SimpleFIN connector", async () => {
+  gate({
+    ...healthy,
+    "/api/core/connectors/simplefin/accounts": () =>
+      new Response("{}", { status: 404 }),
+  })
+  await render()
+  expect(text()).not.toContain("SimpleFIN accounts")
+  expect(container.querySelector("#simplefin")).toBeNull()
 })
 
 test("profile is reached by row, not an h2 section", async () => {
@@ -252,7 +267,8 @@ test("no control revokes a passkey or edits permissions", async () => {
     (b) => b.getAttribute("aria-label") ?? b.textContent ?? ""
   )
   expect(labels.join("|")).not.toMatch(/^(remove|revoke|edit|delete)/i)
-  // The only controls that change anything are the theme radios and the push switch.
+  // The only controls that change anything are the theme radios, the push switch and the
+  // SimpleFIN entity pickers.
   // The switch mirrors its state into an aria-hidden checkbox input, which is not a
   // control of its own.
   const controls = [
@@ -262,7 +278,7 @@ test("no control revokes a passkey or edits permissions", async () => {
   ]
     .filter((control) => control.getAttribute("aria-hidden") !== "true")
     .map((control) => [
-      control.closest("[aria-labelledby]")?.getAttribute("aria-labelledby"),
+      control.closest('[role="group"]')?.getAttribute("aria-labelledby"),
       control.getAttribute("role") ?? control.tagName.toLowerCase(),
       control.getAttribute("aria-label") ?? control.textContent,
     ])
@@ -271,6 +287,7 @@ test("no control revokes a passkey or edits permissions", async () => {
     ["settings-appearance", "radio", "Light"],
     ["settings-appearance", "radio", "System"],
     ["settings-notifications", "switch", "Push on this device"],
+    ["settings-simplefin", "combobox", "Household▼"],
   ])
   // No write requests were made either.
   const fn = vi.mocked(fetch)

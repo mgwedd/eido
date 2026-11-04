@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 12
+export const SCHEMA_VERSION = 13
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -218,6 +218,12 @@ CREATE TABLE transactions (
 CREATE INDEX transactions_account ON transactions(account_id);
 CREATE INDEX transactions_entity ON transactions(entity_id);
 CREATE INDEX transactions_posted ON transactions(posted_at);
+`,
+  // v13: SimpleFIN accounts assigned an entity after their transactions were first read wait for
+  // a backfill of their older transactions (#545). The assignment itself is accounts.entity_id.
+  `
+ALTER TABLE accounts ADD COLUMN backfill_pending INTEGER NOT NULL DEFAULT 0
+  CHECK (backfill_pending IN (0, 1));
 `,
 ]
 

@@ -29,6 +29,7 @@ import type { AskFigure } from "@eido/schemas"
 import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
 import type { SimpleFinSyncer } from "./api/simplefin-sync-route"
+import type { SimpleFinAccountsDeps } from "./api/simplefin-accounts-route"
 import { createReplyDrafter } from "./api/reply-draft-route"
 import { DEFAULT_CHARS_PER_TOKEN } from "./inference/budget"
 import { createProposalLimiter } from "./propose/limiter"
@@ -126,7 +127,6 @@ export const DATA_PLANE_ENV = [
   "EIDO_PROTON_USERNAME",
   "EIDO_FILES_SYNC",
   "EIDO_SIMPLEFIN_PROXY_URL",
-  "EIDO_SIMPLEFIN_ACCOUNTS_FILE",
   "EIDO_SIMPLEFIN_MAX_RANGE_DAYS",
   "EIDO_SIMPLEFIN_SYNC_TIME",
 ] as const
@@ -419,7 +419,7 @@ export function dataPlaneConfig(env: Env): DataPlaneConfig {
     filesSync !== "1"
   )
     throw new Error("EIDO_FILES_SYNC must be 0 or 1")
-  const simplefin = simplefinPlaneConfig(env, dataDir)
+  const simplefin = simplefinPlaneConfig(env)
   return {
     dataDir,
     dbPath: join(dataDir, DATA_DB_FILE),
@@ -452,6 +452,8 @@ export type DataPlane = {
   connectorHealth: IntentClient["getConnectorHealth"]
   /** A SimpleFIN sync on request (#546); absent when SimpleFIN sync is off. */
   syncSimpleFin?: SimpleFinSyncer
+  /** SimpleFIN accounts and their entities (#545); absent when SimpleFIN sync is off. */
+  simplefinAccounts?: SimpleFinAccountsDeps
   /** Accounts the configured connectors have reported: Proton's at startup, Gmail's per run. */
   connectorAccounts: () => readonly KnownAccount[]
   getInferenceQueue: () => Promise<InferenceQueue>
@@ -875,7 +877,6 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
           client: createSimpleFinClient({
             proxyUrl: config.simplefin.proxyUrl,
           }),
-          accountsFile: config.simplefin.accountsFile,
           config: config.simplefin.config,
           ...(config.simplefin.syncTime === undefined
             ? {}
@@ -946,7 +947,12 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       simplefin === undefined
         ? gate.getConnectorHealth
         : withSimpleFinStatus(gate.getConnectorHealth, simplefin),
-    ...(simplefin === undefined ? {} : { syncSimpleFin: simplefin.syncNow }),
+    ...(simplefin === undefined
+      ? {}
+      : {
+          syncSimpleFin: simplefin.syncNow,
+          simplefinAccounts: { db, backfill: simplefin.backfill },
+        }),
     connectorAccounts: accounts.list,
     getInferenceQueue: model.getQueue,
     getDigestService,
@@ -965,6 +971,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       await gmailTimer?.inFlight()
       await protonTimer?.inFlight()
       await simplefinTimer?.inFlight()
+      await simplefin?.idle()
       await digestScheduling
       await replyScheduling
       await triageScheduling
@@ -1105,6 +1112,9 @@ export async function serveDataPlane(
     ...(plane.syncSimpleFin === undefined
       ? {}
       : { syncSimpleFin: plane.syncSimpleFin }),
+    ...(plane.simplefinAccounts === undefined
+      ? {}
+      : { simplefinAccounts: plane.simplefinAccounts }),
     connectorAccounts: plane.connectorAccounts,
     sendFrom: config.protonUsername,
     ...(ask === undefined ? {} : { ask }),

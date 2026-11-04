@@ -38,6 +38,8 @@ export interface GetAccountsParams {
   /** Unix seconds, exclusive. */
   endDate?: number
   balancesOnly?: boolean
+  /** Read only these accounts (SimpleFIN's repeatable `account` parameter). */
+  accounts?: readonly string[]
 }
 
 export interface SimpleFinClientOptions {
@@ -209,6 +211,8 @@ export function createSimpleFinClient(
         target.searchParams.set("end-date", String(params.endDate))
       if (params.balancesOnly === true)
         target.searchParams.set("balances-only", "1")
+      for (const account of params.accounts ?? [])
+        target.searchParams.append("account", account)
       let response: Response
       try {
         response = await send(endpoint, {

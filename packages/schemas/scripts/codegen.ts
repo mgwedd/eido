@@ -391,7 +391,7 @@ function main(): void {
       file.startsWith("core-api-transaction-") ||
       file.startsWith("core-api-reply-") ||
       file === "core-api-brief.schema.json" ||
-      file === "core-api-simplefin-sync.schema.json" ||
+      file.startsWith("core-api-simplefin-") ||
       file === "ask-coverage.schema.json" ||
       file === "ask-citation.schema.json" ||
       file === "extraction-candidates.schema.json" ||

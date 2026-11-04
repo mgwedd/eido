@@ -1,4 +1,3 @@
-import { join } from "node:path"
 import { loopbackBaseUrl } from "../../inference/client"
 
 export const SIMPLEFIN_CONNECTOR = "simplefin"
@@ -70,13 +69,9 @@ export function resolveSimpleFinConfig(
   }
 }
 
-/** Where the owner's account-to-entity file lives when `EIDO_SIMPLEFIN_ACCOUNTS_FILE` is unset. */
-export const SIMPLEFIN_ACCOUNTS_FILE = "simplefin-accounts.json"
-
 export interface SimpleFinPlaneConfig {
   /** The gate's loopback egress proxy, which holds the access URL. */
   proxyUrl: string
-  accountsFile: string
   config: Partial<SimpleFinConfig>
   /** The local time of day to sync at (`EIDO_SIMPLEFIN_SYNC_TIME`); absent: every sync interval. */
   syncTime?: SyncTime
@@ -89,8 +84,7 @@ type Env = Readonly<Record<string, string | undefined>>
  * SimpleFIN sync is off. None of these is a credential: the access URL stays in the gate.
  */
 export function simplefinPlaneConfig(
-  env: Env,
-  dataDir: string
+  env: Env
 ): SimpleFinPlaneConfig | undefined {
   const proxy = env["EIDO_SIMPLEFIN_PROXY_URL"] ?? ""
   if (proxy === "") return undefined
@@ -120,9 +114,6 @@ export function simplefinPlaneConfig(
   return {
     proxyUrl,
     ...(syncTime === undefined ? {} : { syncTime }),
-    accountsFile:
-      env["EIDO_SIMPLEFIN_ACCOUNTS_FILE"] ||
-      join(dataDir, SIMPLEFIN_ACCOUNTS_FILE),
     config,
   }
 }

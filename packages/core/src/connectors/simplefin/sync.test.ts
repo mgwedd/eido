@@ -9,7 +9,13 @@ import {
 } from "../../ledger/ledger.test-support"
 import { parseAccountSet, SimpleFinError } from "./client"
 import type { GetAccountsParams, SimpleFinClient } from "./client"
-import { CURSOR_OVERLAP_SECONDS, healthMessages, syncSimpleFin } from "./sync"
+import { assignSimpleFinAccount, listSimpleFinAccounts } from "./accounts"
+import {
+  backfillSimpleFin,
+  CURSOR_OVERLAP_SECONDS,
+  healthMessages,
+  syncSimpleFin,
+} from "./sync"
 
 // Synthetic accounts, amounts and descriptions only.
 
@@ -122,7 +128,20 @@ function stubClient(
   }
 }
 
-const ASSIGNMENTS = { acc_chk: "ent_home", acc_biz: "ent_gone" }
+/** The owner's assignment, as Settings stores it: on the account row, before the sync reads it. */
+function assign(db: DatabaseSync, entities: Record<string, string>): void {
+  const insert = db.prepare(
+    "INSERT INTO accounts (id, connector, name, currency, entity_id) VALUES (?, 'simplefin', 'Seeded', 'USD', ?)"
+  )
+  for (const [account, entity] of Object.entries(entities))
+    insert.run(account, entity)
+}
+
+function assigned(): DatabaseSync {
+  const db = ledger()
+  assign(db, { acc_chk: "ent_home" })
+  return db
+}
 
 function transactions(db: DatabaseSync) {
   return db
@@ -171,10 +190,10 @@ describe("syncSimpleFin", () => {
       docId,
       span: { start: 0, end: 9 },
     })
+    assign(db, { acc_chk: property.id })
     const result = await syncSimpleFin({
       db,
       client: stubClient(() => ACCOUNT_SET),
-      assignments: { acc_chk: property.id },
       now: () => NOW_MS,
     })
     expect(result.paymentsLinked).toBe(1)
@@ -185,11 +204,10 @@ describe("syncSimpleFin", () => {
   })
 
   it("tags every stored transaction with its account's entity and stores amounts as integer cents", async () => {
-    const db = ledger()
+    const db = assigned()
     const result = await syncSimpleFin({
       db,
       client: stubClient(() => ACCOUNT_SET),
-      assignments: ASSIGNMENTS,
       now: () => NOW_MS,
     })
     expect(transactions(db)).toEqual([
@@ -218,21 +236,21 @@ describe("syncSimpleFin", () => {
       transactionsStored: 2,
       // The index alone, with no ledger: there are no obligations to link.
       paymentsLinked: 0,
-      // An account with no entity (acc_sav) and one assigned to an entity that does not exist.
+      // Two accounts with no entity: acc_sav and acc_biz.
       unassignedAccounts: 2,
       // 12.345 is malformed; tx_6 has no description.
       rejectedTransactions: 2,
       cursor: NOW,
+      errors: ["Bridge note: see [url]"],
       messages: ["2 accounts need an entity", "Bridge note: see [url]"],
     })
   })
 
-  it("keeps accounts without an entity visible but stores none of their transactions", async () => {
-    const db = ledger()
+  it("keeps the owner's entity, stores new accounts with none, and stores none of their transactions", async () => {
+    const db = assigned()
     await syncSimpleFin({
       db,
       client: stubClient(() => ACCOUNT_SET),
-      assignments: ASSIGNMENTS,
       now: () => NOW_MS,
     })
     expect(
@@ -280,9 +298,9 @@ describe("syncSimpleFin", () => {
   })
 
   it("re-reading the same window creates no duplicates and starts from the cursor less the overlap", async () => {
-    const db = ledger()
+    const db = assigned()
     const client = stubClient(() => ACCOUNT_SET)
-    const options = { db, client, assignments: ASSIGNMENTS }
+    const options = { db, client }
     await syncSimpleFin({ ...options, now: () => NOW_MS })
     const later = NOW_MS + 3_600_000
     const second = await syncSimpleFin({ ...options, now: () => later })
@@ -307,7 +325,6 @@ describe("syncSimpleFin", () => {
     const result = await syncSimpleFin({
       db,
       client,
-      assignments: {},
       config: { maxDateRangeDays: 40 },
       now: () => NOW_MS,
     })
@@ -320,7 +337,6 @@ describe("syncSimpleFin", () => {
     const caughtUp = await syncSimpleFin({
       db,
       client,
-      assignments: {},
       config: { maxDateRangeDays: 40 },
       now: () => NOW_MS,
     })
@@ -333,7 +349,7 @@ describe("syncSimpleFin", () => {
   })
 
   it("moves the cursor only past a window that was stored", async () => {
-    const db = ledger()
+    const db = assigned()
     db.prepare(
       "INSERT INTO cursors (connector, stream, cursor, updated_at) VALUES ('simplefin', 'transactions', ?, 'x')"
     ).run(String(NOW - 120 * DAY))
@@ -342,7 +358,7 @@ describe("syncSimpleFin", () => {
       return ACCOUNT_SET
     })
     await expect(
-      syncSimpleFin({ db, client, assignments: ASSIGNMENTS, now: () => NOW_MS })
+      syncSimpleFin({ db, client, now: () => NOW_MS })
     ).rejects.toThrow("spent")
     expect(cursor(db)).toEqual({
       cursor: String(NOW - 33 * DAY),
@@ -352,36 +368,166 @@ describe("syncSimpleFin", () => {
   })
 
   it("stores nothing and sets no cursor when the first read fails", async () => {
-    const db = ledger()
+    const db = assigned()
     const client = stubClient(() => {
       throw new SimpleFinError("network_error", "down")
     })
     await expect(
-      syncSimpleFin({ db, client, assignments: ASSIGNMENTS, now: () => NOW_MS })
+      syncSimpleFin({ db, client, now: () => NOW_MS })
     ).rejects.toThrow("down")
     expect(cursor(db)).toBeUndefined()
-    expect(db.prepare("SELECT COUNT(*) AS n FROM accounts").get()).toEqual({
-      n: 0,
-    })
+    expect(db.prepare("SELECT id, name FROM accounts").all()).toEqual([
+      { id: "acc_chk", name: "Seeded" },
+    ])
   })
 
   it("rolls back a window whose write fails, leaving the cursor where it was", async () => {
-    const db = ledger()
+    const db = assigned()
     db.exec(`CREATE TRIGGER refuse BEFORE INSERT ON transactions
       WHEN NEW.id = 'acc_chk:tx_2' BEGIN SELECT RAISE(ABORT, 'refused'); END`)
     await expect(
       syncSimpleFin({
         db,
         client: stubClient(() => ACCOUNT_SET),
-        assignments: ASSIGNMENTS,
         now: () => NOW_MS,
       })
     ).rejects.toThrow("refused")
     expect(cursor(db)).toBeUndefined()
     expect(transactions(db)).toEqual([])
-    expect(db.prepare("SELECT COUNT(*) AS n FROM accounts").get()).toEqual({
-      n: 0,
+    expect(db.prepare("SELECT id, name FROM accounts").all()).toEqual([
+      { id: "acc_chk", name: "Seeded" },
+    ])
+  })
+})
+
+/** Answers like SimpleFIN: only transactions posted inside the window, only the accounts asked for. */
+function windowedClient(): SimpleFinClient & { calls: GetAccountsParams[] } {
+  return stubClient((params) => ({
+    ...ACCOUNT_SET,
+    accounts: ACCOUNT_SET.accounts
+      .filter(
+        (account) =>
+          params.accounts === undefined || params.accounts.includes(account.id)
+      )
+      .map((account) => ({
+        ...account,
+        transactions: account.transactions.filter(
+          (transaction) =>
+            transaction.posted >= (params.startDate ?? 0) &&
+            transaction.posted < (params.endDate ?? Infinity)
+        ),
+      })),
+  }))
+}
+
+const LATER_MS = NOW_MS + 30 * DAY * 1000
+const LATER = LATER_MS / 1000
+
+describe("an account assigned in Settings", () => {
+  it("has its transactions stored under that entity by the next sync, and the health count drops", async () => {
+    const db = assigned()
+    const client = stubClient(() => ACCOUNT_SET)
+    const first = await syncSimpleFin({ db, client, now: () => NOW_MS })
+    expect(first.messages[0]).toBe("2 accounts need an entity")
+
+    await assignSimpleFinAccount(db, "acc_sav", "ent_shop")
+    const next = await syncSimpleFin({ db, client, now: () => NOW_MS + 60_000 })
+    expect(next.messages[0]).toBe("1 account needs an entity")
+    expect(next.unassignedAccounts).toBe(1)
+    expect(
+      db
+        .prepare(
+          "SELECT id, entity_id FROM transactions WHERE account_id = 'acc_sav'"
+        )
+        .all()
+    ).toEqual([{ id: "acc_sav:tx_9", entity_id: "ent_shop" }])
+  })
+
+  it("gets the older transactions the sync skipped backfilled, without moving the cursor", async () => {
+    const db = assigned()
+    const client = windowedClient()
+    await syncSimpleFin({ db, client, now: () => NOW_MS })
+    await assignSimpleFinAccount(db, "acc_sav", "ent_home")
+    // A month on, the sync reads from the cursor less the overlap: tx_9 is older than that.
+    await syncSimpleFin({ db, client, now: () => LATER_MS })
+    expect(transactions(db).map((row) => row["id"])).toEqual([
+      "acc_chk:tx_1",
+      "acc_chk:tx_2",
+    ])
+    client.calls.length = 0
+
+    const result = await backfillSimpleFin({ db, client, now: () => LATER_MS })
+    expect(client.calls).toEqual([
+      { startDate: LATER - 90 * DAY, endDate: LATER, accounts: ["acc_sav"] },
+    ])
+    expect(result).toEqual({
+      accounts: 1,
+      transactionsStored: 1,
+      rejectedTransactions: 0,
+      paymentsLinked: 0,
     })
+    expect(
+      db
+        .prepare(
+          "SELECT id, entity_id, amount_cents FROM transactions WHERE account_id = 'acc_sav'"
+        )
+        .all()
+    ).toEqual([
+      { id: "acc_sav:tx_9", entity_id: "ent_home", amount_cents: 10000 },
+    ])
+    expect(listSimpleFinAccounts(db).map((a) => a.backfillPending)).toEqual([
+      false,
+      false,
+      false,
+    ])
+    expect(cursor(db)?.["cursor"]).toBe(String(LATER))
+  })
+
+  it("makes no request when no account waits for a backfill", async () => {
+    const db = assigned()
+    const client = windowedClient()
+    expect(await backfillSimpleFin({ db, client, now: () => NOW_MS })).toEqual({
+      accounts: 0,
+      transactionsStored: 0,
+      rejectedTransactions: 0,
+      paymentsLinked: 0,
+    })
+    expect(client.calls).toEqual([])
+  })
+
+  it("stores only the accounts it asked for, and lets go of one SimpleFIN no longer returns", async () => {
+    const db = ledger()
+    assign(db, { acc_gone: "ent_home" })
+    db.exec("UPDATE accounts SET backfill_pending = 1")
+    // SimpleFIN ignores the filter here and returns every account, none of them acc_gone.
+    const client = stubClient(() => ACCOUNT_SET)
+    const result = await backfillSimpleFin({
+      db,
+      client,
+      config: { maxDateRangeDays: 30 },
+      now: () => NOW_MS,
+    })
+    expect(client.calls[0]?.startDate).toBe(NOW - 30 * DAY)
+    expect(result.transactionsStored).toBe(0)
+    expect(
+      db.prepare("SELECT id, backfill_pending FROM accounts").all()
+    ).toEqual([{ id: "acc_gone", backfill_pending: 0 }])
+  })
+
+  it("keeps the account waiting when the backfill write fails", async () => {
+    const db = assigned()
+    await syncSimpleFin({ db, client: windowedClient(), now: () => NOW_MS })
+    await assignSimpleFinAccount(db, "acc_biz", "ent_shop")
+    db.exec(`CREATE TRIGGER refuse BEFORE INSERT ON transactions
+      WHEN NEW.account_id = 'acc_biz' BEGIN SELECT RAISE(ABORT, 'refused'); END`)
+    await expect(
+      backfillSimpleFin({ db, client: windowedClient(), now: () => NOW_MS })
+    ).rejects.toThrow("refused")
+    expect(
+      db
+        .prepare("SELECT backfill_pending FROM accounts WHERE id = 'acc_biz'")
+        .get()
+    ).toEqual({ backfill_pending: 1 })
   })
 })
 
