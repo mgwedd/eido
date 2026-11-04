@@ -232,6 +232,30 @@ describe("signing", () => {
     })
   })
 
+  test("a folder that changed on the host since review asks for a new review", async () => {
+    const urls = gate({
+      ...reviewable,
+      [COMPLETE]: json(
+        { code: "root_changed", rootId: "studio", message: "changed" },
+        409
+      ),
+    })
+    const { device, approve } = prompt()
+    await render(device)
+    await click(button(/Sign with/))
+    await act(async () => {
+      approve()
+      await settle()
+    })
+    await vi.waitFor(async () => {
+      await act(settle)
+      expect(alertText()).toBe(
+        "A folder changed on the host since you reviewed it. Review again."
+      )
+    })
+    expect(urls).toEqual([LIST, PREPARE, COMPLETE])
+  })
+
   test("an expired session at complete sends the owner to unlock", async () => {
     gate({ ...reviewable, [COMPLETE]: json({}, 401) })
     const replace = vi.fn()

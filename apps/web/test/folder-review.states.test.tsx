@@ -5,6 +5,7 @@ import {
   type FolderReviewState,
 } from "../components/folder-review-view"
 import { vi } from "vitest"
+import { FILE_ROOTS_MESSAGES } from "@/lib/file-roots"
 import { reviewedFolders, signedRoots } from "./fixtures/file-roots"
 import { describeStates } from "./render-states"
 
@@ -36,8 +37,9 @@ function folderMissing(missing: string) {
   return <FolderReviewView />
 }
 
-// Changed since review, too many and bad id have no rows: the gate cannot tell the first apart
-// yet (#585) and only a list editor can produce the last two (#583).
+// Too many and bad id have no rows: only a list editor can produce them (#583). Changed since
+// review follows a passkey prompt, so its row renders the body in the state signing ends in;
+// folder-review-view.test.tsx drives it end to end.
 describeStates("Allowed folders review", [
   {
     state: "preparing",
@@ -87,6 +89,17 @@ describeStates("Allowed folders review", [
     render: () => folderMissing("studio"),
     role: "alert",
     message: "studio doesn't exist on the host. Remove it or fix the path.",
+  },
+  {
+    state: "changed since review",
+    render: body({
+      status: "failed",
+      message: FILE_ROOTS_MESSAGES.changed,
+      unreachable: false,
+    }),
+    role: "alert",
+    message:
+      "A folder changed on the host since you reviewed it. Review again.",
   },
   {
     state: "gate unreachable",

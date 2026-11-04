@@ -85,6 +85,30 @@ export async function prepareFileRoots(
   return { ...prepared, challenge: controlApprovalChallenge(prepared) }
 }
 
+/**
+ * Asks the helper to identify each root again and returns the id of the first one whose
+ * canonical path, dev or ino differs from the captured values, or that it can no longer
+ * identify. Undefined when every root is unchanged. A helper fault throws.
+ */
+export async function changedFileRoot(
+  helper: FileHelper,
+  roots: GateFileRoots
+): Promise<string | undefined> {
+  for (const { id, root } of roots.roots) {
+    const identified = await helper({ op: "identify", path: root.path })
+    if (!identified.ok) return id
+    if (identified.op !== "identify")
+      throw new Error("file helper answered another operation")
+    if (
+      identified.canonicalPath !== root.path ||
+      identified.dev !== root.dev ||
+      identified.ino !== root.ino
+    )
+      return id
+  }
+  return undefined
+}
+
 /** Stores the roots only inside a verified, single-use owner approval of this exact payload. */
 export function setFileRoots(
   db: DatabaseSync,

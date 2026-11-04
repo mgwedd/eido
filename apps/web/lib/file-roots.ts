@@ -60,7 +60,9 @@ export const FILE_ROOTS_MESSAGES = {
   mismatch:
     "The list the gate prepared does not match the folders asked for. Nothing was signed.",
   refused: "The gate refused the signature. The allowed folders are unchanged.",
-  noWebAuthn: "The gate can't check signatures right now. Nothing was changed.",
+  cannotCheck:
+    "The gate can't check the signature or the folders right now. Nothing was changed.",
+  changed: "A folder changed on the host since you reviewed it. Review again.",
 } as const
 
 /** The folder the host could not identify, named by the id it was asked for under. */
@@ -270,10 +272,12 @@ export async function signFileRoots(
   const complete = await post(
     FILE_ROOTS_COMPLETE_URL,
     completion,
-    (_, status) =>
-      status === 503
-        ? FILE_ROOTS_MESSAGES.noWebAuthn
-        : FILE_ROOTS_MESSAGES.refused
+    (error, status) =>
+      error.code === "root_changed"
+        ? FILE_ROOTS_MESSAGES.changed
+        : status === 503
+          ? FILE_ROOTS_MESSAGES.cannotCheck
+          : FILE_ROOTS_MESSAGES.refused
   )
   if (!complete.ok) return complete.outcome
   return validateGateFileRootsSaved(complete.json).ok
