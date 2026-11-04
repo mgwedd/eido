@@ -371,6 +371,16 @@ test("data lists the signed folder count and links to Review", async () => {
   expect(review?.getAttribute("href")).toBe("/settings/folders/review")
 })
 
+test("data links to the folder editor whether or not folders are signed", async () => {
+  gate({ ...healthy, "/api/gate/file-roots": ok({ roots: [] }) })
+  await render()
+  const data = container.querySelector('[aria-labelledby="settings-data"]')
+  const edit = [...(data?.querySelectorAll("a") ?? [])].find(
+    (a) => a.textContent === "Edit"
+  )
+  expect(edit?.getAttribute("href")).toBe("/settings/folders/edit")
+})
+
 test("data with no signed folders offers no Review", async () => {
   gate({ ...healthy, "/api/gate/file-roots": ok({ roots: [] }) })
   await render()

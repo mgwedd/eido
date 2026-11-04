@@ -7,6 +7,7 @@ import type {
   GateFileRootsRequest,
 } from "@eido/schemas"
 import type { PreparedFolders } from "@/lib/file-roots"
+import type { DraftFolder } from "@/lib/file-roots-draft"
 
 /** The list the owner signed earlier, as GET /file-roots returns it. */
 const signedRoots: GateFileRoots = {
@@ -152,8 +153,49 @@ function reviewedFolders(): PreparedFolders {
   }
 }
 
+/** Editor rows from [id, path, trash name] triples, keyed by position. */
+function draftRows(
+  rows: readonly (readonly [string, string, string])[]
+): DraftFolder[] {
+  return rows.map(([id, path, trashDir], index) => ({
+    key: `row-${index}`,
+    id,
+    path,
+    trashDir,
+  }))
+}
+
+/** The first folder an owner with no signed folders adds in the editor. */
+const firstFolderRequest: GateFileRootsRequest = {
+  roots: [
+    {
+      id: "rental",
+      path: "/Users/owner.example/Rental",
+      trashDir: ".eido-trash",
+    },
+  ],
+}
+
+/** What the host found for `firstFolderRequest`. */
+const firstFolderIdentified: GateFileRoots = {
+  roots: [
+    {
+      id: "rental",
+      root: {
+        path: "/Users/owner.example/Rental",
+        dev: "1000004",
+        ino: "3c0d11",
+        trashDir: ".eido-trash",
+      },
+    },
+  ],
+}
+
 export {
   CONTROL_ID,
+  draftRows,
+  firstFolderIdentified,
+  firstFolderRequest,
   reviewedFolders,
   NONCE,
   challengeHex,

@@ -19,6 +19,7 @@ const body = (state: FolderReviewState) => () => (
   />
 )
 
+// Too many and bad id are the editor's rows (folder-editor.states.test.tsx).
 /** The signed list reads back, then the host cannot identify `missing` when asked again. */
 function folderMissing(missing: string) {
   vi.stubGlobal(
