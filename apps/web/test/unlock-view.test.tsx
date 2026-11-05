@@ -179,17 +179,15 @@ describe("UnlockView", () => {
     expect(button()).toBeNull()
   })
 
-  it("says a revoked passkey was revoked and links to enrolment, with no unlock", async () => {
+  it("names the Mac for a revoked passkey, with no link and no unlock", async () => {
     setup({
       status: { enrolled: false, revoked: true, sessionExpiresAt: null },
     })
     await render("/queue")
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "This passkey was revoked. Enrol this device again."
+      "This passkey was revoked. Re-enrol this device from the Mac."
     )
-    expect(container.querySelector("a")?.getAttribute("href")).toBe(
-      "/enroll?next=%2Fqueue"
-    )
+    expect(container.querySelector("a")).toBeNull()
     expect(button()).toBeNull()
   })
 

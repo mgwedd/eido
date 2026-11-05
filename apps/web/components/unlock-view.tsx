@@ -34,7 +34,7 @@ type UnlockState =
 
 const MESSAGES = {
   "not-enrolled": "This device has no passkey yet.",
-  revoked: "This passkey was revoked. Enrol this device again.",
+  revoked: "This passkey was revoked. Re-enrol this device from the Mac.",
   offline: "Can't reach Eido. Check that Tailscale is connected.",
   "wrong-origin": "Open Eido from its Tailscale address to unlock.",
   unsupported: "This browser can't use passkeys.",
@@ -147,7 +147,7 @@ function UnlockCard({
             </Button>
           ) : null}
 
-          {state.status === "not-enrolled" || state.status === "revoked" ? (
+          {state.status === "not-enrolled" ? (
             <Link
               href={enrolUrl(next)}
               className={`${buttonVariants({ size: "lg" })} h-12 rounded-xl`}

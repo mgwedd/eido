@@ -66,7 +66,7 @@ describeStates("Unlock states", [
     state: "passkey revoked",
     render: card({ status: "revoked" }),
     role: "alert",
-    message: "This passkey was revoked. Enrol this device again.",
+    message: "This passkey was revoked. Re-enrol this device from the Mac.",
   },
   {
     state: "passkey prompt cancelled",
