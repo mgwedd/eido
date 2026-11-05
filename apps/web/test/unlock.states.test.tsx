@@ -63,6 +63,12 @@ describeStates("Unlock states", [
     message: "This device has no passkey yet.",
   },
   {
+    state: "passkey revoked",
+    render: card({ status: "revoked" }),
+    role: "alert",
+    message: "This passkey was revoked. Enrol this device again.",
+  },
+  {
     state: "passkey prompt cancelled",
     render: card({ status: "cancelled" }),
     role: "alert",

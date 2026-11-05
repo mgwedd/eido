@@ -21,6 +21,7 @@ import {
 type UnlockState =
   | { status: "checking" }
   | { status: "not-enrolled" }
+  | { status: "revoked" }
   | { status: "check-failed"; offline: boolean }
   | { status: "ready" }
   | { status: "expired" }
@@ -33,6 +34,7 @@ type UnlockState =
 
 const MESSAGES = {
   "not-enrolled": "This device has no passkey yet.",
+  revoked: "This passkey was revoked. Enrol this device again.",
   offline: "Can't reach Eido. Check that Tailscale is connected.",
   "wrong-origin": "Open Eido from its Tailscale address to unlock.",
   unsupported: "This browser can't use passkeys.",
@@ -46,6 +48,7 @@ function alertMessage(
     case "cancelled":
       return `${copy.subject} was cancelled. Eido is still locked.`
     case "not-enrolled":
+    case "revoked":
     case "offline":
     case "wrong-origin":
     case "unsupported":
@@ -144,7 +147,7 @@ function UnlockCard({
             </Button>
           ) : null}
 
-          {state.status === "not-enrolled" ? (
+          {state.status === "not-enrolled" || state.status === "revoked" ? (
             <Link
               href={enrolUrl(next)}
               className={`${buttonVariants({ size: "lg" })} h-12 rounded-xl`}
@@ -210,11 +213,13 @@ function UnlockView({
         router.replace(next)
       } else {
         setState({
-          status: !result.status.enrolled
-            ? "not-enrolled"
-            : expired
-              ? "expired"
-              : "ready",
+          status: result.status.revoked
+            ? "revoked"
+            : !result.status.enrolled
+              ? "not-enrolled"
+              : expired
+                ? "expired"
+                : "ready",
         })
       }
     })
