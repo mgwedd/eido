@@ -21,6 +21,7 @@ import { Skeleton } from "@eido/ui/components/skeleton"
 import { QueueContextUsed } from "@/components/queue-context-used"
 import { QueueEditSheet } from "@/components/queue-edit-sheet"
 import { InjectionFlag } from "@/components/injection-flag"
+import { useReachability } from "@/components/reachability"
 import { ShortcutKeys } from "@/components/shortcuts-provider"
 import { useKeydown } from "@/hooks/use-keydown"
 import { shortHash } from "@/lib/approval/challenge"
@@ -340,8 +341,14 @@ function ApprovalCard({
     now
   )
   const busy = action.status === "signing"
+  const offline = useReachability() === "unreachable"
   const canApprove =
-    card.status === "ready" && view !== undefined && !busy && passkeyEnrolled
+    card.status === "ready" &&
+    view !== undefined &&
+    !busy &&
+    !offline &&
+    passkeyEnrolled
+  const canReject = !busy && !offline
   const canConfirm =
     card.status === "ready" && confirmData !== undefined && !busy
 
@@ -371,6 +378,7 @@ function ApprovalCard({
     card.status === "ready" &&
     view !== undefined &&
     !busy &&
+    !offline &&
     editableFields(card.prepared.payload).length > 0
 
   const submitEdit = async (values: Record<string, string>) => {
@@ -446,7 +454,7 @@ function ApprovalCard({
         event.preventDefault()
         setEditError(null)
         setEditOpen(true)
-      } else if (event.key === "r" && !busy) {
+      } else if (event.key === "r" && canReject) {
         event.preventDefault()
         setRejectOpen(true)
       } else if (event.key === "Enter" && !isInteractiveTarget(event.target)) {
@@ -478,7 +486,7 @@ function ApprovalCard({
       if (outcome === "reject") onSkip?.()
     } else {
       if (outcome === "approve" && canApprove) void approve()
-      if (outcome === "reject" && !busy) setRejectOpen(true)
+      if (outcome === "reject" && canReject) setRejectOpen(true)
     }
   }
 
@@ -800,7 +808,7 @@ function ApprovalCard({
             variant="outline"
             size="lg"
             className="min-h-11"
-            disabled={busy}
+            disabled={!canReject}
             aria-keyshortcuts="r"
             onClick={() => setRejectOpen(true)}
           >
@@ -842,6 +850,11 @@ function ApprovalCard({
           )}
         </div>
       )}
+      {offline && !isConfirm ? (
+        <p className="text-center text-xs text-muted-foreground">
+          Approvals need a connection.
+        </p>
+      ) : null}
       {card.status === "ready" ? (
         <QueueEditSheet
           open={editOpen}
@@ -905,6 +918,9 @@ function QueueRow({
   )
 }
 
+const clockTime = (date: Date) =>
+  `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
+
 /** Whether the gate has a passkey for this device; undefined until it answers, and when it cannot. */
 function usePasskeyEnrolled(): boolean | undefined {
   const [enrolled, setEnrolled] = React.useState<boolean>()
@@ -922,6 +938,7 @@ function usePasskeyEnrolled(): boolean | undefined {
 function QueueView({ initialId }: { initialId?: string }) {
   const { state, reload, remove } = useQueue()
   const passkeyEnrolled = usePasskeyEnrolled()
+  const offline = useReachability() === "unreachable"
   const [selectedId, setSelectedId] = React.useState(initialId)
   const [message, setMessage] = React.useState<string | null>(null)
   const [now] = React.useState(() => new Date())
@@ -981,6 +998,14 @@ function QueueView({ initialId }: { initialId?: string }) {
         <p role="status" className="text-sm">
           {message}
         </p>
+      ) : null}
+      {offline && state.status === "ready" && intents.length > 0 ? (
+        <Alert role="status">
+          <AlertDescription>
+            <b>Offline.</b> Approvals need a connection.
+            {` Cards below were loaded at ${clockTime(now)} and cannot be signed until the Mac is reachable.`}
+          </AlertDescription>
+        </Alert>
       ) : null}
       {state.status === "loading" ? (
         <>
