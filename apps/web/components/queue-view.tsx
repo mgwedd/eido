@@ -862,7 +862,7 @@ function ApprovalCard({
               href={enrolUrl("/queue")}
               className={`${buttonVariants({ size: "lg" })} min-h-[60px] flex-1`}
             >
-              Enrol this device
+              Enroll this device
             </Link>
           )}
         </div>
