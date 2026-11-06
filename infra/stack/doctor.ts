@@ -6,8 +6,20 @@
 // apps/web/.env.local is read for key names; only APP_BASE_URL's value is compared, never shown.
 import { parseEnv } from "node:util"
 
-import { buildConfig, lockPathFrom } from "../llama/config.ts"
-import { parseLock, type ModelLock } from "../llama/lock.ts"
+import {
+  buildConfig,
+  lockPathFrom,
+  USER_PROFILES_FILE,
+} from "../llama/config.ts"
+import {
+  modelPathOf,
+  parseLock,
+  parseUserProfiles,
+  selectProfile,
+  withUserProfiles,
+  type ModelLock,
+  type ModelProfile,
+} from "../llama/lock.ts"
 import { serverArgs } from "../llama/server.ts"
 import { verifyBuild, verifyModel } from "../llama/verify.ts"
 import type { Fetch } from "../tailscale/measure.ts"
@@ -415,41 +427,73 @@ function checkGmail(deps: DoctorDeps): Check {
 type LlamaPaths = { binary: string; modelPath: string; port: number }
 
 /**
- * infra/llama's defaults are the Mac layout. Elsewhere the binary and model sit under the
- * platform's stack dir, and the binary is llama-server.exe on Windows; the env overrides win.
+ * infra/llama's defaults are the Mac and Windows layouts. On Linux the binary and model sit under
+ * the stack dir; the env overrides win.
  */
 function llamaPaths(
   deps: DoctorDeps,
   lock: ModelLock,
+  profile: ModelProfile,
   lockPath: string
 ): LlamaPaths {
-  const config = buildConfig(deps.env, deps.home, lockPath, lock)
-  if (deps.platform === "darwin") return config
+  // The arch only names the release asset, which the doctor does not pick.
+  const config = buildConfig(deps.env, deps.home, lockPath, lock, {
+    os: deps.platform,
+    arch: process.arch,
+  })
+  if (deps.platform !== "linux")
+    return {
+      binary: config.binary,
+      modelPath: modelPathOf(profile, config.modelDir, config.join),
+      port: config.port,
+    }
   const join = (...parts: string[]) => pathsFor(deps.platform).join(...parts)
   const root = stackDirOf(deps.platform, deps.env, deps.home)
   const modelDir = set(deps.env, "EIDO_MODEL_DIR") ?? join(root, "models")
   return {
     port: config.port,
-    modelPath: join(modelDir, lock.file),
+    modelPath: modelPathOf(profile, modelDir, join),
     binary:
       set(deps.env, "EIDO_LLAMA_SERVER_BIN") ??
-      join(
-        root,
-        "llama.cpp",
-        lock.llamaCppBuild,
-        deps.platform === "win32" ? "llama-server.exe" : "llama-server"
-      ),
+      join(root, "llama.cpp", lock.llamaCppBuild, "llama-server"),
   }
+}
+
+/** model.lock plus the profiles `llama add` wrote, and the active profile: EIDO_LLAMA_MODEL or the default. */
+function activeProfile(
+  deps: DoctorDeps,
+  text: string
+): { lock: ModelLock; profile: ModelProfile } {
+  const base = parseLock(text)
+  const profilesPath = pathsFor(deps.platform).join(
+    stackDirOf(deps.platform, deps.env, deps.home),
+    USER_PROFILES_FILE
+  )
+  const user = deps.files.read(profilesPath)
+  const lock =
+    user === undefined
+      ? base
+      : withUserProfiles(
+          base,
+          parseUserProfiles(user, profilesPath),
+          profilesPath
+        )
+  const id = set(deps.env, "EIDO_LLAMA_MODEL") ?? lock.defaultProfile
+  return { lock, profile: selectProfile(lock, id) }
 }
 
 async function checkLlama(deps: DoctorDeps, quick: boolean): Promise<Check[]> {
   const join = (...parts: string[]) => pathsFor(deps.platform).join(...parts)
   const defaultLock = join(deps.repoRoot, "infra", "model.lock")
   let lock: ModelLock
+  let profile: ModelProfile
   let paths: LlamaPaths
   try {
-    lock = parseLock(deps.files.read(lockPathFrom(deps.env, defaultLock)) ?? "")
-    paths = llamaPaths(deps, lock, defaultLock)
+    ;({ lock, profile } = activeProfile(
+      deps,
+      deps.files.read(lockPathFrom(deps.env, defaultLock)) ?? ""
+    ))
+    paths = llamaPaths(deps, lock, profile, defaultLock)
   } catch (error) {
     return [
       fail(
@@ -460,10 +504,16 @@ async function checkLlama(deps: DoctorDeps, quick: boolean): Promise<Check[]> {
     ]
   }
   const q = (text: string) => quote(text, deps.platform)
-  const download = fix(
-    "download-model",
-    `${deps.platform === "win32" ? "curl.exe" : "curl"} -L --fail -o ${q(paths.modelPath)} ${q(lock.source)}`
-  )
+  const download =
+    profile.location.kind === "download"
+      ? fix(
+          "download-model",
+          `${deps.platform === "win32" ? "curl.exe" : "curl"} -L --fail -o ${q(paths.modelPath)} ${q(profile.location.source)}`
+        )
+      : fix(
+          "fix-settings",
+          `point profile ${profile.id} at an existing GGUF, or run: pnpm --filter @eido/infra llama use ${lock.defaultProfile}`
+        )
   const checks: Check[] = []
   const build = await verifyBuild(paths.binary, lock, deps.exec)
   const modelStat = deps.files.stat(paths.modelPath)
@@ -474,7 +524,7 @@ async function checkLlama(deps: DoctorDeps, quick: boolean): Promise<Check[]> {
         build.message,
         fix(
           "install-llama-build",
-          `install llama.cpp ${lock.llamaCppBuild} at ${paths.binary}: infra/llama-server.md, "Install the pinned build and model"`
+          `install llama.cpp ${lock.llamaCppBuild} at ${paths.binary}: infra/llama-server.md, "Install the build and a model"`
         )
       )
     )
@@ -484,13 +534,13 @@ async function checkLlama(deps: DoctorDeps, quick: boolean): Promise<Check[]> {
     )
   else {
     const model = quick
-      ? modelStat.size === lock.size
+      ? modelStat.size === profile.size
         ? { ok: true as const }
         : {
             ok: false as const,
-            message: `${paths.modelPath}: size mismatch: expected ${lock.size} bytes, actual ${modelStat.size}`,
+            message: `${paths.modelPath}: size mismatch: expected ${profile.size} bytes, actual ${modelStat.size}`,
           }
-      : await verifyModel(paths.modelPath, lock, {
+      : await verifyModel(paths.modelPath, profile, {
           size: (path) => Promise.resolve(deps.files.stat(path)?.size),
           sha256: deps.sha256,
           now: deps.now,
@@ -499,7 +549,7 @@ async function checkLlama(deps: DoctorDeps, quick: boolean): Promise<Check[]> {
       model.ok
         ? ok(
             "llama-pin",
-            `${lock.llamaCppBuild} and ${lock.file} match the pin${quick ? " (size only)" : ""}`
+            `${lock.llamaCppBuild} and profile ${profile.id} match the pin${quick ? " (size only)" : ""}`
           )
         : fail("llama-pin", model.message, download)
     )
@@ -515,7 +565,7 @@ async function checkLlama(deps: DoctorDeps, quick: boolean): Promise<Check[]> {
   const start =
     deps.platform === "darwin"
       ? "pnpm --filter @eido/infra llama install"
-      : [paths.binary, ...serverArgs(paths.modelPath, paths.port)]
+      : [paths.binary, ...serverArgs(paths.modelPath, paths.port, profile)]
           .map((arg) => (/^[\w.:/-]+$/.test(arg) ? arg : q(arg)))
           .join(" ")
   checks.push(

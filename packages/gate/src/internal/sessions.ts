@@ -142,6 +142,38 @@ function checkLogin(
   }
 }
 
+type Verified = Extract<Checked, { ok: true }>
+
+/**
+ * In one transaction: consumes the challenge, advances the credential's counter (only if it is
+ * still the one checked and the credential is not revoked) and runs `write`. False, with nothing
+ * written, when anything moved since the check.
+ */
+function consumeChecked(
+  db: DatabaseSync,
+  checked: Verified,
+  at: Date,
+  write: () => void
+): boolean {
+  return atomically(db, () => {
+    const used = db
+      .prepare(
+        "UPDATE login_challenges SET used_at = ? WHERE challenge = ? AND used_at IS NULL"
+      )
+      .run(at.toISOString(), checked.challenge)
+    const counted = db
+      .prepare(
+        "UPDATE credentials SET sign_count = ? WHERE credential_id = ? AND sign_count = ? AND revoked_at IS NULL"
+      )
+      .run(checked.signCount, checked.credentialId, checked.storedSignCount)
+    if (Number(used.changes) !== 1 || Number(counted.changes) !== 1) {
+      return false
+    }
+    write()
+    return true
+  })
+}
+
 function auditLogin(
   db: DatabaseSync,
   action: string,
@@ -212,22 +244,8 @@ export function login(
   }
   const token = newNonce()
   const expiresAt = new Date(at.getTime() + SESSION_TTL_MS)
-  const created = atomically(db, () => {
-    const used = db
-      .prepare(
-        "UPDATE login_challenges SET used_at = ? WHERE challenge = ? AND used_at IS NULL"
-      )
-      .run(at.toISOString(), checked.challenge)
-    const counted = db
-      .prepare(
-        "UPDATE credentials SET sign_count = ? WHERE credential_id = ? AND sign_count = ? AND revoked_at IS NULL"
-      )
-      .run(checked.signCount, checked.credentialId, checked.storedSignCount)
-    if (Number(used.changes) !== 1 || Number(counted.changes) !== 1) {
-      return false
-    }
+  const created = consumeChecked(db, checked, at, () => {
     storeSession(db, token, checked.credentialId, at, expiresAt)
-    return true
   })
   if (!created) {
     auditLogin(
@@ -330,4 +348,108 @@ export function hasCredential(db: DatabaseSync): boolean {
       .prepare("SELECT 1 FROM credentials WHERE revoked_at IS NULL LIMIT 1")
       .get() !== undefined
   )
+}
+
+// Step-up (ADR 0009). A live session can be elevated for ELEVATION_TTL_MS by a fresh assertion
+// from the passkey that opened it, over a single-use challenge from beginLogin. The elevation is
+// held in memory only, keyed by the session token's hash, so a gate restart ends every one. It
+// is never extended by use and never outlives its session; a new step-up replaces the old one.
+// Routes that add authority still need their own signed assertion (ADR 0005): elevation never
+// stands in for one.
+
+/** How long a step-up lasts: 5 minutes, not renewed by use. */
+export const ELEVATION_TTL_MS = 5 * 60 * 1000
+
+/** The live elevations, keyed by the SHA-256 of the session token. */
+export type Elevations = Map<string, { credentialId: string; until: Date }>
+
+export type StepUpRefusal = LoginRefusal | "no_session" | "other_credential"
+
+export type StepUpResult =
+  { ok: true; until: Date } | { ok: false; reason: StepUpRefusal }
+
+/**
+ * Elevates the session behind `token`. The assertion must come from the session's own passkey;
+ * the challenge is consumed and the counter advanced as for a login. Every outcome is audited
+ * with hashes only.
+ */
+export function stepUp(
+  db: DatabaseSync,
+  config: WebAuthnConfig,
+  elevations: Elevations,
+  token: string | undefined,
+  assertion: GateWebAuthnAssertion,
+  now: Clock
+): StepUpResult {
+  const at = now()
+  const refuse = (reason: StepUpRefusal): StepUpResult => {
+    auditLogin(
+      db,
+      `session.step_up_refused.${reason}`,
+      reason,
+      assertion.credentialId
+    )
+    return { ok: false, reason }
+  }
+  const session = liveSession(db, token, now)
+  if (token === undefined || session === undefined) return refuse("no_session")
+  const checked = checkLogin(db, config, assertion, at)
+  if (!checked.ok) return refuse(checked.reason)
+  if (checked.credentialId !== session.credentialId) {
+    return refuse("other_credential")
+  }
+  const until = new Date(
+    Math.min(at.getTime() + ELEVATION_TTL_MS, session.expiresAt.getTime())
+  )
+  const done = consumeChecked(db, checked, at, () => {
+    auditLogin(db, "session.stepped_up", "stepped_up", checked.credentialId)
+  })
+  if (!done) return refuse("lost_race")
+  for (const [key, value] of elevations) {
+    if (value.until.getTime() <= at.getTime()) elevations.delete(key)
+  }
+  elevations.set(hex(token), { credentialId: checked.credentialId, until })
+  return { ok: true, until }
+}
+
+/**
+ * When the elevation of the session behind `token` ends, or undefined when it is not elevated:
+ * no live session, no step-up, the step-up expired, or the session's passkey changed.
+ */
+export function elevatedUntil(
+  db: DatabaseSync,
+  elevations: Elevations,
+  token: string | undefined,
+  now: Clock
+): Date | undefined {
+  const session = liveSession(db, token, now)
+  if (token === undefined || session === undefined) return undefined
+  const elevation = elevations.get(hex(token))
+  if (elevation === undefined) return undefined
+  if (elevation.credentialId !== session.credentialId) return undefined
+  if (elevation.until.getTime() <= now().getTime()) return undefined
+  return elevation.until
+}
+
+/**
+ * Lets one request on an elevated route use the session's elevation, auditing the use with the
+ * route and hashes only. False, with nothing written, when the session is not elevated.
+ */
+export function useElevation(
+  db: DatabaseSync,
+  elevations: Elevations,
+  token: string | undefined,
+  route: string,
+  now: Clock
+): boolean {
+  if (token === undefined) return false
+  const until = elevatedUntil(db, elevations, token, now)
+  if (until === undefined) return false
+  append(db, {
+    actor: "approver",
+    action: "session.elevation_used",
+    target: route,
+    detailHash: payloadHash({ session_sha256: hex(token) }),
+  })
+  return true
 }
