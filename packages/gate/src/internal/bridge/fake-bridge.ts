@@ -1,5 +1,9 @@
 import { createServer } from "node:net"
-import { createServer as createTlsServer } from "node:tls"
+import {
+  createSecureContext,
+  createServer as createTlsServer,
+  TLSSocket,
+} from "node:tls"
 import type { AddressInfo, Server, Socket } from "node:net"
 
 // Test support (#195): a local fake Proton Bridge, IMAP and SMTP, on a configurable host and
@@ -9,6 +13,8 @@ import type { AddressInfo, Server, Socket } from "node:net"
 // bytes left out) so tests can assert what the gate sent, for example that it never sent
 // EXPUNGE. It also keeps every line received, unredacted (`imapLines`, `smtpLines`), so a test
 // can check where a credential went on the wire. All mail and credentials in it are synthetic.
+// With `starttls` it starts in clear text, offers STARTTLS on both protocols (#197) and refuses
+// LOGIN and AUTH until the connection is upgraded, as Bridge's default ports do.
 
 export type FakeMessage = {
   uid: number
@@ -42,6 +48,8 @@ export type FakeBridgeOptions = {
   fetchDelayMs?: number
   /** Test-only implicit TLS certificate and key. */
   implicitTls?: { cert: string; key: string }
+  /** Test-only certificate and key served after STARTTLS on IMAP and SMTP. */
+  starttls?: { cert: string; key: string }
 }
 
 /** What the fake records and serves; the servers share it with the returned FakeBridge. */
@@ -227,6 +235,32 @@ type Session = {
   literal?: { tag: string; box: string; flags: string[]; size: number }
   selected?: { path: string; readOnly: boolean }
   authenticated: boolean
+  /** True once STARTTLS has upgraded the connection. */
+  upgraded: boolean
+}
+
+/**
+ * Upgrades a clear-text server socket to TLS after the go-ahead line, discarding anything the
+ * client pipelined behind STARTTLS (RFC 3207 section 4.2, RFC 3501 section 6.2.1).
+ */
+function startTls(
+  plain: Socket,
+  goAhead: string,
+  material: { cert: string; key: string },
+  onData: (chunk: Buffer) => void,
+  onSecure: (secure: TLSSocket) => void
+) {
+  plain.removeAllListeners("data")
+  plain.pause()
+  plain.write(`${goAhead}${CRLF}`, () => {
+    const secure = new TLSSocket(plain, {
+      isServer: true,
+      secureContext: createSecureContext(material),
+    })
+    secure.on("error", () => undefined)
+    secure.on("data", onData)
+    onSecure(secure)
+  })
 }
 
 function transportServer(
@@ -239,9 +273,13 @@ function transportServer(
 }
 
 function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
-  const capabilities = (
+  const baseCapabilities = (
     options.capabilities ?? ["IMAP4rev1", "MOVE", "UIDPLUS"]
   ).join(" ")
+  const capabilitiesFor = (session: Session) =>
+    options.starttls !== undefined && !session.upgraded
+      ? `${baseCapabilities} STARTTLS LOGINDISABLED`
+      : baseCapabilities
   const write = (session: Session, line: string) =>
     session.socket.write(`${line}${CRLF}`)
 
@@ -357,10 +395,30 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
             .slice(name.startsWith("UID ") ? 3 : 2)
             .join(" ")}`.trim()
     )
+    const capabilities = capabilitiesFor(session)
     if (name === "CAPABILITY") {
       write(session, `* CAPABILITY ${capabilities}`)
       return write(session, `${tag} OK CAPABILITY completed`)
     }
+    if (name === "STARTTLS") {
+      const material = options.starttls
+      if (material === undefined || session.upgraded)
+        return write(session, `${tag} BAD STARTTLS not available`)
+      session.buffer = Buffer.alloc(0)
+      startTls(
+        session.socket,
+        `${tag} OK Begin TLS negotiation now`,
+        material,
+        (chunk) => receive(session, chunk),
+        (secure) => {
+          session.socket = secure
+          session.upgraded = true
+        }
+      )
+      return
+    }
+    if (name === "LOGIN" && options.starttls !== undefined && !session.upgraded)
+      return write(session, `${tag} NO [PRIVACYREQUIRED] use STARTTLS first`)
     if (name === "LOGIN") {
       if (args[0] === options.username && args[1] === options.password) {
         session.authenticated = true
@@ -462,11 +520,17 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
     }
   }
 
+  function receive(session: Session, chunk: Buffer) {
+    session.buffer = Buffer.concat([session.buffer, chunk])
+    drain(session)
+  }
+
   return transportServer(options, (socket) => {
     const session: Session = {
       socket,
       buffer: Buffer.alloc(0),
       authenticated: false,
+      upgraded: false,
     }
     socket.on("error", () => undefined)
     fake.imapSessions.open += 1
@@ -477,16 +541,15 @@ function imapServer(fake: FakeState, options: FakeBridgeOptions): Server {
     socket.on("close", () => {
       fake.imapSessions.open -= 1
     })
-    socket.on("data", (chunk: Buffer) => {
-      session.buffer = Buffer.concat([session.buffer, chunk])
-      drain(session)
-    })
+    socket.on("data", (chunk: Buffer) => receive(session, chunk))
     write(session, "* OK Fake Bridge IMAP ready")
   })
 }
 
 function smtpServer(fake: FakeState, options: FakeBridgeOptions): Server {
-  return transportServer(options, (socket) => {
+  return transportServer(options, (plain) => {
+    let socket: Socket = plain
+    let upgraded = false
     let buffer = ""
     let data: string[] | undefined
     let from = ""
@@ -501,8 +564,9 @@ function smtpServer(fake: FakeState, options: FakeBridgeOptions): Server {
           : "535 5.7.8 invalid credentials"
       )
     }
+    const tlsPending = () => options.starttls !== undefined && !upgraded
     socket.on("error", () => undefined)
-    socket.on("data", (chunk: Buffer) => {
+    const onData = (chunk: Buffer) => {
       buffer += chunk.toString("utf8")
       for (;;) {
         const end = buffer.indexOf(CRLF)
@@ -538,8 +602,29 @@ function smtpServer(fake: FakeState, options: FakeBridgeOptions): Server {
         )
         if (verb === "EHLO" || verb === "HELO") {
           reply("250-fake-bridge")
-          reply("250-AUTH PLAIN LOGIN")
+          reply(tlsPending() ? "250-STARTTLS" : "250-AUTH PLAIN LOGIN")
           reply("250 8BITMIME")
+        } else if (verb === "STARTTLS" && options.starttls !== undefined) {
+          if (upgraded) {
+            reply("503 5.5.1 already using TLS")
+            continue
+          }
+          buffer = ""
+          from = ""
+          to = []
+          startTls(
+            socket,
+            "220 2.0.0 ready to start TLS",
+            options.starttls,
+            onData,
+            (secure) => {
+              socket = secure
+              upgraded = true
+            }
+          )
+          return
+        } else if (verb === "AUTH" && tlsPending()) {
+          reply("530 5.7.0 must issue STARTTLS first")
         } else if (verb === "AUTH" && /^AUTH PLAIN /i.test(line)) {
           const [, name = "", pass = ""] = Buffer.from(line.slice(11), "base64")
             .toString("utf8")
@@ -567,7 +652,8 @@ function smtpServer(fake: FakeState, options: FakeBridgeOptions): Server {
           reply("502 5.5.2 unsupported")
         }
       }
-    })
+    }
+    socket.on("data", onData)
     reply("220 fake-bridge ESMTP")
   })
 }

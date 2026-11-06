@@ -978,15 +978,27 @@ describe("phone sign-in", () => {
 
   test("credential status needs an explicit null when there is no session", () => {
     expect(
-      validateGateCredentialStatus({ enrolled: false, sessionExpiresAt: null })
-        .ok
+      validateGateCredentialStatus({
+        enrolled: false,
+        revoked: false,
+        sessionExpiresAt: null,
+      }).ok
     ).toBe(true)
     expect(
-      validateGateCredentialStatus({ enrolled: true, sessionExpiresAt: AT }).ok
+      validateGateCredentialStatus({
+        enrolled: true,
+        revoked: false,
+        sessionExpiresAt: AT,
+      }).ok
     ).toBe(true)
-    expect(errorsOf(validateGateCredentialStatus({ enrolled: true }))).toEqual([
-      "$.sessionExpiresAt: required",
-    ])
+    expect(
+      errorsOf(validateGateCredentialStatus({ enrolled: true, revoked: false }))
+    ).toEqual(["$.sessionExpiresAt: required"])
+    expect(
+      errorsOf(
+        validateGateCredentialStatus({ enrolled: true, sessionExpiresAt: null })
+      )
+    ).toEqual(["$.revoked: required"])
   })
 })
 

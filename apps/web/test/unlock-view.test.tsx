@@ -69,7 +69,11 @@ function setup(opts: {
       if (url.endsWith("/passkey/status"))
         return json(
           200,
-          opts.status ?? { enrolled: true, sessionExpiresAt: null }
+          opts.status ?? {
+            enrolled: true,
+            revoked: false,
+            sessionExpiresAt: null,
+          }
         )
       if (url.endsWith("/auth/login/options")) return json(200, options)
       if (url.endsWith("/auth/login"))
@@ -133,7 +137,11 @@ describe("UnlockView", () => {
 
   it("says the session expired and does not skip ahead on a stale live session", async () => {
     setup({
-      status: { enrolled: true, sessionExpiresAt: "2026-10-27T22:00:00.000Z" },
+      status: {
+        enrolled: true,
+        revoked: false,
+        sessionExpiresAt: "2026-10-27T22:00:00.000Z",
+      },
     })
     await render("/queue", true)
     expect(replace).not.toHaveBeenCalled()
@@ -150,14 +158,20 @@ describe("UnlockView", () => {
 
   it("skips straight to the page when a session is already live", async () => {
     setup({
-      status: { enrolled: true, sessionExpiresAt: "2026-10-27T22:00:00.000Z" },
+      status: {
+        enrolled: true,
+        revoked: false,
+        sessionExpiresAt: "2026-10-27T22:00:00.000Z",
+      },
     })
     await render("/")
     expect(replace).toHaveBeenCalledWith("/")
   })
 
   it("offers no unlock when this device has no passkey", async () => {
-    setup({ status: { enrolled: false, sessionExpiresAt: null } })
+    setup({
+      status: { enrolled: false, revoked: false, sessionExpiresAt: null },
+    })
     await render()
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
       "This device has no passkey yet."
@@ -165,8 +179,22 @@ describe("UnlockView", () => {
     expect(button()).toBeNull()
   })
 
+  it("names the Mac for a revoked passkey, with no link and no unlock", async () => {
+    setup({
+      status: { enrolled: false, revoked: true, sessionExpiresAt: null },
+    })
+    await render("/queue")
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "This passkey was revoked. Re-enrol this device from the Mac."
+    )
+    expect(container.querySelector("a")).toBeNull()
+    expect(button()).toBeNull()
+  })
+
   it("links the not-enrolled state to enrolment, keeping the page to return to", async () => {
-    setup({ status: { enrolled: false, sessionExpiresAt: null } })
+    setup({
+      status: { enrolled: false, revoked: false, sessionExpiresAt: null },
+    })
     await render("/queue")
     expect(container.querySelector("a")?.getAttribute("href")).toBe(
       "/enroll?next=%2Fqueue"

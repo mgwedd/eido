@@ -3,11 +3,12 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Loader2, ScanFace } from "lucide-react"
+import { Loader2 } from "lucide-react"
 
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent } from "@eido/ui/components/card"
+import { AuthenticatorIcon } from "@/components/authenticator-icon"
 import { enrolUrl } from "@/lib/enrol"
 import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
 import {
@@ -20,6 +21,7 @@ import {
 type UnlockState =
   | { status: "checking" }
   | { status: "not-enrolled" }
+  | { status: "revoked" }
   | { status: "check-failed"; offline: boolean }
   | { status: "ready" }
   | { status: "expired" }
@@ -32,6 +34,7 @@ type UnlockState =
 
 const MESSAGES = {
   "not-enrolled": "This device has no passkey yet.",
+  revoked: "This passkey was revoked. Re-enrol this device from the Mac.",
   offline: "Can't reach Eido. Check that Tailscale is connected.",
   "wrong-origin": "Open Eido from its Tailscale address to unlock.",
   unsupported: "This browser can't use passkeys.",
@@ -45,6 +48,7 @@ function alertMessage(
     case "cancelled":
       return `${copy.subject} was cancelled. Eido is still locked.`
     case "not-enrolled":
+    case "revoked":
     case "offline":
     case "wrong-origin":
     case "unsupported":
@@ -148,7 +152,7 @@ function UnlockCard({
               href={enrolUrl(next)}
               className={`${buttonVariants({ size: "lg" })} h-12 rounded-xl`}
             >
-              Enrol this device
+              Enroll this device
             </Link>
           ) : null}
 
@@ -159,7 +163,7 @@ function UnlockCard({
               disabled={waiting}
               className="h-12 rounded-xl"
             >
-              <ScanFace aria-hidden />
+              <AuthenticatorIcon />
               {copy.unlockWith}
             </Button>
           ) : null}
@@ -209,11 +213,13 @@ function UnlockView({
         router.replace(next)
       } else {
         setState({
-          status: !result.status.enrolled
-            ? "not-enrolled"
-            : expired
-              ? "expired"
-              : "ready",
+          status: result.status.revoked
+            ? "revoked"
+            : !result.status.enrolled
+              ? "not-enrolled"
+              : expired
+                ? "expired"
+                : "ready",
         })
       }
     })

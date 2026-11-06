@@ -2,8 +2,8 @@ import { roleFor, type Role, type RoleClaims } from "@/lib/auth/roles"
 
 /**
  * Which role may open which page. Default deny: a path that matches no entry is open to
- * the owner only. The owner may open every page. Route-level only; per-action rules
- * (what an assistant may do on a page they can open) are issue 371 and belong next to this map.
+ * the owner only. The owner may open every page. Route-level only; what a role may do on a
+ * page it can open is `permissions.ts`.
  */
 export type RouteRule = {
   /** Exact path, or a prefix that also matches nested paths. "/" matches only "/". */

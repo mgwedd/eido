@@ -112,6 +112,11 @@ export async function rejectIntent(
         ok: false,
         error: { code: "already_decided", message: "Already decided." },
       }
+    if (response.status === 401)
+      return {
+        ok: false,
+        error: { code: "unauthenticated", message: "Your session ended." },
+      }
     if (!response.ok)
       return {
         ok: false,
@@ -146,6 +151,7 @@ export type EditFailure = {
     | "invalid_request"
     | "already_decided"
     | "not_found"
+    | "unauthenticated"
     | "network"
     | "other"
   message: string
@@ -194,7 +200,8 @@ export async function editIntent(
           refusal.value.code === "forbidden" ||
           refusal.value.code === "invalid_request" ||
           refusal.value.code === "already_decided" ||
-          refusal.value.code === "not_found")
+          refusal.value.code === "not_found" ||
+          refusal.value.code === "unauthenticated")
       )
         return {
           ok: false,

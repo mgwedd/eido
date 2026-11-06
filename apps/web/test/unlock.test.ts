@@ -88,11 +88,11 @@ describe("loadCredentialStatus", () => {
   it("returns the parsed status", async () => {
     route({
       "/api/gate/passkey/status": () =>
-        json(200, { enrolled: true, sessionExpiresAt: null }),
+        json(200, { enrolled: true, revoked: false, sessionExpiresAt: null }),
     })
     expect(await loadCredentialStatus()).toEqual({
       ok: true,
-      status: { enrolled: true, sessionExpiresAt: null },
+      status: { enrolled: true, revoked: false, sessionExpiresAt: null },
     })
   })
 
