@@ -259,6 +259,10 @@ function RejectSheet({
 }
 
 /** One approval card: the payload as labelled fields, the model's note apart, then actions. */
+/** Wraps on a phone so no button is cut off; stays above the fixed tab bar while the card scrolls. */
+const ACTION_BAR =
+  "flex flex-wrap items-center justify-center gap-3 max-md:sticky max-md:bottom-[calc(53px+env(safe-area-inset-bottom))] max-md:z-10 max-md:bg-background max-md:py-2"
+
 function ApprovalCard({
   intent,
   now,
@@ -748,8 +752,14 @@ function ApprovalCard({
             <QueueContextUsed documentIds={card.prepared.documentIds} />
           ) : null}
           {card.status === "ready" && card.prepared.rationale ? (
-            <section className="flex flex-col gap-1 border-t border-dashed pt-3">
-              <h3 className="text-xs text-muted-foreground">
+            <section
+              aria-labelledby={`note-${intent.id}`}
+              className="flex flex-col gap-1 border-t border-dashed pt-3"
+            >
+              <h3
+                id={`note-${intent.id}`}
+                className="text-xs text-muted-foreground"
+              >
                 Agent&apos;s note · written by the model, not part of the action
               </h3>
               <p className="text-sm break-words whitespace-pre-wrap">
@@ -796,7 +806,7 @@ function ApprovalCard({
           : "Swipe right to approve · left to reject"}
       </p>
       {isConfirm ? (
-        <div className="flex items-center justify-center gap-3">
+        <div className={ACTION_BAR}>
           <Button
             variant="outline"
             size="lg"
@@ -821,7 +831,7 @@ function ApprovalCard({
           </Button>
           <Button
             size="lg"
-            className="min-h-[60px] flex-1 bg-blue-600 text-white hover:bg-blue-700"
+            className="min-h-[60px] min-w-32 flex-1 bg-blue-600 text-white hover:bg-blue-700"
             disabled={!canConfirm}
             aria-keyshortcuts="c"
             onClick={() =>
@@ -833,7 +843,7 @@ function ApprovalCard({
           </Button>
         </div>
       ) : (
-        <div className="flex items-center justify-center gap-3">
+        <div className={ACTION_BAR}>
           <Button
             variant="outline"
             size="lg"
@@ -862,7 +872,7 @@ function ApprovalCard({
           {passkeyEnrolled ? (
             <Button
               size="lg"
-              className="min-h-[60px] flex-1"
+              className="min-h-[60px] min-w-32 flex-1"
               disabled={!canApprove}
               aria-keyshortcuts="a"
               onClick={() => void approve()}
@@ -873,7 +883,7 @@ function ApprovalCard({
           ) : (
             <Link
               href={enrolUrl("/queue")}
-              className={`${buttonVariants({ size: "lg" })} min-h-[60px] flex-1`}
+              className={`${buttonVariants({ size: "lg" })} min-h-[60px] min-w-32 flex-1`}
             >
               Enroll this device
             </Link>
@@ -1006,7 +1016,22 @@ function QueueView({ initialId }: { initialId?: string }) {
     }
   })
 
+  // After a decision the card is gone: move focus to the next card's heading,
+  // or to the "Queue clear" message, so a keyboard or screen-reader user keeps their place.
+  const refocus = React.useRef(false)
+  const clearMessage = React.useRef<HTMLParagraphElement>(null)
+  React.useEffect(() => {
+    if (!refocus.current || state.status !== "ready") return
+    const target = selected
+      ? document.getElementById(`card-${selected.id}`)
+      : clearMessage.current
+    if (!target) return
+    refocus.current = false
+    target.focus()
+  }, [state, selected])
+
   const decided = (id: string, text: string) => {
+    refocus.current = true
     setMessage(text)
     remove(id)
     setSelectedId(undefined)
@@ -1068,7 +1093,12 @@ function QueueView({ initialId }: { initialId?: string }) {
       ) : null}
       {state.status === "ready" && intents.length === 0 ? (
         <div className="flex flex-col items-start gap-2">
-          <p role="status" className="text-sm">
+          <p
+            ref={clearMessage}
+            role="status"
+            tabIndex={-1}
+            className="text-sm outline-none"
+          >
             Queue clear. Every decision is in Activity.
           </p>
           <Link href="/" className="text-sm underline">
@@ -1077,7 +1107,7 @@ function QueueView({ initialId }: { initialId?: string }) {
         </div>
       ) : null}
       {selected ? (
-        <div className="grid items-start gap-4 md:grid-cols-[minmax(220px,300px)_1fr]">
+        <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 md:grid-cols-[minmax(220px,300px)_1fr]">
           <ul className="hidden flex-col gap-2 md:flex">
             {intents.map((intent) => (
               <QueueRow
