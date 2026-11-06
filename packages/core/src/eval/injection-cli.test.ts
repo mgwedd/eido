@@ -4,11 +4,17 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { startStubModelServer } from "../inference/stub-server"
 import type { StubModelServer } from "../inference/stub-server"
+import { execFileSync } from "node:child_process"
 import {
+  LOCAL_REPORT_PATH,
+  PUBLISHED_REPORT_PATH,
   loadInjectionCorpus,
   main,
+  onCleanMain,
   parseInjectionCase,
   parseInjectionCliOptions,
+  readGitState,
+  resolveReportPath,
 } from "./injection-cli"
 
 describe("parseInjectionCliOptions", () => {
@@ -312,5 +318,78 @@ describe("main()", () => {
       expect.stringContaining("WARNING: 1 fenced cases succeeded")
     )
     warnSpy.mockRestore()
+  })
+})
+
+describe("report path", () => {
+  const cleanMain = { head: "abc", originMain: "abc", dirty: false }
+  const branch = { head: "def", originMain: "abc", dirty: false }
+  const dirtyMain = { head: "abc", originMain: "abc", dirty: true }
+
+  test("onCleanMain needs HEAD at origin/main and a clean tree", () => {
+    expect(onCleanMain(cleanMain)).toBe(true)
+    expect(onCleanMain(branch)).toBe(false)
+    expect(onCleanMain(dirtyMain)).toBe(false)
+    expect(onCleanMain({ head: null, originMain: null, dirty: false })).toBe(
+      false
+    )
+  })
+
+  test("default goes to docs only on clean main, else eval-local", () => {
+    expect(resolveReportPath(undefined, cleanMain)).toBe(PUBLISHED_REPORT_PATH)
+    expect(resolveReportPath(undefined, branch)).toBe(LOCAL_REPORT_PATH)
+    expect(resolveReportPath(undefined, dirtyMain)).toBe(LOCAL_REPORT_PATH)
+  })
+
+  test("an explicit --out elsewhere is kept on any branch", () => {
+    expect(resolveReportPath("/tmp/r.md", branch)).toBe("/tmp/r.md")
+  })
+
+  test("--out docs/injection-eval.md off clean main is refused", () => {
+    expect(() => resolveReportPath(PUBLISHED_REPORT_PATH, branch)).toThrow(
+      /only from a clean checkout of origin\/main/
+    )
+    expect(resolveReportPath(PUBLISHED_REPORT_PATH, cleanMain)).toBe(
+      PUBLISHED_REPORT_PATH
+    )
+  })
+
+  test("main refuses to publish from a branch before loading cases", async () => {
+    await expect(
+      main(
+        ["--out", PUBLISHED_REPORT_PATH, "--cases", "/nonexistent.json"],
+        {},
+        () => branch
+      )
+    ).rejects.toThrow(/only from a clean checkout of origin\/main/)
+  })
+
+  test("readGitState reads HEAD, origin/main and dirtiness", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eido-gitstate-"))
+    try {
+      const git = (...args: string[]) =>
+        execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim()
+      git("init", "-q")
+      git("config", "user.email", "test@example.invalid")
+      git("config", "user.name", "Test")
+      writeFileSync(join(dir, "a.txt"), "a")
+      git("add", "a.txt")
+      git("commit", "-qm", "init")
+      const head = git("rev-parse", "HEAD")
+
+      expect(readGitState(dir)).toEqual({
+        head,
+        originMain: null,
+        dirty: false,
+      })
+
+      git("update-ref", "refs/remotes/origin/main", head)
+      expect(onCleanMain(readGitState(dir))).toBe(true)
+
+      writeFileSync(join(dir, "a.txt"), "changed")
+      expect(readGitState(dir).dirty).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

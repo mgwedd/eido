@@ -15,6 +15,7 @@
     "check:deps-fixture": "node scripts/check-boundary-fixture.ts",
     "check:gate-deps": "node scripts/check-gate-deps.ts",
     "check:secrets": "node scripts/secret-scan.ts",
+    "check:eval-report": "node scripts/check-eval-report.ts",
     "check:versions": "node scripts/check-exact-versions.ts",
     "check:lint-coverage": "node scripts/check-lint-coverage.ts",
     "check:invariants": "node scripts/check-invariant-tests.ts",
