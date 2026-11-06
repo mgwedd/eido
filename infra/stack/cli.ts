@@ -11,8 +11,25 @@
 //   doctor  read-only checks, each ok, warn or fail with the command that fixes it; exit 1 on a fail
 //   setup   creates the gate keychain if missing, asks for unset settings, writes stack.env, runs doctor
 //   gate    runs the gate's connect, enrol-code or passkeys script with the stack's gate environment
+// `pnpm stack:install`, `pnpm stack:uninstall` (#629, macOS)
+//   install    writes and loads the login agent com.eido.stack (agent.ts), which runs the
+//              supervisor at login and keeps it running; the supervisor starts the prod stack
+//   uninstall  boots the agent out and removes its plist; the stack's processes keep running
+//   boot       what the agent runs first: `prod --background`, unless a stack process already runs
 // Every command first loads stack.env (settings.ts); a variable set in the environment wins.
 // Start runs doctor's blocking checks before anything else and stops on a failure.
+import {
+  agentBootoutArgs,
+  agentBootstrapArgs,
+  agentEnv,
+  agentLayout,
+  agentPrintArgs,
+  agentState,
+  agentStatusLine,
+  agentTarget,
+  buildAgentPlist,
+  type AgentState,
+} from "./agent.ts"
 import { main as serveRoutes } from "../tailscale/cli.ts"
 import type { Fetch } from "../tailscale/measure.ts"
 import { parseDnsName } from "../tailscale/serve-routes.ts"
@@ -82,6 +99,8 @@ export type Deps = {
   home: string
   repoRoot: string
   nodePath: string
+  /** The user id launchd's gui domain is named by; undefined where there is none (Windows). */
+  uid: number | undefined
   exec: Exec
   /** `pnpm turbo run build` from the repo root with output to the terminal; its exit code. */
   build: () => Promise<number>
@@ -104,7 +123,7 @@ export type Deps = {
 }
 
 const USAGE =
-  "usage: stack dev|prod|stop|status|doctor [--no-serve] [--background] | setup | gate connect|enrol-code|passkeys [args]"
+  "usage: stack dev|prod|stop|status|doctor [--no-serve] [--background] | setup | install | uninstall | boot | gate connect|enrol-code|passkeys [args]"
 
 export const GATE_SCRIPTS = ["connect", "enrol-code", "passkeys"] as const
 type GateScript = (typeof GATE_SCRIPTS)[number]
@@ -121,7 +140,16 @@ type Flags = { serve: boolean; background: boolean }
 
 export type Parsed =
   | {
-      command: "dev" | "prod" | "stop" | "status" | "doctor" | "setup"
+      command:
+        | "dev"
+        | "prod"
+        | "stop"
+        | "status"
+        | "doctor"
+        | "setup"
+        | "install"
+        | "uninstall"
+        | "boot"
       flags: Flags
     }
   | { command: "gate"; script: GateScript; args: string[] }
@@ -132,7 +160,12 @@ export function parseArgs(argv: readonly string[]): Parsed | undefined {
     const [script, ...args] = rest
     return isGateScript(script) ? { command, script, args } : undefined
   }
-  if (command === "setup")
+  if (
+    command === "setup" ||
+    command === "install" ||
+    command === "uninstall" ||
+    command === "boot"
+  )
     return rest.length === 0
       ? { command, flags: { serve: true, background: false } }
       : undefined
@@ -551,7 +584,102 @@ async function stop(deps: Deps): Promise<number> {
     )
   }
   if (left === 0) deps.out("Nothing listens on the stack's ports.")
+  if ((await readAgentState(deps)).kind === "loaded")
+    deps.out(
+      "The login agent is loaded: it starts the stack again at the next login or supervisor restart. To stop that, pnpm stack:uninstall."
+    )
   return 0
+}
+
+/** The agent's state; `unsupported` off macOS or without a user id. */
+async function readAgentState(deps: Deps): Promise<AgentState> {
+  const uid = deps.platform === "darwin" ? deps.uid : undefined
+  if (uid === undefined) return agentState(undefined, false)
+  const printed = await deps.exec("launchctl", agentPrintArgs(uid))
+  return agentState(
+    printed,
+    deps.files.exists(agentLayout(deps.home).plistPath)
+  )
+}
+
+function agentUid(deps: Deps, command: string): number | undefined {
+  const uid = deps.platform === "darwin" ? deps.uid : undefined
+  if (uid === undefined)
+    deps.err(
+      `FAIL: stack ${command} needs launchd and is macOS only so far; Task Scheduler on Windows is #455`
+    )
+  return uid
+}
+
+async function install(deps: Deps): Promise<number> {
+  const uid = agentUid(deps, "install")
+  if (uid === undefined) return 1
+  const paths = agentLayout(deps.home)
+  // bootstrap refuses a label that is already loaded, so a re-install boots the old job out first.
+  if ((await deps.exec("launchctl", agentPrintArgs(uid))).code === 0)
+    await deps.exec("launchctl", agentBootoutArgs(uid))
+  deps.files.ensurePrivateDir(paths.logDir)
+  deps.files.write(
+    paths.plistPath,
+    buildAgentPlist({
+      home: deps.home,
+      node: deps.nodePath,
+      repoRoot: deps.repoRoot,
+      env: agentEnv(deps.env),
+    })
+  )
+  const run = await deps.exec(
+    "launchctl",
+    agentBootstrapArgs(uid, paths.plistPath)
+  )
+  if (run.code !== 0) {
+    deps.err(
+      `FAIL: launchctl bootstrap: ${run.stderr.trim() || `exit ${run.code}`}`
+    )
+    return 1
+  }
+  deps.out(`ok: ${agentTarget(uid)} loaded from ${paths.plistPath}`)
+  deps.out(
+    "It runs the stack supervisor now and at every login, and the supervisor starts the prod stack."
+  )
+  deps.out(`logs: ${paths.outLog} and ${paths.errLog}`)
+  return 0
+}
+
+async function uninstall(deps: Deps): Promise<number> {
+  const uid = agentUid(deps, "uninstall")
+  if (uid === undefined) return 1
+  const paths = agentLayout(deps.home)
+  if ((await deps.exec("launchctl", agentPrintArgs(uid))).code === 0) {
+    const run = await deps.exec("launchctl", agentBootoutArgs(uid))
+    if (run.code !== 0) {
+      deps.err(
+        `FAIL: launchctl bootout: ${run.stderr.trim() || `exit ${run.code}`}`
+      )
+      return 1
+    }
+  }
+  if (deps.files.exists(paths.plistPath)) deps.files.remove(paths.plistPath)
+  deps.out(`ok: ${agentTarget(uid)} is not loaded and its plist is gone`)
+  deps.out(
+    "The stack's processes keep running; stop them with pnpm stack:stop."
+  )
+  return 0
+}
+
+/** The agent's first step: start prod in the background, unless any stack process runs. */
+async function boot(deps: Deps): Promise<number> {
+  const config = configFor(deps, "prod", "localhost")
+  const running: ProcessName[] = []
+  for (const spec of config.processes)
+    if (await isRunning(deps, config, spec.name)) running.push(spec.name)
+  if (running.length > 0) {
+    deps.out(
+      `boot: ${running.join(", ")} already running; the stack is left as it is`
+    )
+    return 0
+  }
+  return await start(deps, "prod", { serve: true, background: true })
 }
 
 async function status(deps: Deps, flags: Flags): Promise<number> {
@@ -592,6 +720,7 @@ async function status(deps: Deps, flags: Flags): Promise<number> {
     )
     deps.out(`url: ${config.url}`)
   }
+  deps.out(agentStatusLine(await readAgentState(deps)))
   return healthy === config.processes.length && serveCode === 0 ? 0 : 1
 }
 
@@ -638,6 +767,12 @@ export async function main(
           parsed.flags
         )
       }
+      case "install":
+        return await install(withSettings)
+      case "uninstall":
+        return await uninstall(withSettings)
+      case "boot":
+        return await boot(withSettings)
       case "gate":
         return await gate(withSettings, parsed.script, parsed.args)
     }

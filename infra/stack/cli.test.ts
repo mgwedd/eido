@@ -37,6 +37,7 @@ describe("parseArgs", () => {
     expect(parseArgs(["restart"])).toBeUndefined()
     expect(parseArgs(["dev", "--watch"])).toBeUndefined()
     expect(parseArgs(["stop", "--background"])).toBeUndefined()
+    expect(parseArgs(["install", "--background"])).toBeUndefined()
   })
 
   it("prints usage and exits 2 on bad arguments", async () => {
@@ -300,7 +301,10 @@ describe("status", () => {
     expect(w.out[2]).toBe(
       "web: running (pid 1002, dev); 127.0.0.1:3000 listener pid 1002 (node); health answers 204"
     )
-    expect(w.out.at(-1)).toBe(`url: https://${HOST}:8443/`)
+    expect(w.out.at(-2)).toBe(`url: https://${HOST}:8443/`)
+    expect(w.out.at(-1)).toBe(
+      "login agent: not installed (pnpm stack:install starts the stack at login)"
+    )
   })
 
   it("exits 1 and says why when nothing runs", async () => {
@@ -314,7 +318,168 @@ describe("status", () => {
       "gate: not started by the stack; 127.0.0.1:8788 nothing listening; health no answer",
       "core: not started by the stack; 127.0.0.1:8789 nothing listening; health no answer",
       "web: stale pid file (pid 4242 is gone); 127.0.0.1:3000 nothing listening; health no answer",
+      "login agent: not installed (pnpm stack:install starts the stack at login)",
     ])
+  })
+
+  it("reports a loaded agent from launchctl print, and a plist without a loaded job", async () => {
+    const loaded = world({ agentLoaded: true })
+    loaded.files.set(PLIST, "<plist/>")
+    await main(["status", "--no-serve"], loaded.deps)
+    expect(loaded.out.at(-1)).toBe(
+      "login agent: loaded (running, pid 777, runs 2, last exit 1)"
+    )
+    const orphan = world({ agentLoaded: true })
+    await main(["status", "--no-serve"], orphan.deps)
+    expect(orphan.out.at(-1)).toBe(
+      "login agent: loaded (running, pid 777, runs 2, last exit 1); its plist is gone, so pnpm stack:uninstall it"
+    )
+    const unloaded = world()
+    unloaded.files.set(PLIST, "<plist/>")
+    await main(["status", "--no-serve"], unloaded.deps)
+    expect(unloaded.out.at(-1)).toBe(
+      "login agent: installed but not loaded; pnpm stack:install loads it"
+    )
+  })
+
+  it("does not ask launchctl off macOS", async () => {
+    const w = world()
+    w.deps.platform = "linux"
+    await main(["status", "--no-serve"], w.deps)
+    expect(w.out.at(-1)).toBe(
+      "login agent: launchd only; not on this platform yet (#455)"
+    )
+    expect(w.launchctlCalls).toEqual([])
+  })
+})
+
+const PLIST = "/home/u/Library/LaunchAgents/com.eido.stack.plist"
+
+describe("install and uninstall", () => {
+  it("writes the plist with PATH and EIDO_STACK_DIR, then bootstraps it", async () => {
+    const w = world({
+      env: {
+        EIDO_GATE_KEYCHAIN_PATH: KEYCHAIN,
+        PATH: "/opt/homebrew/bin:/usr/bin",
+        EIDO_STACK_DIR: STACK,
+        EIDO_GMAIL_CLIENT_ID: "not.passed.example.invalid",
+      },
+    })
+    expect(await main(["install"], w.deps)).toBe(0)
+    expect(w.launchctlCalls).toEqual([
+      "print gui/501/com.eido.stack",
+      `bootstrap gui/501 ${PLIST}`,
+    ])
+    const plist = w.files.get(PLIST) ?? ""
+    expect(plist).toContain(
+      "<string>/repo/infra/stack/supervisor-main.ts</string>\n    <string>--start-stack</string>"
+    )
+    expect(plist).toContain(
+      `<key>EIDO_STACK_DIR</key>\n    <string>${STACK}</string>\n    <key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/bin</string>\n  </dict>`
+    )
+    expect(plist).not.toContain("EIDO_GMAIL_CLIENT_ID")
+    expect(w.dirs).toContain("/home/u/Library/Logs/eido-dev")
+    expect(w.out[0]).toBe(`ok: gui/501/com.eido.stack loaded from ${PLIST}`)
+  })
+
+  it("boots a loaded agent out before loading it again", async () => {
+    const w = world({ agentLoaded: true })
+    expect(await main(["install"], w.deps)).toBe(0)
+    expect(w.launchctlCalls).toEqual([
+      "print gui/501/com.eido.stack",
+      "bootout gui/501/com.eido.stack",
+      `bootstrap gui/501 ${PLIST}`,
+    ])
+  })
+
+  it("reports a failed bootstrap", async () => {
+    const w = world({ launchctlFails: "bootstrap" })
+    expect(await main(["install"], w.deps)).toBe(1)
+    expect(w.err).toEqual([
+      "FAIL: launchctl bootstrap: bootstrap failed: Input/output error",
+    ])
+  })
+
+  it("boots the agent out and removes the plist, and leaves the stack running", async () => {
+    const w = world({ agentLoaded: true })
+    w.files.set(PLIST, "<plist/>")
+    await main(["dev", "--background"], w.deps)
+    expect(await main(["uninstall"], w.deps)).toBe(0)
+    expect(w.agentLoaded()).toBe(false)
+    expect(w.files.has(PLIST)).toBe(false)
+    expect(w.procs.every((p) => p.alive)).toBe(true)
+    expect(w.out.at(-1)).toBe(
+      "The stack's processes keep running; stop them with pnpm stack:stop."
+    )
+  })
+
+  it("removes a plist whose job is not loaded, and reports a failed bootout", async () => {
+    const stale = world()
+    stale.files.set(PLIST, "<plist/>")
+    expect(await main(["uninstall"], stale.deps)).toBe(0)
+    expect(stale.launchctlCalls).toEqual(["print gui/501/com.eido.stack"])
+    expect(stale.files.has(PLIST)).toBe(false)
+    const failing = world({ agentLoaded: true, launchctlFails: "bootout" })
+    failing.files.set(PLIST, "<plist/>")
+    expect(await main(["uninstall"], failing.deps)).toBe(1)
+    expect(failing.files.has(PLIST)).toBe(true)
+  })
+
+  it("refuses off macOS and without a user id", async () => {
+    const windows = world()
+    windows.deps.platform = "win32"
+    expect(await main(["install"], windows.deps)).toBe(1)
+    expect(windows.err).toEqual([
+      "FAIL: stack install needs launchd and is macOS only so far; Task Scheduler on Windows is #455",
+    ])
+    const noUid = world({ uid: undefined })
+    expect(await main(["uninstall"], noUid.deps)).toBe(1)
+    expect(noUid.launchctlCalls).toEqual([])
+  })
+})
+
+describe("stop with the agent loaded", () => {
+  it("says the agent starts the stack again and how to stop that", async () => {
+    const w = world({ agentLoaded: true })
+    await main(["dev", "--background"], w.deps)
+    expect(await main(["stop"], w.deps)).toBe(0)
+    expect(w.procs.some((p) => p.alive)).toBe(false)
+    expect(w.out.at(-1)).toBe(
+      "The login agent is loaded: it starts the stack again at the next login or supervisor restart. To stop that, pnpm stack:uninstall."
+    )
+  })
+})
+
+describe("boot", () => {
+  it("starts prod in the background when nothing runs", async () => {
+    const w = world()
+    expect(await main(["boot"], w.deps)).toBe(0)
+    expect(w.builds()).toBe(1)
+    expect(w.procs.map((p) => [p.spec.name, p.options.background])).toEqual([
+      ["gate", true],
+      ["core", true],
+      ["web", true],
+    ])
+    expect(w.procs[0]?.spec.args.join(" ")).not.toContain("--watch")
+  })
+
+  it("leaves a running stack alone", async () => {
+    const w = world()
+    await main(["prod", "--background"], w.deps)
+    const core = w.procs.find((p) => p.spec.name === "core")
+    core?.exit(0)
+    w.out.length = 0
+    expect(await main(["boot"], w.deps)).toBe(0)
+    expect(w.out).toEqual([
+      "boot: gate, web already running; the stack is left as it is",
+    ])
+    expect(w.procs).toHaveLength(3)
+  })
+
+  it("fails when the start fails", async () => {
+    const w = world({ buildCode: 2 })
+    expect(await main(["boot"], w.deps)).toBe(1)
+    expect(w.procs).toEqual([])
   })
 })
 
