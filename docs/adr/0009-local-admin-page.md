@@ -56,9 +56,24 @@ The Proton Bridge password, the SimpleFIN setup token and the keychain password 
 
 Rejected: a CSP on the Next page (set by the party it guards against); same-origin gate pages (defeated by the service worker); accepting the risk outright (these secrets give lasting access and egress, exactly what the gate boundary exists to protect).
 
-## Decision 4: first run
+## Decision 4: configuration moves into the app; bootstrap is one command
 
-Before any passkey exists, `pnpm stack:setup` (#638) gains one step: it asks the gate over the control socket for the first enrolment code and prints it. That is the only local step. After it, every admin action is in the web app. `enrol-code` stays as the recovery path for a lost phone, with the same trust as today: whoever can open the control socket.
+**Configuration in the app.** Connector setup and settings move out of scripts and shell variables and into the app, behind step-up (Decision 2). This ends the spread of CLI scripts and exported variables. Secrets stay in the gate's existing sealed token store (its vault, ADR 0003): the gate is the vault, and the admin UI never sees a secret (Decision 3).
+
+**Bootstrap.** One command: `pnpm stack:setup` (#638), later possibly a signed installer or the Helper. It:
+
+1. installs;
+2. registers the services (`com.eido.gate` and `com.eido.stack`);
+3. starts them;
+4. prints the address of the first-run page.
+
+Everything else happens in the app behind step-up: model download and switch, connectors, the Tailscale check, settings and the doctor.
+
+**The first passkey is proven by presence at the Mac.** Recommended: a **one-time code in the terminal**. `stack:setup` asks the gate over the control socket for the first enrolment code and prints it with the first-run page's address. The owner enters the code on that page and enrols a passkey. Whoever runs the command has a shell on the Mac as the owner, which proves presence, and no new listener is needed.
+
+Rejected for now: a localhost-only first-run page. It would bring back the loopback listener and its port-shared cookie, which Decision 1 removed. It is worth reconsidering when a signed installer or the Helper replaces the command.
+
+`enrol-code` stays as the recovery path for a lost phone, with the same trust as today: whoever can open the control socket.
 
 ## Decision 5: Google OAuth
 
@@ -99,7 +114,7 @@ Platform pieces are adapters behind seams. The vault is the Keychain on macOS; o
 
 ## Consequences
 
-- One UI, on the phone and the Mac, from the design system. The CLIs become thin wrappers over the same gate routes.
+- One UI, on the phone and the Mac, from the design system. Configuration lives in the app, the secrets in the gate's vault, and bootstrap is one command. The CLIs become thin wrappers over the same gate routes.
 - The gate gains a tier on every route, an elevation store, a second serve port for secret entry, and a supervisor client. It gains no new listener and runs no scripts.
 - Next stays credential-free. Its remaining reach is the accepted look-alike risk in Decision 3.
 
@@ -107,7 +122,6 @@ Platform pieces are adapters behind seams. The vault is the Keychain on macOS; o
 
 - **Approval prompts by email**, CIBA-style, for example through Resend. Email may carry only the prompt; the approval stays a passkey assertion. Sending to an external service needs its own decision, because Eido is local-first.
 - Vault create and unlock on the page. `stack:setup` already creates the keychain over a TTY, and Status shows a locked vault with its fix.
-- Settings editing beyond the model.
 - Windows adapters (#455).
 
 ## Open questions for the owner
