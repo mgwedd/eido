@@ -18,6 +18,7 @@ describe("entry points under node type stripping", () => {
     ["check-gate-deps.ts", [], "ok: gate dependencies"],
     ["check-exact-versions.ts", [], "ok: "],
     ["check-invariant-tests.ts", [], "ok: found all"],
+    ["check-eval-report.ts", [], "docs/injection-eval.md: ok"],
     ["coverage-summary.ts", [], "## Test coverage per package"],
   ])("%s %j runs and succeeds", (script, args, expected) => {
     const result = run(script, args)
