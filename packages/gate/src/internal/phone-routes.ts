@@ -56,14 +56,20 @@ import { readBackupStatus } from "./backup-status"
 import { checkEnrolmentCode } from "./enrolment"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
-import { applyRepin, prepareRepin } from "./repin"
+import {
+  applyFirstPin,
+  applyRepin,
+  prepareFirstPin,
+  prepareRepin,
+  unpinnedReviewed,
+} from "./repin"
 import {
   completeFileRootsRoute,
   prepareFileRootsRoute,
 } from "./file-root-routes"
 import { approvedFileRoots } from "./files/file-roots"
 import type { FileHelper } from "./files/file-helper"
-import type { RepinRefusal } from "./repin"
+import type { FirstPinRefusal, RepinRefusal } from "./repin"
 import {
   checkedSubscription,
   preparePushRegistration,
@@ -105,6 +111,8 @@ export type PhoneState = {
   backupStampPath?: string
   /** The owner's re-reviewed manifest for a drifted connector (#97); undefined when none is placed. */
   reviewedManifest?: (connector: string) => unknown
+  /** The connector names with a reviewed manifest placed (#627); none when undefined. */
+  reviewedManifests?: () => string[]
   /** The gate-side native helper that identifies a requested file root (#574); never the phone's. */
   fileHelper?: FileHelper
 }
@@ -132,6 +140,12 @@ export const PHONE_ROUTES = [
   {
     method: "POST",
     path: "/connector-settings/:id/repin/decision",
+    session: true,
+  },
+  { method: "POST", path: "/connector-settings/:id/pin", session: true },
+  {
+    method: "POST",
+    path: "/connector-settings/:id/pin/decision",
     session: true,
   },
   { method: "GET", path: "/passkeys", session: true },
@@ -496,8 +510,12 @@ function connectorSettings(state: PhoneState, now: Clock): Reply {
             }),
       }
     })
+  const unpinned = unpinnedReviewed(state.db, placedManifests(state), (name) =>
+    reviewedManifest(state, name)
+  ).slice(0, 50)
   const body: GateConnectorSettings = {
     connectors,
+    ...(unpinned.length === 0 ? {} : { unpinned }),
     asOf: now().toISOString(),
   }
   return { status: 200, body }
@@ -530,6 +548,27 @@ const REPIN_REFUSALS = {
   RepinRefusal,
   readonly [number, Parameters<typeof apiError>[1], string]
 >
+
+const FIRST_PIN_REFUSALS = {
+  already_pinned: [409, "unavailable", "the connector is already pinned"],
+  no_reviewed_manifest: REPIN_REFUSALS.no_reviewed_manifest,
+  invalid_manifest: [
+    422,
+    "invalid_request",
+    "the reviewed manifest cannot be pinned",
+  ],
+} as const satisfies Record<
+  FirstPinRefusal,
+  readonly [number, Parameters<typeof apiError>[1], string]
+>
+
+function placedManifests(state: PhoneState): string[] {
+  try {
+    return state.reviewedManifests?.() ?? []
+  } catch {
+    return []
+  }
+}
 
 function reviewedManifest(state: PhoneState, connector: string): unknown {
   try {
@@ -584,6 +623,57 @@ async function repinDecision(
     if (result.code === "refused")
       return apiError(403, "verification_failed", "the re-pin was refused")
     const [status, code, message] = REPIN_REFUSALS[result.code]
+    return apiError(status, code, message)
+  }
+  const done: GateRepinResult = { connector, manifestHash: result.manifestHash }
+  return { status: 200, body: done }
+}
+
+async function firstPinPrepare(
+  state: PhoneState,
+  request: GateRequest,
+  connector: string
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  if (
+    typeof body.value !== "object" ||
+    body.value === null ||
+    Array.isArray(body.value) ||
+    Object.keys(body.value).length !== 0
+  )
+    return invalid("an empty pin request", ["expected an empty object"])
+  const result = prepareFirstPin(
+    state.db,
+    connector,
+    reviewedManifest(state, connector)
+  )
+  if (!result.ok) {
+    const [status, code, message] = FIRST_PIN_REFUSALS[result.code]
+    return apiError(status, code, message)
+  }
+  return { status: 200, body: result.prepared }
+}
+
+async function firstPinDecision(
+  state: PhoneState,
+  request: GateRequest,
+  connector: string
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateRepinRequest(body.value)
+  if (!checked.ok) return invalid("a pin request", checked.errors)
+  const result = applyFirstPin(
+    state.db,
+    connector,
+    reviewedManifest(state, connector),
+    { config: state.webAuthn, request: checked.value }
+  )
+  if (!result.ok) {
+    if (result.code === "refused")
+      return apiError(403, "verification_failed", "the pin was refused")
+    const [status, code, message] = FIRST_PIN_REFUSALS[result.code]
     return apiError(status, code, message)
   }
   const done: GateRepinResult = { connector, manifestHash: result.manifestHash }
@@ -921,6 +1011,10 @@ function route(
       return repinPrepare(state, request, matched.id)
     case "/connector-settings/:id/repin/decision":
       return repinDecision(state, request, matched.id)
+    case "/connector-settings/:id/pin":
+      return firstPinPrepare(state, request, matched.id)
+    case "/connector-settings/:id/pin/decision":
+      return firstPinDecision(state, request, matched.id)
     case "/passkeys":
       return passkeyList(state, request, now)
     case "/permissions":

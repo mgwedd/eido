@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { readReviewedManifest, REVIEWED_MANIFEST_DIR } from "./repin"
+import {
+  listReviewedManifests,
+  readReviewedManifest,
+  REVIEWED_MANIFEST_DIR,
+} from "./repin"
 
 let dir: string
 
@@ -34,5 +38,19 @@ describe("readReviewedManifest", () => {
     writeFileSync(join(dir, "secret.json"), JSON.stringify({ leaked: true }))
     expect(readReviewedManifest(dir, "../secret")).toBeUndefined()
     expect(readReviewedManifest(dir, "a/b")).toBeUndefined()
+  })
+})
+
+describe("listReviewedManifests", () => {
+  it("lists the connector names of the placed manifest files, sorted", () => {
+    for (const file of ["gmail.json", "drive.json", "notes.txt", ".x.json"])
+      writeFileSync(join(dir, REVIEWED_MANIFEST_DIR, file), "{}")
+    writeFileSync(join(dir, REVIEWED_MANIFEST_DIR, "gmail.json.1.tmp"), "{}")
+    expect(listReviewedManifests(dir)).toEqual(["drive", "gmail"])
+  })
+
+  it("is empty when no manifest has been placed", () => {
+    rmSync(join(dir, REVIEWED_MANIFEST_DIR), { recursive: true })
+    expect(listReviewedManifests(dir)).toEqual([])
   })
 })

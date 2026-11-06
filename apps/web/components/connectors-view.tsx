@@ -10,7 +10,8 @@ import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { expiredUnlockUrl } from "@/lib/auth/unlock"
 import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
-import { repinConnector } from "@/lib/connector-repin"
+import { pinConnector, repinConnector } from "@/lib/connector-repin"
+import type { RepinOutcome } from "@/lib/connector-repin"
 import {
   bridgeNotice,
   breakerLabel,
@@ -22,12 +23,18 @@ import {
   invitationsWait,
   loadConnectors,
   type Connector,
+  type Unpinned,
 } from "@/lib/connectors"
 
 type ConnectorsState =
   | { status: "loading" }
   | { status: "error" }
-  | { status: "ready"; connectors: Connector[]; asOf?: string }
+  | {
+      status: "ready"
+      connectors: Connector[]
+      unpinned: Unpinned[]
+      asOf?: string
+    }
   | { status: "offline" }
 
 function useConnectors(): { state: ConnectorsState; retry: () => void } {
@@ -78,13 +85,14 @@ type RepinState =
   | { status: "signing" }
   | { status: "failed"; message: string }
 
-function RepinAction({
-  connector,
-  drift,
+/** The signed `manifest.pin` button: Review and re-pin after drift, or Review and pin. */
+function PinAction({
+  label,
+  sign,
   onRepinned,
 }: {
-  connector: string
-  drift: { added: readonly string[]; removed: readonly string[] }
+  label: string
+  sign: () => Promise<RepinOutcome>
   onRepinned: () => void
 }) {
   const copy = authenticatorCopy(useAuthenticatorLabel())
@@ -93,7 +101,7 @@ function RepinAction({
 
   async function start() {
     setState({ status: "signing" })
-    const outcome = await repinConnector(connector, drift)
+    const outcome = await sign()
     if (outcome.ok) {
       onRepinned()
       return
@@ -115,7 +123,7 @@ function RepinAction({
         onClick={() => void start()}
         className="min-h-11 self-start"
       >
-        Review and re-pin
+        {label}
       </Button>
       {signing ? (
         <p role="status" className="text-sm text-muted-foreground">
@@ -230,9 +238,9 @@ function ConnectorCard({
                 </li>
               ))}
             </ul>
-            <RepinAction
-              connector={connector.name}
-              drift={connector.drift}
+            <PinAction
+              label="Review and re-pin"
+              sign={() => repinConnector(connector.name, connector.drift)}
               onRepinned={onRepinned}
             />
           </section>
@@ -252,20 +260,75 @@ function ConnectorCard({
   )
 }
 
+function UnpinnedCard({
+  connector,
+  onPinned,
+}: {
+  connector: Unpinned
+  onPinned: () => void
+}) {
+  const headingId = `connector-${connector.name}`
+  const name = displayName(connector.name)
+  return (
+    <Card role="group" aria-labelledby={headingId}>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-3">
+          <h2 id={headingId} className="text-base font-semibold">
+            {name}
+          </h2>
+          <Badge variant="outline">Not pinned</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <section aria-label={`Tools, ${name}`} className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground">Tools</span>
+          <ul className="flex flex-col gap-0.5 font-mono text-xs break-all">
+            {connector.operations.map((tool) => (
+              <li key={tool}>{tool}</li>
+            ))}
+          </ul>
+          <PinAction
+            label="Review and pin"
+            sign={() => pinConnector(connector.name, connector.operations)}
+            onRepinned={onPinned}
+          />
+        </section>
+        {connector.scopes.length > 0 ? (
+          <div className="flex flex-col gap-0.5">
+            <span className="text-xs text-muted-foreground">Scopes</span>
+            <ul className="flex flex-col gap-0.5 text-xs break-all">
+              {connector.scopes.map((scope) => (
+                <li key={scope}>{scope}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+/** "3 connectors", or "3 connectors, 1 not pinned" when some are placed but not pinned. */
+function countLabel(pinned: number, unpinned: number): string {
+  const total = pinned + unpinned
+  const all = total === 1 ? "1 connector" : `${total} connectors`
+  return unpinned === 0 ? all : `${all}, ${unpinned} not pinned`
+}
+
 function ConnectorList({
   connectors,
+  unpinned,
   onRepinned,
 }: {
   connectors: readonly Connector[]
+  unpinned: readonly Unpinned[]
   onRepinned: () => void
 }) {
   const notice = bridgeNotice(connectors)
   return (
     <>
       <p role="status" className="sr-only" data-slot="count">
-        {connectors.length === 1
-          ? "1 connector"
-          : `${connectors.length} connectors`}
+        {countLabel(connectors.length, unpinned.length)}
       </p>
       {notice ? (
         <Alert role={undefined}>
@@ -281,6 +344,13 @@ function ConnectorList({
             key={connector.name}
             connector={connector}
             onRepinned={onRepinned}
+          />
+        ))}
+        {unpinned.map((connector) => (
+          <UnpinnedCard
+            key={connector.name}
+            connector={connector}
+            onPinned={onRepinned}
           />
         ))}
       </div>
@@ -330,13 +400,19 @@ function ConnectorsBody({
         </Button>
       </>
     )
-  if (state.connectors.length === 0)
+  if (state.connectors.length === 0 && state.unpinned.length === 0)
     return (
       <p role="status" className="text-sm text-muted-foreground">
         No connectors are configured.
       </p>
     )
-  return <ConnectorList connectors={state.connectors} onRepinned={onRetry} />
+  return (
+    <ConnectorList
+      connectors={state.connectors}
+      unpinned={state.unpinned}
+      onRepinned={onRetry}
+    />
+  )
 }
 
 function ConnectorsView() {
@@ -346,7 +422,9 @@ function ConnectorsView() {
       <header className="flex flex-col gap-0.5">
         <h1 className="text-xl font-semibold tracking-tight">Connectors</h1>
         <p className="min-h-5 text-sm text-muted-foreground">
-          {state.status === "ready" && state.connectors.length > 0 && state.asOf
+          {state.status === "ready" &&
+          state.connectors.length + state.unpinned.length > 0 &&
+          state.asOf
             ? `Status as of ${formatDateTime(state.asOf)}`
             : null}
         </p>

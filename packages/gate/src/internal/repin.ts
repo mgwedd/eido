@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { validateConnectorManifest } from "@eido/schemas"
@@ -82,18 +82,23 @@ export function prepareRepin(
 ): { ok: true; prepared: RepinPrepared } | { ok: false; code: RepinRefusal } {
   const checked = checkReviewed(db, name, reviewed)
   if (!checked.ok) return checked
-  const prepared = prepareManifestPin(db, checked.manifest)
+  return { ok: true, prepared: ceremony(db, checked.manifest) }
+}
+
+/** Prepares the signed `manifest.pin` ceremony over a checked manifest. */
+function ceremony(
+  db: DatabaseSync,
+  manifest: ConnectorManifest
+): RepinPrepared {
+  const prepared = prepareManifestPin(db, manifest)
   return {
-    ok: true,
-    prepared: {
-      id: prepared.id,
-      purpose: "manifest.pin",
-      target: prepared.target,
-      payload: prepared.payload,
-      payloadHash: prepared.payloadHash,
-      nonce: prepared.nonce,
-      challenge: controlApprovalChallenge(prepared),
-    },
+    id: prepared.id,
+    purpose: "manifest.pin",
+    target: prepared.target,
+    payload: prepared.payload,
+    payloadHash: prepared.payloadHash,
+    nonce: prepared.nonce,
+    challenge: controlApprovalChallenge(prepared),
   }
 }
 
@@ -119,7 +124,115 @@ export function applyRepin(
   return { ok: true, manifestHash: manifestHash(checked.manifest) }
 }
 
+// First pin (#627): a connector with no row at all, on a fresh install. The same signed
+// `manifest.pin` ceremony over the reviewed manifest the owner placed on the Mac; it applies
+// only while no row exists for the name, so it can never replace or re-enable an existing pin.
+
+export type FirstPinRefusal =
+  "already_pinned" | "no_reviewed_manifest" | "invalid_manifest"
+
+type FirstPinChecked =
+  | { ok: true; manifest: ConnectorManifest }
+  | { ok: false; code: FirstPinRefusal }
+
+function pinned(db: DatabaseSync, name: string): boolean {
+  return (
+    db.prepare("SELECT 1 FROM connectors WHERE name = ?").get(name) !==
+    undefined
+  )
+}
+
+/** The reviewed manifest, when it can be the first pin of this name: valid and of the same name. */
+function checkFirst(
+  db: DatabaseSync,
+  name: string,
+  reviewed: unknown
+): FirstPinChecked {
+  if (pinned(db, name)) return { ok: false, code: "already_pinned" }
+  if (reviewed === undefined) return { ok: false, code: "no_reviewed_manifest" }
+  const checked = validateConnectorManifest(reviewed)
+  if (!checked.ok || checked.value.name !== name)
+    return { ok: false, code: "invalid_manifest" }
+  return { ok: true, manifest: checked.value }
+}
+
+/** Starts a first pin. Changes no connector state; a new call supersedes an old card. */
+export function prepareFirstPin(
+  db: DatabaseSync,
+  name: string,
+  reviewed: unknown
+):
+  { ok: true; prepared: RepinPrepared } | { ok: false; code: FirstPinRefusal } {
+  const checked = checkFirst(db, name, reviewed)
+  if (!checked.ok) return checked
+  return { ok: true, prepared: ceremony(db, checked.manifest) }
+}
+
+/**
+ * Pins the reviewed manifest of a never-pinned connector, only when the passkey assertion
+ * verifies over the prepared hash and still no row exists. Any failure changes nothing.
+ */
+export function applyFirstPin(
+  db: DatabaseSync,
+  name: string,
+  reviewed: unknown,
+  authorization: ControlAuthorization
+):
+  | { ok: true; manifestHash: string }
+  | { ok: false; code: FirstPinRefusal | "refused" } {
+  const checked = checkFirst(db, name, reviewed)
+  if (!checked.ok) return checked
+  try {
+    pinManifest(db, checked.manifest, "owner", authorization, {
+      firstPin: true,
+    })
+  } catch {
+    return { ok: false, code: "refused" }
+  }
+  return { ok: true, manifestHash: manifestHash(checked.manifest) }
+}
+
+/**
+ * The placed reviewed manifests that could be a first pin: valid, named as their file, and with
+ * no connector row. Listed by name with their tool names and scopes, which the owner reviews
+ * before signing.
+ */
+export function unpinnedReviewed(
+  db: DatabaseSync,
+  names: readonly string[],
+  read: (connector: string) => unknown
+): Array<{ name: string; operations: string[]; scopes: string[] }> {
+  return [...new Set(names)].sort().flatMap((name) => {
+    const checked = checkFirst(db, name, read(name))
+    if (!checked.ok) return []
+    return [
+      {
+        name,
+        operations: checked.manifest.operations.map((op) => op.name),
+        scopes: [...checked.manifest.auth.scopes],
+      },
+    ]
+  })
+}
+
 export const REVIEWED_MANIFEST_DIR = "reviewed-manifests"
+
+const CONNECTOR_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+
+/** The connector names with a reviewed manifest file placed; empty when the directory is absent. */
+export function listReviewedManifests(dataDir: string): string[] {
+  let entries: string[]
+  try {
+    entries = readdirSync(join(dataDir, REVIEWED_MANIFEST_DIR))
+  } catch {
+    return []
+  }
+  return entries
+    .filter((entry) => entry.endsWith(".json"))
+    .map((entry) => entry.slice(0, -".json".length))
+    .filter((name) => CONNECTOR_NAME.test(name))
+    .sort()
+}
 
 /**
  * The owner's reviewed manifest for a connector: undefined when no file is placed, `null` when
@@ -130,7 +243,7 @@ export function readReviewedManifest(
   dataDir: string,
   connector: string
 ): unknown {
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(connector)) return undefined
+  if (!CONNECTOR_NAME.test(connector)) return undefined
   let text: string
   try {
     text = readFileSync(

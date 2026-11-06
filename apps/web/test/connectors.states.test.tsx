@@ -6,6 +6,7 @@ import {
   driveDisabled,
   driveDrifted,
   gmail,
+  gmailUnpinned,
   sharedBridgeOpen,
 } from "./fixtures/connectors"
 import { describeStates } from "./render-states"
@@ -24,13 +25,23 @@ describeStates("Connectors", [
   },
   {
     state: "empty",
-    render: body({ status: "ready", connectors: [], asOf: AS_OF }),
+    render: body({
+      status: "ready",
+      connectors: [],
+      unpinned: [],
+      asOf: AS_OF,
+    }),
     role: "status",
     message: "No connectors are configured.",
   },
   {
     state: "healthy",
-    render: body({ status: "ready", connectors: [gmail], asOf: AS_OF }),
+    render: body({
+      status: "ready",
+      connectors: [gmail],
+      unpinned: [],
+      asOf: AS_OF,
+    }),
     role: "status",
     message: "1 connector",
   },
@@ -39,6 +50,7 @@ describeStates("Connectors", [
     render: body({
       status: "ready",
       connectors: [gmail, driveDegraded],
+      unpinned: [],
       asOf: AS_OF,
     }),
     role: "status",
@@ -49,6 +61,7 @@ describeStates("Connectors", [
     render: body({
       status: "ready",
       connectors: sharedBridgeOpen,
+      unpinned: [],
       asOf: AS_OF,
     }),
     role: "status",
@@ -56,15 +69,36 @@ describeStates("Connectors", [
   },
   {
     state: "disabled",
-    render: body({ status: "ready", connectors: [driveDisabled], asOf: AS_OF }),
+    render: body({
+      status: "ready",
+      connectors: [driveDisabled],
+      unpinned: [],
+      asOf: AS_OF,
+    }),
     role: "status",
     message: "1 connector",
   },
   {
     state: "disabled by manifest drift",
-    render: body({ status: "ready", connectors: [driveDrifted], asOf: AS_OF }),
+    render: body({
+      status: "ready",
+      connectors: [driveDrifted],
+      unpinned: [],
+      asOf: AS_OF,
+    }),
     role: "status",
     message: "1 connector",
+  },
+  {
+    state: "reviewed manifest placed, not pinned",
+    render: body({
+      status: "ready",
+      connectors: [],
+      unpinned: [gmailUnpinned],
+      asOf: AS_OF,
+    }),
+    role: "status",
+    message: "1 connector, 1 not pinned",
   },
   {
     state: "offline",

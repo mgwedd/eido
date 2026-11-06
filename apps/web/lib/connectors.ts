@@ -4,6 +4,8 @@ import {
 } from "@eido/schemas"
 
 export type Connector = GateConnectorSettings["connectors"][number]
+/** A connector whose reviewed manifest is placed on the Mac but has never been pinned. */
+export type Unpinned = NonNullable<GateConnectorSettings["unpinned"]>[number]
 export type Health = Connector["health"]
 
 export const CONNECTORS_URL = "/api/gate/connector-settings"
@@ -93,7 +95,12 @@ export function invitationsWait(connector: Connector): boolean {
 }
 
 export type ConnectorsLoad =
-  | { status: "ready"; connectors: Connector[]; asOf?: string }
+  | {
+      status: "ready"
+      connectors: Connector[]
+      unpinned: Unpinned[]
+      asOf?: string
+    }
   | { status: "offline" }
   | { status: "unauthenticated" }
   | { status: "error" }
@@ -116,6 +123,7 @@ export async function loadConnectors(
     return {
       status: "ready",
       connectors: parsed.value.connectors,
+      unpinned: parsed.value.unpinned ?? [],
       ...(parsed.value.asOf === undefined ? {} : { asOf: parsed.value.asOf }),
     }
   } catch (error) {
