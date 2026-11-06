@@ -32,6 +32,18 @@ function parseArgs(payload: string): Args | undefined {
   return isRecord(parsed["args"]) ? parsed["args"] : {}
 }
 
+/** The target message, never a rationale or another contextual document. */
+export function mailMessageSha256(
+  kind: string,
+  payload: string
+): string | undefined {
+  if (kind !== "email.reply" && kind !== "email.forward") return undefined
+  const sha256 = parseArgs(payload)?.["messageSha256"]
+  return typeof sha256 === "string" && /^[a-f0-9]{64}$/.test(sha256)
+    ? sha256
+    : undefined
+}
+
 /** Text from an unknown payload value, never markup: arrays are comma joined. */
 function plain(value: unknown): string {
   if (typeof value === "string") return value

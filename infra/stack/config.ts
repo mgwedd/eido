@@ -312,6 +312,7 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       env["EIDO_GATE_KEYCHAIN_PATH"] === ""
         ? {}
         : { EIDO_GATE_KEYCHAIN_PATH: env["EIDO_GATE_KEYCHAIN_PATH"] }),
+      // Web Push turns on in the gate when a subject is set; it also needs the Keychain vault.
       ...passThrough(env, PASS_THROUGH.gate),
       EIDO_WEBAUTHN_RP_ID: read(env, "EIDO_WEBAUTHN_RP_ID", tailnetHost),
       EIDO_WEBAUTHN_ORIGIN: read(env, "EIDO_WEBAUTHN_ORIGIN", url.origin),

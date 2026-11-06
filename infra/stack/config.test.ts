@@ -114,6 +114,35 @@ describe("buildStackConfig", () => {
     )
   })
 
+  it("passes the Web Push subject and window to the gate alone", () => {
+    const config = buildStackConfig(
+      input({
+        env: {
+          EIDO_PUSH_VAPID_SUBJECT: "mailto:owner@example.invalid",
+          EIDO_PUSH_WINDOW_MS: "30000",
+        },
+      })
+    )
+    expect(byName(config, "gate").env).toMatchObject({
+      EIDO_PUSH_VAPID_SUBJECT: "mailto:owner@example.invalid",
+      EIDO_PUSH_WINDOW_MS: "30000",
+    })
+    for (const name of ["core", "web"] as const) {
+      expect(byName(config, name).env).not.toHaveProperty(
+        "EIDO_PUSH_VAPID_SUBJECT"
+      )
+    }
+  })
+
+  it("leaves push off when the subject is unset or empty", () => {
+    const config = buildStackConfig(
+      input({ env: { EIDO_PUSH_VAPID_SUBJECT: "" } })
+    )
+    expect(byName(config, "gate").env).not.toHaveProperty(
+      "EIDO_PUSH_VAPID_SUBJECT"
+    )
+  })
+
   it("passes the profile audit rotation epoch to the gate alone", () => {
     const config = buildStackConfig(
       input({ env: { EIDO_PROFILE_AUDIT_EPOCH: "rotation_2" } })

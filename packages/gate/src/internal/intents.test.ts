@@ -672,6 +672,28 @@ describe("history", () => {
 })
 
 describe("the pending list", () => {
+  it.each(["email.reply", "email.forward"] as const)(
+    "projects the %s target hash without the message body or a new nonce",
+    (kind) => {
+      const s = fresh()
+      const sha256 = "ab".repeat(32)
+      const { intentId } = ok(
+        proposeKind(s, sample(kind, { messageSha256: sha256 }))
+      )
+      const nonce = () =>
+        s.db
+          .prepare("SELECT current_nonce FROM intents WHERE id = ?")
+          .get(intentId)?.["current_nonce"]
+      const before = nonce()
+      const list = pendingIntents(s.db)
+      expect(list).toEqual([
+        expect.objectContaining({ id: intentId, messageSha256: sha256 }),
+      ])
+      expect(JSON.stringify(list)).not.toContain(BODY_MARKER)
+      expect(nonce()).toBe(before)
+    }
+  )
+
   it("returns exactly the pending intents, oldest first, with no payload", async () => {
     const s = fresh()
     await signedFileRoots(s.db, {

@@ -140,6 +140,21 @@ describe("formatStackSettings", () => {
   })
 })
 
+describe("formatStackSettings keys", () => {
+  it("writes each key once, so a key in two allowlists is not duplicated", () => {
+    const text = formatStackSettings({
+      EIDO_PUSH_VAPID_SUBJECT: "mailto:owner@example.invalid",
+      EIDO_GATE_KEYCHAIN_PATH: "/k",
+    })
+    expect(
+      text.split("\n").filter((line) => !line.startsWith("#") && line !== "")
+    ).toEqual([
+      "EIDO_GATE_KEYCHAIN_PATH=/k",
+      "EIDO_PUSH_VAPID_SUBJECT=mailto:owner@example.invalid",
+    ])
+  })
+})
+
 describe("readStackSettings", () => {
   it("is empty when there is no file", () => {
     expect(readStackSettings(disk().files, PATH, "darwin")).toEqual({})
