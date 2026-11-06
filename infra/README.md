@@ -2,6 +2,8 @@
 
 Host setup for the Mac: the local stack, `tailscale serve` routes, Proton Bridge supervision, nightly backups, host checks and the pinned llama-server; pf later (#70). Never commit secrets here; `infra/secrets` is denied to agents.
 
+End-to-end check on an iPhone: `infra/device-smoke.md`.
+
 Connecting and reconnecting Gmail and the Proton connectors on the Mac: `infra/connectors.md` (#98).
 
 ## Local stack (#374)
