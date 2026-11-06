@@ -30,7 +30,7 @@ const REQUEST: GateRequest = {
 type Call = { method: string; args: unknown[] }
 
 /** A stand-in client: records each call and answers with `answer`, or throws `fail`. */
-function fake(fail?: unknown): { client: SupervisorClient; calls: Call[] } {
+function fake(fail?: Error): { client: SupervisorClient; calls: Call[] } {
   const calls: Call[] = []
   const answer =
     <T>(method: string, value: T) =>
