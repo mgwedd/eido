@@ -1,9 +1,9 @@
-// Checks a model file and a llama-server binary against `infra/model.lock`. The checks take their
+// Checks a model file against its profile and a llama-server binary against `infra/model.lock`. The checks take their
 // effects (stat, hash, run) as arguments, so tests need no real model or binary.
 import { createHash } from "node:crypto"
 import { createReadStream } from "node:fs"
 
-import type { ModelLock } from "./lock.ts"
+import type { ModelLock, ModelProfile } from "./lock.ts"
 
 export type RunResult = { code: number; stdout: string; stderr: string }
 
@@ -35,7 +35,7 @@ export function sha256File(path: string): Promise<string> {
  */
 export async function verifyModel(
   path: string,
-  lock: Pick<ModelLock, "size" | "sha256">,
+  lock: Pick<ModelProfile, "size" | "sha256">,
   probe: FileProbe
 ): Promise<ModelCheck> {
   const size = await probe.size(path)

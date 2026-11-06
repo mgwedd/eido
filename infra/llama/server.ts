@@ -1,15 +1,23 @@
 // llama-server arguments and the HTTP checks run against it: readiness (`/health`), the loaded
 // chat template (`/props`), the rendered prompt for a fixed conversation (`/apply-template`) and
 // one JSON-schema-constrained completion. HTTP goes through an injected fetch.
+import type { ModelProfile } from "./lock.ts"
 
 /** llama-server binds this address only; nothing else on the LAN or tailnet can reach it. */
 export const LOOPBACK = "127.0.0.1"
 
 /**
- * The flags measured on the host in #69, with the bind address fixed. `--jinja` applies the
- * model's own chat template from the GGUF.
+ * The flags measured on the host in #69, with the bind address fixed, then the profile's chat
+ * template kwargs and its own flags. `--jinja` applies the model's own chat template from the GGUF;
+ * `--chat-template-kwargs` makes the profile's kwargs the default for every templated request, so
+ * core and the template check render with them. The lock refuses profile flags that would change
+ * the model, the bind or the template.
  */
-export function serverArgs(modelPath: string, port: number): string[] {
+export function serverArgs(
+  modelPath: string,
+  port: number,
+  profile: Pick<ModelProfile, "chatTemplateKwargs" | "flags">
+): string[] {
   return [
     "-m",
     modelPath,
@@ -34,8 +42,10 @@ export function serverArgs(modelPath: string, port: number): string[] {
     "2048",
     "-t",
     "8",
-    "--reasoning",
-    "off",
+    ...(profile.chatTemplateKwargs === undefined
+      ? []
+      : ["--chat-template-kwargs", JSON.stringify(profile.chatTemplateKwargs)]),
+    ...profile.flags,
   ]
 }
 
@@ -95,10 +105,10 @@ export async function waitHealthy(
 
 export type Check = { ok: true } | { ok: false; message: string }
 
-/** `/props` must report a chat template that contains the lock's marker. */
+/** `/props` must report a chat template, one that contains the profile's marker when it has one. */
 export async function checkProps(
   port: number,
-  marker: string,
+  marker: string | undefined,
   fetch: Fetch
 ): Promise<Check> {
   let body: unknown
@@ -108,9 +118,9 @@ export async function checkProps(
     return { ok: false, message: `/props failed: ${errorText(error)}` }
   }
   const template = isRecord(body) ? body["chat_template"] : undefined
-  if (typeof template !== "string")
+  if (typeof template !== "string" || template === "")
     return { ok: false, message: "/props has no chat_template" }
-  if (!template.includes(marker))
+  if (marker !== undefined && !template.includes(marker))
     return {
       ok: false,
       message: `/props chat_template does not contain ${JSON.stringify(marker)}`,
