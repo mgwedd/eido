@@ -21,6 +21,7 @@ import { Skeleton } from "@eido/ui/components/skeleton"
 import { QueueContextUsed } from "@/components/queue-context-used"
 import { QueueEditSheet } from "@/components/queue-edit-sheet"
 import { InjectionFlag } from "@/components/injection-flag"
+import { MailSignals } from "@/components/mail-signals"
 import { useReachability } from "@/components/reachability"
 import { ShortcutKeys } from "@/components/shortcuts-provider"
 import { useKeydown } from "@/hooks/use-keydown"
@@ -39,6 +40,7 @@ import {
   REJECT_REASONS,
   buildCard,
   historyRows,
+  mailMessageSha256,
   parseConfirmField,
   swipeOutcome,
   waitingSince,
@@ -344,6 +346,10 @@ function ApprovalCard({
     card.status === "ready" && !isConfirm
       ? buildCard(card.prepared.kind, card.prepared.payload)
       : undefined
+  const messageSha256 =
+    card.status === "ready"
+      ? mailMessageSha256(card.prepared.kind, card.prepared.payload)
+      : undefined
   const waiting = formatWaiting(
     waitingSince(
       history.status === "ready" ? history.history : undefined,
@@ -594,6 +600,13 @@ function ApprovalCard({
               }
             />
           </div>
+          {messageSha256 ? (
+            <MailSignals
+              key={messageSha256}
+              sha256={messageSha256}
+              defaultExpanded
+            />
+          ) : null}
           {card.status === "loading" ? (
             <>
               <p role="status" className="sr-only">
@@ -931,6 +944,17 @@ function QueueRow({
           {formatWaiting(intent.createdAt, now)}
         </span>
       </button>
+      {intent.injection || intent.messageSha256 ? (
+        <div className="flex flex-col gap-2 px-3 pb-3">
+          <InjectionFlag injection={intent.injection} />
+          {intent.messageSha256 ? (
+            <MailSignals
+              key={intent.messageSha256}
+              sha256={intent.messageSha256}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </li>
   )
 }
