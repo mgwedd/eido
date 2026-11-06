@@ -265,11 +265,37 @@ The app refuses to start (`instrumentation.ts`) if `EIDO_OWNER_EMAIL` is missing
 
 What sign-in does not cover: on the tailnet origin, `tailscale serve` sends `/api/gate/*` and `/api/core/*` straight to the gate and core, not through Next, so the proxy never sees those requests. The gate's own checks still guard it there. Every approval route needs the gate's passkey session cookie (`eido_gate_session`, from Unlock), and every decision needs the owner's passkey signature. The Auth0 cookie means nothing to the gate (see the gate test "401s … with only the web app's sign-in cookie").
 
+### Actions
+
+`apps/web/lib/auth/permissions.ts` decides what a role may do on a page it can open. Permissions are named `resource:action`, and the map is default-deny: a role holds only the permissions listed for it, and a name not on the list is denied to everyone. Change the assistant's access by changing this map and this table in the same PR.
+
+| Permission             | Action                                                   | Owner | Assistant |
+| ---------------------- | -------------------------------------------------------- | ----- | --------- |
+| `approval:decide`      | approve or deny a queued intent, signed with the passkey | yes   | no        |
+| `approval:edit`        | change a queued draft's fields before deciding           | yes   | no        |
+| `approval:undo`        | undo an executed action inside its window                | yes   | no        |
+| `passkey:unlock`       | start the gate's passkey session                         | yes   | no        |
+| `passkey:enroll`       | register a passkey on this device                        | yes   | no        |
+| `ask:query`            | ask a question over the indexed mail and documents       | yes   | no        |
+| `draft:create`         | have Eido draft a reply for the queue                    | yes   | no        |
+| `obligation:resolve`   | mark a ledger obligation done                            | yes   | no        |
+| `document:update`      | set a document's type, or file a document action         | yes   | no        |
+| `folders:update`       | add, review or remove a watched folder                   | yes   | no        |
+| `connector:update`     | repin, sync or assign accounts on a connector            | yes   | no        |
+| `profile:update`       | edit the profile, entities and their assignments         | yes   | no        |
+| `notifications:update` | add or remove a push subscription                        | yes   | no        |
+
+The assistant holds none yet; the hand-off workspace (#382) adds theirs with its pages.
+
+Every mutating server action and route handler in `apps/web` calls `requirePermission(user, permission, route)` before it acts. On a refusal it answers `403` and logs one `permission_denied` line with the role, the permission, the route and the Auth0 user id (`sub`), never the email address. `apps/web/test/auth-handlers.test.ts` lists every `POST`, `PUT`, `PATCH` and `DELETE` route handler and every server action, and fails if one does not call it. The UI uses `can(user, permission)` to hide a control the user lacks, so nobody sees a button that only fails.
+
+A permission never replaces the owner's passkey signature: every gate write still needs it. Today the web app has no mutating server action or route handler. The browser sends each action straight to `/api/core` or `/api/gate` (step 8 above), so these checks guard what Next serves, and the gate's own checks guard the rest.
+
 ## 9. Check it by hand
 
 1. Signed out, open `/queue`. You land on Universal Login, with no sign-up link. `curl -i http://localhost:3000/healthz` answers `204` without a session.
 2. Sign in as the owner with the emailed code. You come back to `/queue`, and every page opens.
 3. Unlock with the passkey, then approve an item. Without Unlock, the gate answers `401`.
-4. Sign in as an assistant. Every page answers `403` with a sign-out button.
+4. Sign in as an assistant. Every page answers `403` with a sign-out button, and the server log shows no email address.
 5. Sign in with an address that isn't invited. Universal Login refuses it and offers no sign-up, because the connection has sign-ups off. To check the second line on its own, open Actions → `invite-only-signup` → Test in the dashboard and run it with an event whose `user.app_metadata` is empty: it returns a deny. Run step 4's binding check too.
 6. Sign out from the sidebar or the 403 page. You return to Universal Login, and the next page load asks you to sign in again.
