@@ -6,6 +6,22 @@ export type BriefItemLine = Extract<
   { kind: "overdue" | "due" | "changed" | "needs-you" }
 >
 export type BriefMoreLine = Extract<BriefLine, { kind: "more" }>
+export type BriefDeferredLine = Extract<BriefLine, { kind: "deferred" }>
+
+/**
+ * A deferred line that opens in the Ledger: the obligation ones. Extraction lines have no web
+ * destination yet, so they are left out.
+ */
+export function isDeferredObligationLine(
+  line: BriefLine
+): line is BriefDeferredLine {
+  return line.kind === "deferred" && line.ledger.type === "obligation"
+}
+
+/** The Ledger's focused-row address for an obligation. */
+export function ledgerObligationUrl(obligationId: string): string {
+  return `/ledger?obligation=${encodeURIComponent(obligationId)}`
+}
 
 export const BRIEF_URL = "/api/core/brief/latest"
 
@@ -22,7 +38,7 @@ export function filterRenderableBriefLines(
 ): BriefLine[] {
   return lines.filter((line) => {
     if (line.kind === "more") return true
-    if (line.kind === "deferred") return true
+    if (line.kind === "deferred") return isDeferredObligationLine(line)
     return (
       "source" in line &&
       Boolean(line.source) &&

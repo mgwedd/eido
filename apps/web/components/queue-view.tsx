@@ -21,11 +21,12 @@ import { Skeleton } from "@eido/ui/components/skeleton"
 import { QueueContextUsed } from "@/components/queue-context-used"
 import { QueueEditSheet } from "@/components/queue-edit-sheet"
 import { InjectionFlag } from "@/components/injection-flag"
+import { useReachability } from "@/components/reachability"
 import { ShortcutKeys } from "@/components/shortcuts-provider"
 import { useKeydown } from "@/hooks/use-keydown"
 import { shortHash } from "@/lib/approval/challenge"
 import { prepareApproval, signApproval } from "@/lib/approval/sign"
-import { loadCredentialStatus } from "@/lib/auth/unlock"
+import { expiredUnlockUrl, loadCredentialStatus } from "@/lib/auth/unlock"
 import { enrolUrl } from "@/lib/enrol"
 import {
   confirmFieldIntent,
@@ -52,6 +53,13 @@ import { isInteractiveTarget, isShortcutEvent } from "@/lib/shortcuts"
 import { formatWaiting } from "@/lib/relative-time"
 import { describeKind, type PendingIntent } from "@/lib/today"
 import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
+
+/** The session ended: sign in again and come back to this page. */
+function goToUnlock() {
+  window.location.replace(
+    expiredUnlockUrl(window.location.pathname + window.location.search)
+  )
+}
 
 type ListState =
   | { status: "loading" }
@@ -125,6 +133,7 @@ function useQueue() {
     const controller = new AbortController()
     void loadQueue(controller.signal).then((result) => {
       if (controller.signal.aborted) return
+      if (!result.ok && result.status === 401) return goToUnlock()
       setState(
         result.ok
           ? { status: "ready", intents: result.value }
@@ -305,6 +314,8 @@ function ApprovalCard({
     void (async () => {
       const result = await prepareApproval(intent.id, controller.signal)
       if (controller.signal.aborted) return
+      if (!result.ok && result.error.code === "unauthenticated")
+        return goToUnlock()
       if (!result.ok)
         return setCard({
           status:
@@ -319,6 +330,7 @@ function ApprovalCard({
     const controller = new AbortController()
     void loadHistory(intent.id, controller.signal).then((result) => {
       if (controller.signal.aborted) return
+      if (!result.ok && result.status === 401) return goToUnlock()
       setHistory(
         result.ok
           ? { status: "ready", history: result.value }
@@ -340,8 +352,14 @@ function ApprovalCard({
     now
   )
   const busy = action.status === "signing"
+  const offline = useReachability() === "unreachable"
   const canApprove =
-    card.status === "ready" && view !== undefined && !busy && passkeyEnrolled
+    card.status === "ready" &&
+    view !== undefined &&
+    !busy &&
+    !offline &&
+    passkeyEnrolled
+  const canReject = !busy && !offline
   const canConfirm =
     card.status === "ready" && confirmData !== undefined && !busy
 
@@ -350,6 +368,7 @@ function ApprovalCard({
     setAction({ status: "signing" })
     const result = await signApproval(card.prepared)
     if (result.ok) return onDecided("Approved")
+    if (result.error.code === "unauthenticated") return goToUnlock()
     if (result.error.code === "already_decided")
       return onDecided("Already decided")
     if (result.error.code === "payload_changed") {
@@ -371,6 +390,7 @@ function ApprovalCard({
     card.status === "ready" &&
     view !== undefined &&
     !busy &&
+    !offline &&
     editableFields(card.prepared.payload).length > 0
 
   const submitEdit = async (values: Record<string, string>) => {
@@ -381,6 +401,7 @@ function ApprovalCard({
     setAction({ status: "signing" })
     const result = await editIntent(intent.id, edited)
     if (!result.ok) {
+      if (result.error.code === "unauthenticated") return goToUnlock()
       setAction({ status: "idle" })
       if (
         result.error.code === "already_decided" ||
@@ -392,6 +413,8 @@ function ApprovalCard({
       return setEditError(editRefusalMessage(result.error))
     }
     const signed = await signApproval(result.value)
+    if (!signed.ok && signed.error.code === "unauthenticated")
+      return goToUnlock()
     setEditOpen(false)
     if (signed.ok) return onDecided("Approved")
     // The gate has already replaced this intent with the edited one, so the queue reloads onto it.
@@ -446,7 +469,7 @@ function ApprovalCard({
         event.preventDefault()
         setEditError(null)
         setEditOpen(true)
-      } else if (event.key === "r" && !busy) {
+      } else if (event.key === "r" && canReject) {
         event.preventDefault()
         setRejectOpen(true)
       } else if (event.key === "Enter" && !isInteractiveTarget(event.target)) {
@@ -459,6 +482,8 @@ function ApprovalCard({
   const reject = async (code?: (typeof REJECT_REASONS)[number]["code"]) => {
     setAction({ status: "signing" })
     const result = await rejectIntent(intent.id, code)
+    if (!result.ok && result.error.code === "unauthenticated")
+      return goToUnlock()
     setRejectOpen(false)
     if (result.ok)
       return onDecided(code ? "Rejected · reason saved for evals" : "Rejected")
@@ -478,7 +503,7 @@ function ApprovalCard({
       if (outcome === "reject") onSkip?.()
     } else {
       if (outcome === "approve" && canApprove) void approve()
-      if (outcome === "reject" && !busy) setRejectOpen(true)
+      if (outcome === "reject" && canReject) setRejectOpen(true)
     }
   }
 
@@ -800,7 +825,7 @@ function ApprovalCard({
             variant="outline"
             size="lg"
             className="min-h-11"
-            disabled={busy}
+            disabled={!canReject}
             aria-keyshortcuts="r"
             onClick={() => setRejectOpen(true)}
           >
@@ -837,11 +862,16 @@ function ApprovalCard({
               href={enrolUrl("/queue")}
               className={`${buttonVariants({ size: "lg" })} min-h-[60px] flex-1`}
             >
-              Enrol this device
+              Enroll this device
             </Link>
           )}
         </div>
       )}
+      {offline && !isConfirm ? (
+        <p className="text-center text-xs text-muted-foreground">
+          Approvals need a connection.
+        </p>
+      ) : null}
       {card.status === "ready" ? (
         <QueueEditSheet
           open={editOpen}
@@ -905,6 +935,9 @@ function QueueRow({
   )
 }
 
+const clockTime = (date: Date) =>
+  `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
+
 /** Whether the gate has a passkey for this device; undefined until it answers, and when it cannot. */
 function usePasskeyEnrolled(): boolean | undefined {
   const [enrolled, setEnrolled] = React.useState<boolean>()
@@ -922,6 +955,7 @@ function usePasskeyEnrolled(): boolean | undefined {
 function QueueView({ initialId }: { initialId?: string }) {
   const { state, reload, remove } = useQueue()
   const passkeyEnrolled = usePasskeyEnrolled()
+  const offline = useReachability() === "unreachable"
   const [selectedId, setSelectedId] = React.useState(initialId)
   const [message, setMessage] = React.useState<string | null>(null)
   const [now] = React.useState(() => new Date())
@@ -981,6 +1015,14 @@ function QueueView({ initialId }: { initialId?: string }) {
         <p role="status" className="text-sm">
           {message}
         </p>
+      ) : null}
+      {offline && state.status === "ready" && intents.length > 0 ? (
+        <Alert role="status">
+          <AlertDescription>
+            <b>Offline.</b> Approvals need a connection.
+            {` Cards below were loaded at ${clockTime(now)} and cannot be signed until the Mac is reachable.`}
+          </AlertDescription>
+        </Alert>
       ) : null}
       {state.status === "loading" ? (
         <>
