@@ -104,6 +104,7 @@ export {
   validateCoreApiError,
   validateCoreApiTodayDueSoon,
   validateCoreApiBrief,
+  validateCoreApiMailSignals,
   validateCoreApiConversationSearch,
   validateCoreApiConversationGet,
   validateCoreApiSimpleFinSync,

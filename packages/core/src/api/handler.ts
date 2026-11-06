@@ -51,6 +51,7 @@ import {
   conversationGetRoute,
 } from "./conversation-get-route"
 import { BRIEF_PATH, briefRoute } from "./brief-route"
+import { MAIL_SIGNALS_PATH, mailSignalsRoute } from "./mail-signals-route"
 import { dueSoonRoute } from "./due-soon"
 import { SIMPLEFIN_SYNC_PATH, simplefinSyncRoute } from "./simplefin-sync-route"
 import type { SimpleFinSyncer } from "./simplefin-sync-route"
@@ -580,6 +581,14 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
     if (briefMatch !== null && deps.documents !== undefined) {
       if (method !== "GET") return notAllowed("GET")
       const result = briefRoute(deps.documents.db, briefMatch)
+      if (result.ok) return json(result.body)
+      return failure(result.code, result.message)
+    }
+
+    const mailSignalsMatch = MAIL_SIGNALS_PATH.exec(path)
+    if (mailSignalsMatch !== null && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const result = mailSignalsRoute(deps.documents.db, mailSignalsMatch)
       if (result.ok) return json(result.body)
       return failure(result.code, result.message)
     }

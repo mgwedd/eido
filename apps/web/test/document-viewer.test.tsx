@@ -665,3 +665,54 @@ describe("DocumentViewer type control", () => {
     expect(view.textContent).toContain("Set by you")
   })
 })
+
+describe("DocumentViewer phishing signals", () => {
+  const MAIL_VIEW: CoreApiDocumentView = {
+    ...SAMPLE_VIEW,
+    document: {
+      ...SAMPLE_VIEW.document,
+      name: "Re: roofing invoice",
+      source: "gmail",
+      mime: "message/rfc822",
+    },
+  }
+
+  function stubMail(view: CoreApiDocumentView) {
+    const fetcher = vi.fn((url: RequestInfo | URL) =>
+      Promise.resolve(
+        toUrlString(url).startsWith("/api/core/mail/")
+          ? Response.json({ signals: [{ kind: "spf_fail" }] })
+          : Response.json(view)
+      )
+    )
+    vi.stubGlobal("fetch", fetcher)
+    return fetcher
+  }
+
+  test("a mail message opens its signal banner in the detail card", async () => {
+    const fetcher = stubMail(MAIL_VIEW)
+    const view = await renderViewer({ sha256: SHA256 })
+    expect(
+      fetcher.mock.calls.some(
+        ([url]) => toUrlString(url) === `/api/core/mail/${SHA256}/signals`
+      )
+    ).toBe(true)
+    const chip = view.querySelector("button[aria-expanded]")
+    expect(chip?.textContent).toBe("Possible phishing · 1")
+    expect(chip?.getAttribute("aria-expanded")).toBe("true")
+    expect(
+      view.querySelector('[data-slot="alert"]:not([hidden])')?.textContent
+    ).toContain("Sender failed SPF")
+  })
+
+  test("a file asks for no signals and shows no chip", async () => {
+    const fetcher = stubMail(SAMPLE_VIEW)
+    const view = await renderViewer({ sha256: SHA256 })
+    expect(
+      fetcher.mock.calls.some(([url]) =>
+        toUrlString(url).startsWith("/api/core/mail/")
+      )
+    ).toBe(false)
+    expect(view.querySelector('[data-slot="mail-signals"]')).toBeNull()
+  })
+})

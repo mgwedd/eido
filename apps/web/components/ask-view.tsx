@@ -25,6 +25,10 @@ import { Skeleton } from "@eido/ui/components/skeleton"
 import { AskSearchView } from "@/components/ask-search"
 import { InjectionFlag } from "@/components/injection-flag"
 import {
+  CitationSignalMark,
+  useMailSignalCounts,
+} from "@/components/mail-signals"
+import {
   ASK_ROUTE,
   isSearchRoute,
   parseRoute,
@@ -48,7 +52,13 @@ export type AskState =
   | { status: "ready"; question: string; result: CoreApiAskResponse }
 export type ProposalState = ProposalLoad | { status: "proposing" }
 
-function SourceList({ result }: { result: CoreApiAskResponse }) {
+function SourceList({
+  result,
+  signalCounts,
+}: {
+  result: CoreApiAskResponse
+  signalCounts: ReadonlyMap<string, number>
+}) {
   return (
     <Card className="min-w-0 self-start">
       <CardHeader>
@@ -79,6 +89,7 @@ function SourceList({ result }: { result: CoreApiAskResponse }) {
                     injectionSuspected={citation.injectionSuspected}
                     reasons={citation.injectionReasons}
                   />
+                  <CitationMark count={signalCounts.get(citation.documentId)} />
                 </div>
                 <p>{citation.title || citation.sourceRef}</p>
                 <p className="text-xs text-muted-foreground">
@@ -103,6 +114,10 @@ function SourceList({ result }: { result: CoreApiAskResponse }) {
       </CardContent>
     </Card>
   )
+}
+
+function CitationMark({ count }: { count: number | undefined }) {
+  return count === undefined ? null : <CitationSignalMark count={count} />
 }
 
 export function AskScreen({
@@ -132,6 +147,12 @@ export function AskScreen({
 }) {
   const result = state.status === "ready" ? state.result : undefined
   const figures = result ? computedFigures(result) : []
+  const signalCounts = useMailSignalCounts(
+    result?.citations.map((citation) => citation.documentId) ?? []
+  )
+  const citedDocument = new Map(
+    result?.citations.map((citation) => [citation.tag, citation.documentId])
+  )
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5">
       <header className="flex items-center justify-between gap-3">
@@ -212,13 +233,19 @@ export function AskScreen({
                       <p className="break-words whitespace-pre-wrap">
                         {answerParts(result).map((part, index) =>
                           part.tag ? (
-                            <span
-                              key={index}
-                              className="font-mono text-muted-foreground"
-                              aria-label={`Source ${part.tag}`}
-                            >
-                              {part.text}
-                            </span>
+                            <React.Fragment key={index}>
+                              <span
+                                className="font-mono text-muted-foreground"
+                                aria-label={`Source ${part.tag}`}
+                              >
+                                {part.text}
+                              </span>
+                              <CitationMark
+                                count={signalCounts.get(
+                                  citedDocument.get(part.tag) ?? ""
+                                )}
+                              />
+                            </React.Fragment>
                           ) : (
                             <React.Fragment key={index}>
                               {part.text}
@@ -264,7 +291,7 @@ export function AskScreen({
             </>
           )}
         </div>
-        {result && <SourceList result={result} />}
+        {result && <SourceList result={result} signalCounts={signalCounts} />}
         {result && (
           <>
             {actionableFollowUps(result).length > 0 && (
