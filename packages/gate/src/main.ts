@@ -39,6 +39,7 @@ import type { Handler, LoopbackHost } from "./internal/http"
 import { fileLog } from "./internal/log"
 import { defaultBackupStampPath } from "./internal/backup-status"
 import { phoneHandler } from "./internal/phone-routes"
+import { createSupervisorClient } from "./internal/supervisor-client"
 import { listReviewedManifests, readReviewedManifest } from "./internal/repin"
 import { createPushNotifier } from "./internal/push-notify"
 import {
@@ -121,6 +122,8 @@ export const BASIC_URL_READ_CONNECTORS = [
   },
 ] as const
 export const EGRESS_PORT_ENV = "EIDO_GATE_EGRESS_PORT"
+/** The stack supervisor's Unix socket (#659), set by the stack; unset, the admin routes answer 503. */
+export const SUPERVISOR_SOCKET_ENV = "EIDO_GATE_SUPERVISOR_SOCKET"
 
 export type EgressProxyConfig = {
   vault: VaultConfig
@@ -165,6 +168,8 @@ export type GateConfig = {
   /** Native helper binary and its pinned SHA-256, both required for file execution. */
   fileHelper?: FileHelperConfig
   backupStampPath?: string
+  /** The stack supervisor's socket (#659); absent outside the stack, so the admin routes answer 503. */
+  supervisorSocketPath?: string
   /** The calendar connector's sent record tracker (#21, #290). */
   calendarTracker?: CalendarTracker
   /** Overrides the stored attendees reader for policy (#168, #290). */
@@ -242,12 +247,19 @@ export function gateConfig(
     backupOverride !== undefined && backupOverride !== ""
       ? defaultBackupStampPath(env)
       : undefined
+  const supervisorSocket = read(SUPERVISOR_SOCKET_ENV)
+  if (supervisorSocket !== "" && !isAbsolute(supervisorSocket)) {
+    throw new Error(`${SUPERVISOR_SOCKET_ENV} must be an absolute path`)
+  }
   const config: GateConfig = {
     dataDir: read(REQUIRED.dataDir),
     socketPath: read(REQUIRED.socketPath),
     controlSocketPath: read(REQUIRED.controlSocketPath),
     webAuthn: { rpId: read(REQUIRED.rpId), origin: read(REQUIRED.origin) },
     ...(backupStampPath === undefined ? {} : { backupStampPath }),
+    ...(supervisorSocket === ""
+      ? {}
+      : { supervisorSocketPath: supervisorSocket }),
   }
   const port = env["EIDO_GATE_PHONE_PORT"] ?? ""
   const bridge = bridgeConfig(env)
@@ -554,6 +566,10 @@ export async function runGate(
             [PROTON_CALENDAR_CONNECTOR]: bridgeProbe(mail),
           }),
     }
+    const supervisor =
+      config.supervisorSocketPath === undefined
+        ? undefined
+        : createSupervisorClient({ socketPath: config.supervisorSocketPath })
     const state = () => ({
       probes,
       fileHelper: nativeFiles,
@@ -564,6 +580,7 @@ export async function runGate(
       reviewedManifest: (connector: string) =>
         readReviewedManifest(config.dataDir, connector),
       reviewedManifests: () => listReviewedManifests(config.dataDir),
+      ...(supervisor === undefined ? {} : { supervisor }),
       notifyPending: notifier?.notifyPending,
       ...(config.push === undefined
         ? {}

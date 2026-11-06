@@ -6,3 +6,4 @@
 - Every change ships with tests.
 - Never log token values or payload bodies.
 - Everything outside `src/index.ts` is internal; do not export it.
+- The admin routes (`src/internal/admin-routes.ts`) only relay the stack supervisor over its socket (`EIDO_GATE_SUPERVISOR_SOCKET`). Reads need a session, changes need a step-up (`elevated`), and no supervisor text reaches a reply unchecked.

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateAdminStack",
+  "description": "Response of GET /admin/stack on the phone listener (#659): the stack supervisor's job status, or, when its socket does not answer, only that it is unavailable. The gate is answering either way, since it served the reply.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "supervisor": {
+          "const": "available"
+        },
+        "jobs": {
+          "$ref": "stack-job-status.schema.json"
+        }
+      },
+      "required": ["supervisor", "jobs"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "supervisor": {
+          "const": "unavailable"
+        }
+      },
+      "required": ["supervisor"],
+      "additionalProperties": false
+    }
+  ]
+}

@@ -31,6 +31,7 @@ import type {
 } from "@eido/schemas"
 import { issueNonce, reject, verifyApproval } from "./approvals"
 import type { PreparedApproval } from "./approvals"
+import { adminRoute } from "./admin-routes"
 import { apiError, NOT_FOUND } from "./http"
 import type { GateRequest, Handler, Reply } from "./http"
 import type { ExecutionResult } from "./executor"
@@ -91,13 +92,15 @@ import {
   sessionToken,
 } from "./sessions"
 import type { Clock, Elevations } from "./sessions"
+import type { SupervisorClient } from "./supervisor-client"
 import type { WebAuthnConfig } from "./webauthn"
 
 // The phone listener (#85): what the PWA calls, through `tailscale serve`, to sign in with its
 // passkey and to list, prepare, edit and decide approvals. It answers only the Host headers it
 // is given (421 otherwise) and only below its base path. Every route outside the table below is
-// 404 before any session check, so the admin routes (issuing enrolment codes, revocation,
-// policy; #78) and the data plane's routes do not exist here, signed in or not. The one
+// 404 before any session check, so the control socket's routes (issuing enrolment codes,
+// revocation, policy; #78) and the data plane's routes do not exist here, signed in or not. The
+// stack admin routes (`/admin/*`, #659) relay the stack supervisor; see admin-routes.ts. The one
 // exception is the allowed-folder list (`GET /file-roots`, #574), served beside the signed
 // ceremony that changes it; file reads (`POST /files`) stay on the data plane. Credential
 // status, login and enrolment need no session: enrolment needs a single-use code the owner
@@ -119,6 +122,8 @@ export type PhoneState = {
   reviewedManifests?: () => string[]
   /** The gate-side native helper that identifies a requested file root (#574); never the phone's. */
   fileHelper?: FileHelper
+  /** The stack supervisor's socket client (#659); undefined when the gate runs outside the stack. */
+  supervisor?: SupervisorClient
 }
 
 export type PhoneRoute = {
@@ -179,6 +184,14 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/file-roots", tier: "session" },
   { method: "POST", path: "/file-roots/prepare", tier: "session" },
   { method: "POST", path: "/file-roots/complete", tier: "signed" },
+  { method: "GET", path: "/admin/stack", tier: "session" },
+  { method: "GET", path: "/admin/doctor", tier: "session" },
+  { method: "POST", path: "/admin/stack/start", tier: "elevated" },
+  { method: "POST", path: "/admin/stack/stop", tier: "elevated" },
+  { method: "POST", path: "/admin/stack/restart", tier: "elevated" },
+  { method: "GET", path: "/admin/models", tier: "session" },
+  { method: "POST", path: "/admin/models/:id/use", tier: "elevated" },
+  { method: "POST", path: "/admin/models/:id/fetch", tier: "elevated" },
 ] as const satisfies readonly PhoneRoute[]
 
 type RoutePath = (typeof PHONE_ROUTES)[number]["path"]
@@ -1129,6 +1142,15 @@ function route(
       return prepareFileRootsRoute(request, state)
     case "/file-roots/complete":
       return completeFileRootsRoute(request, state)
+    case "/admin/stack":
+    case "/admin/doctor":
+    case "/admin/stack/start":
+    case "/admin/stack/stop":
+    case "/admin/stack/restart":
+    case "/admin/models":
+    case "/admin/models/:id/use":
+    case "/admin/models/:id/fetch":
+      return adminRoute(state.supervisor, path, matched.id, request, jsonBody)
   }
 }
 

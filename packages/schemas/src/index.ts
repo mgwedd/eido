@@ -14,6 +14,7 @@ export {
 } from "./generated/prompt"
 export {
   INTENT_JSON_SCHEMA,
+  validateGateAdminStack,
   validateGateApiError,
   validateGateAuditChainStatus,
   validateGateAuditPage,

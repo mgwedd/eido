@@ -34,6 +34,7 @@ var SENSITIVE_SEGMENTS = [
   "enrol",
   "enroll",
   "unlock",
+  "admin",
 ]
 
 var NETWORK_ONLY_PATHS = ["/healthz", "/sw.js", "/sw-routing.js"]

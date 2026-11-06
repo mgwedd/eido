@@ -2995,3 +2995,121 @@ describe("tierRefusal", () => {
     expect(intentState(id)).toBe("pending")
   })
 })
+
+describe("phoneHandler: admin routes (#659)", () => {
+  const JOBS = { processes: [], tasks: [] }
+  const seen: string[] = []
+
+  beforeEach(() => {
+    seen.length = 0
+    const answer =
+      <T>(name: string, value: T) =>
+      (...args: unknown[]) => {
+        seen.push(`${name} ${JSON.stringify(args)}`)
+        return Promise.resolve(value)
+      }
+    state.supervisor = {
+      doctor: answer("doctor", { checks: [] }),
+      jobs: answer("jobs", JOBS),
+      start: answer("start", JOBS),
+      stop: answer("stop", JOBS),
+      restart: answer("restart", JOBS),
+      models: answer("models", { active: "small", profiles: [] }),
+      useModel: answer("useModel", { active: "small", profiles: [] }),
+      fetchModel: answer("fetchModel", JOBS),
+      settings: answer("settings", { sha256: null, settings: {} }),
+      writeSettings: answer("writeSettings", { sha256: null, settings: {} }),
+    }
+  })
+
+  async function elevate(cookie: string) {
+    const options = await call("POST", "/auth/step-up/options", { cookie })
+    const parsed = validateGateLoginOptions(options.body)
+    if (!parsed.ok) throw new Error("step-up options do not match the schema")
+    const reply = await call("POST", "/auth/step-up", {
+      cookie,
+      body: {
+        assertion: assertion(auth, parsed.value.challenge, { signCount: 1 }),
+      },
+    })
+    if (reply.status !== 200) throw new Error("step-up refused")
+  }
+
+  it.each([
+    ["GET", "/admin/stack"],
+    ["GET", "/admin/doctor"],
+    ["GET", "/admin/models"],
+    ["POST", "/admin/stack/start"],
+    ["POST", "/admin/models/small/use"],
+  ])("refuses %s %s without a session", async (method, path) => {
+    const reply = await call(method, path, { body: { names: ["core"] } })
+    expect([reply.status, code(reply)]).toEqual([401, "unauthenticated"])
+    expect(seen).toEqual([])
+  })
+
+  it("reads the stack, doctor and models with a session alone", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    expect((await call("GET", "/admin/stack", { cookie })).body).toEqual({
+      supervisor: "available",
+      jobs: JOBS,
+    })
+    expect((await call("GET", "/admin/doctor", { cookie })).status).toBe(200)
+    expect((await call("GET", "/admin/models", { cookie })).status).toBe(200)
+    expect(seen).toEqual(["jobs []", "doctor []", "models []"])
+  })
+
+  it.each([
+    ["/admin/stack/start", { names: ["core"] }],
+    ["/admin/stack/stop", { names: ["core"] }],
+    ["/admin/stack/restart", { names: ["llama"] }],
+    ["/admin/models/small/use", {}],
+    ["/admin/models/small/fetch", {}],
+  ])("refuses %s to a session without a step-up", async (path, body) => {
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("POST", path, { cookie, body })
+    expect([reply.status, code(reply)]).toEqual([403, "step_up_required"])
+    expect(seen).toEqual([])
+  })
+
+  it("relays stack and model changes once the session is stepped up", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    await elevate(cookie)
+    const stopped = await call("POST", "/admin/stack/stop", {
+      cookie,
+      body: { names: ["core", "llama"] },
+    })
+    expect(stopped.status).toBe(202)
+    const fetched = await call("POST", "/admin/models/large/fetch", { cookie })
+    expect(fetched.status).toBe(202)
+    expect(seen).toEqual(['stop [["core","llama"]]', 'fetchModel ["large"]'])
+  })
+
+  it("never lets the web app stop the gate or itself", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    await elevate(cookie)
+    const reply = await call("POST", "/admin/stack/stop", {
+      cookie,
+      body: { names: ["gate", "web"] },
+    })
+    expect([reply.status, code(reply)]).toEqual([400, "invalid_request"])
+    expect(seen).toEqual([])
+  })
+
+  it("reports the stack as unavailable when the gate has no supervisor socket", async () => {
+    delete state.supervisor
+    enrol(auth)
+    const cookie = await signIn()
+    expect((await call("GET", "/admin/stack", { cookie })).body).toEqual({
+      supervisor: "unavailable",
+    })
+    const doctor = await call("GET", "/admin/doctor", { cookie })
+    expect([doctor.status, code(doctor)]).toEqual([
+      503,
+      "supervisor_unavailable",
+    ])
+  })
+})
