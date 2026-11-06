@@ -1,193 +1,125 @@
-# 0009: A local admin page served by the gate on loopback
+# 0009: Admin in the web app behind passkey step-up
 
-Status: proposed (#632). The build waits for the owner to accept this ADR; the child issues are listed at the end.
-Related: #625, #626, #627, #628, #629, #455, #70, #78, #497
+Status: accepted (owner, 2026-11-05). Decision issue #632; the build issues are listed at the end.
+Related: #626, #625, #627, #628, #629, #638, #455, #70, #497; ADR 0003, 0004, 0005
 
 ## Context
 
-Running Eido takes shell variables and CLI scripts: `connect`, `enrol-code`, `passkeys`, `reviewed-manifest`, `llama`, the stack commands, and settings exported in every shell (#625). The owner wants setup, configuration, start and stop, model choice, and adding, reconnecting and removing connectors to be part of Eido. They chose a page that the gate serves on the host's loopback and that is opened in a browser on that host. They rejected a Swift menu bar app (a second native codebase, macOS only) and doing it in the phone PWA (admin actions are kept off the phone listener on purpose, ADR 0004 and #78).
+Running Eido still takes CLI scripts and shell variables: `connect`, `enrol-code`, `passkeys`, `reviewed-manifest`, `llama`, the stack commands. The owner wants setup, connectors, model choice, and start and stop inside Eido, on the phone and in the Mac's browser. The page must also work on Windows (#455).
 
-Salome develops on Windows, so the page must work on Windows as well as macOS (#455). Platform-specific pieces are adapters added on a platform-neutral base.
+Two requirements pull against each other:
 
-The gate is the right host: it already holds the credentials, runs the Gmail loopback OAuth (RFC 8252, `src/internal/connect/oauth.ts`) and the enrolment-code issuer, and the credential boundary holds when the PWA and Next never see a secret. The cost is that the gate gets a new listener and an HTML surface, so this ADR is mostly about who may use it.
+- **One app.** The admin pages should use the web app, shadcn and the existing design system, not a second UI.
+- **The credential boundary.** Next is the data plane. It must never see a secret, and it must not be able to add authority (ADR 0001, 0003).
 
-## Threats
+This ADR keeps the UI in Next and puts every authority decision in the gate, behind a passkey tier per route.
 
-| Actor                                                                                           | Can do                                                                                                                                    | Relevant to                                                        |
-| ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| A website open in the owner's browser                                                           | Navigate or post forms to `http://127.0.0.1:<port>`, embed it in a frame, rebind its own DNS name to 127.0.0.1, read nothing cross-origin | CSRF, DNS rebinding, clickjacking                                  |
-| Another local user (another macOS user, another Windows session, the data-plane user after #70) | Connect to any loopback port with any `Host` and `Origin`, list processes and their arguments, bind any free loopback port (squatting)    | Token theft from argv, cookie theft through another port, phishing |
-| A process running as the owner (before #70, also as the gate)                                   | Everything the owner can: read the browser profile, the control socket, the vault                                                         | Out of scope, as in ADR 0003 and 0005                              |
-| Browser history and its sync (iCloud, Google)                                                   | Keep every URL visited, on other devices too                                                                                              | Token leakage in URLs                                              |
+## Decision 1: admin lives in the web app
 
-A browser-side check (`Host`, `Origin`, `SameSite`) stops only browsers. A local non-browser client sets every header itself, so the credential, not the header checks, is what stops other local users. Before #70 the gate and data plane run as the same user (ADR 0003, "What is not decided here"); the page does not make that weaker or stronger, and #70 must add the admin port to the data-plane user's denied destinations.
+- The admin pages are routes in `apps/web`, built from `packages/ui`. They are reached at `https://<host>.ts.net:8443`, from the phone or the Mac's browser.
+- Every admin action is a gate route on the existing phone listener under `/api/gate`. `tailscale serve` routes `/api/gate` straight to the gate (`infra/tailscale/serve-routes.ts`), so the Next server never sees a request body or the session cookie (`Path=/api/gate`). Next renders the pages; the browser calls the gate directly.
+- The gate gets no new listener or port, and no HTML. The phone listener's defences apply unchanged: exact origin, JSON only, and the session cookie.
 
-## Decision 1: listener
+Rejected: a gate-served page on `127.0.0.1` (an earlier draft of this ADR). It needed a second UI with no shadcn, a launch token, a loopback cookie that leaks to every local port, and a new gate listener. Also rejected: a Swift menu bar app (a second codebase, macOS only).
 
-- A third gate listener, built like the phone listener: a handler mounted on `createGateServer` (`packages/gate/src/internal/http.ts`) on its own loopback TCP port. `EIDO_GATE_ADMIN_PORT`, default **8790** (3000, 8787, 8788, 8789 and 8443 are taken, ADR 0004). It binds `127.0.0.1` only, through `loopbackHost`; it has no host setting, so it cannot be bound to a LAN address.
-- The gate refuses to start when the port is taken, so a squatter cannot sit on the admin port while the gate runs.
-- Never behind `tailscale serve`. `serve-routes check` fails when any serve route, on any port, targets the admin port, and `apply` refuses to add one. A test proves it.
-- The page's one origin is `http://127.0.0.1:8790`. Not `localhost`: the gate never trusts a name a resolver can redirect (ADR 0001, Bridge), and one canonical host means one cookie jar.
-- **Host check.** Every request whose `Host` is not exactly `127.0.0.1:<port>` gets 421 before routing. A DNS-rebinding page sends its own name as `Host`, so it is refused; its cookie jar is also a different host.
-- **Origin check.** Every POST must carry `Origin: http://127.0.0.1:<port>` exactly, and `Sec-Fetch-Site: same-origin` when the browser sends that header. A missing or other value gets 403. All current browsers send `Origin` on form posts.
-- Chrome's local network access prompt also guards public sites from loopback. It is defence in depth and the design does not rely on it.
-- **Headers on every response:** `Cache-Control: no-store`; `Referrer-Policy: no-referrer`; `X-Frame-Options: DENY`; `X-Content-Type-Options: nosniff`; `Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self' https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'`. With no `script-src`, an injected script does not run.
-- `GateRequest` gains the `Origin` and `Sec-Fetch-Site` headers, and `Reply` gains HTML and redirect bodies (today `send` writes JSON only). The phone and data-plane listeners keep their behaviour; tests show it.
+## Decision 2: step-up tiers, a general gate feature
 
-**Boundary change, stated as required:** `packages/gate/AGENTS.md` lists the `node:http` exceptions. This adds one: the admin listener on one loopback TCP port. The dependency allowlist is unchanged.
+Every phone route declares one tier in `PHONE_ROUTES`. It replaces today's `session: boolean`. The router enforces the tier before the handler runs, and a test fails when a route has no tier.
 
-Rejected: a Unix socket or named pipe for the page (browsers cannot open one); binding `::1` as well (a second address to defend, with no gain once the origin is `127.0.0.1`); serving the page from Next (Next would then handle credentials, which breaks the boundary).
+| Tier       | What it takes                                                                                                                                                                                                                                                                            | Routes                                                                                                                                                                                                                   |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `public`   | Nothing                                                                                                                                                                                                                                                                                  | Passkey status, the login ceremony, and enrolling with a code. These are today's `session: false` routes.                                                                                                                |
+| `session`  | The 12-hour passkey session in use today                                                                                                                                                                                                                                                 | Reads: status, doctor checks, connectors, models, settings shown read-only, audit                                                                                                                                        |
+| `elevated` | A fresh passkey assertion with user verification required. It gives a **5-minute elevation bound to the session**, held in memory as a hash only. The elevation is not renewed by use. It ends on lock, sign-out or a gate restart. Every use appends an audit row naming the elevation. | Model choice; start, stop and restart; start at login; removing a connector (a restrictive change); operational settings                                                                                                 |
+| `signed`   | A per-action assertion over the payload hash (ADR 0005, unchanged)                                                                                                                                                                                                                       | Anything that adds authority: adding or reconnecting a connector (credential, first pin, scopes); re-pin; `policy.set`; file roots; push binding; **issuing an enrolment code** (adding a device creates a new approver) |
 
-## Decision 2: who may use it
+- **Elevation never stands in for a signature.** A `signed` route ignores elevation. An `elevated` route refuses a bare session.
+- **Why the elevation is bound and short.** A stolen session cookie gains nothing above `session`. A stolen session together with a live elevation gains five minutes of restrictive and operational changes, all audited, and never a pin, a device or a scope.
+- **How it generalises.** A future sensitive feature picks a tier in its route entry and adds no checks of its own. The tier test makes a missing choice fail CI. A new tier needs an ADR amendment.
+- **Enrolment from the web app** is `signed`. The CLI `enrol-code` over the control socket stays as the owner-local path (Decision 4).
 
-**Recommended: a one-time launch link from the control socket, then a session cookie.** No platform passkey in the first build.
+## Decision 3: typed secrets
 
-1. **Issue.** A launcher asks the running gate over the control socket (mode 0600 on macOS; on Windows a named pipe whose ACL is the gate user's, #455) for a launch token: 32 random bytes, single use, 60 s, stored in memory as SHA-256 only. Only a principal that can open the control socket can get one. That is the same trust as `enrol-code` today (#78).
-2. **Open.** The launcher opens `http://127.0.0.1:8790/launch?t=<token>` in the default browser without putting the URL in a process argument, because other local users can read process arguments. On macOS it uses `osascript` reading `open location` from a pipe, the same pattern as the Keychain bridge (`infra/keychain-vault.md`). On Windows the adapter must show that its method does not expose the command line to other sessions, or it does not ship.
-3. **Exchange.** `GET /launch` consumes the token, sets the session cookie and answers `303` to `/`. A used, expired or unknown token gets a page saying so, with nothing set. Every outcome is audited with hashes only. If an attacker uses a token first, the owner's link fails loudly instead of silently.
-4. **Session.** The cookie is `eido_admin_session`, `HttpOnly; SameSite=Strict; Path=/`, with no `Domain`. There is no `Secure` flag because the origin is plain http: loopback traffic does not leave the host, and capturing it needs root or admin. The cookie holds 32 random bytes; the gate keeps only the SHA-256, in memory. A session ends after 30 minutes idle or 4 hours in all. Only one session exists: a new launch ends the old one. A gate restart ends all sessions.
+The Proton Bridge password, the SimpleFIN setup token and the keychain password are typed by the owner.
 
-**Why the cookie alone is not enough, and what limits it.** Cookies are scoped by host, not port (RFC 6265, as ADR 0004 notes for the phone). A browser therefore sends `eido_admin_session` to every `127.0.0.1` port. Another local user who listens on `127.0.0.1:<other port>`, and gets the owner's browser to load a page from it, receives the cookie. The limits:
+**The rule.** The form posts straight to a gate route, never to a Next route or a server action. The value lives only in the input field and is cleared after the post.
 
-- The session is short-lived, in memory only, and dies at the next launch or restart.
-- It carries no signing authority (Decision 4). A stolen session can do what an unsigned local admin action can do and no more, and every such action is audited.
-- Changing a security pin needs the secret it protects to be entered again (Decision 5).
+**The remaining risk.** The page around the field is code that Next serves. A compromised data plane could serve a page that reads the keystrokes. A CSP does not help, because Next sets the CSP header. A gate-served form under `/api/gate` does not help either: it shares the origin, so a service worker registered by Next can answer for it, and a Next page that opened it can script it.
 
-A squatter on the admin port while the gate is down receives a dead cookie, because sessions do not survive a restart. A phishing page on that port is possible only while the gate is down; a launcher link only opens after the gate answered on the control socket, and the gate holds the port while it runs.
+**Decision: secret entry on its own origin.**
 
-**Token in URLs and history.** The launch token is in one URL. That URL can stay in history and be synced, but the token is used within seconds, expires after 60 s and is never valid again. No other URL holds a secret. CSRF tokens are in form bodies, never in query strings.
+- The three secret fields are minimal pages that the gate serves on a second serve port, `https://<host>.ts.net:8444`. `tailscale serve` maps that port to the gate only.
+- The pages run no script and have a strict CSP (`default-src 'none'; form-action 'self'; frame-ancestors 'none'`). `Cross-Origin-Opener-Policy: same-origin` severs the opener.
+- The gate refuses the secret routes on 8443, and refuses every other route on 8444.
+- The web app links to the page with a single-use handoff id from the signed step (for example, the signed "add Proton" with its pin and scopes). The id is good for 5 minutes and is useless without the session.
+- **Accepted residual.** A compromised data plane can still link to a look-alike page instead. The owner checks for `:8444` in the address bar. The fields are rare, one-time entries, and that check is the cost of keeping keystrokes away from the data plane.
 
-**How this composes with the phone passkey.** The phone passkey's RP ID is the tailnet host and its origin is `https://<host>.ts.net:8443` (`EIDO_WEBAUTHN_RP_ID`, `EIDO_WEBAUTHN_ORIGIN`, ADR 0004). A WebAuthn ceremony on `http://127.0.0.1` cannot use it: an IP address is not a valid RP ID, and the gate compares the origin exactly. The admin page uses no WebAuthn, so it changes nothing about the phone passkey. The two cookies live on different hosts (`127.0.0.1` and `<host>.ts.net`). Each listener reads only its own cookie name and session store: the admin listener refuses a phone session and the phone listener refuses an admin session, each with a test.
+Rejected: a CSP on the Next page (set by the party it guards against); same-origin gate pages (defeated by the service worker); accepting the risk outright (these secrets give lasting access and egress, exactly what the gate boundary exists to protect).
 
-**Rejected:**
+## Decision 4: first run
 
-- **A platform passkey on the host (Touch ID or Windows Hello) for sign-in.** It would remove the launcher after first run. But it needs a second RP (`localhost`, since an IP cannot be an RP ID) and so a second origin and credential class in the ADR 0005 roster. It also needs page script for `navigator.credentials`, and an enrolment bootstrap that still needs the control socket. It also adds a phishing target on `localhost:<port>` while the gate is down. Deferred to a discovery issue (open question 1).
-- **Approving a Mac sign-in from the phone** (a pairing code signed with the phone passkey). It reuses the one passkey, but first run has no phone yet, and it adds a signed ceremony to the phone listener for an admin action. Left for the same discovery issue.
-- **A static password or a long-lived token in a file.** Either is a reusable secret that other local users and backups can get at.
-- **No credential, trusting loopback.** Every local user and process could change settings and connectors.
-- **A secret in every URL** (to pair with the cookie). It defeats cookie theft through another port, but puts a live secret in history and in synced history.
+Before any passkey exists, `pnpm stack:setup` (#638) gains one step: it asks the gate over the control socket for the first enrolment code and prints it. That is the only local step. After it, every admin action is in the web app. `enrol-code` stays as the recovery path for a lost phone, with the same trust as today: whoever can open the control socket.
 
-## Decision 3: rendering
+## Decision 5: Google OAuth
 
-- Server-rendered HTML forms with no client framework and **no script**: no `<script>` element and no event handlers. Pages that wait (Google sign-in, a phone approval) refresh with `<meta http-equiv="refresh">`. The no-JS rule is therefore met trivially: no `.js` file and no inline script, and the CSP blocks any script. `scripts/check-no-js.ts` is unchanged.
-- Templates are TypeScript functions in `packages/gate/src/internal/admin/` that return strings. They use one escaping function for every interpolated value. Tests feed hostile values (`<`, `"`, `&`, `javascript:`) through every field.
-- Forms post `application/x-www-form-urlencoded` only, parsed with `URLSearchParams`. Any other content type gets 415, multipart included. The body is capped at the gate's 1 MiB. The phone listener's "JSON only, so the browser preflights" defence does not apply, because an HTML form cannot send JSON.
-- **CSRF on every form:** a per-session synchronizer token in a hidden field, compared in constant time. Together with the exact `Origin` check and `SameSite=Strict`, this blocks a cross-site post. A failure gets 403 and is audited.
-- Every successful POST answers `303` (post, redirect, get), so a reload never resubmits. Secret fields are `type="password"` with `autocomplete="off"`, and their values are never written back into a page.
-- **Styling:** one stylesheet served by the gate, using the same token values as `packages/ui/src/styles/globals.css`, copied in. The gate cannot import `packages/ui` (`gate-imports-schemas-only`), and React or shadcn would change the allowlist. This is a stated exception to `shadcn-first.md`. A repo check fails when the copied tokens drift from `globals.css`.
-- **Design:** the page has no design page yet. Under `design-and-plan-traceability.md`, the design pages come first (a child issue) and each UI child links them.
-- The dependency allowlist does not change. Any later change to it needs its own ADR amendment.
+Today's Desktop client redirects to loopback (RFC 8252). That only works when the browser is on the Mac.
 
-## Decision 4: signed changes and local settings
+**Decision: switch to a Google web client** that redirects to `https://<host>.ts.net:8443/api/gate/connect/google/callback`. It lands on the gate, which already holds the client secret in the vault and checks PKCE and state.
 
-| Class                                        | Actions                                                                                                                                                                                                                 | Authority                                                                                                                                                   |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Signed control changes (ADR 0005)            | first pin (#627) and re-pin (`manifest.pin`); permission overrides, file roots and push binding (`policy.set`); enabling a connector again after Remove                                                                 | A fresh assertion from the **phone** passkey. The admin page may prepare the change and show "Approve on your phone" with its payload hash; it never signs. |
-| Local admin actions (admin session, audited) | connector credential add, reconnect, remove; enrolment code issue; model choice; start at login; Start and Stop; operational settings (push VAPID subject, owner address, OAuth client ids); keychain create and unlock | The admin session. Each action appends an audit row with actor `local-admin` and hashes only.                                                               |
-| Install pins (never edited on the page)      | `EIDO_WEBAUTHN_RP_ID`, `EIDO_WEBAUTHN_ORIGIN`, the allowed hosts and base paths, `EIDO_FILE_HELPER_PATH` and `_SHA256`, `EIDO_GATE_KEYCHAIN_PATH`, data directories, sockets and ports                                  | Shown read-only. Changed by the install commands, then a restart.                                                                                           |
+- The same flow works from the phone and from the Mac. The CLI `connect` prints the same URL.
+- **Trade-off.** Setup gains one Google Cloud step: registering the redirect URI. A renamed tailnet host needs a new URI. The host name becomes known to Google, though it is already public in certificate transparency logs for `ts.net`.
+- The rejected option, Mac-only in the first build, keeps two Google flows and makes the phone a second-class admin client.
 
-Why the third class stays off the page: a stolen session that could change the file helper pin would run its own code as the gate, and one that could change the WebAuthn origin would point the phone at another origin.
+## Decision 6: the supervisor
 
-Remove disables the connector and deletes its vault entries. It deletes no data beyond the credential. This is a restrictive change, which ADR 0005 allows without a signature. Enabling the connector again adds authority, so it needs a fresh signed pin on the phone.
+A small process in `infra/stack` that runs as the owner. The gate runs no repo scripts or host tools.
 
-Pins are signed on the phone in the first build, so there is one signing key, one RP and no page script. Signing locally with Touch ID or Windows Hello goes with the platform passkey question (open question 1).
+- **What it owns.** The doctor checks (#625), model profiles (#628: list, use, and fetch as a tracked job), start, stop and restart, start at login (#629), and writes to `stack.env`.
+- **Its socket.** A Unix socket at mode 0600 in a 0700 directory that the owner owns. On Windows, a named pipe with an owner-only ACL (#455). No TCP.
+- **Its calls.** A fixed RPC set, HTTP over the socket. Bodies are validated on both sides with schemas from `@eido/schemas`: `stack-doctor-report`, `stack-job-status`, `stack-model-list` and `stack-settings`. Every other route is 404.
+- **The gate is only a client.** It checks the tier, audits, calls the supervisor and returns the result. The supervisor never receives a token, a password or a vault handle. A compromised supervisor can lie about status or stop the stack. It cannot reach a credential or add authority.
+- **Jobs.** The supervisor is the `com.eido.stack` job, which already parents core and web through `supervise.ts`. `com.eido.gate` is its own job. **Stop** stops core and llama, and leaves the gate, the supervisor and web running, so the admin page stays reachable. Start and Restart reverse it.
+- **Settings.** Writes go through the supervisor with the file's SHA-256 as read: a changed file is refused. The gate audits first, with key names and a hash, never values. Secrets never go to `stack.env`.
+- **#70.** After #70, the gate user gets the supervisor socket through a group or an ACL, and the data-plane user does not. The supervisor never gets gate privileges.
 
-## Decision 5: settings store
+## Decision 7: what may change from the page
 
-- `stack.env` (#625) becomes system-managed: the page writes it, and the stack reads it at every start. Secrets stay in the vault: client secrets, the Bridge password, the SimpleFIN access URL, tokens and the keychain password.
-- **The gate cannot import the #625 library**, because it lives in `infra/stack` and `gate-imports-schemas-only` allows `@eido/schemas` only. The key table (name, type, class from Decision 4) and the pure parse and serialise functions therefore move to `@eido/schemas` (`stack-settings`), and `infra/stack` and the gate both import them. This keeps one source of truth, as #625 intends, without changing a boundary rule.
-- **Writes:**
-  - Only keys in the local-admin class are writable; an install pin or an unknown key is refused.
-  - The gate writes atomically: a temp file at mode 0600 in the same directory, fsync, then rename. The ACL is set on Windows.
-  - Each write carries the SHA-256 of the file as the form read it. A changed file is refused with "changed elsewhere, reload", so the page and a CLI cannot overwrite each other.
-  - Each write is audited with the key names and a hash, never values.
-- **Applying.** Settings are read at start, so the page says which changed values need a restart and offers Restart where process control exists (Decision 7).
-- **Bridge certificate pin.** It is a security pin, but adding Proton needs it. Rule: the pin (path and SHA-256 of the exported public certificate, ADR 0003) is set only in the same form as the Bridge password, and changing the pin deletes the stored Bridge password. A stolen session therefore cannot send a stored password to a new endpoint. The page shows the fingerprint it computed from the named file, never from a connection to a loopback port.
+| Class                   | Authority                     | Examples                                                                                                                                       |
+| ----------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Signed control changes  | `signed`                      | First pin, re-pin, `policy.set`, file roots, push binding, connector add and reconnect, enrolment code                                         |
+| Local admin actions     | `elevated`                    | Model choice, start, stop and restart, start at login, remove connector, operational settings                                                  |
+| Install pins, read-only | None (changed by the install) | `EIDO_WEBAUTHN_RP_ID` and `_ORIGIN`, allowed hosts, `EIDO_FILE_HELPER_PATH` and `_SHA256`, the keychain path, data directories, sockets, ports |
 
-## Decision 6: scope of the first build
+- **Reviewed connector manifests** become committed JSON in `@eido/schemas`, with a core test that fails when they differ from core's source. The gate never runs core code to place one.
+- **Bridge certificate pin.** It is set only together with the Bridge password, on the secret page. Changing it deletes the stored password.
 
-Each item is a child issue (listed at the end). Each section shows only what works; there is no stub section.
+## Decision 8: Windows
 
-- **Status.** The doctor checks from #625, rendered as ok, warning or fail, with the fix for each. The gate does not run the checks in-process (it cannot import `infra`), and it does not call core (ADR 0003, Direction). It runs the doctor as a child process: `node infra/stack/bin.ts doctor --json`, with fixed argv, no shell, an allowlisted environment, a 10 s timeout and 64 KiB of output. It parses the output with a `stack-doctor-report` schema from `@eido/schemas`. The doctor's port and health probes report whether core, web and llama answer.
-- **First-run setup.**
-  - Create or unlock the vault, through the vault adapter (Decision 8). On macOS the keychain password is typed into the page and passed to the Keychain bridge over its private pipe: never argv, env, logs or disk. Failed unlocks are rate-limited.
-  - Push: the VAPID subject in `stack.env`; the keys stay in the vault as today.
-  - The owner address.
-  - The page lists these steps until each one is done.
-- **Connectors.**
-  - **Add Gmail and Drive.** The page starts the existing one-shot OAuth loopback listener (PKCE S256, state) and redirects to Google. The callback redirects back to the page.
-  - **Add Proton (mail and calendar).** Bridge password and certificate pin (Decision 5).
-  - **Add SimpleFIN.** The setup token, claimed as `connect` does today.
-  - **Reconnect.** Reuses the add flow.
-  - **Remove.** Decision 4.
-  - **Pinning.** A connector that has never been pinned shows "Pin on your phone" (#627). The page polls until the phone has signed.
-  - **Where the manifest comes from.** The page cannot pipe core's `connector-manifest` into the gate, because the gate must never run core code. Instead the reviewed manifests become committed JSON in `@eido/schemas`, with a core test that fails when they differ from core's manifest source. Placing a reviewed manifest is then the gate copying a committed file (open question 3).
-- **Model picker (#628).** The page lists the profiles and their state with `llama list --json` and applies one with `llama use <id>`. Both run as child processes, like the doctor, and their output is checked against a schema. A download (`llama fetch`) runs as a tracked background job, and the page refreshes until it ends.
-- **Start at login (#629).** On or off, through the process-control adapter.
-- **Enrolment code.** Issues a code as `enrol-code` does and shows it once, on a `no-store` page, with its expiry and the phone URL `https://<host>.ts.net:8443/`.
-
-Out of the first build: passkey list and revoke (they stay on the control-socket CLI), audit browsing (it is on the phone), QR codes, and the platform passkey.
-
-## Decision 7: start and stop
-
-The gate cannot stop itself from its own page: once it has stopped, nothing is listening to start it again. The service manager owns the lifecycle, so the #629 job is split in two:
-
-- `com.eido.gate` runs the gate alone, starts at login, and is restarted if it exits. It hosts the admin page, so the page is up whenever the owner is logged in.
-- `com.eido.stack` runs core and web; the llama agent already exists. The gate starts first, and the stack waits for the gate's socket (`waitReady`).
-
-The page's **Start** and **Stop** act on `com.eido.stack` and the llama agent, through the process-control adapter. Stop leaves the gate running, with its admin, control and phone listeners. Core is down, so nothing new is proposed. Approvals already pending can still be decided on the phone. **Restart** applies changed settings: it restarts the stack jobs, and for gate settings it restarts `com.eido.gate`. The response is sent first, and the page reloads once the gate answers again.
-
-**When only the gate runs**, Status shows the doctor's result: core, web and llama not answering, with Start when process control exists. The same view appears when the stack crashed or when the owner started the gate by hand. A gate started by hand, outside the service manager, shows no Start, Stop or Restart, because the page cannot manage a process it did not start. It says how it was started, and offers Start at login, which takes effect at the next login. Turning Start at login off disables the job for the next login; it does not stop the running gate.
-
-The gate itself is stopped from outside: by logging out, or with `stack:uninstall`. This is the one shell step left, and stopping is the only thing it is needed for.
-
-## Decision 8: cross-platform adapters
-
-The listener, sessions, CSRF, templates, the settings store, the doctor and the connector flows are platform-neutral, and CI runs their tests on Linux, macOS and Windows (the `gate-os` matrix). Everything else goes behind four adapter seams, each with a fake for tests:
-
-| Seam            | macOS                                                         | Windows (#455)                                                                                                                                  |
-| --------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Vault           | Keychain (`EIDO_GATE_KEYCHAIN_PATH`): create, unlock, status  | Now: the dev file vault (`EIDO_GATE_VAULT_FILE` with `EIDO_DEV_VAULT=1`), shown as development-only. Later: DPAPI or Credential Manager (#455). |
-| Start at login  | launchd LaunchAgents (#629)                                   | Task Scheduler "at log on" tasks for the same two jobs (#629, #455)                                                                             |
-| Process control | `launchctl kickstart`, `bootout` and `disable` in `gui/<uid>` | `schtasks /Run` and `/End`, and enable or disable, on the two tasks                                                                             |
-| Browser launch  | `osascript` `open location` from a pipe                       | A method that keeps the URL out of a command line other sessions can read; it ships only once that is shown                                     |
-| Local unlock    | Touch ID, only if open question 1 is accepted                 | Windows Hello, only if open question 1 is accepted                                                                                              |
-
-- **Control socket on Windows.** It is a named pipe (`listen` in `http.ts`), and Unix file modes do not apply. The ACL that limits it to the gate user is part of #455; until that ACL exists, a launch token on Windows is only as private as the pipe.
-- **Other sessions.** On Windows, other users' sessions (fast user switching, Remote Desktop) share `127.0.0.1`. They take the "another local user" row in the threat table, and the same mitigations apply.
-- **A missing adapter.** The page leaves that control out and states the gap in one line that links the issue, for example "Start at login is not available on Windows yet (#629)". It never shows a control that does nothing (`no-placeholders.md`). The page lists the adapters a platform has, and a test per platform checks that every rendered control has a working adapter behind it.
+Platform pieces are adapters behind seams. The vault is the Keychain on macOS; on Windows it is the dev file vault for now, and later DPAPI or Credential Manager (#455). The other seams are start at login (launchd or Task Scheduler), process control, and the supervisor socket (Unix socket or ACL'd pipe). A missing adapter hides its control and states the gap, linking the issue. The page never shows a control that does nothing.
 
 ## Consequences
 
-- The owner gets one page for setup and running. The CLIs stay as thin wrappers over the same gate routes, and `stack:admin` is the launcher.
-- The gate gets a third listener and an HTML surface. Its trusted base also grows by the `infra` scripts it runs as children (doctor, llama, the service-manager adapters). They run as the gate's user, take fixed argv and are parsed with schemas.
-- `stack.env` gets a second writer, guarded by the hash check.
-- **Interaction with #70.** After #70, the gate runs as its own user. The owner then cannot open the control socket, so the launcher needs a socket or group the owner can use, and only for launch tokens. The gate user also cannot manage jobs in the owner's login session, so process control needs a design that #70 must supply. Until #70, everything runs as the owner, and the second-user threats above hold only as far as the OS already separates users.
+- One UI, on the phone and the Mac, from the design system. The CLIs become thin wrappers over the same gate routes.
+- The gate gains a tier on every route, an elevation store, a second serve port for secret entry, and a supervisor client. It gains no new listener and runs no scripts.
+- Next stays credential-free. Its remaining reach is the accepted look-alike risk in Decision 3.
+
+## Later, not in this build
+
+- **Approval prompts by email**, CIBA-style, for example through Resend. Email may carry only the prompt; the approval stays a passkey assertion. Sending to an external service needs its own decision, because Eido is local-first.
+- Vault create and unlock on the page. `stack:setup` already creates the keychain over a TTY, and Status shows a locked vault with its fix.
+- Settings editing beyond the model.
+- Windows adapters (#455).
 
 ## Open questions for the owner
 
-1. **Is one launcher command acceptable?** Opening the page needs `pnpm stack:admin` (or `stack:setup` on first run). The alternative is a platform passkey (Touch ID or Windows Hello on a `localhost` RP), which drops the launcher after first run but adds page script, a second RP and credential class, and a phishing target while the gate is down. Recommended: launcher now, with a discovery issue for the passkey.
-2. **Should pins stay phone-only?** Recommended: yes, one signing key. Local signing goes with question 1.
-3. **Can reviewed connector manifests become committed JSON in `@eido/schemas`?** That changes #497 and #627. The alternative, the gate running core's `connector-manifest` command, would run data-plane code with gate privileges and is rejected.
-4. **Can #629 split into a gate job and a stack job?** That split is what makes Start and Stop possible from the page.
-5. **Is "the gate is stopped only by logout or `stack:uninstall`" acceptable?**
+1. Is a second serve port (8444) for secret entry acceptable, or is the residual risk on 8443 accepted instead?
+2. Should an elevation last 5 minutes, and should it also end when the PWA goes to the background?
 
-## Child issues to file on acceptance
+## Build issues
 
-1. `web` / design: admin page design pages (Status, Setup, Connectors, Model, Start at login, Enrolment) in the design artifact.
-2. `gate`: admin listener: port, Host and Origin checks, security headers, HTML and redirect replies in `http.ts`, a `node:http` exception line in `packages/gate/AGENTS.md`, and a test that the phone and data-plane listeners are unchanged.
-3. `gate`: launch tokens over the control socket, `/launch`, the admin session store, CSRF, cross-listener cookie refusal tests, and the `stack:admin` launcher (the macOS browser adapter).
-4. `infra`: `serve-routes check` and `apply` refuse any route that targets the admin port.
-5. `schemas`: the `stack-settings` key table with parse and serialise, moved from #625; the `stack-doctor-report` and `llama list` output schemas.
-6. `gate`: settings writes (atomic, hash-checked, classes, audited) and the read-only install pins view.
-7. `gate`: Status page from `doctor --json`.
-8. `gate`: first-run setup: the vault adapter (Keychain create and unlock over the bridge pipe; the dev file vault on Windows), push subject, owner address.
-9. `gate`: connector add, reconnect and remove for Gmail and Drive, Proton (with the Bridge pin rule) and SimpleFIN, with phone-pin handoff (needs #627 and question 3).
-10. `schemas` / `core`: committed reviewed manifests with a core equality test (if question 3 is accepted).
-11. `gate`: model picker over `llama list`, `use` and `fetch` (needs #628).
-12. `infra`: split #629 into `com.eido.gate` and `com.eido.stack`; the process-control and start-at-login adapters for launchd (amends #629).
-13. `infra`: Windows Task Scheduler and process-control adapters, and the Windows browser launch (part of #455).
-14. `gate`: enrolment code page.
-15. `ci`: check that the gate stylesheet's tokens match `packages/ui` `globals.css`.
-16. `discovery`: platform passkey (Touch ID, Windows Hello) or phone-approved sign-in for the admin page (open question 1).
-17. `infra` (#70 follow-up): owner access to launch tokens and process control across the gate and owner users; deny the admin port to the data-plane user, with a live-host test.
+Filed on acceptance, each linking this ADR and #626. The Later items above are not filed until picked up.
+
+1. `gate`: step-up tiers as a general feature. This covers the elevation primitive, a tier on every `PHONE_ROUTES` entry with a test that fails on a route with none, and the existing routes moved to their tiers (enrolment code issuance becomes `signed`).
+2. `infra`: the supervisor (Decision 6), with its schemas in `@eido/schemas`. Builds on #638 and #628.
+3. Design: the Admin pages in the design artifact. These are Status, Connectors (add, reconnect, remove, secret handoff), Model, Start/Stop, Add device, and the step-up prompt states.
+4. `web` and `gate`: the admin page itself, with secret entry on `:8444`, the Google web client and the `stack:setup` first code. Needs 1, 2 and 3.
