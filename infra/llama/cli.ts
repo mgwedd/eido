@@ -191,7 +191,9 @@ function activeId(deps: Deps, { lock }: Base): string {
     MODEL_KEY,
     platformOf(deps.platform.os)
   )
-  return fromFile === undefined || fromFile === "" ? lock.defaultProfile : fromFile
+  return fromFile === undefined || fromFile === ""
+    ? lock.defaultProfile
+    : fromFile
 }
 
 function withProfile(base: Base, profile: ModelProfile): Loaded {

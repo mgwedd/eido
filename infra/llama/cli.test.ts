@@ -639,8 +639,7 @@ describe("llama use", () => {
     const h = harness({
       files: {
         ...verified,
-        [SETTINGS]:
-          "EIDO_LLAMA_MODEL=gemma-4-26b-a4b\nEIDO_CORE_PORT=4000\n",
+        [SETTINGS]: "EIDO_LLAMA_MODEL=gemma-4-26b-a4b\nEIDO_CORE_PORT=4000\n",
       },
     })
     expect(await main(["use", "qwen3.6-35b-a3b"], h.deps)).toBe(0)
@@ -660,7 +659,8 @@ describe("llama use", () => {
     expect(await main(["use", "gemma-4-26b-a4b"], h.deps)).toBe(0)
     expect(h.made).toEqual(["/stack"])
     expect(h.written).toEqual({
-      "/stack/stack.env": "# Written by the Eido stack (pnpm stack:setup). Non-secret settings only.\nEIDO_LLAMA_MODEL=gemma-4-26b-a4b\n",
+      "/stack/stack.env":
+        "# Written by the Eido stack (pnpm stack:setup). Non-secret settings only.\nEIDO_LLAMA_MODEL=gemma-4-26b-a4b\n",
     })
   })
 
