@@ -17,7 +17,41 @@ env:
   DO_NOT_TRACK: "1"
 
 jobs:
+  # Pull requests that only touch docs or images (.md, .png, .jpg, .jpeg, .gif, .webp: the same rule as
+  # scripts/verify.ts) skip the OS matrix jobs and the heavy setup in `check`. `check` is a required status
+  # check, so it always runs and reports; the matrix jobs are not required and are skipped outright.
+  # Every push to main runs everything.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      docs_only: ${{ steps.filter.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          fetch-depth: 2 # the PR merge commit and its base parent
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          docs_only=false
+          if [ "$EVENT" = pull_request ]; then
+            files=$(git diff --name-only HEAD^1 HEAD)
+            if ! printf '%s\n' "$files" | grep -qvE '\.(md|png|jpe?g|gif|webp)$|^$'; then
+              docs_only=true
+            fi
+            printf 'Changed files:\n%s\n' "$files"
+          fi
+          echo "docs_only=$docs_only"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
   check:
+    needs: changes
+    # A failed `changes` job leaves docs_only empty, so this runs the full check rather than being skipped:
+    # a skipped required check would count as passing.
+    if: ${{ !cancelled() }}
     # Pinned: the Tesseract package versions below are Ubuntu 24.04's; ubuntu-latest moved to 26.04.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -36,15 +70,16 @@ jobs:
         run: corepack enable
       - run: pnpm install --frozen-lockfile
       - name: Install Tesseract (parser OCR test, #261)
+        if: needs.changes.outputs.docs_only != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends tesseract-ocr=5.3.4-1build5 tesseract-ocr-eng=1:4.1.0-2
           tesseract --version
       - name: Check named invariant tests
+        if: needs.changes.outputs.docs_only != 'true'
         run: pnpm check:invariants
       # The checks are one turbo run, defined by scripts/verify.ts and turbo.json: edit those to change CI and
-      # `pnpm verify` together. Pull requests that only touch docs or images run the light steps;
-      # every push to main runs everything.
+      # `pnpm verify` together. Pull requests that only touch docs or images run the light checks.
       - name: Verify
         run: pnpm verify --full
       # Feeds the "Restrict code coverage" ruleset rule (#125). It runs here because the rule does not wait for
@@ -104,6 +139,8 @@ jobs:
   # must hold off Linux too. The full check run stays on Linux in `check`.
   gate-os:
     name: gate tests (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -127,6 +164,8 @@ jobs:
   # toolchain comes from the runner's preinstalled rustup, pinned by rust-toolchain.toml.
   file-helper:
     name: file helper (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
