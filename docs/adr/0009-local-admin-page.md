@@ -38,23 +38,22 @@ Every phone route declares one tier in `PHONE_ROUTES`. It replaces today's `sess
 - **How it generalises.** A future sensitive feature picks a tier in its route entry and adds no checks of its own. The tier test makes a missing choice fail CI. A new tier needs an ADR amendment.
 - **Enrolment from the web app** is `signed`. The CLI `enrol-code` over the control socket stays as the owner-local path (Decision 4).
 
-## Decision 3: typed secrets
+## Decision 3: typed secrets are entered in the PWA
 
-The Proton Bridge password, the SimpleFIN setup token and the keychain password are typed by the owner.
+The owner types the Proton Bridge password and the SimpleFIN setup token into the PWA, on the admin page itself. The keychain password follows the same rule when vault unlock comes to the page (Later).
 
-**The rule.** The form posts straight to a gate route, never to a Next route or a server action. The value lives only in the input field and is cleared after the post.
+**Mechanism.** A client component POSTs the secret straight from the browser to a `signed` route under `/api/gate`. `tailscale serve` routes `/api/gate` to the gate's phone listener (ADR 0004), so the Next server never receives the body. The gate checks the signature and seals the value in its token store (the vault). The reply carries no secret.
 
-**The remaining risk.** The page around the field is code that Next serves. A compromised data plane could serve a page that reads the keystrokes. A CSP does not help, because Next sets the CSP header. A gate-served form under `/api/gate` does not help either: it shares the origin, so a service worker registered by Next can answer for it, and a Next page that opened it can script it.
+**Rules.**
 
-**Decision: secret entry on its own origin.**
+- There are no server actions and no Next route handlers on that path. A check in `apps/web`'s tests fails when one appears.
+- The value is never put in persisted React state, logged, or sent to core.
+- It lives only in the input field and the one request, and the field is cleared after the post.
+- The signed payload binds the action to its connector, pin and scopes. The secret goes in the request body and is never shown back.
 
-- The three secret fields are minimal pages that the gate serves on a second serve port, `https://<host>.ts.net:8444`. `tailscale serve` maps that port to the gate only.
-- The pages run no script and have a strict CSP (`default-src 'none'; form-action 'self'; frame-ancestors 'none'`). `Cross-Origin-Opener-Policy: same-origin` severs the opener.
-- The gate refuses the secret routes on 8443, and refuses every other route on 8444.
-- The web app links to the page with a single-use handoff id from the signed step (for example, the signed "add Proton" with its pin and scopes). The id is good for 5 minutes and is useless without the session.
-- **Accepted residual.** A compromised data plane can still link to a look-alike page instead. The owner checks for `:8444` in the address bar. The fields are rare, one-time entries, and that check is the cost of keeping keystrokes away from the data plane.
+**Accepted residual risk.** The page code around the field is served by Next. A compromised data plane could serve a page that reads the keystrokes. The owner accepts this risk: one UI matters more here, and the fields are rare one-time entries. A compromised data plane already reads the owner's data. It still cannot use a secret it stole through the gate's checks, because adding a connector is `signed`.
 
-Rejected: a CSP on the Next page (set by the party it guards against); same-origin gate pages (defeated by the service worker); accepting the risk outright (these secrets give lasting access and egress, exactly what the gate boundary exists to protect).
+Rejected: a separate gate-served entry page on its own serve port. It kept keystrokes away from Next but split the UI, and it still left a look-alike-link risk.
 
 ## Decision 4: configuration moves into the app; bootstrap is one command
 
@@ -115,8 +114,8 @@ Platform pieces are adapters behind seams. The vault is the Keychain on macOS; o
 ## Consequences
 
 - One UI, on the phone and the Mac, from the design system. Configuration lives in the app, the secrets in the gate's vault, and bootstrap is one command. The CLIs become thin wrappers over the same gate routes.
-- The gate gains a tier on every route, an elevation store, a second serve port for secret entry, and a supervisor client. It gains no new listener and runs no scripts.
-- Next stays credential-free. Its remaining reach is the accepted look-alike risk in Decision 3.
+- The gate gains a tier on every route, an elevation store, signed secret-entry routes, and a supervisor client. It gains no new listener and runs no scripts.
+- The Next server stays credential-free. The remaining reach is the accepted keystroke risk in Decision 3.
 
 ## Later, not in this build
 
@@ -126,8 +125,7 @@ Platform pieces are adapters behind seams. The vault is the Keychain on macOS; o
 
 ## Open questions for the owner
 
-1. Is a second serve port (8444) for secret entry acceptable, or is the residual risk on 8443 accepted instead?
-2. Should an elevation last 5 minutes, and should it also end when the PWA goes to the background?
+1. Should an elevation last 5 minutes, and should it also end when the PWA goes to the background?
 
 ## Build issues
 
@@ -135,5 +133,5 @@ Filed on acceptance, each linking this ADR and #626. The Later items above are n
 
 1. #643, `gate`: step-up tiers as a general feature. This covers the elevation primitive, a tier on every `PHONE_ROUTES` entry with a test that fails on a route with none, and the existing routes moved to their tiers (enrolment code issuance becomes `signed`).
 2. #644, `infra`: the supervisor (Decision 6), with its schemas in `@eido/schemas`. Builds on #638 and #628.
-3. #645, design: the Admin pages in the design artifact. These are Status, Connectors (add, reconnect, remove, secret handoff), Model, Start/Stop, Add device, and the step-up prompt states.
-4. #646, `web` and `gate`: the admin page itself, with secret entry on `:8444`, the Google web client and the `stack:setup` first code. Needs 1, 2 and 3.
+3. #645, design: the Admin pages in the design artifact. These are Status, Connectors (add, reconnect, remove, secret entry), Model, Start/Stop, Add device, and the step-up prompt states.
+4. #646, `web` and `gate`: the admin page itself, with secret entry in the PWA, the Google web client and the `stack:setup` first code. Needs 1, 2 and 3.
