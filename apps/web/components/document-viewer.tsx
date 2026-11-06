@@ -20,6 +20,7 @@ import { Separator } from "@eido/ui/components/separator"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import { InjectionFlag } from "@/components/injection-flag"
 import { DocumentTypeControl } from "@/components/document-type-control"
+import { MailSignals } from "@/components/mail-signals"
 import {
   isLocalFile,
   loadPendingTrashKeys,
@@ -404,6 +405,9 @@ export function DocumentViewer({
               reasons={injectionReasons}
             />
           </div>
+          {doc.mime === "message/rfc822" ? (
+            <MailSignals sha256={doc.sha256} defaultExpanded />
+          ) : null}
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <Badge variant="outline">{doc.source}</Badge>
             {doc.entity ? (

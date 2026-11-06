@@ -27,6 +27,19 @@ afterEach(() => {
 async function flush(action: () => void) {
   await act(() => Promise.resolve().then(action))
 }
+/** Ask's own requests go to `fetcher`; the citation signal reads answer as clean mail. */
+function stubFetch(fetcher: typeof fetch) {
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
+    (typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url
+    ).startsWith("/api/core/mail/")
+      ? Promise.resolve(Response.json({ signals: [] }))
+      : fetcher(input, init)
+  )
+}
 async function render() {
   await flush(() => {
     root.render(<AskView />)
@@ -176,7 +189,7 @@ test("a running question is locked against duplicate submits and aborts on unmou
     requestSignal = init?.signal
     return new Promise<Response>(() => {})
   })
-  vi.stubGlobal("fetch", fetcher)
+  stubFetch(fetcher)
   await render()
   const input = await fill()
   await send(true)
@@ -196,7 +209,7 @@ test("retry preserves the failed question and clears stale data during replaceme
     .mockResolvedValueOnce(new Response(null, { status: 503 }))
     .mockResolvedValueOnce(Response.json(answered))
     .mockResolvedValueOnce(new Response(null, { status: 500 }))
-  vi.stubGlobal("fetch", fetcher)
+  stubFetch(fetcher)
   await render()
   const input = await fill()
   await send()
@@ -239,7 +252,7 @@ test.each([
         )
       )
     )
-    vi.stubGlobal("fetch", fetcher)
+    stubFetch(fetcher)
     await render()
     await fill()
     await send()
@@ -270,7 +283,7 @@ test("pending proposals lock every control and cannot be submitted twice", async
           complete = resolve
         })
   )
-  vi.stubGlobal("fetch", fetcher)
+  stubFetch(fetcher)
   await render()
   await fill()
   await send()
@@ -303,7 +316,7 @@ test("a failed proposal stays visible and does not report success", async () => 
         : new Response(null, { status: 403 })
     )
   )
-  vi.stubGlobal("fetch", fetcher)
+  stubFetch(fetcher)
   await render()
   await fill()
   await send()
@@ -334,7 +347,7 @@ async function keydown(input: HTMLInputElement, init: KeyboardEventInit) {
 
 test("Cmd+Enter in the field sends the question", async () => {
   const fetcher = vi.fn().mockResolvedValue(Response.json(answered))
-  vi.stubGlobal("fetch", fetcher)
+  stubFetch(fetcher)
   await render()
   const input = await fill()
   await keydown(input, { key: "Enter", metaKey: true })
@@ -346,7 +359,7 @@ test("Cmd+Enter in the field sends the question", async () => {
 
 test("Ctrl+Enter sends too, and a bare letter does not", async () => {
   const fetcher = vi.fn().mockResolvedValue(Response.json(answered))
-  vi.stubGlobal("fetch", fetcher)
+  stubFetch(fetcher)
   await render()
   const input = await fill()
   await keydown(input, { key: "a" })
@@ -357,7 +370,7 @@ test("Ctrl+Enter sends too, and a bare letter does not", async () => {
 
 test("Cmd+Enter with an empty field sends nothing", async () => {
   const fetcher = vi.fn()
-  vi.stubGlobal("fetch", fetcher)
+  stubFetch(fetcher)
   await render()
   const input = container.querySelector("input")
   if (!input) throw new Error("Question input missing")

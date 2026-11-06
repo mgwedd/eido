@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiMailSignals",
+  "description": "Response of GET /mail/:sha256/signals (#469): the phishing signals core stored for one mail message (#207), one entry per stored signal, in core's fixed kind order (spf_fail, dkim_fail, dmarc_fail, display_name_address, reply_to_domain, punycode_domain, mixed_script_domain, lookalike_domain, link_mismatch), then by detail. Empty for a message with no signal. `detail` is untrusted text from the message (a domain, an address, a link's shown and real hosts): the client renders it as escaped plain text, never as a link or HTML. It is absent for the sender-authentication kinds, whose only stored detail is the result word.",
+  "type": "object",
+  "properties": {
+    "signals": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "title": "CoreApiMailSignal",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "spf_fail",
+              "dkim_fail",
+              "dmarc_fail",
+              "display_name_address",
+              "reply_to_domain",
+              "punycode_domain",
+              "mixed_script_domain",
+              "lookalike_domain",
+              "link_mismatch"
+            ]
+          },
+          "detail": { "type": "string", "minLength": 1, "maxLength": 300 }
+        },
+        "required": ["kind"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["signals"],
+  "additionalProperties": false
+}
