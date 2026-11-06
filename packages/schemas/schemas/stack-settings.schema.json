@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StackSettings",
+  "description": "The stack settings file (stack.env) as the supervisor reports it (#644): every set key, and the SHA-256 of the file a write must name, or null when there is no file.",
+  "type": "object",
+  "properties": {
+    "sha256": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "settings": {
+      "title": "StackSettingValues",
+      "description": "Set keys only. An unset key is absent.",
+      "type": "object",
+      "properties": {
+        "EIDO_STACK_LOG_DIR": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_TAILNET_HOST": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_EDGE_PORT": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_WEB_PORT": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_CORE_PORT": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_GATE_PHONE_PORT": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_GATE_DATA_DIR": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_DATA_DIR": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_GATE_SOCKET": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_GATE_CONTROL_SOCKET": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_GATE_KEYCHAIN_PATH": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_PROFILE_AUDIT_EPOCH": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_FILE_HELPER_PATH": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_FILE_HELPER_SHA256": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_FILES_SYNC": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_WEBAUTHN_RP_ID": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_WEBAUTHN_ORIGIN": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_GATE_PHONE_BASE_PATH": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_CORE_BASE_PATH": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_GATE_PHONE_ALLOWED_HOSTS": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_CORE_ALLOWED_HOSTS": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_PUSH_VAPID_SUBJECT": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_PUSH_WINDOW_MS": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_GMAIL_CLIENT_ID": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_GMAIL_READ_CLIENT_ID": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_DRIVE_CLIENT_ID": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_BRIDGE_HOST": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_BRIDGE_USERNAME": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_BRIDGE_IMAP_PORT": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_BRIDGE_SMTP_PORT": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_BRIDGE_TLS": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_BRIDGE_CERT_PATH": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_BRIDGE_CERT_SHA256": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_BRIDGE_ALLOW_SELF_SIGNED": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_BRIDGE_SEARCH_FOLDERS": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_DEV_VAULT": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_GATE_VAULT_FILE": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_LLAMA_HOST": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_LLAMA_PORT": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_LLAMA_CHAT_TEMPLATE_KWARGS": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_MODEL_LOCK": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_MODEL_DIR": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_LLAMA_SERVER_BIN": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "EIDO_LLAMA_MODEL": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["sha256", "settings"],
+  "additionalProperties": false
+}

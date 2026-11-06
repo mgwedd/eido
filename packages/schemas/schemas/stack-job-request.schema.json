@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StackJobRequest",
+  "description": "The processes a start, stop or restart acts on (#644). Only core and llama: the gate, the supervisor and web stay running.",
+  "type": "object",
+  "properties": {
+    "names": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "items": {
+        "type": "string",
+        "enum": ["core", "llama"]
+      }
+    }
+  },
+  "required": ["names"],
+  "additionalProperties": false
+}
