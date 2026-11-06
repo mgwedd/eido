@@ -6,7 +6,14 @@ import type { ConnectorProbe, ProbeOutcome } from "./connector-connect"
 import { getConnectorHealth } from "./connector-health"
 import type { GateRequest } from "./http"
 import { controlHandler, dataPlaneHandler } from "./routes"
-import { auditRows, MAIL_OPS, manifest, setup } from "./test-fixtures"
+import { applyFirstPin, prepareFirstPin } from "./repin"
+import {
+  auditRows,
+  controlAuthorization,
+  MAIL_OPS,
+  manifest,
+  setup,
+} from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
 const NOW = new Date("2026-11-02T09:00:00.000Z")
@@ -61,6 +68,35 @@ function setRow(setUp: Setup, name: string, sql: string): void {
 }
 
 describe("POST /connectors/{name}/connected", () => {
+  it("connects gmail on a fresh gate once its first pin is signed (#627)", async () => {
+    s = setup([])
+    const setUp = s
+    const gmail = manifest("gmail", MAIL_OPS)
+    const unpinned = await connected(setUp, "gmail", { gmail: always("ok") })
+    expect(unpinned.status).toBe(404)
+
+    const prepared = prepareFirstPin(setUp.db, "gmail", gmail)
+    if (!prepared.ok)
+      throw new Error(`first pin not prepared: ${prepared.code}`)
+    const authorization = controlAuthorization(setUp.db, prepared.prepared)
+    expect(applyFirstPin(setUp.db, "gmail", gmail, authorization).ok).toBe(true)
+
+    const reply = await connected(setUp, "gmail", { gmail: always("ok") })
+    expect(reply).toEqual({
+      status: 200,
+      body: {
+        connectors: [
+          { name: "gmail", health: "healthy", consecutiveFailures: 0 },
+        ],
+      },
+    })
+    expect(
+      auditRows(setUp.db)
+        .filter((r) => r.target === "gmail")
+        .map((r) => r.action)
+    ).toEqual(["connector.pinned", "connector.connected"])
+  })
+
   it("probes a connector and reports it healthy", async () => {
     const setUp = gate()
     const probe = vi.fn(always("ok"))

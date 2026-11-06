@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateRepinRequest",
-  "description": "Body of POST /connector-settings/:name/repin/decision (#97): the control approval prepared by GateRepinPrepared, signed by the passkey.",
+  "description": "Body of POST /connector-settings/:name/repin/decision (#97) and POST /connector-settings/:name/pin/decision (#627): the control approval prepared by GateRepinPrepared, signed by the passkey.",
   "type": "object",
   "properties": {
     "id": { "type": "string", "minLength": 1, "maxLength": 64 },

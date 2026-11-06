@@ -4,7 +4,7 @@ import { IPHONE_UA } from "./platform"
 import { createHash } from "node:crypto"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { GateRepinPrepared } from "@eido/schemas"
-import { repinConnector } from "@/lib/connector-repin"
+import { pinConnector, repinConnector } from "@/lib/connector-repin"
 
 const DRIFT = { added: ["drive.move_bulk"], removed: ["drive.save"] }
 
@@ -307,5 +307,109 @@ describe("repinConnector", () => {
       expect(await repinConnector("drive", DRIFT)).toMatchObject({ ok: false })
     }
     expect(get).not.toHaveBeenCalled()
+  })
+})
+
+describe("pinConnector (#627)", () => {
+  const TOOLS = ["drive.list", "drive.move_bulk"]
+
+  function preparedFor(payload: string): GateRepinPrepared {
+    const hash = createHash("sha256").update(payload).digest("hex")
+    return {
+      ...prepared,
+      payload,
+      payloadHash: hash,
+      challenge: challengeFor("drive", hash),
+    }
+  }
+
+  it("prepares at /pin, signs the challenge and posts the decision to /pin/decision", async () => {
+    const get = stubWebAuthn(async () => new FakeCredential())
+    const fetchMock = stubFetch(
+      json(200, prepared),
+      json(200, { connector: "drive", manifestHash: PAYLOAD_HASH })
+    )
+    expect(await pinConnector("drive", TOOLS)).toEqual({ ok: true })
+    const urls = fetchMock.mock.calls.map((c) => (c as unknown as [string])[0])
+    expect(urls).toEqual([
+      "/api/gate/connector-settings/drive/pin",
+      "/api/gate/connector-settings/drive/pin/decision",
+    ])
+    const options = get.mock.calls[0]![0].publicKey!
+    expect(
+      Buffer.from(options.challenge as ArrayBuffer).toString("base64url")
+    ).toBe(prepared.challenge)
+  })
+
+  it("never signs a manifest with a tool the card did not show", async () => {
+    const get = stubWebAuthn(async () => new FakeCredential())
+    stubFetch(
+      json(
+        200,
+        preparedFor(
+          '{"name":"drive","operations":[{"name":"drive.list"},{"name":"drive.move_bulk"},{"name":"drive.delete"}],"version":2}'
+        )
+      )
+    )
+    const outcome = await pinConnector("drive", TOOLS)
+    expect(outcome).toEqual({
+      ok: false,
+      message:
+        "The manifest the gate prepared does not match the tools shown. Nothing was signed.",
+    })
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it("never signs a manifest that lacks a tool the card showed", async () => {
+    const get = stubWebAuthn(async () => new FakeCredential())
+    stubFetch(
+      json(
+        200,
+        preparedFor(
+          '{"name":"drive","operations":[{"name":"drive.list"}],"version":2}'
+        )
+      )
+    )
+    expect(await pinConnector("drive", TOOLS)).toMatchObject({ ok: false })
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it("says the connector stays unpinned when the prompt is cancelled", async () => {
+    stubWebAuthn(async () => {
+      throw new DOMException("cancelled", "NotAllowedError")
+    })
+    const fetchMock = stubFetch(json(200, prepared))
+    expect(await pinConnector("drive", TOOLS)).toEqual({
+      ok: false,
+      message:
+        "The passkey prompt did not complete. The connector stays unpinned.",
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("says nothing was pinned when the gate refuses the signature", async () => {
+    stubWebAuthn(async () => new FakeCredential())
+    stubFetch(
+      json(200, prepared),
+      json(403, { code: "verification_failed", message: "the pin was refused" })
+    )
+    expect(await pinConnector("drive", TOOLS)).toEqual({
+      ok: false,
+      message: "The gate refused the signature. Nothing was pinned.",
+    })
+  })
+
+  it("relays the gate's reason when it cannot start a first pin", async () => {
+    stubFetch(
+      json(409, {
+        code: "unavailable",
+        message: "the connector is already pinned",
+      })
+    )
+    expect(await pinConnector("drive", TOOLS)).toEqual({
+      ok: false,
+      message:
+        "The gate cannot pin this connector: the connector is already pinned. Nothing was changed.",
+    })
   })
 })

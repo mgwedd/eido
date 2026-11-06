@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateConnectorSettings",
-  "description": "Authenticated phone view of each pinned connector's live health, declared auth scopes, pin timestamp, pinned manifest hash, last successful read and manifest drift detail, with the gate's own time. Fields other than the original ones are optional per connector. It contains no credentials.",
+  "description": "Authenticated phone view of each pinned connector's live health, declared auth scopes, pin timestamp, pinned manifest hash, last successful read and manifest drift detail, with the gate's own time. Fields other than the original ones are optional per connector. `unpinned` lists the connectors with a reviewed manifest placed on the Mac and no pin yet (#627), with the tool names and scopes the owner reviews before a first pin. It contains no credentials.",
   "type": "object",
   "properties": {
     "connectors": {
@@ -76,6 +76,29 @@
           "health",
           "consecutiveFailures"
         ],
+        "additionalProperties": false
+      }
+    },
+    "unpinned": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "title": "GateUnpinnedConnector",
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "operations": {
+            "type": "array",
+            "maxItems": 200,
+            "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+          },
+          "scopes": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+          }
+        },
+        "required": ["name", "operations", "scopes"],
         "additionalProperties": false
       }
     },
