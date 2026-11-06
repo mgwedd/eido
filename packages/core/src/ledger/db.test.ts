@@ -261,7 +261,10 @@ describe("migrations", () => {
       testDoc("one", { entityId: a.id }),
       testDoc("two", { entityId: a.id }),
     ])
-    for (const [i, sql] of LEDGER_MIGRATIONS.slice(0, -1).entries()) {
+    const rebuild = LEDGER_MIGRATIONS.findIndex((sql) =>
+      sql.includes("CREATE TABLE links_next")
+    )
+    for (const [i, sql] of LEDGER_MIGRATIONS.slice(0, rebuild).entries()) {
       old.exec(sql)
       old
         .prepare(

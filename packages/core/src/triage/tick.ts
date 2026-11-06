@@ -77,7 +77,7 @@ async function run(
   const decidedAt = now.toISOString()
   for (const event of queuedEvents(deps.db)) {
     let decision: Decision
-    if (event.score < cfg.ledgerOnlyBelow) {
+    if (event.kind !== "confirm-field" && event.score < cfg.ledgerOnlyBelow) {
       decision = { disposition: "ledger", reason: "low-score" }
     } else if (cardsToday >= cfg.cardBudget.perDay) {
       decision = { disposition: "digest", reason: "budget" }
