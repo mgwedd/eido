@@ -25,7 +25,7 @@ import { ShortcutKeys } from "@/components/shortcuts-provider"
 import { useKeydown } from "@/hooks/use-keydown"
 import { shortHash } from "@/lib/approval/challenge"
 import { prepareApproval, signApproval } from "@/lib/approval/sign"
-import { loadCredentialStatus } from "@/lib/auth/unlock"
+import { expiredUnlockUrl, loadCredentialStatus } from "@/lib/auth/unlock"
 import { enrolUrl } from "@/lib/enrol"
 import {
   confirmFieldIntent,
@@ -52,6 +52,13 @@ import { isInteractiveTarget, isShortcutEvent } from "@/lib/shortcuts"
 import { formatWaiting } from "@/lib/relative-time"
 import { describeKind, type PendingIntent } from "@/lib/today"
 import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
+
+/** The session ended: sign in again and come back to this page. */
+function goToUnlock() {
+  window.location.replace(
+    expiredUnlockUrl(window.location.pathname + window.location.search)
+  )
+}
 
 type ListState =
   | { status: "loading" }
@@ -125,6 +132,7 @@ function useQueue() {
     const controller = new AbortController()
     void loadQueue(controller.signal).then((result) => {
       if (controller.signal.aborted) return
+      if (!result.ok && result.status === 401) return goToUnlock()
       setState(
         result.ok
           ? { status: "ready", intents: result.value }
@@ -305,6 +313,8 @@ function ApprovalCard({
     void (async () => {
       const result = await prepareApproval(intent.id, controller.signal)
       if (controller.signal.aborted) return
+      if (!result.ok && result.error.code === "unauthenticated")
+        return goToUnlock()
       if (!result.ok)
         return setCard({
           status:
@@ -319,6 +329,7 @@ function ApprovalCard({
     const controller = new AbortController()
     void loadHistory(intent.id, controller.signal).then((result) => {
       if (controller.signal.aborted) return
+      if (!result.ok && result.status === 401) return goToUnlock()
       setHistory(
         result.ok
           ? { status: "ready", history: result.value }
@@ -350,6 +361,7 @@ function ApprovalCard({
     setAction({ status: "signing" })
     const result = await signApproval(card.prepared)
     if (result.ok) return onDecided("Approved")
+    if (result.error.code === "unauthenticated") return goToUnlock()
     if (result.error.code === "already_decided")
       return onDecided("Already decided")
     if (result.error.code === "payload_changed") {
@@ -381,6 +393,7 @@ function ApprovalCard({
     setAction({ status: "signing" })
     const result = await editIntent(intent.id, edited)
     if (!result.ok) {
+      if (result.error.code === "unauthenticated") return goToUnlock()
       setAction({ status: "idle" })
       if (
         result.error.code === "already_decided" ||
@@ -392,6 +405,8 @@ function ApprovalCard({
       return setEditError(editRefusalMessage(result.error))
     }
     const signed = await signApproval(result.value)
+    if (!signed.ok && signed.error.code === "unauthenticated")
+      return goToUnlock()
     setEditOpen(false)
     if (signed.ok) return onDecided("Approved")
     // The gate has already replaced this intent with the edited one, so the queue reloads onto it.
@@ -459,6 +474,8 @@ function ApprovalCard({
   const reject = async (code?: (typeof REJECT_REASONS)[number]["code"]) => {
     setAction({ status: "signing" })
     const result = await rejectIntent(intent.id, code)
+    if (!result.ok && result.error.code === "unauthenticated")
+      return goToUnlock()
     setRejectOpen(false)
     if (result.ok)
       return onDecided(code ? "Rejected · reason saved for evals" : "Rejected")
