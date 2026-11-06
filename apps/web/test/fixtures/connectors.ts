@@ -3,6 +3,7 @@
 import type { GateConnectorSettings } from "@eido/schemas"
 
 type Connector = GateConnectorSettings["connectors"][number]
+type Unpinned = NonNullable<GateConnectorSettings["unpinned"]>[number]
 
 const gmail: Connector = {
   name: "gmail",
@@ -69,6 +70,13 @@ const sharedBridgeOpen: GateConnectorSettings["connectors"] = [
   drive,
 ]
 
+/** A reviewed manifest placed on the Mac for a connector that has never been pinned (#627). */
+const gmailUnpinned: Unpinned = {
+  name: "gmail",
+  operations: ["gmail.read", "gmail.draft"],
+  scopes: ["https://scopes.example.invalid/mail.read"],
+}
+
 const AS_OF = "2026-10-18T11:30:00.000Z"
 
 export {
@@ -78,6 +86,7 @@ export {
   driveDisabled,
   driveDrifted,
   gmail,
+  gmailUnpinned,
   protonCalendarOpen,
   protonMailOpen,
   sharedBridgeOpen,

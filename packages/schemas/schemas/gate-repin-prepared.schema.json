@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateRepinPrepared",
-  "description": "Response of POST /connector-settings/:name/repin on the phone listener (#97): a signed manifest.pin control ceremony over the re-reviewed manifest of a drift-disabled connector. Nothing changes until the passkey signs the challenge. The device hashes payload itself, checks its operation names against the drift it shows, and rebuilds the challenge before signing.",
+  "description": "Response of POST /connector-settings/:name/repin (#97) and POST /connector-settings/:name/pin (#627) on the phone listener: a signed manifest.pin control ceremony over the reviewed manifest of a drift-disabled connector, or of a connector that has never been pinned. Nothing changes until the passkey signs the challenge. The device hashes payload itself, checks its operation names against the drift or the tools it shows, and rebuilds the challenge before signing.",
   "type": "object",
   "properties": {
     "id": { "type": "string", "minLength": 1, "maxLength": 64 },

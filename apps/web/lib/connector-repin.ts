@@ -13,32 +13,56 @@ import {
 import { hashPayloadText } from "@/lib/approval/canonical"
 import { toAssertion } from "@/lib/approval/sign"
 
-/** What a re-pin attempt came to: pinned, a session that expired (401), or a message to show. */
+/** What a pin or re-pin attempt came to: pinned, a session that expired (401), or a message to show. */
 export type RepinOutcome =
   | { ok: true }
   | { ok: false; expired: true }
   | { ok: false; expired?: undefined; message: string }
 
-const MESSAGES = {
-  network: "The gate could not be reached. Nothing was changed.",
-  unreadable: "The gate sent an unreadable answer. Nothing was changed.",
+/** The two `manifest.pin` ceremonies: re-pin a drift-disabled connector, or pin a new one. */
+type Kind = {
+  path: "repin" | "pin"
+  verb: string
+  mismatch: string
+  refused: string
+  stays: string
+}
+
+const REPIN: Kind = {
+  path: "repin",
+  verb: "re-pin",
   mismatch:
     "The manifest the gate prepared does not match the drift shown. Nothing was signed.",
   refused: "The gate refused the signature. The old pin is unchanged.",
-  unavailable: "The gate cannot re-pin this connector right now.",
+  stays: "The connector stays disabled.",
+}
+
+const PIN: Kind = {
+  path: "pin",
+  verb: "pin",
+  mismatch:
+    "The manifest the gate prepared does not match the tools shown. Nothing was signed.",
+  refused: "The gate refused the signature. Nothing was pinned.",
+  stays: "The connector stays unpinned.",
+}
+
+const MESSAGES = {
+  network: "The gate could not be reached. Nothing was changed.",
+  unreadable: "The gate sent an unreadable answer. Nothing was changed.",
 } as const
 
 const encoder = new TextEncoder()
 
 const fail = (message: string): RepinOutcome => ({ ok: false, message })
 
-const cancelledMessage = () =>
-  `${authenticatorCopy(currentAuthenticatorLabel()).subject} did not complete. The connector stays disabled.`
+const cancelledMessage = (kind: Kind) =>
+  `${authenticatorCopy(currentAuthenticatorLabel()).subject} did not complete. ${kind.stays}`
 
-const repinUrl = (connector: string) =>
-  `/api/gate/connector-settings/${encodeURIComponent(connector)}/repin`
+const ceremonyUrl = (kind: Kind, connector: string) =>
+  `/api/gate/connector-settings/${encodeURIComponent(connector)}/${kind.path}`
 
 async function post(
+  kind: Kind,
   url: string,
   body: unknown,
   signal?: AbortSignal
@@ -66,7 +90,11 @@ async function post(
   } catch {
     return {
       ok: false,
-      outcome: fail(response.ok ? MESSAGES.unreadable : MESSAGES.unavailable),
+      outcome: fail(
+        response.ok
+          ? MESSAGES.unreadable
+          : `The gate cannot ${kind.verb} this connector right now.`
+      ),
       status: response.status,
     }
   }
@@ -77,8 +105,8 @@ async function post(
     status: response.status,
     outcome: fail(
       error.ok && response.status !== 403
-        ? `The gate cannot re-pin this connector: ${error.value.message}. Nothing was changed.`
-        : MESSAGES.refused
+        ? `The gate cannot ${kind.verb} this connector: ${error.value.message}. Nothing was changed.`
+        : kind.refused
     ),
   }
 }
@@ -117,6 +145,38 @@ export async function checkedRepinChallenge(
   drift: { added: readonly string[]; removed: readonly string[] },
   prepared: GateRepinPrepared
 ): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  return checkedChallenge(
+    connector,
+    prepared,
+    (names) =>
+      drift.added.every((tool) => names.has(tool)) &&
+      !drift.removed.some((tool) => names.has(tool))
+  )
+}
+
+/**
+ * The same check for a first pin: the payload must hash to `payloadHash` and be this
+ * connector's manifest with exactly the tools the card showed, no more and no fewer.
+ */
+export async function checkedPinChallenge(
+  connector: string,
+  operations: readonly string[],
+  prepared: GateRepinPrepared
+): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  const shown = new Set(operations)
+  return checkedChallenge(
+    connector,
+    prepared,
+    (names) =>
+      names.size === shown.size && [...names].every((tool) => shown.has(tool))
+  )
+}
+
+async function checkedChallenge(
+  connector: string,
+  prepared: GateRepinPrepared,
+  toolsMatch: (names: ReadonlySet<string>) => boolean
+): Promise<Uint8Array<ArrayBuffer> | undefined> {
   const hash = await hashPayloadText(prepared.payload)
   const names = operationNames(prepared.payload, connector)
   if (
@@ -124,8 +184,7 @@ export async function checkedRepinChallenge(
     hash !== prepared.payloadHash ||
     prepared.target !== connector ||
     names === undefined ||
-    !drift.added.every((tool) => names.has(tool)) ||
-    drift.removed.some((tool) => names.has(tool))
+    !toolsMatch(names)
   )
     return undefined
   const challenge = toBase64url(
@@ -160,16 +219,46 @@ export async function repinConnector(
   drift: { added: readonly string[]; removed: readonly string[] },
   signal?: AbortSignal
 ): Promise<RepinOutcome> {
-  const prepare = await post(repinUrl(connector), {}, signal)
+  return signManifestPin(
+    REPIN,
+    connector,
+    (prepared) => checkedRepinChallenge(connector, drift, prepared),
+    signal
+  )
+}
+
+/**
+ * Pins the reviewed manifest of a connector that has never been pinned, over the same
+ * signed ceremony. Any refusal, cancelled prompt or mismatch leaves it unpinned.
+ */
+export async function pinConnector(
+  connector: string,
+  operations: readonly string[],
+  signal?: AbortSignal
+): Promise<RepinOutcome> {
+  return signManifestPin(
+    PIN,
+    connector,
+    (prepared) => checkedPinChallenge(connector, operations, prepared),
+    signal
+  )
+}
+
+async function signManifestPin(
+  kind: Kind,
+  connector: string,
+  check: (
+    prepared: GateRepinPrepared
+  ) => Promise<Uint8Array<ArrayBuffer> | undefined>,
+  signal?: AbortSignal
+): Promise<RepinOutcome> {
+  const url = ceremonyUrl(kind, connector)
+  const prepare = await post(kind, url, {}, signal)
   if (!prepare.ok) return prepare.outcome
   const prepared = validateGateRepinPrepared(prepare.json)
   if (!prepared.ok) return fail(MESSAGES.unreadable)
-  const challenge = await checkedRepinChallenge(
-    connector,
-    drift,
-    prepared.value
-  )
-  if (challenge === undefined) return fail(MESSAGES.mismatch)
+  const challenge = await check(prepared.value)
+  if (challenge === undefined) return fail(kind.mismatch)
 
   let credential: Credential | null
   try {
@@ -183,20 +272,20 @@ export async function repinConnector(
       signal,
     })
   } catch {
-    return fail(cancelledMessage())
+    return fail(cancelledMessage(kind))
   }
   const assertion =
     credential instanceof PublicKeyCredential
       ? toAssertion(credential)
       : undefined
-  if (assertion === undefined) return fail(cancelledMessage())
+  if (assertion === undefined) return fail(cancelledMessage(kind))
 
   const request: GateRepinRequest = {
     id: prepared.value.id,
     nonce: prepared.value.nonce,
     assertion,
   }
-  const decided = await post(`${repinUrl(connector)}/decision`, request, signal)
+  const decided = await post(kind, `${url}/decision`, request, signal)
   if (!decided.ok) return decided.outcome
   const result = validateGateRepinResult(decided.json)
   return result.ok &&
