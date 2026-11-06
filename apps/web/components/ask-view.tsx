@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
-import { ArrowUp, Check, TriangleAlert } from "lucide-react"
+import { ArrowUp, Check, Search, TriangleAlert } from "lucide-react"
 import type { CoreApiAskResponse } from "@eido/schemas"
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
@@ -19,9 +19,18 @@ import {
   InputGroupAddon,
   InputGroupInput,
 } from "@eido/ui/components/input-group"
+import { Kbd } from "@eido/ui/components/kbd"
 import { Separator } from "@eido/ui/components/separator"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import { AskSearchView } from "@/components/ask-search"
 import { InjectionFlag } from "@/components/injection-flag"
+import {
+  ASK_ROUTE,
+  isSearchRoute,
+  parseRoute,
+  routeUrl,
+  type AskRoute,
+} from "@/lib/ask-search"
 import { ASK_INPUT_ID, consumeAskFocus } from "@/lib/shortcuts"
 import {
   actionableFollowUps,
@@ -106,6 +115,7 @@ export function AskScreen({
   onSubmit,
   onRetry,
   onPropose,
+  onOpenSearch,
   keyboardInset = 0,
 }: {
   state: AskState
@@ -118,12 +128,29 @@ export function AskScreen({
   onSubmit: () => void
   onRetry: () => void
   onPropose: (index: number) => void
+  onOpenSearch: () => void
 }) {
   const result = state.status === "ready" ? state.result : undefined
   const figures = result ? computedFigures(result) : []
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5">
-      <h1 className="text-2xl font-semibold tracking-tight">Ask Eido</h1>
+      <header className="flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">Ask Eido</h1>
+        <Button
+          variant="outline"
+          className="min-h-11 min-w-11"
+          aria-label="Search conversations"
+          onClick={onOpenSearch}
+        >
+          <Search aria-hidden />
+          <span aria-hidden className="hidden md:inline">
+            Search conversations
+          </span>
+          <Kbd aria-hidden className="hidden md:inline-flex">
+            ⌘K
+          </Kbd>
+        </Button>
+      </header>
       <div className="grid min-w-0 flex-1 content-start gap-5 min-[1100px]:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)]">
         <div className="flex min-w-0 flex-col gap-5" aria-live="polite">
           {state.status === "idle" && (
@@ -369,6 +396,36 @@ export function AskScreen({
   )
 }
 
+const locationListeners = new Set<() => void>()
+function subscribeToLocation(listener: () => void): () => void {
+  locationListeners.add(listener)
+  window.addEventListener("popstate", listener)
+  return () => {
+    locationListeners.delete(listener)
+    window.removeEventListener("popstate", listener)
+  }
+}
+function notifyLocation(): void {
+  for (const listener of locationListeners) listener()
+}
+function currentSearch(): string {
+  return window.location.search
+}
+function serverSearch(): string {
+  return ""
+}
+
+/** True when the open conversation was pushed from the results, so Back returns to them. */
+function openedFromResults(): boolean {
+  const state: unknown = window.history.state
+  return (
+    typeof state === "object" &&
+    state !== null &&
+    "eidoAskOpened" in state &&
+    state.eidoAskOpened === true
+  )
+}
+
 export function AskView() {
   const [input, setInput] = React.useState("")
   const [keyboardInset, setKeyboardInset] = React.useState(0)
@@ -379,6 +436,55 @@ export function AskView() {
   const lock = React.useRef(false)
   const controllers = React.useRef(new Set<AbortController>())
   const inputRef = React.useRef<HTMLInputElement>(null)
+  const searchInputRef = React.useRef<HTMLInputElement>(null)
+  const locationSearch = React.useSyncExternalStore(
+    subscribeToLocation,
+    currentSearch,
+    serverSearch
+  )
+  const route = React.useMemo(
+    () => parseRoute(locationSearch),
+    [locationSearch]
+  )
+  const searching = isSearchRoute(route)
+  const wasSearching = React.useRef(false)
+  const go = React.useCallback(
+    (next: AskRoute, how: "push" | "replace", opened = false) => {
+      if (how === "push")
+        window.history.pushState(
+          opened ? { eidoAskOpened: true } : null,
+          "",
+          routeUrl(next)
+        )
+      else window.history.replaceState(window.history.state, "", routeUrl(next))
+      notifyLocation()
+    },
+    []
+  )
+  const handleRoute = React.useCallback(
+    (next: AskRoute, how: "push" | "replace") => go(next, how, how === "push"),
+    [go]
+  )
+  const openSearch = React.useCallback(() => {
+    if (isSearchRoute(parseRoute(window.location.search)))
+      searchInputRef.current?.focus()
+    else go({ search: "", conversation: null, turn: null }, "push")
+  }, [go])
+  React.useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault()
+        openSearch()
+      }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [openSearch])
+  React.useEffect(() => {
+    if (searching && !wasSearching.current) searchInputRef.current?.focus()
+    if (!searching && wasSearching.current) inputRef.current?.focus()
+    wasSearching.current = searching
+  }, [searching])
   React.useEffect(() => {
     const viewport = window.visualViewport
     if (!viewport) return
@@ -450,6 +556,23 @@ export function AskView() {
     if (controller.signal.aborted) return
     setProposals((previous) => ({ ...previous, [index]: loaded }))
   }
+  if (searching)
+    return (
+      <AskSearchView
+        route={route}
+        inputRef={searchInputRef}
+        onRoute={handleRoute}
+        onClose={() => go(ASK_ROUTE, "push")}
+        onBackToResults={() => {
+          if (openedFromResults()) window.history.back()
+          else go({ ...route, conversation: null, turn: null }, "replace")
+        }}
+        onNewQuestion={() => {
+          setInput("")
+          go(ASK_ROUTE, "push")
+        }}
+      />
+    )
   return (
     <AskScreen
       state={state}
@@ -468,6 +591,7 @@ export function AskView() {
       onPropose={(index) => {
         void propose(index)
       }}
+      onOpenSearch={openSearch}
     />
   )
 }

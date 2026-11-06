@@ -70,7 +70,10 @@ export function legendGroups(
     },
     {
       title: "Ask",
-      items: [{ keys: ["⌘", "↵"], label: "Send question" }],
+      items: [
+        { keys: ["⌘", "↵"], label: "Send question" },
+        { keys: ["⌘", "K"], label: "Search conversations" },
+      ],
     },
   ]
 }

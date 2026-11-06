@@ -74,6 +74,7 @@ import {
 import {
   beginLogin,
   hasCredential,
+  onlyRevokedCredentials,
   login,
   sessionCookie,
   sessionCredential,
@@ -231,6 +232,7 @@ function credentialStatus(
   )
   const status: GateCredentialStatus = {
     enrolled: hasCredential(state.db),
+    revoked: onlyRevokedCredentials(state.db),
     sessionExpiresAt: expiry === undefined ? null : expiry.toISOString(),
   }
   return { status: 200, body: status }

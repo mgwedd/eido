@@ -233,6 +233,91 @@ describe("certificate pinning against an implicit-TLS fake Bridge", () => {
   })
 })
 
+describe("certificate pinning against a STARTTLS fake Bridge", () => {
+  let pinned: ReturnType<typeof createTestCertificate>
+  let other: ReturnType<typeof createTestCertificate>
+  beforeAll(() => {
+    pinned = createTestCertificate()
+    other = createTestCertificate()
+  })
+  afterAll(() => {
+    pinned.cleanup()
+    other.cleanup()
+  })
+
+  async function bridgeFor(
+    cert: ReturnType<typeof createTestCertificate>,
+    expectedSha256 = pinned.sha256
+  ) {
+    const fake = await startFakeBridge({
+      username: USER,
+      password: PASSWORD,
+      starttls: { cert: cert.cert, key: cert.key },
+    })
+    opened.push(fake)
+    const vault = new InMemoryVault()
+    await vault.set(BRIDGE_PASSWORD_KEY, PASSWORD)
+    const bridge = createProtonBridge({
+      config: {
+        host: "127.0.0.1",
+        imapPort: fake.imapPort,
+        smtpPort: fake.smtpPort,
+        tls: "starttls",
+        certificatePem: pinned.cert,
+        certificateSha256: expectedSha256,
+        username: USER,
+        searchFolders: ["INBOX"],
+      },
+      vault,
+    })
+    return { fake, bridge }
+  }
+
+  it("upgrades with STARTTLS before IMAP LOGIN and SMTP AUTH, then works", async () => {
+    const { fake, bridge } = await bridgeFor(pinned)
+    expect(await bridge.listFolders()).toContain("INBOX")
+    await bridge.send({ to: ["guest@example.invalid"], text: "synthetic" })
+    expect(fake.sent).toHaveLength(1)
+    const imapStart = fake.imapCommands.indexOf("STARTTLS")
+    const imapLogin = fake.imapCommands.indexOf("LOGIN <redacted>")
+    expect(imapStart).toBeGreaterThanOrEqual(0)
+    expect(imapLogin).toBeGreaterThan(imapStart)
+    const smtpStart = fake.smtpCommands.indexOf("STARTTLS")
+    const smtpAuth = fake.smtpCommands.findIndex((line) =>
+      line.startsWith("AUTH")
+    )
+    expect(smtpStart).toBeGreaterThanOrEqual(0)
+    expect(smtpAuth).toBeGreaterThan(smtpStart)
+  })
+
+  it("refuses a different certificate after STARTTLS, before IMAP LOGIN or SMTP AUTH", async () => {
+    const { fake, bridge } = await bridgeFor(other)
+    await expect(bridge.listFolders()).rejects.toMatchObject({
+      code: "handshake_failed",
+    })
+    await expect(
+      bridge.send({ to: ["guest@example.invalid"], text: "synthetic" })
+    ).rejects.toMatchObject({ code: "handshake_failed" })
+    expect(fake.imapCommands).toContain("STARTTLS")
+    expect(fake.smtpCommands).toContain("STARTTLS")
+    expect(fake.imapLines.some((line) => line.includes("LOGIN"))).toBe(false)
+    expect(fake.smtpLines.some((line) => line.startsWith("AUTH"))).toBe(false)
+    expect(fake.sent).toEqual([])
+  })
+
+  it("refuses a trusted certificate whose fingerprint is not the pin, before LOGIN or AUTH", async () => {
+    const { fake, bridge } = await bridgeFor(pinned, other.sha256)
+    await expect(bridge.listFolders()).rejects.toMatchObject({
+      code: "handshake_failed",
+    })
+    await expect(
+      bridge.send({ to: ["guest@example.invalid"], text: "synthetic" })
+    ).rejects.toMatchObject({ code: "handshake_failed" })
+    expect(fake.imapLines.some((line) => line.includes("LOGIN"))).toBe(false)
+    expect(fake.smtpLines.some((line) => line.startsWith("AUTH"))).toBe(false)
+  })
+})
+
 describe("parseFallbackId", () => {
   it("splits core's fallback id, keeping colons in the folder", () => {
     expect(parseFallbackId("proton:Folders/a:b:1700000001:42")).toEqual({

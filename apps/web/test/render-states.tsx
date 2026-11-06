@@ -18,6 +18,8 @@ type StateCase = {
   render: () => ReactNode
   /** Stub the network for this state (optional). */
   fetch?: ProbeOutcome
+  /** Acts on the rendered tree before the assertion, for a state reached by a user action (a click). */
+  interact?: (container: HTMLElement) => Promise<void>
   /** The live region that announces the state. */
   role: "status" | "alert"
   /** Select a state's own region when a page has several independent announcements. */
@@ -69,6 +71,13 @@ function describeStates(name: string, cases: readonly StateCase[]) {
           root.render(row.render())
           await new Promise((resolve) => setTimeout(resolve, 0))
         })
+        if (row.interact) {
+          const interact = row.interact
+          await act(async () => {
+            await interact(container)
+            await new Promise((resolve) => setTimeout(resolve, 0))
+          })
+        }
         const region = container.querySelector(
           row.selector ?? `[role="${row.role}"]`
         )

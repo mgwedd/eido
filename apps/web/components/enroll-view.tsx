@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Loader2, Lock, ScanFace } from "lucide-react"
+import { Loader2, Lock } from "lucide-react"
 
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Button, buttonVariants } from "@eido/ui/components/button"
@@ -12,6 +12,7 @@ import { Input } from "@eido/ui/components/input"
 import { Label } from "@eido/ui/components/label"
 import { enrol, loadPasskeyCreatedAt } from "@/lib/enrol"
 import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
+import { AuthenticatorIcon } from "@/components/authenticator-icon"
 import { checkEnvironment, loadCredentialStatus } from "@/lib/auth/unlock"
 import type { Environment } from "@/lib/auth/unlock"
 
@@ -235,7 +236,7 @@ function EnrollCard({
                 disabled={enrolling || code.trim() === ""}
                 className="h-12 rounded-xl"
               >
-                <ScanFace aria-hidden />
+                <AuthenticatorIcon />
                 Create passkey
               </Button>
             </form>

@@ -76,12 +76,16 @@ describe("Queue without a passkey", () => {
   test("links to enrolment instead of Approve when no passkey is enrolled", async () => {
     stubGate(() =>
       Promise.resolve(
-        Response.json({ enrolled: false, sessionExpiresAt: null })
+        Response.json({
+          enrolled: false,
+          revoked: false,
+          sessionExpiresAt: null,
+        })
       )
     )
     await render()
     const link = document.querySelector('a[href="/enroll?next=%2Fqueue"]')
-    expect(link?.textContent).toBe("Enrol this device")
+    expect(link?.textContent).toBe("Enroll this device")
     expect(buttonLabels().some((label) => label.startsWith("Approve"))).toBe(
       false
     )
@@ -89,7 +93,13 @@ describe("Queue without a passkey", () => {
 
   test("keeps Approve when a passkey is enrolled", async () => {
     stubGate(() =>
-      Promise.resolve(Response.json({ enrolled: true, sessionExpiresAt: null }))
+      Promise.resolve(
+        Response.json({
+          enrolled: true,
+          revoked: false,
+          sessionExpiresAt: null,
+        })
+      )
     )
     await render()
     expect(document.querySelector('a[href^="/enroll"]')).toBeNull()

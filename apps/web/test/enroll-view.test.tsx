@@ -60,7 +60,11 @@ function setup(opts: {
       if (url.endsWith("/passkey/status"))
         return json(
           200,
-          opts.status ?? { enrolled: false, sessionExpiresAt: null }
+          opts.status ?? {
+            enrolled: false,
+            revoked: false,
+            sessionExpiresAt: null,
+          }
         )
       if (url.endsWith("/passkey/enroll/options"))
         return json(200, {
@@ -200,7 +204,11 @@ describe("EnrollView", () => {
 
   it("shows an enrolled phone with its creation time and a way on", async () => {
     setup({
-      status: { enrolled: true, sessionExpiresAt: "2026-10-27T22:00:00.000Z" },
+      status: {
+        enrolled: true,
+        revoked: false,
+        sessionExpiresAt: "2026-10-27T22:00:00.000Z",
+      },
     })
     await render("/queue")
     expect(container.querySelector("[role=status]")?.textContent).toBe(

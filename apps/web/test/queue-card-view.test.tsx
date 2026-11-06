@@ -163,6 +163,7 @@ async function click(label: string) {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   inflight = 0
   vi.unstubAllGlobals()
   signApproval.mockReset()
@@ -289,6 +290,26 @@ describe("Queue card", () => {
       expect.objectContaining({ nonce: NONCE, payloadHash: HASH })
     )
     expect(view.textContent).toContain("Approved")
+  })
+
+  test("a second tap while signing does nothing", async () => {
+    routed()
+    signApproval.mockReturnValue(new Promise(() => undefined))
+    await render()
+    await click("Approve")
+    await click("Approve")
+    expect(signApproval).toHaveBeenCalledTimes(1)
+    expect(button("Approve")?.disabled).toBe(true)
+  })
+
+  test("the footer shows how long the card has waited and nothing mentions expiry", async () => {
+    routed()
+    // The history's pending entry is 2026-10-17T10:01Z, so this clock is 22 h later.
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-10-18T08:01:30.000Z"))
+    const view = await render()
+    expect(view.textContent).toContain("Waiting 22 h")
+    expect(view.textContent).not.toMatch(/expir/i)
   })
 
   test("a cancelled passkey prompt shows its own message and keeps the card", async () => {

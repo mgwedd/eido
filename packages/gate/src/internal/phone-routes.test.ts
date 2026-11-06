@@ -1224,14 +1224,26 @@ describe("phoneHandler: session", () => {
     const before = await call("GET", "/passkey/status")
     expect(validateGateCredentialStatus(before.body)).toEqual({
       ok: true,
-      value: { enrolled: false, sessionExpiresAt: null },
+      value: { enrolled: false, revoked: false, sessionExpiresAt: null },
     })
     enrol(auth)
     const cookie = await signIn()
     const after = await call("GET", "/passkey/status", { cookie })
     expect(after.body).toEqual({
       enrolled: true,
+      revoked: false,
       sessionExpiresAt: "2026-10-19T20:00:00.000Z",
+    })
+  })
+
+  it("reports a revoked passkey apart from one never enrolled", async () => {
+    enrol(auth)
+    expect(revokeCredential(s.db, "admin", auth.credentialId).ok).toBe(true)
+    const reply = await call("GET", "/passkey/status")
+    expect(reply.body).toEqual({
+      enrolled: false,
+      revoked: true,
+      sessionExpiresAt: null,
     })
   })
 })
@@ -1742,6 +1754,7 @@ describe("phoneHandler: passkey enrolment with a code (#202)", () => {
     expect((await call("GET", "/approvals", { cookie })).status).toBe(200)
     expect((await call("GET", "/passkey/status", { cookie })).body).toEqual({
       enrolled: true,
+      revoked: false,
       sessionExpiresAt: "2026-10-19T20:00:00.000Z",
     })
   })
@@ -1750,6 +1763,7 @@ describe("phoneHandler: passkey enrolment with a code (#202)", () => {
     issue()
     expect((await call("GET", "/passkey/status")).body).toEqual({
       enrolled: false,
+      revoked: false,
       sessionExpiresAt: null,
     })
   })

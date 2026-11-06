@@ -12,6 +12,7 @@ import {
   savings,
   studio,
 } from "./fixtures/simplefin-accounts"
+import { health, synced } from "./fixtures/simplefin-sync"
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -52,6 +53,13 @@ function core(options: {
           JSON.stringify({ entities: options.entities ?? [studio, household] })
         )
       )
+    if (url === "/api/core/connectors/health")
+      return Promise.resolve(new Response(JSON.stringify(health())))
+    if (
+      url === "/api/core/connectors/simplefin/sync" &&
+      init?.method === "POST"
+    )
+      return Promise.resolve(new Response(JSON.stringify(synced)))
     if (url === "/api/core/connectors/simplefin/accounts")
       return Promise.resolve(
         new Response(JSON.stringify(options.accounts), {
@@ -306,5 +314,22 @@ describe("SimpleFIN accounts section", () => {
     core({ accounts: { accounts: [{ id: "x" }] } })
     await mount()
     expect(alert()).toBe("Could not read SimpleFIN accounts from core.")
+  })
+  test("the Sync now control sits in the section and a synced run reads the accounts again", async () => {
+    const fn = core({ accounts: accountList(checking) })
+    await mount()
+    const accountReads = () =>
+      fn.mock.calls.filter(([url]) => url.endsWith("/simplefin/accounts"))
+        .length
+    expect(accountReads()).toBe(1)
+    const button = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "Sync now"
+    )
+    await act(async () => {
+      button?.click()
+      await flush()
+      await flush()
+    })
+    expect(accountReads()).toBe(2)
   })
 })

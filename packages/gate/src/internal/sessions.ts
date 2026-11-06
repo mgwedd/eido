@@ -315,6 +315,14 @@ export function sessionCookie(token: string): string {
   ].join("; ")
 }
 
+/** True when a passkey was enrolled and every one has since been revoked. */
+export function onlyRevokedCredentials(db: DatabaseSync): boolean {
+  return (
+    !hasCredential(db) &&
+    db.prepare("SELECT 1 FROM credentials LIMIT 1").get() !== undefined
+  )
+}
+
 /** True when the gate holds at least one unrevoked passkey. */
 export function hasCredential(db: DatabaseSync): boolean {
   return (
