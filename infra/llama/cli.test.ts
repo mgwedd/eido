@@ -73,6 +73,8 @@ type Options = {
   env?: Record<string, string>
   platform?: Platform
   uid?: number
+  /** The st_mode the settings store sees for an existing file. */
+  settingsMode?: number
 }
 
 const SIZES: Record<string, number> = {
@@ -181,11 +183,6 @@ function harness(o: Options = {}) {
         written[path] = text
         files[path] = text
       },
-      writePrivate: (path, text) => {
-        privately.push(path)
-        written[path] = text
-        files[path] = text
-      },
       rename: (from, to) => {
         files[to] = files[from] ?? ""
         delete files[from]
@@ -196,6 +193,19 @@ function harness(o: Options = {}) {
       },
       removeTree: (path) => void removed.push(`${path}/`),
       list: () => [],
+    },
+    settings: {
+      read: (path) => files[path],
+      stat: (path) =>
+        path in files
+          ? { isFile: true, mode: o.settingsMode ?? 0o100600, size: 1 }
+          : undefined,
+      write: (path, text) => {
+        privately.push(path)
+        written[path] = text
+        files[path] = text
+      },
+      ensurePrivateDir: (path) => void made.push(path),
     },
     env: o.env ?? {},
     home: HOME,
@@ -625,18 +635,18 @@ describe("llama list", () => {
 describe("llama use", () => {
   const verified = { [QWEN]: "", [RECORD]: QWEN_PASS }
 
-  it("writes only EIDO_LLAMA_MODEL to the settings file, privately, and keeps other lines", async () => {
+  it("writes only EIDO_LLAMA_MODEL to the settings file, privately, and keeps the other settings", async () => {
     const h = harness({
       files: {
         ...verified,
         [SETTINGS]:
-          "# stack\nEIDO_LLAMA_MODEL=gemma-4-26b-a4b\nEIDO_CORE_PORT=4000\n",
+          "EIDO_LLAMA_MODEL=gemma-4-26b-a4b\nEIDO_CORE_PORT=4000\n",
       },
     })
     expect(await main(["use", "qwen3.6-35b-a3b"], h.deps)).toBe(0)
     expect(h.written).toEqual({
       [SETTINGS]:
-        "# stack\nEIDO_LLAMA_MODEL=qwen3.6-35b-a3b\nEIDO_CORE_PORT=4000\n",
+        "# Written by the Eido stack (pnpm stack:setup). Non-secret settings only.\nEIDO_CORE_PORT=4000\nEIDO_LLAMA_MODEL=qwen3.6-35b-a3b\n",
     })
     expect(h.privately).toEqual([SETTINGS])
     expect(h.out).toEqual([
@@ -650,8 +660,25 @@ describe("llama use", () => {
     expect(await main(["use", "gemma-4-26b-a4b"], h.deps)).toBe(0)
     expect(h.made).toEqual(["/stack"])
     expect(h.written).toEqual({
-      "/stack/stack.env": "EIDO_LLAMA_MODEL=gemma-4-26b-a4b\n",
+      "/stack/stack.env": "# Written by the Eido stack (pnpm stack:setup). Non-secret settings only.\nEIDO_LLAMA_MODEL=gemma-4-26b-a4b\n",
     })
+  })
+
+  it("refuses a settings file that is not mode 0600, or holds a key outside the allowlist, writing nothing", async () => {
+    const open = harness({
+      settingsMode: 0o100644,
+      files: { [SETTINGS]: "EIDO_LLAMA_MODEL=gemma-4-26b-a4b\n" },
+    })
+    expect(await main(["use", "gemma-4-26b-a4b"], open.deps)).toBe(1)
+    expect(open.err).toEqual([
+      `FAIL: ${SETTINGS} has mode 0644, not 0600; fix with: chmod 600 '${SETTINGS}'`,
+    ])
+    const typo = harness({ files: { [SETTINGS]: "EIDO_LLAMA_MODLE=x\n" } })
+    expect(await main(["launch"], typo.deps)).toBe(1)
+    expect(typo.err).toEqual([
+      `FAIL: ${SETTINGS}: EIDO_LLAMA_MODLE is not a stack setting`,
+    ])
+    for (const h of [open, typo]) expect(h.written).toEqual({})
   })
 
   it("restarts the installed LaunchAgent", async () => {
@@ -729,7 +756,8 @@ describe("llama use", () => {
     h.deps.probe.size = (p) => Promise.resolve(p === model ? SIZE : undefined)
     expect(await main(["use", "gemma-4-26b-a4b"], h.deps)).toBe(0)
     expect(h.written).toEqual({
-      [`${root}\\stack.env`]: "EIDO_LLAMA_MODEL=gemma-4-26b-a4b\n",
+      [`${root}\\stack.env`]:
+        "# Written by the Eido stack (pnpm stack:setup). Non-secret settings only.\nEIDO_LLAMA_MODEL=gemma-4-26b-a4b\n",
     })
     expect(h.ran).toEqual([])
     expect(h.out.at(-1)).toBe(

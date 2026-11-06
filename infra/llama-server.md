@@ -107,7 +107,7 @@ pnpm --filter @eido/infra llama check-template --model qwen3.6-35b-a3b   # once,
 pnpm --filter @eido/infra llama use qwen3.6-35b-a3b
 ```
 
-`use` refuses a profile that is not on disk or not verified. It writes only `EIDO_LLAMA_MODEL` in `stack.env` (mode 0600) and keeps every other line. Then, when the LaunchAgent is installed, it restarts it with `launchctl kickstart -k`; the new launcher verifies and loads the new profile. An `EIDO_LLAMA_MODEL` exported in your shell still wins over the file, and `use` says so. Core needs no change: it talks to whichever model serves the port, and the profile's `chat_template_kwargs` become the server's defaults through `--chat-template-kwargs`.
+`use` refuses a profile that is not on disk or not verified. It sets `EIDO_LLAMA_MODEL` in `stack.env` through the shared stack settings store (mode 0600, the same file `pnpm stack:setup` writes) and keeps every other setting. Then, when the LaunchAgent is installed, it restarts it with `launchctl kickstart -k`; the new launcher verifies and loads the new profile. An `EIDO_LLAMA_MODEL` exported in your shell still wins over the file, and `use` says so. Core needs no change: it talks to whichever model serves the port, and the profile's `chat_template_kwargs` become the server's defaults through `--chat-template-kwargs`.
 
 ### Add a profile
 

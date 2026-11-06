@@ -409,6 +409,54 @@ describe("runDoctor", () => {
     )
   })
 
+  it("checks the active profile: EIDO_LLAMA_MODEL from the env or stack.env, or a user profile", async () => {
+    const m = machine()
+    const QWEN =
+      "/home/u/Library/Application Support/eido-dev/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    m.deps.env = { ...m.deps.env, EIDO_LLAMA_MODEL: "qwen3.6-35b-a3b" }
+    expect((await only(m, "llama-pin"))[0]).toMatchObject({
+      status: "fail",
+      summary: `no model file at ${QWEN}`,
+      fix: {
+        action: "download-model",
+        text: `curl -L --fail -o '${QWEN}' 'https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf'`,
+      },
+    })
+    m.stats.set(QWEN, { isFile: true, mode: 0o100644, size: 22134528992 })
+    expect(
+      (await only(m, "llama-pin", { serve: true, quick: true }))[0]?.summary
+    ).toBe("b11149 and profile qwen3.6-35b-a3b match the pin (size only)")
+
+    m.files.set(
+      "/home/u/Library/Application Support/eido-dev/profiles.lock",
+      [
+        "[profile mine]",
+        "model: o/r",
+        "quantization: Q8_0",
+        "path: /blobs/m.gguf",
+        "size: 9",
+        `sha256: ${"c".repeat(64)}`,
+        "",
+      ].join("\n")
+    )
+    m.deps.env = { ...m.deps.env, EIDO_LLAMA_MODEL: "mine" }
+    expect((await only(m, "llama-pin"))[0]).toMatchObject({
+      summary: "no model file at /blobs/m.gguf",
+      fix: {
+        action: "fix-settings",
+        text: "point profile mine at an existing GGUF, or run: pnpm --filter @eido/infra llama use gemma-4-26b-a4b",
+      },
+    })
+  })
+
+  it("fails an unknown EIDO_LLAMA_MODEL, naming the profiles", async () => {
+    const m = machine()
+    m.deps.env = { ...m.deps.env, EIDO_LLAMA_MODEL: "nope" }
+    expect((await only(m, "llama-pin"))[0]?.summary).toBe(
+      'unknown model profile "nope"; the profiles are gemma-4-26b-a4b, qwen3.6-35b-a3b, gpt-oss-20b'
+    )
+  })
+
   it("fails an unreadable model.lock", async () => {
     const m = machine()
     m.files.set("/repo/infra/model.lock", "nope")
@@ -574,7 +622,7 @@ describe("runDoctor on Windows", () => {
     const m = windows()
     m.commands.delete(`${WIN_BIN} --version`)
     expect((await only(m, "llama-pin"))[0]?.fix?.text).toBe(
-      `install llama.cpp b11149 at ${WIN_BIN}: infra/llama-server.md, "Install the pinned build and model"`
+      `install llama.cpp b11149 at ${WIN_BIN}: infra/llama-server.md, "Install the build and a model"`
     )
     m.commands.set(
       `${WIN_BIN} --version`,

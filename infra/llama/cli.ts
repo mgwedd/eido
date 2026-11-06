@@ -37,6 +37,13 @@ import {
   type LlamaConfig,
   type Platform,
 } from "./config.ts"
+import { platformOf } from "../stack/config.ts"
+import {
+  getStackSetting,
+  stackSettingsPath,
+  writeStackSetting,
+  type SettingsFiles,
+} from "../stack/settings.ts"
 import { fetchBuild, fetchModel, type FetchDeps } from "./fetch.ts"
 import { hubFile, profileSection } from "./hf.ts"
 import {
@@ -68,7 +75,6 @@ import {
   waitHealthy,
   type Fetch,
 } from "./server.ts"
-import { MODEL_KEY, readSetting, withSetting } from "./settings.ts"
 import { hasPass, withPass } from "./verified.ts"
 import {
   verifyBuild,
@@ -95,9 +101,9 @@ export type Deps = {
   onStopSignal: (handler: () => void) => void
   fs: FetchDeps["fs"] & {
     writeFile: (path: string, text: string) => void
-    /** Writes the file with mode 0600, also when it already exists. */
-    writePrivate: (path: string, text: string) => void
   }
+  /** The stack settings store (`stack.env`), shared with `pnpm stack:setup`. */
+  settings: SettingsFiles
   env: Env
   home: string
   platform: Platform
@@ -170,13 +176,22 @@ function launchdUid(deps: Deps, command: string): number | undefined {
 }
 
 /** The active profile id: EIDO_LLAMA_MODEL from the environment, else the settings file, else the lock's default. */
-function activeId(deps: Deps, { lock, config }: Base): string {
+/** The key in `stack.env` holding the active profile id. An exported variable wins over it. */
+const MODEL_KEY = "EIDO_LLAMA_MODEL"
+
+const settingsPathOf = (deps: Deps): string =>
+  stackSettingsPath(deps.env, deps.home, platformOf(deps.platform.os))
+
+function activeId(deps: Deps, { lock }: Base): string {
   const fromEnv = envValue(deps.env, MODEL_KEY)
   if (fromEnv !== undefined) return fromEnv
-  const fromFile = deps.fs.exists(config.settingsPath)
-    ? readSetting(deps.readText(config.settingsPath), MODEL_KEY)
-    : undefined
-  return fromFile ?? lock.defaultProfile
+  const fromFile = getStackSetting(
+    deps.settings,
+    settingsPathOf(deps),
+    MODEL_KEY,
+    platformOf(deps.platform.os)
+  )
+  return fromFile === undefined || fromFile === "" ? lock.defaultProfile : fromFile
 }
 
 function withProfile(base: Base, profile: ModelProfile): Loaded {
@@ -609,10 +624,14 @@ async function use(
     deps.err(unverified(base, profile))
     return 1
   }
-  const { settingsPath, stackDir } = base.config
-  const text = deps.fs.exists(settingsPath) ? deps.readText(settingsPath) : ""
-  deps.fs.mkdir(stackDir)
-  deps.fs.writePrivate(settingsPath, withSetting(text, MODEL_KEY, profile.id))
+  const settingsPath = settingsPathOf(deps)
+  writeStackSetting(
+    deps.settings,
+    settingsPath,
+    MODEL_KEY,
+    profile.id,
+    platformOf(deps.platform.os)
+  )
   deps.out(`ok: ${MODEL_KEY}=${profile.id} in ${settingsPath}`)
   const exported = envValue(deps.env, MODEL_KEY)
   if (exported !== undefined && exported !== profile.id)

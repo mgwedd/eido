@@ -1,11 +1,11 @@
-// Where the launcher finds the lock, the models, llama-server and the stack settings file, and which
+// Where the launcher finds the lock, the models, llama-server and the stack directory, and which
 // loopback port it uses. Every value has a default and an env override; none is a secret. The
 // defaults depend on the platform, which is passed in so both layouts are tested on any host.
 import { posix, win32 } from "node:path"
 
+import { platformOf, stackDirOf } from "../stack/config.ts"
 import { parsePort } from "../tailscale/serve-routes.ts"
 import type { ModelLock } from "./lock.ts"
-import { SETTINGS_FILE } from "./settings.ts"
 import { VERIFIED_FILE } from "./verified.ts"
 
 /** The user's own profiles, written by `llama add`; next to the settings, never committed. */
@@ -40,8 +40,6 @@ export type LlamaConfig = {
   buildDir: string
   port: number
   stackDir: string
-  /** `<stackDir>/stack.env`, which holds the active profile (EIDO_LLAMA_MODEL). */
-  settingsPath: string
   /** `<stackDir>/profiles.lock`, the profiles `llama add` wrote. */
   profilesPath: string
   /** `<stackDir>/verified-profiles`, the template checks passed on this machine. */
@@ -89,7 +87,7 @@ export function buildConfig(
     : (...parts: string[]) => posix.join(...parts)
   const root = dataRoot(env, home, platform.os)
   const buildDir = join(root, "llama.cpp", lock.llamaCppBuild)
-  const stackDir = set(env, "EIDO_STACK_DIR") ?? root
+  const stackDir = stackDirOf(platformOf(platform.os), env, home)
   const portText = set(env, "EIDO_LLAMA_PORT")
   return {
     platform: `${platform.os}-${platform.arch}`,
@@ -105,7 +103,6 @@ export function buildConfig(
         ? DEFAULT_PORT
         : parsePort(portText, "EIDO_LLAMA_PORT"),
     stackDir,
-    settingsPath: join(stackDir, SETTINGS_FILE),
     profilesPath: join(stackDir, USER_PROFILES_FILE),
     verifiedPath: join(stackDir, VERIFIED_FILE),
   }

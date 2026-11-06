@@ -24,7 +24,6 @@ describe("buildConfig on macOS", () => {
         "/Users/u/Library/Application Support/eido-dev/llama.cpp/b11149",
       port: 8080,
       stackDir: "/Users/u/Library/Application Support/eido-dev",
-      settingsPath: "/Users/u/Library/Application Support/eido-dev/stack.env",
       profilesPath:
         "/Users/u/Library/Application Support/eido-dev/profiles.lock",
       verifiedPath:
@@ -49,7 +48,6 @@ describe("buildConfig on macOS", () => {
         "/Users/u/Library/Application Support/eido-dev/llama.cpp/b11149/llama-server",
       port: 18091,
       stackDir: "/stack",
-      settingsPath: "/stack/stack.env",
       profilesPath: "/stack/profiles.lock",
       verifiedPath: "/stack/verified-profiles",
     })
@@ -81,7 +79,6 @@ describe("buildConfig on Windows", () => {
       buildDir: "C:\\Users\\s\\AppData\\Local\\eido-dev\\llama.cpp\\b11149",
       port: 8080,
       stackDir: "C:\\Users\\s\\AppData\\Local\\eido-dev",
-      settingsPath: "C:\\Users\\s\\AppData\\Local\\eido-dev\\stack.env",
       profilesPath: "C:\\Users\\s\\AppData\\Local\\eido-dev\\profiles.lock",
       verifiedPath: "C:\\Users\\s\\AppData\\Local\\eido-dev\\verified-profiles",
     })

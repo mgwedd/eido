@@ -4,6 +4,7 @@ import {
   chmodSync,
   createWriteStream,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -87,10 +88,6 @@ process.exitCode = await main(process.argv.slice(2), {
     exists: existsSync,
     mkdir: (path) => void mkdirSync(path, { recursive: true }),
     writeFile: (path, text) => writeFileSync(path, text, { mode: 0o644 }),
-    writePrivate: (path, text) => {
-      writeFileSync(path, text, { mode: 0o600 })
-      chmodSync(path, 0o600)
-    },
     rename: (from, to) => renameSync(from, to),
     remove: (path) => rmSync(path),
     removeTree: (path) => rmSync(path, { recursive: true, force: true }),
@@ -99,6 +96,25 @@ process.exitCode = await main(process.argv.slice(2), {
         name: entry.name,
         directory: entry.isDirectory(),
       })),
+  },
+  settings: {
+    read: (path) => (existsSync(path) ? readFileSync(path, "utf8") : undefined),
+    stat: (path) => {
+      try {
+        const stat = lstatSync(path)
+        return { isFile: stat.isFile(), mode: stat.mode, size: stat.size }
+      } catch {
+        return undefined
+      }
+    },
+    write: (path, text) => {
+      writeFileSync(path, text, { mode: 0o600 })
+      chmodSync(path, 0o600)
+    },
+    ensurePrivateDir: (path) => {
+      mkdirSync(path, { recursive: true, mode: 0o700 })
+      chmodSync(path, 0o700)
+    },
   },
   env: process.env,
   home: homedir(),
