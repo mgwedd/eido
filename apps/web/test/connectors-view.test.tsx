@@ -3,7 +3,7 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, expect, test, vi } from "vitest"
 import { stubIphone } from "./platform"
-import { repinConnector } from "../lib/connector-repin"
+import { pinConnector, repinConnector } from "../lib/connector-repin"
 import { ConnectorsView } from "../components/connectors-view"
 import { formatDateTime } from "../lib/connectors"
 import {
@@ -13,12 +13,17 @@ import {
   driveDisabled,
   driveDrifted,
   gmail,
+  gmailUnpinned,
   protonMailOpen,
   sharedBridgeOpen,
 } from "./fixtures/connectors"
 
-vi.mock("../lib/connector-repin", () => ({ repinConnector: vi.fn() }))
+vi.mock("../lib/connector-repin", () => ({
+  pinConnector: vi.fn(),
+  repinConnector: vi.fn(),
+}))
 const repin = vi.mocked(repinConnector)
+const pin = vi.mocked(pinConnector)
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -40,6 +45,7 @@ afterEach(() => {
   container.remove()
   vi.unstubAllGlobals()
   repin.mockReset()
+  pin.mockReset()
 })
 
 async function render() {
@@ -359,4 +365,75 @@ test("an expired session during re-pin sends the owner to unlock", async () => {
   })
   expect(replace).toHaveBeenCalledTimes(1)
   expect(String(replace.mock.calls[0]![0])).toContain("/unlock")
+})
+
+const pinButton = () =>
+  [...container.querySelectorAll("button")].find(
+    (b) => b.textContent === "Review and pin"
+  )
+
+test("a placed, unpinned manifest shows a Not pinned card with its tools, scopes and Review and pin", async () => {
+  respond({ connectors: [drive], unpinned: [gmailUnpinned] })
+  await render()
+  const card = cardFor("Gmail")!
+  expect(card.textContent).toContain("Not pinned")
+  const tools = card.querySelector('section[aria-label="Tools, Gmail"]')!
+  expect([...tools.querySelectorAll("li")].map((li) => li.textContent)).toEqual(
+    ["gmail.read", "gmail.draft"]
+  )
+  expect(card.textContent).toContain("https://scopes.example.invalid/mail.read")
+  expect(pinButton()).not.toBeUndefined()
+  expect(cardFor("Drive")!.textContent).not.toContain("Not pinned")
+})
+
+test("without placed manifests there is no Review and pin action", async () => {
+  respond({ connectors: [drive] })
+  await render()
+  expect(pinButton()).toBeUndefined()
+})
+
+test("Review and pin signs the shown tools, then reloads so the connector shows as pinned", async () => {
+  let reads = 0
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof fetch>(() => {
+      reads += 1
+      return Promise.resolve(
+        Response.json(
+          reads === 1
+            ? { connectors: [], unpinned: [gmailUnpinned] }
+            : { connectors: [gmail] }
+        )
+      )
+    })
+  )
+  pin.mockResolvedValueOnce({ ok: true })
+  await render()
+  await act(async () => {
+    pinButton()!.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  expect(pin).toHaveBeenCalledWith("gmail", gmailUnpinned.operations)
+  expect(repin).not.toHaveBeenCalled()
+  expect(reads).toBe(2)
+  expect(pinButton()).toBeUndefined()
+  expect(cardFor("Gmail")!.textContent).toContain("Healthy")
+})
+
+test("a refused first pin shows the message and keeps the card unpinned", async () => {
+  respond({ connectors: [], unpinned: [gmailUnpinned] })
+  pin.mockResolvedValueOnce({
+    ok: false,
+    message: "The gate refused the signature. Nothing was pinned.",
+  })
+  await render()
+  await act(async () => {
+    pinButton()!.click()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    "The gate refused the signature. Nothing was pinned."
+  )
+  expect(cardFor("Gmail")!.textContent).toContain("Not pinned")
+  expect(pinButton()!.disabled).toBe(false)
 })

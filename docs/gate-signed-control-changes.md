@@ -12,12 +12,13 @@ The gate stores the accepted override in `approved_policy` with its consumed app
 
 The phone listener (`PHONE_ROUTES` in `packages/gate/src/internal/phone-routes.ts`, reached as `/api/gate/...`) serves these signed control ceremonies, each behind the passkey session. The session only lets the phone ask; every change still needs a fresh WebAuthn assertion over the challenge the gate prepared.
 
-| Route                                                                               | Ceremony                                                                                     |
-| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `POST /connector-settings/:id/repin`, `POST /connector-settings/:id/repin/decision` | `manifest.pin` for a drift-disabled connector, over the reviewed manifest on the Mac (below) |
-| `POST /push/prepare`, `POST /push/subscriptions`                                    | `policy.set` binding one push subscription to its endpoint                                   |
-| `POST /file-roots/prepare`, `POST /file-roots/complete`                             | `policy.set` on target `file-roots` (#574); see `docs/local-files.md`                        |
-| `GET /file-roots`                                                                   | reads the approved roots; changes nothing                                                    |
+| Route                                                                               | Ceremony                                                                                                 |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `POST /connector-settings/:id/repin`, `POST /connector-settings/:id/repin/decision` | `manifest.pin` for a drift-disabled connector, over the reviewed manifest on the Mac (below)             |
+| `POST /connector-settings/:id/pin`, `POST /connector-settings/:id/pin/decision`     | `manifest.pin` for a connector that has never been pinned, over the reviewed manifest on the Mac (below) |
+| `POST /push/prepare`, `POST /push/subscriptions`                                    | `policy.set` binding one push subscription to its endpoint                                               |
+| `POST /file-roots/prepare`, `POST /file-roots/complete`                             | `policy.set` on target `file-roots` (#574); see `docs/local-files.md`                                    |
+| `GET /file-roots`                                                                   | reads the approved roots; changes nothing                                                                |
 
 Permission overrides (`policy.set` on `permissions`), enrolment codes and passkey revocation stay off the phone listener.
 
@@ -38,3 +39,13 @@ When a connector's server reports a different tool list, the gate disables it an
 3. On the phone, open Connectors and choose Review and re-pin, then sign with the passkey.
 
 The file holds only schema fields (names, scopes, egress hosts, operations, triggers); the command writes the validated manifest, refuses any field the schema does not define, and no token or password is read or written.
+
+## Pinning a connector for the first time (#627)
+
+On a fresh install no connector is pinned, so re-pin has nothing to compare against. The first pin uses the same `manifest.pin` ceremony, `prepareManifestPin` and `withControlApproval`, over the same reviewed manifest file:
+
+1. Place the reviewed manifest with the two commands above (step 2). Any version is accepted, since there is no earlier pin.
+2. `GET /connector-settings` lists each placed manifest that has no connector row under `unpinned`, with its tool names and scopes. Connectors shows it as Not pinned, with Review and pin.
+3. Review and pin prepares the ceremony at `POST /connector-settings/:id/pin`. The phone checks that the prepared payload is that connector's manifest with exactly the tools it showed, then signs with the passkey and posts the assertion to `/pin/decision`.
+
+The gate refuses a first pin when a row already exists for the name, at preparation and again inside the signed transaction, so a first pin never overwrites an existing pin and never skips the re-pin version and drift rules. It also refuses a missing or invalid reviewed manifest, a manifest for another name, and an assertion that is missing or does not verify. A refusal changes nothing: no row, no audit, and the approval is not consumed. A successful first pin writes the row and one `connector.pinned` audit row; then run `connect` for the connector (`infra/connectors.md`).

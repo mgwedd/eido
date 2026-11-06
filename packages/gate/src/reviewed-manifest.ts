@@ -4,13 +4,13 @@ import { validateConnectorManifest } from "@eido/schemas"
 import { REVIEWED_MANIFEST_DIR } from "./internal/repin"
 
 // `pnpm --filter @eido/gate reviewed-manifest <manifest.json | ->`: run on the Mac, as the gate
-// user, to place the manifest the owner has reviewed where re-pin reads it (#497, #97). It
+// user, to place the manifest the owner has reviewed where pin and re-pin read it (#497, #97, #627). It
 // checks the manifest against the connector manifest schema and writes
 // `reviewed-manifests/<connector>.json` in the gate's data dir. The gate imports nothing from
 // core, so core prints the current manifest (`pnpm --filter @eido/core connector-manifest
 // <connector>`) and this command receives it from a file or, with `-`, from stdin. It never
 // touches the pin: the gate still checks the name, the version and the tool names when the owner
-// starts a re-pin, and only a passkey assertion changes the pin.
+// starts a pin or re-pin, and only a passkey assertion changes the pin.
 
 export const DATA_DIR_ENV = "EIDO_GATE_DATA_DIR"
 
@@ -70,7 +70,9 @@ export function placeReviewedManifest(
     return 1
   }
   output.out(`Placed ${manifest.name} version ${manifest.version} at ${target}`)
-  output.out("Open Connectors on the phone and choose Review and re-pin.")
+  output.out(
+    "Open Connectors on the phone and choose Review and pin, or Review and re-pin."
+  )
   return 0
 }
 

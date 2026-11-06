@@ -155,12 +155,15 @@ function inTransaction<T>(db: DatabaseSync, work: () => T): T {
  * changed manifest is the re-review path and needs a higher version than the one pinned; a
  * drift-disabled connector needs that too, so re-pinning the same manifest cannot re-enable it.
  * Appends `connector.pinned` with a detail binding the manifest and approval reference.
+ * With `firstPin`, the pin applies only when no row exists for the name (#627): it is checked
+ * in the same transaction as the signature, so a first pin can never replace an existing pin.
  */
 export function pinManifest(
   db: DatabaseSync,
   manifest: unknown,
   actor: string,
-  authorization?: ControlAuthorization
+  authorization?: ControlAuthorization,
+  options: { firstPin?: boolean } = {}
 ): void {
   const result = validateConnectorManifest(manifest)
   if (!result.ok) {
@@ -175,6 +178,14 @@ export function pinManifest(
     hash,
     authorization,
     (approvalRefHash) => {
+      if (
+        options.firstPin === true &&
+        db
+          .prepare("SELECT 1 FROM connectors WHERE name = ?")
+          .get(valid.name) !== undefined
+      ) {
+        throw new Error(`connector ${valid.name} is already pinned`)
+      }
       const current = storedRow(db, valid.name)
       if (current !== undefined && valid.version <= current.manifest.version) {
         // A changed manifest is a new review, so it needs a new version. A drift-disabled

@@ -25,7 +25,10 @@ The same command connects a connector for the first time and reconnects one late
   The command writes the same vault the gate reads.
 
 - **The gate must be running.** The command asks the gate for connector health before it prompts for anything. If the gate is not reachable, or the connector is not pinned, it stops and nothing is stored.
-- **The connector must already be pinned.** Pin its reviewed manifest first; this command does not pin.
+- **The connector must already be pinned.** Pin its reviewed manifest first; this command does not pin. On a fresh install, in this order:
+  1. Place the reviewed manifest on the Mac: `pnpm --silent --filter @eido/core connector-manifest gmail | EIDO_GATE_DATA_DIR=<gate data dir> pnpm --filter @eido/gate reviewed-manifest -` (see `docs/gate-signed-control-changes.md`).
+  2. On the phone, open Connectors, choose Review and pin on the Not pinned card, and sign with the passkey.
+  3. Run `pnpm --filter @eido/gate connect gmail`.
 
 ## What the command does
 
