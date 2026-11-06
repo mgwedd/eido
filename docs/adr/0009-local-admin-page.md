@@ -119,7 +119,7 @@ Platform pieces are adapters behind seams. The vault is the Keychain on macOS; o
 
 Filed on acceptance, each linking this ADR and #626. The Later items above are not filed until picked up.
 
-1. `gate`: step-up tiers as a general feature. This covers the elevation primitive, a tier on every `PHONE_ROUTES` entry with a test that fails on a route with none, and the existing routes moved to their tiers (enrolment code issuance becomes `signed`).
-2. `infra`: the supervisor (Decision 6), with its schemas in `@eido/schemas`. Builds on #638 and #628.
-3. Design: the Admin pages in the design artifact. These are Status, Connectors (add, reconnect, remove, secret handoff), Model, Start/Stop, Add device, and the step-up prompt states.
-4. `web` and `gate`: the admin page itself, with secret entry on `:8444`, the Google web client and the `stack:setup` first code. Needs 1, 2 and 3.
+1. #643, `gate`: step-up tiers as a general feature. This covers the elevation primitive, a tier on every `PHONE_ROUTES` entry with a test that fails on a route with none, and the existing routes moved to their tiers (enrolment code issuance becomes `signed`).
+2. #644, `infra`: the supervisor (Decision 6), with its schemas in `@eido/schemas`. Builds on #638 and #628.
+3. #645, design: the Admin pages in the design artifact. These are Status, Connectors (add, reconnect, remove, secret handoff), Model, Start/Stop, Add device, and the step-up prompt states.
+4. #646, `web` and `gate`: the admin page itself, with secret entry on `:8444`, the Google web client and the `stack:setup` first code. Needs 1, 2 and 3.
