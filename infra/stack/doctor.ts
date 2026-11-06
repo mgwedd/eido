@@ -201,7 +201,7 @@ const INSTALL_NODE: Record<Platform, string> = {
 }
 
 function checkNode(deps: DoctorDeps): Check {
-  const { join } = pathsFor(deps.platform)
+  const join = (...parts: string[]) => pathsFor(deps.platform).join(...parts)
   const range = field(
     field(
       parseJson(deps.files.read(join(deps.repoRoot, "package.json"))),
@@ -227,7 +227,7 @@ function checkNode(deps: DoctorDeps): Check {
 }
 
 function checkDependencies(deps: DoctorDeps): Check {
-  const { join } = pathsFor(deps.platform)
+  const join = (...parts: string[]) => pathsFor(deps.platform).join(...parts)
   return deps.files.exists(join(deps.repoRoot, "node_modules", ".modules.yaml"))
     ? ok("dependencies", "node_modules is installed")
     : fail(
@@ -289,7 +289,7 @@ async function checkTailscale(
 }
 
 function checkWebEnv(deps: DoctorDeps, edgeOrigin: string | undefined): Check {
-  const { join } = pathsFor(deps.platform)
+  const join = (...parts: string[]) => pathsFor(deps.platform).join(...parts)
   const relative = join("apps", "web", ".env.local")
   const text = deps.files.read(join(deps.repoRoot, relative))
   if (text === undefined)
@@ -425,7 +425,7 @@ function llamaPaths(
 ): LlamaPaths {
   const config = buildConfig(deps.env, deps.home, lockPath, lock)
   if (deps.platform === "darwin") return config
-  const { join } = pathsFor(deps.platform)
+  const join = (...parts: string[]) => pathsFor(deps.platform).join(...parts)
   const root = stackDirOf(deps.platform, deps.env, deps.home)
   const modelDir = set(deps.env, "EIDO_MODEL_DIR") ?? join(root, "models")
   return {
@@ -443,7 +443,7 @@ function llamaPaths(
 }
 
 async function checkLlama(deps: DoctorDeps, quick: boolean): Promise<Check[]> {
-  const { join } = pathsFor(deps.platform)
+  const join = (...parts: string[]) => pathsFor(deps.platform).join(...parts)
   const defaultLock = join(deps.repoRoot, "infra", "model.lock")
   let lock: ModelLock
   let paths: LlamaPaths

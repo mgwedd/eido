@@ -206,7 +206,7 @@ export function defaultDirs(
   env: Env,
   home: string
 ): { stackDir: string; logDir: string } {
-  const { join } = pathsFor(platform)
+  const join = (...parts: string[]) => pathsFor(platform).join(...parts)
   const given = (name: string) => {
     const value = env[name]
     return value === undefined || value === "" ? undefined : value
@@ -249,7 +249,7 @@ export const logFilePath = (config: StackConfig, name: ProcessName): string =>
 
 export function buildStackConfig(input: ConfigInput): StackConfig {
   const { env, mode, repoRoot, platform = "darwin" } = input
-  const { join } = pathsFor(platform)
+  const join = (...parts: string[]) => pathsFor(platform).join(...parts)
   const tailnetHost = read(env, "EIDO_TAILNET_HOST", input.tailnetHost)
   if (!HOSTNAME.test(tailnetHost))
     throw new Error(
