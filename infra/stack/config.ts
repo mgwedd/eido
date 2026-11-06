@@ -2,11 +2,20 @@
 // which loopback port it listens on, the Host headers it answers, and the WebAuthn origin. Every
 // value has a default and an env override; nothing here is a secret. Hosts are fixed to
 // 127.0.0.1: the stack never binds any other interface.
-import { join } from "node:path"
+import { posix, win32 } from "node:path"
 
 import { parsePort } from "../tailscale/serve-routes.ts"
 
 export type Mode = "dev" | "prod"
+/** The platforms the stack tells apart; every other POSIX system is treated as linux. */
+export type Platform = "darwin" | "win32" | "linux"
+
+export const platformOf = (platform: string): Platform =>
+  platform === "darwin" || platform === "win32" ? platform : "linux"
+
+/** Path functions for `platform`, so a win32 config built on a Mac still has win32 paths. */
+export const pathsFor = (platform: Platform) =>
+  platform === "win32" ? win32 : posix
 export type ProcessName = "gate" | "core" | "web"
 export type Env = Readonly<Record<string, string | undefined>>
 
@@ -47,6 +56,51 @@ export const OVERRIDES = [
   "EIDO_CORE_ALLOWED_HOSTS",
 ] as const
 
+/**
+ * Settings the stack does not read itself but hands to one process when they are set and
+ * non-empty, so a value from `stack.env` reaches it. None is a secret.
+ */
+export const PASS_THROUGH = {
+  gate: [
+    // Web Push turns on in the gate when a subject is set; it also needs the Keychain vault.
+    "EIDO_PUSH_VAPID_SUBJECT",
+    "EIDO_PUSH_WINDOW_MS",
+    "EIDO_GMAIL_CLIENT_ID",
+    "EIDO_GMAIL_READ_CLIENT_ID",
+    "EIDO_DRIVE_CLIENT_ID",
+    "EIDO_BRIDGE_HOST",
+    "EIDO_BRIDGE_USERNAME",
+    "EIDO_BRIDGE_IMAP_PORT",
+    "EIDO_BRIDGE_SMTP_PORT",
+    "EIDO_BRIDGE_TLS",
+    "EIDO_BRIDGE_CERT_PATH",
+    "EIDO_BRIDGE_CERT_SHA256",
+    "EIDO_BRIDGE_ALLOW_SELF_SIGNED",
+    "EIDO_BRIDGE_SEARCH_FOLDERS",
+    // The development file vault: the only gate vault on Windows and Linux for now (#455).
+    "EIDO_DEV_VAULT",
+    "EIDO_GATE_VAULT_FILE",
+  ],
+  core: [
+    "EIDO_LLAMA_HOST",
+    "EIDO_LLAMA_PORT",
+    "EIDO_LLAMA_CHAT_TEMPLATE_KWARGS",
+  ],
+} as const
+
+/** `{ [name]: value }` for each name set and non-empty in `env`. */
+function passThrough(
+  env: Env,
+  names: readonly string[]
+): Record<string, string> {
+  const picked: Record<string, string> = {}
+  for (const name of names) {
+    const value = env[name]
+    if (value !== undefined && value !== "") picked[name] = value
+  }
+  return picked
+}
+
 export type ProcessSpec = {
   name: ProcessName
   cwd: string
@@ -65,6 +119,7 @@ export type ProcessSpec = {
 
 export type StackConfig = {
   mode: Mode
+  platform: Platform
   stackDir: string
   runDir: string
   logDir: string
@@ -84,6 +139,8 @@ export type StackConfig = {
 
 export type ConfigInput = {
   mode: Mode
+  /** Defaults to darwin for callers that run on macOS only, such as infra/backup. */
+  platform?: Platform
   env: Env
   home: string
   repoRoot: string
@@ -140,8 +197,59 @@ export function allowedHosts(
   ].join(",")
 }
 
+/**
+ * Where the stack keeps data and logs before any override: Application Support and Logs on
+ * macOS, %LOCALAPPDATA%\eido-dev on Windows, the XDG data and state dirs elsewhere.
+ */
+export function defaultDirs(
+  platform: Platform,
+  env: Env,
+  home: string
+): { stackDir: string; logDir: string } {
+  const { join } = pathsFor(platform)
+  const given = (name: string) => {
+    const value = env[name]
+    return value === undefined || value === "" ? undefined : value
+  }
+  switch (platform) {
+    case "darwin":
+      return {
+        stackDir: join(home, "Library", "Application Support", "eido-dev"),
+        logDir: join(home, "Library", "Logs", "eido-dev"),
+      }
+    case "win32": {
+      const local = given("LOCALAPPDATA") ?? join(home, "AppData", "Local")
+      const stackDir = join(local, "eido-dev")
+      return { stackDir, logDir: join(stackDir, "logs") }
+    }
+    case "linux":
+      return {
+        stackDir: join(
+          given("XDG_DATA_HOME") ?? join(home, ".local", "share"),
+          "eido-dev"
+        ),
+        logDir: join(
+          given("XDG_STATE_HOME") ?? join(home, ".local", "state"),
+          "eido-dev",
+          "logs"
+        ),
+      }
+  }
+}
+
+/** The stack dir: EIDO_STACK_DIR, else the platform default. */
+export const stackDirOf = (platform: Platform, env: Env, home: string) =>
+  read(env, "EIDO_STACK_DIR", defaultDirs(platform, env, home).stackDir)
+
+export const pidFilePath = (config: StackConfig, name: ProcessName): string =>
+  pathsFor(config.platform).join(config.runDir, `${name}.pid`)
+
+export const logFilePath = (config: StackConfig, name: ProcessName): string =>
+  pathsFor(config.platform).join(config.logDir, `${name}.log`)
+
 export function buildStackConfig(input: ConfigInput): StackConfig {
-  const { env, mode, repoRoot } = input
+  const { env, mode, repoRoot, platform = "darwin" } = input
+  const { join } = pathsFor(platform)
   const tailnetHost = read(env, "EIDO_TAILNET_HOST", input.tailnetHost)
   if (!HOSTNAME.test(tailnetHost))
     throw new Error(
@@ -158,28 +266,22 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       "EIDO_WEB_PORT, EIDO_CORE_PORT and EIDO_GATE_PHONE_PORT must differ"
     )
 
-  const stackDir = read(
-    env,
-    "EIDO_STACK_DIR",
-    join(input.home, "Library", "Application Support", "eido-dev")
-  )
-  const logDir = read(
-    env,
-    "EIDO_STACK_LOG_DIR",
-    join(input.home, "Library", "Logs", "eido-dev")
-  )
+  const dirs = defaultDirs(platform, env, input.home)
+  const stackDir = read(env, "EIDO_STACK_DIR", dirs.stackDir)
+  const logDir = read(env, "EIDO_STACK_LOG_DIR", dirs.logDir)
   const runDir = join(stackDir, "run")
   const gateDataDir = read(env, "EIDO_GATE_DATA_DIR", join(stackDir, "gate"))
   const coreDataDir = read(env, "EIDO_DATA_DIR", join(stackDir, "core"))
-  const gateSocket = read(
-    env,
-    "EIDO_GATE_SOCKET",
-    join(runDir, "gate-data-plane.sock")
-  )
+  // The gate listens on a Unix socket on macOS and Linux, a named pipe on Windows (ADR 0003).
+  const socket = (name: string) =>
+    platform === "win32"
+      ? `\\\\.\\pipe\\eido-dev-${name}`
+      : join(runDir, `${name}.sock`)
+  const gateSocket = read(env, "EIDO_GATE_SOCKET", socket("gate-data-plane"))
   const controlSocket = read(
     env,
     "EIDO_GATE_CONTROL_SOCKET",
-    join(runDir, "gate-control.sock")
+    socket("gate-control")
   )
   // URL.origin drops a default port, as browsers do when they report the origin.
   const url = new URL(`https://${tailnetHost}:${edgePort}/`)
@@ -210,6 +312,7 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       env["EIDO_GATE_KEYCHAIN_PATH"] === ""
         ? {}
         : { EIDO_GATE_KEYCHAIN_PATH: env["EIDO_GATE_KEYCHAIN_PATH"] }),
+      ...passThrough(env, PASS_THROUGH.gate),
       EIDO_WEBAUTHN_RP_ID: read(env, "EIDO_WEBAUTHN_RP_ID", tailnetHost),
       EIDO_WEBAUTHN_ORIGIN: read(env, "EIDO_WEBAUTHN_ORIGIN", url.origin),
       EIDO_GATE_PHONE_HOST: LOOPBACK,
@@ -240,6 +343,7 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       ...(env["EIDO_FILES_SYNC"] === undefined
         ? {}
         : { EIDO_FILES_SYNC: env["EIDO_FILES_SYNC"] }),
+      ...passThrough(env, PASS_THROUGH.core),
       EIDO_DATA_DIR: coreDataDir,
       EIDO_GATE_SOCKET: gateSocket,
       EIDO_CORE_HOST: LOOPBACK,
@@ -289,6 +393,7 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
 
   return {
     mode,
+    platform,
     stackDir,
     runDir,
     logDir,

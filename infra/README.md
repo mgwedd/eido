@@ -8,6 +8,13 @@ Connecting and reconnecting Gmail and the Proton connectors on the Mac: `infra/c
 
 ## Local stack (#374)
 
+First run, then every start after it:
+
+```bash
+pnpm stack:setup               # creates the gate keychain, asks for unset settings, writes stack.env, runs doctor
+pnpm stack:prod --background   # starts the stack and prints https://<host>.ts.net:8443/
+```
+
 One command starts the gate, core and web, with the serve routes, so `https://<host>.ts.net:8443/` works:
 
 ```bash
@@ -15,13 +22,33 @@ pnpm stack:dev      # gate and core under node --watch, web under next dev; outp
 pnpm stack:prod     # turbo run build, then gate, core and next start; no watchers
 pnpm stack:stop     # stops what either mode started, then confirms no listener is left on the ports
 pnpm stack:status   # each process, who listens on its port, its health check, and the serve routes
+pnpm stack:doctor   # read-only checks: each ok, warn or fail with one fix command; exits 1 on a fail
+pnpm stack:gate connect|enrol-code|passkeys [args]   # a gate CLI with the gate environment the stack gives the gate
 ```
 
-Start checks first that ports 3000, 8789 and 8788 are free, and names the pid holding any that is not. It then applies the serve routes on :8443 (routes on other ports are left alone), and starts gate, core and web in that order, each once the one before answers. In the foreground, Ctrl-C stops all three; `--background` returns once they answer, and `pnpm stack:stop` stops them. Stop leaves the serve routes in place.
+Start runs doctor's blocking checks first and starts nothing on a failure. It then checks that ports 3000, 8789 and 8788 are free, and names the pid holding any that is not. It then applies the serve routes on :8443 (routes on other ports are left alone), and starts gate, core and web in that order, each once the one before answers. In the foreground, Ctrl-C stops all three; `--background` returns once they answer, and `pnpm stack:stop` stops them. Stop leaves the serve routes in place.
 
 `--no-serve` skips the serve routes: backends only, so the UI does not work from the tailnet origin.
 
-The tailnet host is read from `tailscale status --json`. Data, sockets and pid files live under `~/Library/Application Support/eido-dev` (pid files in `run/`), and one log per process under `~/Library/Logs/eido-dev`. The typed config is `infra/stack/config.ts`; every value is overridable by env, with no secrets: `EIDO_TAILNET_HOST`, `EIDO_EDGE_PORT`, `EIDO_WEB_PORT`, `EIDO_CORE_PORT`, `EIDO_GATE_PHONE_PORT`, `EIDO_STACK_DIR`, `EIDO_STACK_LOG_DIR`, and the gate and core variables listed in `OVERRIDES`. The llama, Gmail and Bridge variables are passed through from your environment and never set by the stack.
+The tailnet host is read from `tailscale status --json`. On macOS, data, sockets and pid files live under `~/Library/Application Support/eido-dev` (pid files in `run/`), and one log per process under `~/Library/Logs/eido-dev`. The typed config is `infra/stack/config.ts`; every value is overridable by env, with no secrets: `EIDO_TAILNET_HOST`, `EIDO_EDGE_PORT`, `EIDO_WEB_PORT`, `EIDO_CORE_PORT`, `EIDO_GATE_PHONE_PORT`, `EIDO_STACK_DIR`, `EIDO_STACK_LOG_DIR`, and the gate and core variables listed in `OVERRIDES`. The llama, push, Gmail, Drive, Bridge and development-vault variables are passed through from your environment or `stack.env` when set, and never invented by the stack.
+
+### Settings: `stack.env` (#625)
+
+`stack.env` in the stack dir (`~/Library/Application Support/eido-dev/stack.env` on macOS) holds the stack's non-secret settings as `KEY=value` lines. `pnpm stack:setup` writes it; treat it as written by the system rather than by hand. Every stack command loads it, and a variable set in your environment wins over the same key in the file. It must be a regular file with mode 0600, and only these keys are accepted, so a typo or a secret fails with the key's name:
+
+- the stack's own overrides (`OVERRIDES` in `infra/stack/config.ts`, except `EIDO_STACK_DIR`, which says where the file lives);
+- the settings passed to the gate (`PASS_THROUGH.gate`: the VAPID subject and push window, the Gmail and Drive client ids, the Bridge settings, and the development vault);
+- the settings passed to core (`PASS_THROUGH.core`: the llama host, port and chat template arguments), the llama paths in `infra/llama/config.ts`, and `EIDO_LLAMA_MODEL`.
+
+Secrets never go in it: tokens and passwords live in the gate's vault. `infra/stack/settings.ts` is the typed store (`readStackSettings`, `getStackSetting`, `writeStackSetting`, `validateSettings`), and `infra/stack/doctor.ts` returns each check as `{ id, platforms, status, summary, fix: { action, text } }` for a setup UI to use.
+
+### Doctor
+
+`pnpm stack:doctor` checks node against `engines` and node_modules, Tailscale and its MagicDNS host, the key names in `apps/web/.env.local` (never their values) and that `APP_BASE_URL` includes `https://<host>:8443`, the gate keychain (a regular file, mode 0600, unlocked), the VAPID subject (warn), the llama pin and `/health`, the Gmail client ids (warn), and that the ports are free or held by the running stack. `--no-serve` skips Tailscale and the `APP_BASE_URL` check.
+
+### Windows and Linux
+
+Setup, doctor, settings and `stack:gate` run on Windows and Linux too. The stack dir is `%LOCALAPPDATA%\eido-dev` (logs in `logs\`) on Windows and the XDG data dir on Linux; the gate's sockets are named pipes on Windows. There is no keychain off macOS: setup sets the development file vault (`EIDO_DEV_VAULT=1` and `EIDO_GATE_VAULT_FILE`), and doctor warns that a production vault there is #455. Windows has no mode bits, so the 0600 check on `stack.env` is skipped there, with a doctor note pointing at #455. Starting and stopping the stack on Windows is not supported yet.
 
 The WebAuthn origin is `https://<host>:8443`. The gate accepts an origin with a port once #375 lands; until then set `EIDO_WEBAUTHN_ORIGIN=https://<host>` to start it.
 

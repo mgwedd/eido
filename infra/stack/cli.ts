@@ -1,4 +1,5 @@
 // `pnpm stack:dev|stack:prod|stack:stop|stack:status [--no-serve] [--background]` (#374)
+// `pnpm stack:doctor [--no-serve]`, `pnpm stack:setup`, `pnpm stack:gate <cli> [args]` (#625)
 //   dev     gate and core under `node --watch`, web under `next dev`; output prefixed by name
 //   prod    `turbo run build`, then gate, core and `next start`, with no watchers
 //   stop    stops what either mode started, foreground or background, from the pid files
@@ -7,25 +8,40 @@
 // /api/gate and /api/core on its own origin), then starts gate, core and web in that order, each
 // once the one before answers. `--no-serve` leaves the routes out: backends only, no working UI.
 // `--background` returns once all three answer and leaves them running; stop them with stop.
-import { join } from "node:path"
-
+//   doctor  read-only checks, each ok, warn or fail with the command that fixes it; exit 1 on a fail
+//   setup   creates the gate keychain if missing, asks for unset settings, writes stack.env, runs doctor
+//   gate    runs the gate's connect, enrol-code or passkeys script with the stack's gate environment
+// Every command first loads stack.env (settings.ts); a variable set in the environment wins.
+// Start runs doctor's blocking checks before anything else and stops on a failure.
 import { main as serveRoutes } from "../tailscale/cli.ts"
 import type { Fetch } from "../tailscale/measure.ts"
 import { parseDnsName } from "../tailscale/serve-routes.ts"
 import {
   buildStackConfig,
+  logFilePath,
+  pathsFor,
+  pidFilePath,
   type Env,
   type Mode,
+  type Platform,
   type ProcessName,
   type ProcessSpec,
   type StackConfig,
 } from "./config.ts"
+import { failed, formatCheck, runDoctor, type DoctorDeps } from "./doctor.ts"
 import {
   busyPorts,
   describeListeners,
   listenersOn,
   type Exec,
 } from "./ports.ts"
+import {
+  applyStackSettings,
+  readStackSettings,
+  stackSettingsPath,
+  type FileStat,
+} from "./settings.ts"
+import { runSetup, type SetupDeps } from "./setup.ts"
 import {
   answers,
   parsePidRecord,
@@ -55,9 +71,13 @@ export type Files = {
   remove: (path: string) => void
   /** mkdir -p, then chmod 700. */
   ensurePrivateDir: (path: string) => void
+  /** lstat: undefined when nothing is at the path. */
+  stat: (path: string) => FileStat | undefined
+  setMode: (path: string, mode: number) => void
 }
 
 export type Deps = {
+  platform: Platform
   env: Env
   home: string
   repoRoot: string
@@ -73,11 +93,23 @@ export type Deps = {
   files: Files
   /** Calls `handler` once on SIGINT, SIGTERM or SIGHUP. */
   onStopSignal: (handler: () => void) => void
+  /** `process.version`. */
+  nodeVersion: string
+  /** SHA-256 of a file, lowercase hex. */
+  sha256: (path: string) => Promise<string>
+  interactive: SetupDeps["interactive"]
+  ask: SetupDeps["ask"]
   out: (line: string) => void
   err: (line: string) => void
 }
 
-const USAGE = "usage: stack dev|prod|stop|status [--no-serve] [--background]"
+const USAGE =
+  "usage: stack dev|prod|stop|status|doctor [--no-serve] [--background] | setup | gate connect|enrol-code|passkeys [args]"
+
+export const GATE_SCRIPTS = ["connect", "enrol-code", "passkeys"] as const
+type GateScript = (typeof GATE_SCRIPTS)[number]
+const isGateScript = (value: string | undefined): value is GateScript =>
+  GATE_SCRIPTS.some((script) => script === value)
 
 const PORT_VARIABLES: Record<ProcessName, string> = {
   gate: "EIDO_GATE_PHONE_PORT",
@@ -87,15 +119,29 @@ const PORT_VARIABLES: Record<ProcessName, string> = {
 
 type Flags = { serve: boolean; background: boolean }
 
-export function parseArgs(
-  argv: readonly string[]
-): { command: "dev" | "prod" | "stop" | "status"; flags: Flags } | undefined {
+export type Parsed =
+  | {
+      command: "dev" | "prod" | "stop" | "status" | "doctor" | "setup"
+      flags: Flags
+    }
+  | { command: "gate"; script: GateScript; args: string[] }
+
+export function parseArgs(argv: readonly string[]): Parsed | undefined {
   const [command, ...rest] = argv
+  if (command === "gate") {
+    const [script, ...args] = rest
+    return isGateScript(script) ? { command, script, args } : undefined
+  }
+  if (command === "setup")
+    return rest.length === 0
+      ? { command, flags: { serve: true, background: false } }
+      : undefined
   if (
     command !== "dev" &&
     command !== "prod" &&
     command !== "stop" &&
-    command !== "status"
+    command !== "status" &&
+    command !== "doctor"
   )
     return undefined
   const flags: Flags = { serve: true, background: false }
@@ -111,10 +157,8 @@ export function parseArgs(
   return { command, flags }
 }
 
-const pidFile = (config: StackConfig, name: ProcessName) =>
-  join(config.runDir, `${name}.pid`)
-const logFile = (config: StackConfig, name: ProcessName) =>
-  join(config.logDir, `${name}.log`)
+const pidFile = pidFilePath
+const logFile = logFilePath
 
 function probeWith(fetch: Fetch): Probe {
   return async (url) => {
@@ -152,6 +196,7 @@ async function resolveHost(deps: Deps, serve: boolean): Promise<string> {
 function configFor(deps: Deps, mode: Mode, tailnetHost: string): StackConfig {
   return buildStackConfig({
     mode,
+    platform: deps.platform,
     env: deps.env,
     home: deps.home,
     repoRoot: deps.repoRoot,
@@ -210,7 +255,119 @@ async function stopAll(
   }
 }
 
+function doctorDeps(deps: Deps): DoctorDeps {
+  return {
+    platform: deps.platform,
+    env: deps.env,
+    home: deps.home,
+    repoRoot: deps.repoRoot,
+    nodeVersion: deps.nodeVersion,
+    exec: deps.exec,
+    fetch: deps.fetch,
+    files: deps.files,
+    sha256: deps.sha256,
+    now: deps.clock.now,
+  }
+}
+
+async function doctor(deps: Deps, flags: Flags): Promise<number> {
+  const checks = await runDoctor(doctorDeps(deps), {
+    serve: flags.serve,
+    quick: false,
+  })
+  for (const check of checks)
+    for (const line of formatCheck(check)) deps.out(line)
+  const failures = failed(checks).length
+  deps.out(
+    failures === 0
+      ? "doctor: no failures"
+      : `doctor: ${failures} failure${failures === 1 ? "" : "s"}`
+  )
+  return failures === 0 ? 0 : 1
+}
+
+/** Doctor's failures that block a start. Ports are left to start's own check, which is stricter. */
+async function preflight(deps: Deps, flags: Flags): Promise<boolean> {
+  const checks = await runDoctor(doctorDeps(deps), {
+    serve: flags.serve,
+    quick: true,
+  })
+  const blocking = failed(checks).filter((check) => check.id !== "ports")
+  for (const check of blocking)
+    for (const line of formatCheck(check)) deps.err(line)
+  return blocking.length === 0
+}
+
+/** The gate's environment as start would give it. The host only shapes WebAuthn settings, which
+ *  the gate CLIs do not read, so a missing Tailscale falls back to localhost. */
+async function gateSpec(deps: Deps): Promise<ProcessSpec> {
+  let host: string
+  try {
+    host = await resolveHost(deps, true)
+  } catch {
+    host = "localhost"
+  }
+  const gate = configFor(deps, "prod", host).processes.find(
+    (spec) => spec.name === "gate"
+  )
+  // buildStackConfig always returns gate, core and web.
+  if (gate === undefined) throw new Error("no gate process in the stack config")
+  return gate
+}
+
+/**
+ * The node arguments of a gate script in packages/gate/package.json, which runs them as
+ * `node <args>`. Running node directly needs no pnpm shell, so it works the same on Windows.
+ */
+export function gateScriptArgs(
+  packageJson: string | undefined,
+  script: GateScript
+): string[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(packageJson ?? "")
+  } catch {
+    parsed = undefined
+  }
+  const scripts: unknown =
+    typeof parsed === "object" && parsed !== null
+      ? Object.entries(parsed).find(([key]) => key === "scripts")?.[1]
+      : undefined
+  const line: unknown =
+    typeof scripts === "object" && scripts !== null
+      ? Object.entries(scripts).find(([name]) => name === script)?.[1]
+      : undefined
+  const words = typeof line === "string" ? line.trim().split(/\s+/) : []
+  if (words[0] !== "node" || words.some((word) => /["'`$&|;<>]/.test(word)))
+    throw new Error(
+      `packages/gate/package.json has no plain "node ..." script named ${script}`
+    )
+  return words.slice(1)
+}
+
+async function gate(
+  deps: Deps,
+  script: GateScript,
+  args: readonly string[]
+): Promise<number> {
+  const spec = await gateSpec(deps)
+  const packageJson = deps.files.read(
+    pathsFor(deps.platform).join(spec.cwd, "package.json")
+  )
+  return await deps.interactive(
+    deps.nodePath,
+    [...gateScriptArgs(packageJson, script), ...args],
+    { cwd: spec.cwd, env: spec.env }
+  )
+}
+
 async function start(deps: Deps, mode: Mode, flags: Flags): Promise<number> {
+  if (!(await preflight(deps, flags))) {
+    deps.err(
+      "Nothing was started. Run pnpm stack:doctor for every check, or pnpm stack:setup."
+    )
+    return 1
+  }
   const config = configFor(deps, mode, await resolveHost(deps, flags.serve))
 
   const busy = await busyPorts(
@@ -219,7 +376,8 @@ async function start(deps: Deps, mode: Mode, flags: Flags): Promise<number> {
       name: spec.name,
       port: spec.port,
       variable: PORT_VARIABLES[spec.name],
-    }))
+    })),
+    deps.platform
   )
   if (busy.length > 0) {
     for (const message of busy) deps.err(`FAIL: ${message}`)
@@ -344,7 +502,7 @@ async function stop(deps: Deps): Promise<number> {
   await stopAll(deps, config, names)
   let left = 0
   for (const spec of config.processes) {
-    const listeners = await listenersOn(deps.exec, spec.port)
+    const listeners = await listenersOn(deps.exec, spec.port, deps.platform)
     if (listeners.length === 0) continue
     left++
     deps.out(
@@ -370,7 +528,7 @@ async function status(deps: Deps, flags: Flags): Promise<number> {
         : running
           ? `running (pid ${record.pid}, ${record.mode})`
           : `stale pid file (pid ${record.pid} is gone)`
-    const listeners = await listenersOn(deps.exec, spec.port)
+    const listeners = await listenersOn(deps.exec, spec.port, deps.platform)
     const listening =
       listeners.length === 0
         ? "nothing listening"
@@ -408,14 +566,41 @@ export async function main(
     return 2
   }
   try {
+    const settingsPath = stackSettingsPath(deps.env, deps.home, deps.platform)
+    const fileSettings = readStackSettings(
+      deps.files,
+      settingsPath,
+      deps.platform
+    )
+    const withSettings: Deps = {
+      ...deps,
+      env: applyStackSettings(deps.env, fileSettings),
+    }
     switch (parsed.command) {
       case "dev":
       case "prod":
-        return await start(deps, parsed.command, parsed.flags)
+        return await start(withSettings, parsed.command, parsed.flags)
       case "stop":
-        return await stop(deps)
+        return await stop(withSettings)
       case "status":
-        return await status(deps, parsed.flags)
+        return await status(withSettings, parsed.flags)
+      case "doctor":
+        return await doctor(withSettings, parsed.flags)
+      case "setup": {
+        const code = await runSetup(withSettings, settingsPath, fileSettings)
+        if (code !== 0) return code
+        const written = readStackSettings(
+          deps.files,
+          settingsPath,
+          deps.platform
+        )
+        return await doctor(
+          { ...deps, env: applyStackSettings(deps.env, written) },
+          parsed.flags
+        )
+      }
+      case "gate":
+        return await gate(withSettings, parsed.script, parsed.args)
     }
   } catch (error) {
     deps.err(`FAIL: ${(error as Error).message}`)

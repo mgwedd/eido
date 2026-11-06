@@ -8,24 +8,25 @@ what you saw and the matching log lines from `~/Library/Logs/eido-dev`.
 
 ## Mac setup (once)
 
-1. Create the gate Keychain (`infra/keychain-vault.md`) and set
-   `EIDO_GATE_KEYCHAIN_PATH`. For push, also set `EIDO_PUSH_VAPID_SUBJECT`
-   (see the Web Push section there).
-2. Start llama-server (`infra/llama-server.md`).
-3. Start the stack: `pnpm stack:prod --background`, then `pnpm stack:status`
-   until gate, core and web answer and the serve routes are listed.
+1. Run `pnpm stack:setup`. It creates the gate Keychain, asks for the VAPID
+   subject and the Gmail client ids, writes `stack.env` and runs
+   `pnpm stack:doctor`. Fix each failure with the command it prints, for
+   example starting llama-server (`infra/llama-server.md`).
+2. Start the stack: `pnpm stack:prod --background`. It runs doctor's blocking
+   checks first and prints `https://<host>.ts.net:8443/`.
+3. Run `pnpm stack:status` until gate, core and web answer and the serve
+   routes are listed.
 4. Connect one test mail account and one test calendar:
-   `pnpm --filter @eido/gate connect <connector>` (`infra/connectors.md`).
+   `pnpm stack:gate connect <connector>` (`infra/connectors.md`).
 
 ## iPhone setup (once)
 
 5. Turn Tailscale on and open `https://<host>.ts.net:8443/` in Safari. Share →
    Add to Home Screen, then launch Eido from the Home Screen icon.
-6. Sign in with Auth0. On the Mac, print an enrolment code from
-   `packages/gate`:
+6. Sign in with Auth0. On the Mac, print an enrolment code:
 
    ```bash
-   EIDO_GATE_CONTROL_SOCKET="$HOME/Library/Application Support/eido-dev/run/gate-control.sock" pnpm -s enrol-code
+   pnpm stack:gate enrol-code
    ```
 
    Enter it on the enrol page and create the passkey with Face ID.
@@ -49,8 +50,7 @@ what you saw and the matching log lines from `~/Library/Logs/eido-dev`.
 
 ## Teardown
 
-13. Revoke the test passkey from `packages/gate`, with the same
-    `EIDO_GATE_CONTROL_SOCKET` as step 6: `pnpm -s passkeys` lists them, then
-    `pnpm -s passkeys revoke <fingerprint>`.
+13. Revoke the test passkey: `pnpm stack:gate passkeys` lists them, then
+    `pnpm stack:gate passkeys revoke <fingerprint>`.
 14. Sign out at `https://<host>.ts.net:8443/auth/logout`, and
     `pnpm stack:stop` if the stack is not needed.

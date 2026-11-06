@@ -4,6 +4,11 @@ import {
   allowedHosts,
   buildStackConfig,
   DEFAULTS,
+  defaultDirs,
+  logFilePath,
+  pidFilePath,
+  platformOf,
+  stackDirOf,
   type ConfigInput,
 } from "./config.ts"
 
@@ -11,6 +16,7 @@ const HOST = "node.example.ts.net"
 
 const input = (overrides: Partial<ConfigInput> = {}): ConfigInput => ({
   mode: "dev",
+  platform: "darwin",
   env: {},
   home: "/home/u",
   repoRoot: "/repo",
@@ -238,5 +244,127 @@ describe("buildStackConfig", () => {
     expect(() =>
       buildStackConfig(input({ env: { EIDO_WEB_PORT: "8788" } }))
     ).toThrow(/must differ/)
+  })
+})
+
+describe("platformOf", () => {
+  it("keeps darwin and win32 and treats every other platform as linux", () => {
+    expect(platformOf("darwin")).toBe("darwin")
+    expect(platformOf("win32")).toBe("win32")
+    expect(platformOf("freebsd")).toBe("linux")
+  })
+})
+
+describe("defaultDirs", () => {
+  it("uses Application Support and Logs on macOS", () => {
+    expect(defaultDirs("darwin", {}, "/home/u")).toEqual({
+      stackDir: "/home/u/Library/Application Support/eido-dev",
+      logDir: "/home/u/Library/Logs/eido-dev",
+    })
+  })
+
+  it("uses %LOCALAPPDATA%\\eido-dev on Windows, with logs under it", () => {
+    expect(
+      defaultDirs(
+        "win32",
+        { LOCALAPPDATA: "C:\\Users\\s\\AppData\\Local" },
+        "C:\\Users\\s"
+      )
+    ).toEqual({
+      stackDir: "C:\\Users\\s\\AppData\\Local\\eido-dev",
+      logDir: "C:\\Users\\s\\AppData\\Local\\eido-dev\\logs",
+    })
+  })
+
+  it("falls back to the home AppData\\Local when LOCALAPPDATA is unset", () => {
+    expect(defaultDirs("win32", {}, "C:\\Users\\s").stackDir).toBe(
+      "C:\\Users\\s\\AppData\\Local\\eido-dev"
+    )
+  })
+
+  it("uses the XDG data and state dirs on Linux, with their defaults", () => {
+    expect(defaultDirs("linux", {}, "/home/u")).toEqual({
+      stackDir: "/home/u/.local/share/eido-dev",
+      logDir: "/home/u/.local/state/eido-dev/logs",
+    })
+    expect(
+      defaultDirs(
+        "linux",
+        { XDG_DATA_HOME: "/data", XDG_STATE_HOME: "/state" },
+        "/home/u"
+      )
+    ).toEqual({ stackDir: "/data/eido-dev", logDir: "/state/eido-dev/logs" })
+  })
+
+  it("lets EIDO_STACK_DIR move the stack dir", () => {
+    expect(
+      stackDirOf("win32", { EIDO_STACK_DIR: "D:\\eido" }, "C:\\Users\\s")
+    ).toBe("D:\\eido")
+  })
+})
+
+describe("buildStackConfig on Windows", () => {
+  const windows = () =>
+    buildStackConfig(
+      input({
+        platform: "win32",
+        env: { LOCALAPPDATA: "C:\\Users\\s\\AppData\\Local" },
+        home: "C:\\Users\\s",
+        repoRoot: "C:\\repo",
+      })
+    )
+
+  it("gives the gate named pipes, not socket files", () => {
+    const config = windows()
+    expect(config.gateSocket).toBe("\\\\.\\pipe\\eido-dev-gate-data-plane")
+    expect(byName(config, "gate").env["EIDO_GATE_CONTROL_SOCKET"]).toBe(
+      "\\\\.\\pipe\\eido-dev-gate-control"
+    )
+    expect(byName(config, "core").env["EIDO_GATE_SOCKET"]).toBe(
+      "\\\\.\\pipe\\eido-dev-gate-data-plane"
+    )
+  })
+
+  it("joins paths with backslashes", () => {
+    const config = windows()
+    const stackDir = "C:\\Users\\s\\AppData\\Local\\eido-dev"
+    expect(byName(config, "gate").cwd).toBe("C:\\repo\\packages\\gate")
+    expect(byName(config, "gate").env["EIDO_GATE_DATA_DIR"]).toBe(
+      `${stackDir}\\gate`
+    )
+    expect(pidFilePath(config, "web")).toBe(`${stackDir}\\run\\web.pid`)
+    expect(logFilePath(config, "web")).toBe(`${stackDir}\\logs\\web.log`)
+  })
+})
+
+describe("settings passed through", () => {
+  it("gives the gate the push, Gmail, Bridge and dev vault settings, and core the llama ones", () => {
+    const config = buildStackConfig(
+      input({
+        env: {
+          EIDO_PUSH_VAPID_SUBJECT: "mailto:owner@example.invalid",
+          EIDO_GMAIL_CLIENT_ID: "send.example.invalid",
+          EIDO_BRIDGE_HOST: "127.0.0.1",
+          EIDO_DEV_VAULT: "1",
+          EIDO_GATE_VAULT_FILE: "/v/vault.json",
+          EIDO_LLAMA_PORT: "8081",
+        },
+      })
+    )
+    expect(byName(config, "gate").env).toMatchObject({
+      EIDO_PUSH_VAPID_SUBJECT: "mailto:owner@example.invalid",
+      EIDO_GMAIL_CLIENT_ID: "send.example.invalid",
+      EIDO_BRIDGE_HOST: "127.0.0.1",
+      EIDO_DEV_VAULT: "1",
+      EIDO_GATE_VAULT_FILE: "/v/vault.json",
+    })
+    expect(byName(config, "gate").env).not.toHaveProperty("EIDO_LLAMA_PORT")
+    expect(byName(config, "core").env["EIDO_LLAMA_PORT"]).toBe("8081")
+    expect(byName(config, "core").env).not.toHaveProperty(
+      "EIDO_GMAIL_CLIENT_ID"
+    )
+    expect(byName(config, "web").env).not.toHaveProperty(
+      "EIDO_PUSH_VAPID_SUBJECT"
+    )
   })
 })
