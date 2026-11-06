@@ -128,12 +128,12 @@ const USAGE =
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 
-type Base = { lock: ModelLock; config: LlamaConfig }
+export type Base = { lock: ModelLock; config: LlamaConfig }
 
 type Loaded = Base & { profile: ModelProfile; modelPath: string }
 
 /** model.lock, plus the user's own profiles when that file exists. */
-function loadBase(deps: Deps): Base {
+export function loadBase(deps: Deps): Base {
   const lockPath = lockPathFrom(deps.env, deps.defaultLockPath)
   const lock = parseLock(deps.readText(lockPath))
   const config = buildConfig(
@@ -573,29 +573,77 @@ async function fetchCommand(
   return 0
 }
 
-/** "on disk" when a file of the pinned size is there; the hash is checked by verify and launch. */
-async function diskState(deps: Deps, path: string, size: number) {
+export type DiskState =
+  | { kind: "present" }
+  | { kind: "missing" }
+  | { kind: "wrong_size"; bytes: number }
+
+/** Present when a file of the pinned size is there; the hash is checked by verify and launch. */
+async function diskOf(
+  deps: Pick<Deps, "probe">,
+  path: string,
+  size: number
+): Promise<DiskState> {
   const actual = await deps.probe.size(path)
-  if (actual === undefined) return "not on disk"
-  return actual === size ? "on disk" : `wrong size (${actual} bytes)`
+  if (actual === undefined) return { kind: "missing" }
+  return actual === size
+    ? { kind: "present" }
+    : { kind: "wrong_size", bytes: actual }
+}
+
+function describeDisk(disk: DiskState): string {
+  switch (disk.kind) {
+    case "present":
+      return "on disk"
+    case "missing":
+      return "not on disk"
+    case "wrong_size":
+      return `wrong size (${disk.bytes} bytes)`
+  }
+}
+
+export type ProfileRow = {
+  profile: ModelProfile
+  disk: DiskState
+  verified: boolean
+  isDefault: boolean
+}
+
+/** Every profile with its file's state on disk and whether it is verified here, and the active id. */
+export async function profileRows(
+  deps: Deps,
+  base: Base
+): Promise<{ active: string; rows: ProfileRow[] }> {
+  const rows: ProfileRow[] = []
+  for (const profile of base.lock.profiles)
+    rows.push({
+      profile,
+      disk: await diskOf(
+        deps,
+        modelPathOf(profile, base.config.modelDir, base.config.join),
+        profile.size
+      ),
+      verified: isVerified(deps, base, profile),
+      isDefault: profile.id === base.lock.defaultProfile,
+    })
+  return { active: activeId(deps, base), rows }
 }
 
 async function list(deps: Deps, base: Base): Promise<number> {
-  const active = activeId(deps, base)
-  for (const profile of base.lock.profiles) {
-    const path = modelPathOf(profile, base.config.modelDir, base.config.join)
+  const { active, rows } = await profileRows(deps, base)
+  for (const { profile, disk, verified, isDefault } of rows) {
     const notes = [
-      await diskState(deps, path, profile.size),
-      isVerified(deps, base, profile) ? "verified" : "unverified",
+      describeDisk(disk),
+      verified ? "verified" : "unverified",
       ...(profile.origin === "user" ? ["added"] : []),
-      ...(profile.id === base.lock.defaultProfile ? ["default"] : []),
+      ...(isDefault ? ["default"] : []),
       ...(profile.id === active ? ["active"] : []),
     ]
     deps.out(
       `${profile.id === active ? "*" : " "} ${profile.id}: ${profile.model} ${profile.quantization}, ${notes.join(", ")}`
     )
   }
-  if (!base.lock.profiles.some((p) => p.id === active)) {
+  if (!rows.some((row) => row.profile.id === active)) {
     deps.err(
       `FAIL: the active profile ${JSON.stringify(active)} is not in model.lock; run llama use with one of the ids above`
     )
@@ -615,10 +663,10 @@ async function use(
   }
   const profile = selectProfile(base.lock, id)
   const path = modelPathOf(profile, base.config.modelDir, base.config.join)
-  const state = await diskState(deps, path, profile.size)
-  if (state !== "on disk") {
+  const disk = await diskOf(deps, path, profile.size)
+  if (disk.kind !== "present") {
     deps.err(
-      `FAIL: ${path} is ${state}; run llama fetch --model ${profile.id} first`
+      `FAIL: ${path} is ${describeDisk(disk)}; run llama fetch --model ${profile.id} first`
     )
     return 1
   }

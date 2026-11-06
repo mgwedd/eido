@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StackError",
+  "description": "A refusal from the stack supervisor (#644).",
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "string",
+      "enum": [
+        "not_found",
+        "invalid_body",
+        "stale_settings",
+        "stack_not_running",
+        "unavailable",
+        "busy",
+        "failed"
+      ]
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    }
+  },
+  "required": ["error", "message"],
+  "additionalProperties": false
+}

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StackModelList",
+  "description": "The model profiles (#628) as the supervisor reports them on GET /models and after POST /models/use (#644).",
+  "type": "object",
+  "properties": {
+    "active": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "profiles": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "title": "StackModelProfile",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "quantization": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "disk": {
+            "type": "string",
+            "enum": ["present", "missing", "wrong_size"]
+          },
+          "verified": {
+            "type": "boolean"
+          },
+          "origin": {
+            "type": "string",
+            "enum": ["lock", "user"]
+          },
+          "isDefault": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "model",
+          "quantization",
+          "sizeBytes",
+          "disk",
+          "verified",
+          "origin",
+          "isDefault"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["active", "profiles"],
+  "additionalProperties": false
+}

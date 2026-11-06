@@ -98,6 +98,10 @@ importers:
         version: 5.0.5(@types/node@24.19.2)(@vitest/coverage-v8@5.0.5)(happy-dom@21.0.4)(vite@8.3.4(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0))
 
   infra:
+    dependencies:
+      '@eido/schemas':
+        specifier: workspace:*
+        version: link:../packages/schemas
     devDependencies:
       '@eido/eslint-config':
         specifier: workspace:*

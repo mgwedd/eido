@@ -187,13 +187,17 @@ async function tailscaleHost(deps: Deps): Promise<string> {
 }
 
 /** The tailnet host: EIDO_TAILNET_HOST, else Self.DNSName from tailscale when serving, else localhost. */
-async function resolveHost(deps: Deps, serve: boolean): Promise<string> {
+export async function resolveHost(deps: Deps, serve: boolean): Promise<string> {
   const fromEnv = deps.env["EIDO_TAILNET_HOST"]
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv
   return serve ? await tailscaleHost(deps) : "localhost"
 }
 
-function configFor(deps: Deps, mode: Mode, tailnetHost: string): StackConfig {
+export function configFor(
+  deps: Deps,
+  mode: Mode,
+  tailnetHost: string
+): StackConfig {
   return buildStackConfig({
     mode,
     platform: deps.platform,
@@ -214,7 +218,7 @@ function serveDeps(deps: Deps) {
   }
 }
 
-function readRecord(
+export function readRecord(
   deps: Deps,
   config: StackConfig,
   name: ProcessName
@@ -224,7 +228,7 @@ function readRecord(
 }
 
 /** Stops the named processes in reverse start order and removes their pid files. */
-async function stopAll(
+export async function stopAll(
   deps: Deps,
   config: StackConfig,
   names: readonly ProcessName[]
@@ -255,7 +259,7 @@ async function stopAll(
   }
 }
 
-function doctorDeps(deps: Deps): DoctorDeps {
+export function doctorDeps(deps: Deps): DoctorDeps {
   return {
     platform: deps.platform,
     env: deps.env,
@@ -361,6 +365,79 @@ async function gate(
   )
 }
 
+/**
+ * Starts `specs` in order, each once the one before answers, with a pid file each. On a failure
+ * it reports it, stops what it started and returns the failure.
+ */
+export async function launchInOrder(
+  deps: Deps,
+  config: StackConfig,
+  specs: readonly ProcessSpec[],
+  mode: Mode,
+  background: boolean
+): Promise<{ started: Started[]; failure: string | undefined }> {
+  const probe = probeWith(deps.fetch)
+  const { started, failure } = await startInOrder(specs, {
+    launch: (spec) => {
+      const launched = deps.launch(spec, {
+        logFile: logFile(config, spec.name),
+        background,
+        prefixOutput: mode === "dev" && !background,
+      })
+      const record: PidRecord = {
+        name: spec.name,
+        pid: launched.pid,
+        marker: spec.marker,
+        mode,
+      }
+      deps.files.write(
+        pidFile(config, spec.name),
+        `${JSON.stringify(record)}\n`
+      )
+      deps.out(
+        `${spec.name}: started pid ${launched.pid}, log ${logFile(config, spec.name)}`
+      )
+      return launched
+    },
+    ready: (spec, launched) =>
+      waitReady(spec, launched, {
+        probe,
+        clock: deps.clock,
+        // Core reaches the gate only through its data-plane socket.
+        ...(spec.name === "gate"
+          ? { alsoReady: () => deps.files.exists(config.gateSocket) }
+          : {}),
+      }).then((result) => {
+        if (result === undefined)
+          deps.out(`${spec.name}: answers on ${spec.healthUrl}`)
+        return result
+      }),
+  })
+  if (failure !== undefined) {
+    const last = started.at(-1)?.spec.name ?? specs[0]?.name ?? "gate"
+    deps.err(`FAIL: ${failure}; see ${logFile(config, last)}`)
+    await stopAll(
+      deps,
+      config,
+      started.map((s) => s.spec.name)
+    )
+  }
+  return { started, failure }
+}
+
+/** Whether the pid file names a live process that still carries the stack's marker. */
+export async function isRunning(
+  deps: Deps,
+  config: StackConfig,
+  name: ProcessName
+): Promise<boolean> {
+  const record = readRecord(deps, config, name)
+  return (
+    record !== undefined &&
+    (await argsOf(deps.exec, record.pid))?.includes(record.marker) === true
+  )
+}
+
 async function start(deps: Deps, mode: Mode, flags: Flags): Promise<number> {
   if (!(await preflight(deps, flags))) {
     deps.err(
@@ -409,50 +486,14 @@ async function start(deps: Deps, mode: Mode, flags: Flags): Promise<number> {
 
   for (const dir of config.privateDirs) deps.files.ensurePrivateDir(dir)
 
-  const probe = probeWith(deps.fetch)
-  const { started, failure } = await startInOrder(config.processes, {
-    launch: (spec) => {
-      const launched = deps.launch(spec, {
-        logFile: logFile(config, spec.name),
-        background: flags.background,
-        prefixOutput: mode === "dev" && !flags.background,
-      })
-      const record: PidRecord = {
-        name: spec.name,
-        pid: launched.pid,
-        marker: spec.marker,
-        mode,
-      }
-      deps.files.write(
-        pidFile(config, spec.name),
-        `${JSON.stringify(record)}\n`
-      )
-      deps.out(
-        `${spec.name}: started pid ${launched.pid}, log ${logFile(config, spec.name)}`
-      )
-      return launched
-    },
-    ready: (spec, launched) =>
-      waitReady(spec, launched, {
-        probe,
-        clock: deps.clock,
-        // Core reaches the gate only through its data-plane socket.
-        ...(spec.name === "gate"
-          ? { alsoReady: () => deps.files.exists(config.gateSocket) }
-          : {}),
-      }).then((result) => {
-        if (result === undefined)
-          deps.out(`${spec.name}: answers on ${spec.healthUrl}`)
-        return result
-      }),
-  })
-  const names = started.map((s) => s.spec.name)
-  if (failure !== undefined) {
-    const last = started.at(-1)?.spec.name ?? "gate"
-    deps.err(`FAIL: ${failure}; see ${logFile(config, last)}`)
-    await stopAll(deps, config, names)
-    return 1
-  }
+  const { started, failure } = await launchInOrder(
+    deps,
+    config,
+    config.processes,
+    mode,
+    flags.background
+  )
+  if (failure !== undefined) return 1
 
   if (flags.serve) deps.out(`Open ${config.url}`)
   else
@@ -519,9 +560,7 @@ async function status(deps: Deps, flags: Flags): Promise<number> {
   let healthy = 0
   for (const spec of config.processes) {
     const record = readRecord(deps, config, spec.name)
-    const running =
-      record !== undefined &&
-      (await argsOf(deps.exec, record.pid))?.includes(record.marker) === true
+    const running = await isRunning(deps, config, spec.name)
     const state =
       record === undefined
         ? "not started by the stack"

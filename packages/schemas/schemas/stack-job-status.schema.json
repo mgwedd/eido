@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StackJobStatus",
+  "description": "The stack processes and the supervisor tasks (#644), on GET /jobs and as the reply to a start, stop, restart or model fetch. Only core and llama are controllable: stop never reaches the gate, the supervisor or web. A process message says why the last start or stop failed, or why it is unavailable.",
+  "type": "object",
+  "properties": {
+    "processes": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "title": "StackProcessStatus",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["gate", "core", "web", "llama"]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "starting",
+              "stopping",
+              "stopped",
+              "unavailable"
+            ]
+          },
+          "controllable": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "required": ["name", "state", "controllable"],
+        "additionalProperties": false
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "title": "StackTask",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^task-[0-9]{1,9}$"
+          },
+          "kind": {
+            "const": "model.fetch"
+          },
+          "profile": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "state": {
+            "type": "string",
+            "enum": ["running", "succeeded", "failed"]
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time",
+            "minLength": 20,
+            "maxLength": 40
+          },
+          "receivedBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "totalBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "profile",
+          "state",
+          "startedAt",
+          "receivedBytes",
+          "totalBytes"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["processes", "tasks"],
+  "additionalProperties": false
+}

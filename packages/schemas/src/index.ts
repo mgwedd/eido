@@ -120,6 +120,14 @@ export {
   validateCoreApiReplyDraftResponse,
   validateAskCoverage,
   validateAskCitation,
+  validateStackDoctorReport,
+  validateStackError,
+  validateStackJobRequest,
+  validateStackJobStatus,
+  validateStackModelList,
+  validateStackModelRequest,
+  validateStackSettings,
+  validateStackSettingsWrite,
 } from "./generated/validators"
 export { validateConnectorManifest } from "./manifest"
 export { gateAuditDisplayActor } from "./gate-audit-display"
