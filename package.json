@@ -25,7 +25,10 @@
     "check:no-telemetry-fixture": "node scripts/check-no-telemetry.ts --self-test",
     "verify": "node scripts/verify.ts",
     "stack:dev": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts dev",
+    "stack:doctor": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts doctor",
+    "stack:gate": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts gate",
     "stack:prod": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts prod",
+    "stack:setup": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts setup",
     "stack:stop": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts stop",
     "stack:status": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts status",
     "postinstall": "node packages/schemas/scripts/codegen.ts"
