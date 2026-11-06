@@ -5,6 +5,7 @@ import {
   checkAttackSuccess,
   checkRefusal,
   formatComparisonReport,
+  formatPercentChange,
   formatPercent,
 } from "./injection-predicates"
 import { loadInjectionCorpus } from "./injection-cli"
@@ -236,6 +237,15 @@ describe("formatComparisonReport", () => {
     expect(md).toContain("| `ask` | 80.0% (4/5) | 20.0% (1/5) | -60.0% |")
     expect(md).toContain("## Failing fenced cases (1)")
     expect(md).toContain("forged closing tag")
+  })
+})
+
+describe("formatPercentChange", () => {
+  test("signs the change once, and shows no sign for zero", () => {
+    expect(formatPercentChange(-0.333)).toBe("-33.3%")
+    expect(formatPercentChange(0.0556)).toBe("+5.6%")
+    expect(formatPercentChange(0)).toBe("0.0%")
+    expect(formatPercentChange(-0.0001)).toBe("0.0%")
   })
 })
 

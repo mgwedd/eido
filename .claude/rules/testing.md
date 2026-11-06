@@ -9,6 +9,7 @@
 - Tests are Vitest, next to the code as `*.test.ts` (in `apps/web`, under `test/`). Prefer plain functions you can test without a browser or network. Anything touching the gate ships with tests (see `packages/gate/AGENTS.md`).
 - Do not call `eslint` or `tsc` directly when a turbo task does the job. Call `vitest` directly only for a one-shot `vitest related` or `--changed` run, or through the `test:watch` task below.
 - Never put real tokens, personal data or live-service calls in tests.
+- `docs/injection-eval.md` is regenerated on main only. `pnpm eval-injection` writes it from a clean checkout of `origin/main` and writes `eval-local/injection-eval.md` anywhere else. A feature PR puts its eval numbers in the PR body; the regenerated report lands in a PR of its own (`//#check:eval-report`).
 
 ## Coverage
 

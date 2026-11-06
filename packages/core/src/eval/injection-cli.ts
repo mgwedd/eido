@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
@@ -29,7 +30,18 @@ const DEFAULT_CASES_PATH = join(
   "injection",
   "cases.json"
 )
-const DEFAULT_OUT_PATH = join(REPO_ROOT, "docs", "injection-eval.md")
+// The committed report. Only a run on a clean checkout of origin/main writes it, so every row comes from one
+// run and feature branches never conflict on it. Other runs write the local copy, which is gitignored.
+export const PUBLISHED_REPORT_PATH = join(
+  REPO_ROOT,
+  "docs",
+  "injection-eval.md"
+)
+export const LOCAL_REPORT_PATH = join(
+  REPO_ROOT,
+  "eval-local",
+  "injection-eval.md"
+)
 const DEFAULT_MODEL_DIR = join(
   homedir(),
   "Library",
@@ -53,7 +65,7 @@ export interface InjectionCliOptions {
   port: number
   baseUrl: string
   cases: string
-  out: string
+  out: string | undefined
   builders: PromptBuilderName[]
   noServer: boolean
   modelDir: string
@@ -194,8 +206,7 @@ export function parseInjectionCliOptions(
   const cases =
     rawCases !== undefined ? resolve(REPO_ROOT, rawCases) : DEFAULT_CASES_PATH
   const rawOut = flags.get("--out") ?? env["EIDO_EVAL_OUT"]
-  const out =
-    rawOut !== undefined ? resolve(REPO_ROOT, rawOut) : DEFAULT_OUT_PATH
+  const out = rawOut !== undefined ? resolve(REPO_ROOT, rawOut) : undefined
   const modelDir =
     flags.get("--model-dir") ?? env["EIDO_MODEL_DIR"] ?? DEFAULT_MODEL_DIR
   const serverBin =
@@ -231,6 +242,44 @@ export function parseInjectionCliOptions(
   }
 }
 
+export interface GitState {
+  head: string | null
+  originMain: string | null
+  dirty: boolean
+}
+
+export function readGitState(cwd: string = REPO_ROOT): GitState {
+  const git = (args: string[]): string | null => {
+    const r = spawnSync("git", args, { cwd, encoding: "utf8" })
+    return r.status === 0 ? r.stdout.trim() : null
+  }
+  const status = git(["status", "--porcelain"])
+  return {
+    head: git(["rev-parse", "HEAD"]),
+    originMain: git(["rev-parse", "--verify", "-q", "origin/main"]),
+    dirty: status === null || status !== "",
+  }
+}
+
+export function onCleanMain(state: GitState): boolean {
+  return state.head !== null && state.head === state.originMain && !state.dirty
+}
+
+/** Where the report goes: the committed path only from a clean origin/main checkout. */
+export function resolveReportPath(
+  out: string | undefined,
+  state: GitState
+): string {
+  const published = resolve(PUBLISHED_REPORT_PATH)
+  if (out !== undefined && resolve(out) !== published) return out
+  if (onCleanMain(state)) return published
+  if (out === undefined) return LOCAL_REPORT_PATH
+  throw new Error(
+    "docs/injection-eval.md is written only from a clean checkout of origin/main. " +
+      "Run without --out to write eval-local/injection-eval.md, and put your numbers in the PR body."
+  )
+}
+
 async function isServerHealthy(baseUrl: string): Promise<boolean> {
   try {
     const res = await fetch(`${loopbackBaseUrl(baseUrl)}/health`, {
@@ -245,7 +294,8 @@ async function isServerHealthy(baseUrl: string): Promise<boolean> {
 
 export async function main(
   argv: readonly string[] = process.argv.slice(2),
-  env: Env = process.env
+  env: Env = process.env,
+  gitState: () => GitState = readGitState
 ): Promise<void> {
   const options = parseInjectionCliOptions(argv, env)
 
@@ -256,7 +306,8 @@ export async function main(
         "  --host <host>          Host (default: 127.0.0.1)\n" +
         "  --port <port>          Port (default: 8080)\n" +
         "  --cases <file>         Cases JSON path (default: fixtures/injection/cases.json)\n" +
-        "  --out <file>           Output markdown report path (default: docs/injection-eval.md)\n" +
+        "  --out <file>           Output markdown report path (default: docs/injection-eval.md on a clean\n" +
+        "                         origin/main checkout, else eval-local/injection-eval.md)\n" +
         "  --builders <list>      Comma-separated builders: ask,propose,digest,extraction\n" +
         "  --model-dir <dir>      Model directory for llama-server auto-start\n" +
         "  --server-bin <bin>     llama-server binary path for auto-start\n" +
@@ -266,6 +317,7 @@ export async function main(
     return
   }
 
+  const outPath = resolveReportPath(options.out, gitState())
   const cases = loadInjectionCorpus(options.cases)
   console.log(
     `Loaded ${String(cases.length)} injection cases from ${options.cases}`
@@ -371,9 +423,9 @@ export async function main(
     const markdown = formatComparisonReport(report)
     console.log("\n" + markdown)
 
-    mkdirSync(dirname(options.out), { recursive: true })
-    writeFileSync(options.out, markdown, "utf8")
-    console.log(`\nWrote evaluation results to ${options.out}`)
+    mkdirSync(dirname(outPath), { recursive: true })
+    writeFileSync(outPath, markdown, "utf8")
+    console.log(`\nWrote evaluation results to ${outPath}`)
 
     if (report.failingFencedCases.length > 0) {
       console.warn(
