@@ -81,7 +81,7 @@ describe("Queue without a passkey", () => {
     )
     await render()
     const link = document.querySelector('a[href="/enroll?next=%2Fqueue"]')
-    expect(link?.textContent).toBe("Enrol this device")
+    expect(link?.textContent).toBe("Enroll this device")
     expect(buttonLabels().some((label) => label.startsWith("Approve"))).toBe(
       false
     )

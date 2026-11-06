@@ -149,7 +149,7 @@ function UnlockCard({
               href={enrolUrl(next)}
               className={`${buttonVariants({ size: "lg" })} h-12 rounded-xl`}
             >
-              Enrol this device
+              Enroll this device
             </Link>
           ) : null}
 
