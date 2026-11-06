@@ -13,7 +13,7 @@ import {
 } from "../extraction/prompt"
 import { PROPOSE_SYSTEM_PROMPT } from "../propose/prompt"
 import { ANSWER_SYSTEM } from "../ask/ask"
-import { MATERIAL_RULES, fence, toMaterial } from "../inference/fence"
+import { fence, toMaterial } from "../inference/fence"
 import type { InferenceRequest } from "../inference/types"
 import type { PromptBuilderName } from "./injection-types"
 
