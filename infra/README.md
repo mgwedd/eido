@@ -32,6 +32,17 @@ Start runs doctor's blocking checks first and starts nothing on a failure. It th
 
 The tailnet host is read from `tailscale status --json`. On macOS, data, sockets and pid files live under `~/Library/Application Support/eido-dev` (pid files in `run/`), and one log per process under `~/Library/Logs/eido-dev`. The typed config is `infra/stack/config.ts`; every value is overridable by env, with no secrets: `EIDO_TAILNET_HOST`, `EIDO_EDGE_PORT`, `EIDO_WEB_PORT`, `EIDO_CORE_PORT`, `EIDO_GATE_PHONE_PORT`, `EIDO_STACK_DIR`, `EIDO_STACK_LOG_DIR`, and the gate and core variables listed in `OVERRIDES`. The llama, push, Gmail, Drive, Bridge and development-vault variables are passed through from your environment or `stack.env` when set, and never invented by the stack.
 
+### Start at login (#629, macOS)
+
+```bash
+pnpm stack:install     # writes and loads the LaunchAgent com.eido.stack; it starts the stack now and at every login
+pnpm stack:uninstall   # boots the agent out and removes its plist; the stack keeps running until pnpm stack:stop
+```
+
+The agent runs the stack supervisor (`infra/stack/supervisor-main.ts --start-stack`). The supervisor first runs `stack boot`, which starts the prod stack in the background unless a stack process already runs, and then serves its socket. launchd restarts the supervisor when it exits, after 10 seconds, so a start that fails at login (Tailscale not up yet, say) is tried again. The stack's processes run in their own process groups and outlive a supervisor restart.
+
+The plist is `~/Library/LaunchAgents/com.eido.stack.plist` and the supervisor logs to `~/Library/Logs/eido-dev/stack.out.log` and `stack.err.log`. It passes on `PATH` and `EIDO_STACK_DIR` from the shell that ran `stack:install`; every other setting comes from `stack.env`, so run `stack:install` again after changing `PATH` or the stack dir. `pnpm stack:status` ends with the agent's state from `launchctl print`. `pnpm stack:stop` stops the stack while the agent stays loaded, and says that the next login or supervisor restart starts it again. Windows (a Task Scheduler task) is #455.
+
 ### Settings: `stack.env` (#625)
 
 `stack.env` in the stack dir (`~/Library/Application Support/eido-dev/stack.env` on macOS) holds the stack's non-secret settings as `KEY=value` lines. `pnpm stack:setup` writes it; treat it as written by the system rather than by hand. Every stack command loads it, and a variable set in your environment wins over the same key in the file. It must be a regular file with mode 0600, and only these keys are accepted, so a typo or a secret fails with the key's name:
@@ -48,7 +59,7 @@ Secrets never go in it: tokens and passwords live in the gate's vault. `infra/st
 
 ### Windows and Linux
 
-Setup, doctor, settings and `stack:gate` run on Windows and Linux too. The stack dir is `%LOCALAPPDATA%\eido-dev` (logs in `logs\`) on Windows and the XDG data dir on Linux; the gate's sockets are named pipes on Windows. There is no keychain off macOS: setup sets the development file vault (`EIDO_DEV_VAULT=1` and `EIDO_GATE_VAULT_FILE`), and doctor warns that a production vault there is #455. Windows has no mode bits, so the 0600 check on `stack.env` is skipped there, with a doctor note pointing at #455. Starting and stopping the stack on Windows is not supported yet.
+Setup, doctor, settings and `stack:gate` run on Windows and Linux too. The stack dir is `%LOCALAPPDATA%\eido-dev` (logs in `logs\`) on Windows and the XDG data dir on Linux; the gate's sockets are named pipes on Windows. There is no keychain off macOS: setup sets the development file vault (`EIDO_DEV_VAULT=1` and `EIDO_GATE_VAULT_FILE`), and doctor warns that a production vault there is #455. Windows has no mode bits, so the 0600 check on `stack.env` is skipped there, with a doctor note pointing at #455. Starting and stopping the stack on Windows, and starting it at login, are not supported yet.
 
 The WebAuthn origin is `https://<host>:8443`. The gate accepts an origin with a port once #375 lands; until then set `EIDO_WEBAUTHN_ORIGIN=https://<host>` to start it.
 

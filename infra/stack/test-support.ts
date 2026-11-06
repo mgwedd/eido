@@ -62,6 +62,11 @@ export function world(
     failToStart?: string
     buildCode?: number
     tailscaleDown?: boolean
+    /** The login agent is loaded in launchd at the start. */
+    agentLoaded?: boolean
+    /** launchctl answers bootstrap or bootout with this failure. */
+    launchctlFails?: "bootstrap" | "bootout"
+    uid?: number
   } = {}
 ) {
   const procs: Proc[] = []
@@ -95,6 +100,37 @@ export function world(
   const tailscaleCalls: string[] = []
   const serve: ServeConfig = structuredClone(options.serve ?? {})
   let builds = 0
+  let agentLoaded = options.agentLoaded === true
+  const launchctlCalls: string[] = []
+  const launchctl = (args: readonly string[]): RunResult => {
+    launchctlCalls.push(args.join(" "))
+    const [verb, target] = args
+    if (verb === options.launchctlFails)
+      return {
+        code: 5,
+        stdout: "",
+        stderr: `${verb} failed: Input/output error`,
+      }
+    if (verb === "print")
+      return agentLoaded && target === "gui/501/com.eido.stack"
+        ? ok(
+            "gui/501/com.eido.stack = {\n\tstate = running\n\truns = 2\n\tpid = 777\n\tlast exit code = 1\n}\n"
+          )
+        : {
+            code: 113,
+            stdout: "",
+            stderr: `Could not find service in domain`,
+          }
+    if (verb === "bootstrap") {
+      agentLoaded = true
+      return ok()
+    }
+    if (verb === "bootout") {
+      agentLoaded = false
+      return ok()
+    }
+    return { code: 1, stdout: "", stderr: `unexpected: ${args.join(" ")}` }
+  }
   let stopHandler: (() => void) | undefined
   let nextPid = 1000
   let now = 0
@@ -141,7 +177,9 @@ export function world(
     home: "/home/u",
     repoRoot: "/repo",
     nodePath: "/bin/node",
+    uid: "uid" in options ? options.uid : 501,
     exec: (command, args) => {
+      if (command === "launchctl") return Promise.resolve(launchctl(args))
       if (command === "lsof") {
         const port = Number(args[1]?.replace("-iTCP:", ""))
         const stdout = listening(port)
@@ -256,6 +294,8 @@ export function world(
     err,
     serve,
     tailscaleCalls,
+    launchctlCalls,
+    agentLoaded: () => agentLoaded,
     builds: () => builds,
     stop: () => stopHandler?.(),
     hasStopHandler: () => stopHandler !== undefined,

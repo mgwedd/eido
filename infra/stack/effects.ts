@@ -106,6 +106,7 @@ export function stackEffects(): Deps {
     home: homedir(),
     repoRoot,
     nodePath: process.execPath,
+    uid: process.getuid?.(),
     exec,
     build: () =>
       new Promise((resolve) => {
