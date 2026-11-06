@@ -5,13 +5,16 @@ import { verifyChain } from "./audit"
 import { openControlDb } from "./control-db"
 import {
   beginLogin,
+  elevatedUntil,
   hasCredential,
   login,
   sessionCookie,
   sessionCredential,
   sessionExpiry,
   sessionToken,
+  stepUp,
 } from "./sessions"
+import type { Elevations } from "./sessions"
 import {
   assertion,
   auditRows,
@@ -307,5 +310,142 @@ describe("hasCredential", () => {
     expect(hasCredential(db)).toBe(true)
     revoke(auth)
     expect(hasCredential(db)).toBe(false)
+  })
+})
+
+describe("stepUp", () => {
+  function signedIn(auth: TestAuthenticator): string {
+    const { challenge } = beginLogin(db, now)
+    const result = login(db, WEBAUTHN, assertion(auth, challenge), now)
+    if (!result.ok) throw new Error(`login refused: ${result.reason}`)
+    return result.token
+  }
+
+  function stepUpWith(
+    elevations: Elevations,
+    token: string | undefined,
+    auth: TestAuthenticator,
+    signCount = 1
+  ) {
+    const { challenge } = beginLogin(db, now)
+    return stepUp(
+      db,
+      WEBAUTHN,
+      elevations,
+      token,
+      assertion(auth, challenge, { signCount }),
+      now
+    )
+  }
+
+  it("elevates the session for five minutes, and the elevation ends then", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const token = signedIn(auth)
+    const elevations: Elevations = new Map()
+    const result = stepUpWith(elevations, token, auth)
+    if (!result.ok) throw new Error(`step-up refused: ${result.reason}`)
+    expect(result.until.toISOString()).toBe("2026-10-19T08:05:00.000Z")
+    at = new Date(START.getTime() + 4 * MINUTE)
+    expect(elevatedUntil(db, elevations, token, now)?.toISOString()).toBe(
+      "2026-10-19T08:05:00.000Z"
+    )
+    at = new Date(START.getTime() + 5 * MINUTE)
+    expect(elevatedUntil(db, elevations, token, now)).toBeUndefined()
+    expect(auditRows(db).map((row) => row.action)).toEqual([
+      "session.created",
+      "session.stepped_up",
+    ])
+    expect(verifyChain(db).ok).toBe(true)
+  })
+
+  it("never lasts past the session's own expiry", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const token = signedIn(auth)
+    at = new Date(START.getTime() + 12 * HOUR - 2 * MINUTE)
+    const result = stepUpWith(new Map(), token, auth)
+    if (!result.ok) throw new Error(`step-up refused: ${result.reason}`)
+    expect(result.until.toISOString()).toBe("2026-10-19T20:00:00.000Z")
+  })
+
+  it("refuses a passkey other than the session's and elevates nothing", () => {
+    const owner = testAuthenticator()
+    const other = testAuthenticator()
+    enrol(owner)
+    enrol(other)
+    const token = signedIn(owner)
+    const elevations: Elevations = new Map()
+    expect(stepUpWith(elevations, token, other)).toEqual({
+      ok: false,
+      reason: "other_credential",
+    })
+    expect(elevatedUntil(db, elevations, token, now)).toBeUndefined()
+    expect(auditRows(db).at(-1)?.action).toBe(
+      "session.step_up_refused.other_credential"
+    )
+  })
+
+  it("refuses without a live session", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const token = signedIn(auth)
+    expect(stepUpWith(new Map(), undefined, auth).ok).toBe(false)
+    at = new Date(START.getTime() + 12 * HOUR)
+    expect(stepUpWith(new Map(), token, auth)).toEqual({
+      ok: false,
+      reason: "no_session",
+    })
+  })
+
+  it("refuses a challenge that was already used", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const token = signedIn(auth)
+    const { challenge } = beginLogin(db, now)
+    const signed = assertion(auth, challenge, { signCount: 1 })
+    expect(stepUp(db, WEBAUTHN, new Map(), token, signed, now).ok).toBe(true)
+    const again = stepUp(db, WEBAUTHN, new Map(), token, signed, now)
+    expect(again.ok).toBe(false)
+  })
+
+  it("is lost when the elevations are new, as after a gate restart", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const token = signedIn(auth)
+    expect(stepUpWith(new Map(), token, auth).ok).toBe(true)
+    expect(elevatedUntil(db, new Map(), token, now)).toBeUndefined()
+  })
+
+  it("does not carry over to another session of the same passkey", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const first = signedIn(auth)
+    const second = signedIn(auth)
+    const elevations: Elevations = new Map()
+    expect(stepUpWith(elevations, first, auth, 2).ok).toBe(true)
+    expect(elevatedUntil(db, elevations, second, now)).toBeUndefined()
+  })
+
+  it("ends when the session's passkey is revoked", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const token = signedIn(auth)
+    const elevations: Elevations = new Map()
+    expect(stepUpWith(elevations, token, auth).ok).toBe(true)
+    revoke(auth)
+    expect(elevatedUntil(db, elevations, token, now)).toBeUndefined()
+  })
+
+  it("prunes expired elevations of other sessions", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const first = signedIn(auth)
+    const second = signedIn(auth)
+    const elevations: Elevations = new Map()
+    expect(stepUpWith(elevations, first, auth, 1).ok).toBe(true)
+    at = new Date(START.getTime() + 6 * MINUTE)
+    expect(stepUpWith(elevations, second, auth, 2).ok).toBe(true)
+    expect(elevations.size).toBe(1)
   })
 })
