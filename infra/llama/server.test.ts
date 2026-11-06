@@ -19,7 +19,10 @@ const reply = (status: number, body: unknown): HttpResponse => ({
 })
 
 describe("serverArgs", () => {
-  const args = serverArgs("/m/model.gguf", 18080)
+  const args = serverArgs("/m/model.gguf", 18080, {
+    chatTemplateKwargs: undefined,
+    flags: ["--reasoning", "off"],
+  })
 
   it("binds loopback only, with the model's own template", () => {
     expect(args[args.indexOf("--host") + 1]).toBe("127.0.0.1")
@@ -27,7 +30,7 @@ describe("serverArgs", () => {
     expect(args).not.toContain("0.0.0.0")
   })
 
-  it("passes the model and port, and the flags measured in #69, with thinking off", () => {
+  it("passes the model and port, the flags measured in #69, then the profile's flags", () => {
     expect(args).toEqual([
       "-m",
       "/m/model.gguf",
@@ -55,6 +58,30 @@ describe("serverArgs", () => {
       "--reasoning",
       "off",
     ])
+  })
+})
+
+describe("serverArgs with chat template kwargs", () => {
+  it("passes them to llama-server as compact JSON before the profile's flags", () => {
+    const args = serverArgs("/m/q.gguf", 8080, {
+      chatTemplateKwargs: { enable_thinking: false },
+      flags: ["-c", "16384"],
+    })
+    expect(args.slice(-4)).toEqual([
+      "--chat-template-kwargs",
+      '{"enable_thinking":false}',
+      "-c",
+      "16384",
+    ])
+  })
+
+  it("adds nothing for a profile without kwargs or flags", () => {
+    expect(
+      serverArgs("/m/q.gguf", 8080, {
+        chatTemplateKwargs: undefined,
+        flags: [],
+      }).at(-1)
+    ).toBe("8")
   })
 })
 
@@ -155,6 +182,15 @@ describe("checkProps", () => {
       ok: false,
       message: "/props has no chat_template",
     })
+  })
+
+  it("without a marker, passes any loaded template but not an empty one", async () => {
+    expect(
+      await checkProps(8080, undefined, props({ chat_template: "{{ x }}" }))
+    ).toEqual({ ok: true })
+    expect(
+      await checkProps(8080, undefined, props({ chat_template: "" }))
+    ).toEqual({ ok: false, message: "/props has no chat_template" })
   })
 
   it("fails when the request fails", async () => {

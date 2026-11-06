@@ -97,6 +97,7 @@ export type PendingIntentSummary = {
   editedFrom?: string
   rationale?: string
   injection?: GateIntentInjection
+  messageSha256?: string
 }
 
 /** What the approval card shows besides the payload: no payload, nonce or hash. */
@@ -708,6 +709,21 @@ export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
       const editedFrom = optionalText(row["edited_from"])
       const rationale = optionalText(row["rationale"])
       const injection = injectionOf(optionalText(row["injection_reasons_json"]))
+      let messageSha256: string | undefined
+      if (
+        (row["kind"] === "email.reply" || row["kind"] === "email.forward") &&
+        typeof row["payload_json"] === "string"
+      ) {
+        const payload: unknown = JSON.parse(row["payload_json"])
+        const checked = validateIntent(payload)
+        if (
+          checked.ok &&
+          (checked.value.kind === "email.reply" ||
+            checked.value.kind === "email.forward")
+        ) {
+          messageSha256 = checked.value.args.messageSha256
+        }
+      }
       let title: string | undefined
       let subtitle: string | undefined
       if (
@@ -769,6 +785,7 @@ export function pendingIntents(db: DatabaseSync): PendingIntentSummary[] {
         ...(editedFrom === null ? {} : { editedFrom }),
         ...(rationale === null ? {} : { rationale }),
         ...(injection === null ? {} : { injection }),
+        ...(messageSha256 === undefined ? {} : { messageSha256 }),
         ...(title === undefined ? {} : { title }),
         ...(subtitle === undefined ? {} : { subtitle }),
       }

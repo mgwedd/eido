@@ -1,14 +1,68 @@
-# The one pinned model and llama.cpp build (#29). No secrets. The launcher refuses to start
-# llama-server unless the model file matches size and sha256, and the binary reports this build.
-# To change the pin, follow "Updating the pin" in infra/llama-server.md.
+# The pinned llama.cpp build and the model profiles (#29, #628). No secrets. The launcher refuses to
+# start llama-server unless the binary reports this build and the active profile's file matches its
+# size and sha256, and refuses a profile that is not verified. To add a profile or change a pin, see
+# infra/llama-server.md.
+llama_cpp_build: b11149
+llama_cpp_commit: d2e54583c
+default_profile: gemma-4-26b-a4b
+
+# One release asset per <platform>-<arch> (Node's process.platform and process.arch). Each sha256
+# is the asset digest the GitHub release API reports for b11149.
+[build darwin-arm64]
+asset: llama-b11149-bin-macos-arm64.tar.gz
+source: https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-macos-arm64.tar.gz
+sha256: 791eb0200a7c846ca925b6274fc21f0f21f537fda2924cc5a47402655816f56e
+
+# Vulkan runs on NVIDIA, AMD and Intel GPUs alike.
+[build win32-x64]
+asset: llama-b11149-bin-win-vulkan-x64.zip
+source: https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-win-vulkan-x64.zip
+sha256: ca432b775c5dcb5af85bbdcf22b06b6e2dca792f30334b19ef4a45ee4a512446
+
+[build win32-arm64]
+asset: llama-b11149-bin-win-cpu-arm64.zip
+source: https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-win-cpu-arm64.zip
+sha256: 95b1f114b601498b546343b97ca381a41ffb16d88dfde19433fb95123f4ef7ca
+
+# Each model profile's size and sha256 are the file's LFS size and oid from the Hugging Face tree API
+# at the pinned revision. The marker is a string found only in that model's embedded chat template.
+# verified: true means the profile passed llama check-template on a real host with this build;
+# false means launch refuses it until check-template passes on this machine.
+
+[profile gemma-4-26b-a4b]
 model: gemma-4-26B-A4B-it
 quantization: Q4_0 (QAT)
 file: gemma-4-26B_q4_0-it.gguf
 source: https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf/resolve/d1c082be9cf3c8a514acf63b8761f4b41935842e/gemma-4-26B_q4_0-it.gguf
 size: 14439363584
 sha256: 3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d
-llama_cpp_build: b11149
-llama_cpp_commit: d2e54583c
-llama_cpp_asset: llama-b11149-bin-macos-arm64.tar.gz
-llama_cpp_sha256: 791eb0200a7c846ca925b6274fc21f0f21f537fda2924cc5a47402655816f56e
 chat_template_marker: <|turn>model
+# Without it the template injects <|think|> and a schema-constrained completion comes back empty.
+flags: --reasoning off
+verified: true
+
+# Mixture of experts, 35B with 3B active, architecture qwen35moe. The template thinks unless
+# enable_thinking is false.
+[profile qwen3.6-35b-a3b]
+model: Qwen3.6-35B-A3B
+quantization: UD-Q4_K_M
+file: Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+source: https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+size: 22134528992
+sha256: ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61
+chat_template_marker: messages[1].role == 'developer'
+chat_template_kwargs: {"enable_thinking": false}
+verified: false
+
+# The small-memory floor, for 16 GB machines and Windows GPUs. Harmony format: reasoning cannot be
+# switched off, only lowered; low is the least the template documents (its default is medium).
+[profile gpt-oss-20b]
+model: gpt-oss-20b
+quantization: MXFP4
+file: gpt-oss-20b-MXFP4.gguf
+source: https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf
+size: 12109566624
+sha256: 27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901
+chat_template_marker: <|channel|>final
+chat_template_kwargs: {"reasoning_effort": "low"}
+verified: false

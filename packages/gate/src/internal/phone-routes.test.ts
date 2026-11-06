@@ -29,7 +29,7 @@ import {
   validateGateUndoResult,
 } from "@eido/schemas"
 import type { GateIntentInjection } from "@eido/schemas"
-import type { Body, GateRequest, Reply } from "./http"
+import type { Body, GateRequest, Handler, Reply } from "./http"
 import { append } from "./audit"
 import {
   beginConnectorRead,
@@ -43,8 +43,13 @@ import { loadPolicy, SHIPPED_DEFAULT_PATH } from "./policy"
 import { propose } from "./intents"
 import { revokeCredential } from "./credentials"
 import { issueEnrolmentCode } from "./enrolment"
-import { matchRoute, phoneHandler, routePath } from "./phone-routes"
-import { readReviewedManifest } from "./repin"
+import {
+  matchRoute,
+  phoneHandler,
+  routePath,
+  tierRefusal,
+} from "./phone-routes"
+import { listReviewedManifests, readReviewedManifest } from "./repin"
 import { DATA_DIR_ENV, placeReviewedManifest } from "../reviewed-manifest"
 import type { ExecutionResult } from "./executor"
 import { preparePushRegistration } from "./push-subscriptions"
@@ -53,14 +58,17 @@ import {
   assertion,
   signedFileRoots,
   auditRows,
+  FLAG_UP,
   controlAuthorization,
   loggedText,
   registration,
   FILE_OPS,
+  MAIL_OPS,
   manifest,
   deviceChallenge,
   sample,
   setup,
+  signedPin,
   signedPolicy,
   testAuthenticator,
   WEBAUTHN,
@@ -75,6 +83,7 @@ let s: Setup
 let state: PhoneState
 let at: Date
 let auth: TestAuthenticator
+let shared: Handler | undefined
 
 type Options = {
   host?: string | null
@@ -92,13 +101,22 @@ async function call(
   path: string,
   options: Options = {}
 ): Promise<Reply> {
-  const handler = phoneHandler({
-    gate: () => state,
-    allowedHosts: [HOST],
-    basePath: options.basePath ?? "",
-    now: () => at,
-    undo: options.undo,
-  })
+  // One handler per test, as one gate process: the step-up elevations live in it.
+  const handler =
+    options.basePath === undefined && options.undo === undefined
+      ? (shared ??= phoneHandler({
+          gate: () => state,
+          allowedHosts: [HOST],
+          basePath: "",
+          now: () => at,
+        }))
+      : phoneHandler({
+          gate: () => state,
+          allowedHosts: [HOST],
+          basePath: options.basePath ?? "",
+          now: () => at,
+          undo: options.undo,
+        })
   const host = options.host === undefined ? HOST : options.host
   const contentType =
     options.contentType === undefined ? "application/json" : options.contentType
@@ -192,6 +210,7 @@ beforeEach(() => {
   state = { db: s.db, policy: s.policy, webAuthn: WEBAUTHN }
   at = START
   auth = testAuthenticator()
+  shared = undefined
 })
 
 describe("phoneHandler: push subscriptions", () => {
@@ -2192,6 +2211,278 @@ describe("phoneHandler: connector re-pin (#97)", () => {
   })
 })
 
+describe("phoneHandler: first pin of a never-pinned connector (#627)", () => {
+  // The default setup pins mail, calendar, files and things; "gmail" has no row.
+  const reviewed = () => manifest("gmail", MAIL_OPS)
+  const PIN = "/connector-settings/gmail/pin"
+  const DECIDE = `${PIN}/decision`
+
+  async function settings(cookie: string) {
+    const reply = await call("GET", "/connector-settings", { cookie })
+    const checked = validateGateConnectorSettings(reply.body)
+    if (!checked.ok) throw new Error("connector settings are invalid")
+    return checked.value
+  }
+
+  async function prepare(cookie: string) {
+    const reply = await call("POST", PIN, { cookie, body: {} })
+    const checked = validateGateRepinPrepared(reply.body)
+    if (!checked.ok) throw new Error(`pin not prepared: ${reply.status}`)
+    return checked.value
+  }
+
+  const gmailRow = () =>
+    s.db.prepare("SELECT * FROM connectors WHERE name = 'gmail'").get()
+
+  // Built from the spec in docs/gate-signed-control-changes.md, not by the gate's own code.
+  const expectedChallenge = (p: {
+    id: string
+    payloadHash: string
+    nonce: string
+  }) =>
+    createHash("sha256")
+      .update(
+        JSON.stringify([
+          "eido.control.v1",
+          "manifest.pin",
+          "gmail",
+          p.id,
+          p.payloadHash,
+          p.nonce,
+        ])
+      )
+      .digest("base64url")
+
+  beforeEach(() => {
+    state.reviewedManifests = () => ["gmail"]
+    state.reviewedManifest = (name) =>
+      name === "gmail" ? reviewed() : undefined
+  })
+
+  it("lists a placed, unpinned manifest with its tools and scopes", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const body = await settings(cookie)
+    expect(body.unpinned).toEqual([
+      {
+        name: "gmail",
+        operations: MAIL_OPS.map((op) => op.name),
+        scopes: ["write"],
+      },
+    ])
+    expect(body.connectors.map((c) => c.name)).not.toContain("gmail")
+  })
+
+  it("does not list a placed manifest for a pinned name, an invalid one, or one named otherwise", async () => {
+    state.reviewedManifests = () => ["files", "broken", "renamed"]
+    state.reviewedManifest = (name) =>
+      name === "files"
+        ? manifest("files", FILE_OPS, 2)
+        : name === "broken"
+          ? null
+          : manifest("other", MAIL_OPS)
+    enrol(auth)
+    const cookie = await signIn()
+    expect(await settings(cookie)).not.toHaveProperty("unpinned")
+  })
+
+  it("lists nothing when the placed-manifest listing throws", async () => {
+    state.reviewedManifests = () => {
+      throw new Error("unreadable")
+    }
+    enrol(auth)
+    const cookie = await signIn()
+    expect(await settings(cookie)).not.toHaveProperty("unpinned")
+  })
+
+  it("prepares a challenge over the reviewed manifest and changes nothing until it is signed", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const prepared = await prepare(cookie)
+    expect(prepared.target).toBe("gmail")
+    expect(prepared.payloadHash).toBe(manifestHash(reviewed()))
+    expect(prepared.challenge).toBe(expectedChallenge(prepared))
+    expect(gmailRow()).toBeUndefined()
+  })
+
+  it("pins the connector on a valid signature, audits connector.pinned, and only once", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const before = auditRows(s.db).length
+    const prepared = await prepare(cookie)
+    const body = {
+      id: prepared.id,
+      nonce: prepared.nonce,
+      assertion: assertion(auth, prepared.challenge),
+    }
+    const done = await call("POST", DECIDE, { cookie, body })
+    const result = validateGateRepinResult(done.body)
+    expect(result.ok && result.value).toEqual({
+      connector: "gmail",
+      manifestHash: manifestHash(reviewed()),
+    })
+    const after = await settings(cookie)
+    expect(after.connectors.find((c) => c.name === "gmail")).toMatchObject({
+      enabled: true,
+      manifestHash: manifestHash(reviewed()),
+    })
+    expect(after).not.toHaveProperty("unpinned")
+    const added = auditRows(s.db).slice(before)
+    expect(added.map((r) => [r.action, r.target])).toEqual([
+      ["connector.pinned", "gmail"],
+    ])
+    const replay = await call("POST", DECIDE, { cookie, body })
+    expect([replay.status, code(replay)]).toEqual([409, "unavailable"])
+  })
+
+  it("pins from the file the reviewed-manifest command writes", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "eido-placed-"))
+    try {
+      const placed = placeReviewedManifest(
+        ["gmail.json"],
+        { [DATA_DIR_ENV]: dataDir },
+        () => JSON.stringify(reviewed()),
+        { out: () => undefined, err: () => undefined }
+      )
+      expect(placed).toBe(0)
+      state.reviewedManifests = () => listReviewedManifests(dataDir)
+      state.reviewedManifest = (name) => readReviewedManifest(dataDir, name)
+      enrol(auth)
+      const cookie = await signIn()
+      expect((await settings(cookie)).unpinned?.map((u) => u.name)).toEqual([
+        "gmail",
+      ])
+      const prepared = await prepare(cookie)
+      const done = await call("POST", DECIDE, {
+        cookie,
+        body: {
+          id: prepared.id,
+          nonce: prepared.nonce,
+          assertion: assertion(auth, prepared.challenge),
+        },
+      })
+      expect(done.status).toBe(200)
+      expect(gmailRow()?.["enabled"]).toBe(1)
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses a signature over another challenge and changes nothing", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const prepared = await prepare(cookie)
+    const before = auditRows(s.db)
+    const refused = await call("POST", DECIDE, {
+      cookie,
+      body: {
+        id: prepared.id,
+        nonce: prepared.nonce,
+        assertion: assertion(auth, "A".repeat(43)),
+      },
+    })
+    expect([refused.status, code(refused)]).toEqual([
+      403,
+      "verification_failed",
+    ])
+    expect(gmailRow()).toBeUndefined()
+    expect(auditRows(s.db)).toEqual(before)
+  })
+
+  it("refuses a request with no assertion and changes nothing", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const prepared = await prepare(cookie)
+    const before = auditRows(s.db)
+    const reply = await call("POST", DECIDE, {
+      cookie,
+      body: { id: prepared.id, nonce: prepared.nonce },
+    })
+    expect(reply.status).toBe(400)
+    expect(gmailRow()).toBeUndefined()
+    expect(auditRows(s.db)).toEqual(before)
+  })
+
+  it("refuses a name that already has a row, at prepare and at decision, and changes nothing", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    state.reviewedManifest = () => manifest("files", FILE_OPS, 2)
+    const early = await call("POST", "/connector-settings/files/pin", {
+      cookie,
+      body: {},
+    })
+    expect([early.status, code(early)]).toEqual([409, "unavailable"])
+
+    // Prepared while unpinned; the name is pinned before the signature arrives.
+    state.reviewedManifest = () => reviewed()
+    const prepared = await prepare(cookie)
+    signedPin(s.db, manifest("gmail", MAIL_OPS, 3))
+    const stored = gmailRow()
+    const before = auditRows(s.db)
+    const late = await call("POST", DECIDE, {
+      cookie,
+      body: {
+        id: prepared.id,
+        nonce: prepared.nonce,
+        assertion: assertion(auth, prepared.challenge),
+      },
+    })
+    expect([late.status, code(late)]).toEqual([409, "unavailable"])
+    expect(gmailRow()).toEqual(stored)
+    expect(auditRows(s.db)).toEqual(before)
+  })
+
+  it("refuses an invalid manifest, one for another name, or none placed", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    state.reviewedManifest = () => null
+    expect((await call("POST", PIN, { cookie, body: {} })).status).toBe(422)
+    state.reviewedManifest = () => ({ ...reviewed(), name: "mail" })
+    expect((await call("POST", PIN, { cookie, body: {} })).status).toBe(422)
+    const bad = reviewed()
+    delete bad.operations[0]?.intentKind
+    state.reviewedManifest = () => bad
+    expect((await call("POST", PIN, { cookie, body: {} })).status).toBe(422)
+    state.reviewedManifest = () => undefined
+    expect((await call("POST", PIN, { cookie, body: {} })).status).toBe(409)
+    expect(gmailRow()).toBeUndefined()
+  })
+
+  it("refuses a decision when the manifest became invalid after preparation", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const prepared = await prepare(cookie)
+    state.reviewedManifest = () => null
+    const reply = await call("POST", DECIDE, {
+      cookie,
+      body: {
+        id: prepared.id,
+        nonce: prepared.nonce,
+        assertion: assertion(auth, prepared.challenge),
+      },
+    })
+    expect(reply.status).toBe(422)
+    expect(gmailRow()).toBeUndefined()
+  })
+
+  it("refuses a non-empty prepare body", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("POST", PIN, {
+      cookie,
+      body: { manifest: reviewed() },
+    })
+    expect(reply.status).toBe(400)
+  })
+
+  it.each([
+    ["no session", PIN],
+    ["no session on decision", DECIDE],
+  ])("%s", async (_name, path) => {
+    expect((await call("POST", path, { body: {} })).status).toBe(401)
+  })
+})
+
 describe("phoneHandler: allowed folders (#574)", () => {
   const CANONICAL = {
     path: "/srv/owner/notes",
@@ -2509,5 +2800,198 @@ describe("phoneHandler: allowed folders (#574)", () => {
       basePath: "/api/gate",
     })
     expect([reply.status, reply.body]).toEqual([200, { roots: [] }])
+  })
+})
+
+describe("phoneHandler: step-up", () => {
+  async function stepUp(cookie: string, who = auth, signCount = 1) {
+    const options = await call("POST", "/auth/step-up/options", { cookie })
+    const parsed = validateGateLoginOptions(options.body)
+    if (!parsed.ok) throw new Error("step-up options do not match the schema")
+    return call("POST", "/auth/step-up", {
+      cookie,
+      body: {
+        assertion: assertion(who, parsed.value.challenge, { signCount }),
+      },
+    })
+  }
+
+  it("elevates the session for five minutes and reports when it ends", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    expect((await call("GET", "/auth/step-up", { cookie })).body).toEqual({
+      expiresAt: null,
+    })
+    const reply = await stepUp(cookie)
+    expect(reply.status).toBe(200)
+    expect(reply.body).toEqual({ expiresAt: "2026-10-19T08:05:00.000Z" })
+    expect((await call("GET", "/auth/step-up", { cookie })).body).toEqual({
+      expiresAt: "2026-10-19T08:05:00.000Z",
+    })
+    at = new Date(START.getTime() + 5 * 60 * 1000)
+    expect((await call("GET", "/auth/step-up", { cookie })).body).toEqual({
+      expiresAt: null,
+    })
+  })
+
+  it("refuses a step-up by another passkey with 403 verification_failed", async () => {
+    const other = testAuthenticator()
+    enrol(auth)
+    enrol(other)
+    const cookie = await signIn()
+    const reply = await stepUp(cookie, other)
+    expect(reply.status).toBe(403)
+    expect(code(reply)).toBe("verification_failed")
+    expect((await call("GET", "/auth/step-up", { cookie })).body).toEqual({
+      expiresAt: null,
+    })
+  })
+
+  it("needs a session for every step-up route", async () => {
+    for (const [method, path] of [
+      ["POST", "/auth/step-up/options"],
+      ["POST", "/auth/step-up"],
+      ["GET", "/auth/step-up"],
+    ] as const) {
+      const reply = await call(method, path, { body: {} })
+      expect(reply.status).toBe(401)
+      expect(code(reply)).toBe("unauthenticated")
+    }
+  })
+
+  it("refuses an assertion without user verification", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const options = await call("POST", "/auth/step-up/options", { cookie })
+    const parsed = validateGateLoginOptions(options.body)
+    if (!parsed.ok) throw new Error("step-up options do not match the schema")
+    const reply = await call("POST", "/auth/step-up", {
+      cookie,
+      body: {
+        assertion: assertion(auth, parsed.value.challenge, {
+          signCount: 1,
+          flags: FLAG_UP,
+        }),
+      },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+  })
+
+  it("rejects a step-up body that is not a login request", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("POST", "/auth/step-up", {
+      cookie,
+      body: { nope: true },
+    })
+    expect(reply.status).toBe(400)
+    expect(code(reply)).toBe("invalid_request")
+  })
+})
+
+describe("tierRefusal", () => {
+  const tokenOf = (cookie: string) => cookie.split("=")[1]
+
+  it("lets public routes through with no session", () => {
+    expect(
+      tierRefusal(
+        "public",
+        "/admin/example",
+        s.db,
+        new Map(),
+        undefined,
+        () => at
+      )
+    ).toBeUndefined()
+  })
+
+  it("refuses session, signed and elevated routes without a session", () => {
+    for (const tier of ["session", "signed", "elevated"] as const) {
+      const reply = tierRefusal(
+        tier,
+        "/admin/example",
+        s.db,
+        new Map(),
+        undefined,
+        () => at
+      )
+      expect(reply?.status).toBe(401)
+      expect(reply === undefined ? undefined : code(reply)).toBe(
+        "unauthenticated"
+      )
+    }
+  })
+
+  it("refuses an elevated route to a session without a step-up, with 403 step_up_required", async () => {
+    enrol(auth)
+    const token = tokenOf(await signIn())
+    expect(
+      tierRefusal("session", "/admin/example", s.db, new Map(), token, () => at)
+    ).toBeUndefined()
+    const reply = tierRefusal(
+      "elevated",
+      "/admin/example",
+      s.db,
+      new Map(),
+      token,
+      () => at
+    )
+    expect(reply?.status).toBe(403)
+    expect(reply === undefined ? undefined : code(reply)).toBe(
+      "step_up_required"
+    )
+  })
+
+  it("lets an elevated route through while the step-up lasts", async () => {
+    enrol(auth)
+    const token = tokenOf(await signIn())
+    const elevations = new Map([
+      [
+        createHash("sha256")
+          .update(token ?? "")
+          .digest("hex"),
+        {
+          credentialId: auth.credentialId,
+          until: new Date(START.getTime() + 60_000),
+        },
+      ],
+    ])
+    expect(
+      tierRefusal(
+        "elevated",
+        "/admin/example",
+        s.db,
+        elevations,
+        token,
+        () => at
+      )
+    ).toBeUndefined()
+    const used = auditRows(s.db).at(-1)
+    expect([used?.action, used?.target]).toEqual([
+      "session.elevation_used",
+      "/admin/example",
+    ])
+  })
+
+  it("does not take an elevation in place of a signed route's own assertion", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const stepped = await call("POST", "/auth/step-up/options", { cookie })
+    const parsed = validateGateLoginOptions(stepped.body)
+    if (!parsed.ok) throw new Error("step-up options do not match the schema")
+    const elevated = await call("POST", "/auth/step-up", {
+      cookie,
+      body: {
+        assertion: assertion(auth, parsed.value.challenge, { signCount: 1 }),
+      },
+    })
+    expect(elevated.status).toBe(200)
+    const id = pendingSend()
+    const reply = await call("POST", `/approvals/${id}/decision`, {
+      cookie,
+      body: { intentId: id, decision: "approved" },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect(intentState(id)).toBe("pending")
   })
 })

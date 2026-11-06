@@ -56,14 +56,20 @@ import { readBackupStatus } from "./backup-status"
 import { checkEnrolmentCode } from "./enrolment"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
-import { applyRepin, prepareRepin } from "./repin"
+import {
+  applyFirstPin,
+  applyRepin,
+  prepareFirstPin,
+  prepareRepin,
+  unpinnedReviewed,
+} from "./repin"
 import {
   completeFileRootsRoute,
   prepareFileRootsRoute,
 } from "./file-root-routes"
 import { approvedFileRoots } from "./files/file-roots"
 import type { FileHelper } from "./files/file-helper"
-import type { RepinRefusal } from "./repin"
+import type { FirstPinRefusal, RepinRefusal } from "./repin"
 import {
   checkedSubscription,
   preparePushRegistration,
@@ -78,10 +84,13 @@ import {
   login,
   sessionCookie,
   sessionCredential,
+  elevatedUntil,
+  stepUp,
+  useElevation,
   sessionExpiry,
   sessionToken,
 } from "./sessions"
-import type { Clock } from "./sessions"
+import type { Clock, Elevations } from "./sessions"
 import type { WebAuthnConfig } from "./webauthn"
 
 // The phone listener (#85): what the PWA calls, through `tailscale serve`, to sign in with its
@@ -93,7 +102,8 @@ import type { WebAuthnConfig } from "./webauthn"
 // ceremony that changes it; file reads (`POST /files`) stay on the data plane. Credential
 // status, login and enrolment need no session: enrolment needs a single-use code the owner
 // issued on the Mac instead (#202). Every other route needs the session cookie (401 without
-// it). Every POST must be application/json (415 otherwise): a browser sends that cross-origin
+// it); each route's tier (RouteTier below) says what more it needs: an `elevated` route answers
+// 403 step_up_required without a step-up in the last five minutes (#643). Every POST must be application/json (415 otherwise): a browser sends that cross-origin
 // only after a CORS preflight, which the gate never answers. No response is cacheable.
 
 export type PhoneState = {
@@ -105,6 +115,8 @@ export type PhoneState = {
   backupStampPath?: string
   /** The owner's re-reviewed manifest for a drifted connector (#97); undefined when none is placed. */
   reviewedManifest?: (connector: string) => unknown
+  /** The connector names with a reviewed manifest placed (#627); none when undefined. */
+  reviewedManifests?: () => string[]
   /** The gate-side native helper that identifies a requested file root (#574); never the phone's. */
   fileHelper?: FileHelper
 }
@@ -113,43 +125,60 @@ export type PhoneRoute = {
   method: "GET" | "POST"
   /** Below the base path; `:id` is one path segment, an intent id. */
   path: string
-  session: boolean
+  tier: RouteTier
 }
+
+/**
+ * What a route needs (ADR 0009). `public`: nothing. `session`: the passkey session. `elevated`:
+ * a step-up within the last ELEVATION_TTL_MS. `signed`: the session, plus a per-action passkey
+ * assertion over the payload hash that the route itself verifies (ADR 0005); elevation never
+ * replaces it. A new route picks one of these; there is no other check.
+ */
+export type RouteTier = "public" | "session" | "elevated" | "signed"
 
 /** Every route the phone listener serves. */
 export const PHONE_ROUTES = [
-  { method: "GET", path: "/passkey/status", session: false },
-  { method: "POST", path: "/auth/login/options", session: false },
-  { method: "POST", path: "/auth/login", session: false },
-  { method: "POST", path: "/passkey/enroll/options", session: false },
-  { method: "POST", path: "/passkey/enroll", session: false },
-  { method: "GET", path: "/approvals", session: true },
-  { method: "GET", path: "/audit", session: true },
-  { method: "GET", path: "/audit/chain", session: true },
-  { method: "GET", path: "/connector-settings", session: true },
-  { method: "GET", path: "/backup/status", session: true },
-  { method: "POST", path: "/connector-settings/:id/repin", session: true },
+  { method: "GET", path: "/passkey/status", tier: "public" },
+  { method: "POST", path: "/auth/login/options", tier: "public" },
+  { method: "POST", path: "/auth/login", tier: "public" },
+  { method: "POST", path: "/auth/step-up/options", tier: "session" },
+  { method: "POST", path: "/auth/step-up", tier: "session" },
+  { method: "GET", path: "/auth/step-up", tier: "session" },
+  { method: "POST", path: "/passkey/enroll/options", tier: "public" },
+  { method: "POST", path: "/passkey/enroll", tier: "public" },
+  { method: "GET", path: "/approvals", tier: "session" },
+  { method: "GET", path: "/audit", tier: "session" },
+  { method: "GET", path: "/audit/chain", tier: "session" },
+  { method: "GET", path: "/connector-settings", tier: "session" },
+  { method: "GET", path: "/backup/status", tier: "session" },
+  { method: "POST", path: "/connector-settings/:id/repin", tier: "session" },
   {
     method: "POST",
     path: "/connector-settings/:id/repin/decision",
-    session: true,
+    tier: "signed",
   },
-  { method: "GET", path: "/passkeys", session: true },
-  { method: "GET", path: "/permissions", session: true },
-  { method: "GET", path: "/approvals/:id/history", session: true },
-  { method: "POST", path: "/approvals/:id/nonce", session: true },
-  { method: "POST", path: "/approvals/:id/decision", session: true },
-  { method: "POST", path: "/approvals/:id/edit", session: true },
-  { method: "POST", path: "/executions/:id/undo", session: true },
-  { method: "POST", path: "/executions/:id/discard-draft", session: true },
-  { method: "GET", path: "/push/key", session: true },
-  { method: "GET", path: "/push/subscriptions", session: true },
-  { method: "POST", path: "/push/prepare", session: true },
-  { method: "POST", path: "/push/subscriptions", session: true },
-  { method: "POST", path: "/push/:id/remove", session: true },
-  { method: "GET", path: "/file-roots", session: true },
-  { method: "POST", path: "/file-roots/prepare", session: true },
-  { method: "POST", path: "/file-roots/complete", session: true },
+  { method: "POST", path: "/connector-settings/:id/pin", tier: "session" },
+  {
+    method: "POST",
+    path: "/connector-settings/:id/pin/decision",
+    tier: "signed",
+  },
+  { method: "GET", path: "/passkeys", tier: "session" },
+  { method: "GET", path: "/permissions", tier: "session" },
+  { method: "GET", path: "/approvals/:id/history", tier: "session" },
+  { method: "POST", path: "/approvals/:id/nonce", tier: "session" },
+  { method: "POST", path: "/approvals/:id/decision", tier: "signed" },
+  { method: "POST", path: "/approvals/:id/edit", tier: "session" },
+  { method: "POST", path: "/executions/:id/undo", tier: "session" },
+  { method: "POST", path: "/executions/:id/discard-draft", tier: "session" },
+  { method: "GET", path: "/push/key", tier: "session" },
+  { method: "GET", path: "/push/subscriptions", tier: "session" },
+  { method: "POST", path: "/push/prepare", tier: "session" },
+  { method: "POST", path: "/push/subscriptions", tier: "signed" },
+  { method: "POST", path: "/push/:id/remove", tier: "session" },
+  { method: "GET", path: "/file-roots", tier: "session" },
+  { method: "POST", path: "/file-roots/prepare", tier: "session" },
+  { method: "POST", path: "/file-roots/complete", tier: "signed" },
 ] as const satisfies readonly PhoneRoute[]
 
 type RoutePath = (typeof PHONE_ROUTES)[number]["path"]
@@ -246,6 +275,49 @@ function loginOptions(state: PhoneState, now: Clock): Reply {
     expiresAt: expiresAt.toISOString(),
   }
   return { status: 200, body: options }
+}
+
+async function stepUpRoute(
+  state: PhoneState,
+  request: GateRequest,
+  elevations: Elevations,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateLoginRequest(body.value)
+  if (!checked.ok) return invalid("a step-up request", checked.errors)
+  const result = stepUp(
+    state.db,
+    state.webAuthn,
+    elevations,
+    sessionToken(request.headers.cookie),
+    checked.value.assertion,
+    now
+  )
+  if (!result.ok) {
+    return apiError(403, "verification_failed", "the step-up was refused")
+  }
+  const elevated: GateSession = { expiresAt: result.until.toISOString() }
+  return { status: 200, body: elevated }
+}
+
+function stepUpStatus(
+  state: PhoneState,
+  request: GateRequest,
+  elevations: Elevations,
+  now: Clock
+): Reply {
+  const until = elevatedUntil(
+    state.db,
+    elevations,
+    sessionToken(request.headers.cookie),
+    now
+  )
+  return {
+    status: 200,
+    body: { expiresAt: until === undefined ? null : until.toISOString() },
+  }
 }
 
 async function loginRoute(
@@ -496,8 +568,12 @@ function connectorSettings(state: PhoneState, now: Clock): Reply {
             }),
       }
     })
+  const unpinned = unpinnedReviewed(state.db, placedManifests(state), (name) =>
+    reviewedManifest(state, name)
+  ).slice(0, 50)
   const body: GateConnectorSettings = {
     connectors,
+    ...(unpinned.length === 0 ? {} : { unpinned }),
     asOf: now().toISOString(),
   }
   return { status: 200, body }
@@ -530,6 +606,27 @@ const REPIN_REFUSALS = {
   RepinRefusal,
   readonly [number, Parameters<typeof apiError>[1], string]
 >
+
+const FIRST_PIN_REFUSALS = {
+  already_pinned: [409, "unavailable", "the connector is already pinned"],
+  no_reviewed_manifest: REPIN_REFUSALS.no_reviewed_manifest,
+  invalid_manifest: [
+    422,
+    "invalid_request",
+    "the reviewed manifest cannot be pinned",
+  ],
+} as const satisfies Record<
+  FirstPinRefusal,
+  readonly [number, Parameters<typeof apiError>[1], string]
+>
+
+function placedManifests(state: PhoneState): string[] {
+  try {
+    return state.reviewedManifests?.() ?? []
+  } catch {
+    return []
+  }
+}
 
 function reviewedManifest(state: PhoneState, connector: string): unknown {
   try {
@@ -584,6 +681,57 @@ async function repinDecision(
     if (result.code === "refused")
       return apiError(403, "verification_failed", "the re-pin was refused")
     const [status, code, message] = REPIN_REFUSALS[result.code]
+    return apiError(status, code, message)
+  }
+  const done: GateRepinResult = { connector, manifestHash: result.manifestHash }
+  return { status: 200, body: done }
+}
+
+async function firstPinPrepare(
+  state: PhoneState,
+  request: GateRequest,
+  connector: string
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  if (
+    typeof body.value !== "object" ||
+    body.value === null ||
+    Array.isArray(body.value) ||
+    Object.keys(body.value).length !== 0
+  )
+    return invalid("an empty pin request", ["expected an empty object"])
+  const result = prepareFirstPin(
+    state.db,
+    connector,
+    reviewedManifest(state, connector)
+  )
+  if (!result.ok) {
+    const [status, code, message] = FIRST_PIN_REFUSALS[result.code]
+    return apiError(status, code, message)
+  }
+  return { status: 200, body: result.prepared }
+}
+
+async function firstPinDecision(
+  state: PhoneState,
+  request: GateRequest,
+  connector: string
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateRepinRequest(body.value)
+  if (!checked.ok) return invalid("a pin request", checked.errors)
+  const result = applyFirstPin(
+    state.db,
+    connector,
+    reviewedManifest(state, connector),
+    { config: state.webAuthn, request: checked.value }
+  )
+  if (!result.ok) {
+    if (result.code === "refused")
+      return apiError(403, "verification_failed", "the pin was refused")
+    const [status, code, message] = FIRST_PIN_REFUSALS[result.code]
     return apiError(status, code, message)
   }
   const done: GateRepinResult = { connector, manifestHash: result.manifestHash }
@@ -890,6 +1038,7 @@ function route(
   request: GateRequest,
   matched: Matched,
   now: Clock,
+  elevations: Elevations,
   execute?: (id: string) => Promise<ExecutionResult>,
   executeUndo?: (id: string) => Promise<ExecutionResult>
 ): Reply | Promise<Reply> {
@@ -901,6 +1050,12 @@ function route(
       return loginOptions(state, now)
     case "/auth/login":
       return loginRoute(state, request, now)
+    case "/auth/step-up/options":
+      return loginOptions(state, now)
+    case "/auth/step-up":
+      return request.method === "GET"
+        ? stepUpStatus(state, request, elevations, now)
+        : stepUpRoute(state, request, elevations, now)
     case "/passkey/enroll/options":
       return enrolOptions(state, request, now)
     case "/passkey/enroll":
@@ -921,6 +1076,10 @@ function route(
       return repinPrepare(state, request, matched.id)
     case "/connector-settings/:id/repin/decision":
       return repinDecision(state, request, matched.id)
+    case "/connector-settings/:id/pin":
+      return firstPinPrepare(state, request, matched.id)
+    case "/connector-settings/:id/pin/decision":
+      return firstPinDecision(state, request, matched.id)
     case "/passkeys":
       return passkeyList(state, request, now)
     case "/permissions":
@@ -985,8 +1144,32 @@ export type PhoneOptions = {
 
 const NO_STORE = { "cache-control": "no-store" } as const
 
+/**
+ * The reply that refuses a request for want of its route's tier, or undefined when the request
+ * may go on. `signed` routes need the session here and verify their own assertion.
+ */
+export function tierRefusal(
+  tier: RouteTier,
+  path: string,
+  db: DatabaseSync,
+  elevations: Elevations,
+  token: string | undefined,
+  now: Clock
+): Reply | undefined {
+  if (tier === "public") return undefined
+  if (sessionExpiry(db, token, now) === undefined) {
+    return apiError(401, "unauthenticated", "sign in with your passkey")
+  }
+  if (tier === "elevated" && !useElevation(db, elevations, token, path, now)) {
+    return apiError(403, "step_up_required", "confirm with your passkey")
+  }
+  return undefined
+}
+
 /** The phone listener's handler. */
 export function phoneHandler(options: PhoneOptions): Handler {
+  // In memory only, so a gate restart ends every step-up.
+  const elevations: Elevations = new Map()
   const allowedHosts = new Set(options.allowedHosts.map((h) => h.toLowerCase()))
   const answer = async (request: GateRequest): Promise<Reply> => {
     const host = request.headers.host?.toLowerCase()
@@ -1008,21 +1191,21 @@ export function phoneHandler(options: PhoneOptions): Handler {
       )
     }
     const state = options.gate()
-    if (
-      matched.route.session &&
-      sessionExpiry(
-        state.db,
-        sessionToken(request.headers.cookie),
-        options.now
-      ) === undefined
-    ) {
-      return apiError(401, "unauthenticated", "sign in with your passkey")
-    }
+    const refusal = tierRefusal(
+      matched.route.tier,
+      matched.route.path,
+      state.db,
+      elevations,
+      sessionToken(request.headers.cookie),
+      options.now
+    )
+    if (refusal !== undefined) return refusal
     return route(
       state,
       request,
       matched,
       options.now,
+      elevations,
       options.execute,
       options.undo
     )

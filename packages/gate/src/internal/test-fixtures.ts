@@ -322,7 +322,7 @@ export const WEBAUTHN: WebAuthnConfig = {
   origin: "https://eido.example.invalid",
 }
 
-const FLAG_UP = 0x01
+export const FLAG_UP = 0x01
 const FLAG_UV = 0x04
 const FLAG_AT = 0x40
 export const FLAGS_UP_UV = FLAG_UP | FLAG_UV

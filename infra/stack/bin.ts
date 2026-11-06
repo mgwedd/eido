@@ -7,6 +7,7 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -15,9 +16,13 @@ import {
 } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { createInterface } from "node:readline/promises"
 import { setTimeout as sleep } from "node:timers/promises"
 
+import { sha256File } from "../llama/verify.ts"
+
 import { main, type Deps } from "./cli.ts"
+import { platformOf } from "./config.ts"
 import type { RunResult } from "./ports.ts"
 import { lineWriter } from "./supervise.ts"
 
@@ -95,6 +100,7 @@ const groupAlive = (pid: number) => {
 }
 
 process.exitCode = await main(process.argv.slice(2), {
+  platform: platformOf(process.platform),
   env: process.env,
   home: homedir(),
   repoRoot,
@@ -130,6 +136,39 @@ process.exitCode = await main(process.argv.slice(2), {
       mkdirSync(path, { recursive: true, mode: 0o700 })
       chmodSync(path, 0o700)
     },
+    stat: (path) => {
+      try {
+        const stat = lstatSync(path)
+        return { isFile: stat.isFile(), mode: stat.mode, size: stat.size }
+      } catch {
+        return undefined
+      }
+    },
+    setMode: (path, mode) => chmodSync(path, mode),
+  },
+  nodeVersion: process.version,
+  sha256: sha256File,
+  // The terminal is inherited, so a password prompt goes straight from the user to the program.
+  interactive: (command, args, options = {}) =>
+    new Promise((resolve) => {
+      const child = spawn(command, [...args], {
+        cwd: options.cwd ?? repoRoot,
+        env: { ...process.env, ...options.env },
+        stdio: "inherit",
+      })
+      child.once("exit", (code) => resolve(code ?? 1))
+      child.once("error", () => resolve(127))
+    }),
+  ask: async (question) => {
+    const prompt = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    })
+    try {
+      return await prompt.question(question)
+    } finally {
+      prompt.close()
+    }
   },
   onStopSignal: (handler) => {
     let called = false

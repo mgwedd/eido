@@ -13,6 +13,7 @@ import {
   driveDisabled,
   driveDrifted,
   gmail,
+  gmailUnpinned,
   protonCalendarOpen,
   protonMailOpen,
 } from "./fixtures/connectors"
@@ -78,13 +79,22 @@ describe("loadConnectors", () => {
     expect(await read({ connectors: [gmail], asOf: AS_OF })).toEqual({
       status: "ready",
       connectors: [gmail],
+      unpinned: [],
       asOf: AS_OF,
+    })
+  })
+  test("carries the placed, unpinned manifests the gate lists (#627)", async () => {
+    expect(await read({ connectors: [], unpinned: [gmailUnpinned] })).toEqual({
+      status: "ready",
+      connectors: [],
+      unpinned: [gmailUnpinned],
     })
   })
   test("carries no asOf when the gate sent none", async () => {
     expect(await read({ connectors: [gmail] })).toEqual({
       status: "ready",
       connectors: [gmail],
+      unpinned: [],
     })
   })
 })

@@ -10,11 +10,13 @@ import {
   getPinnedManifest,
   intentBindings,
   manifestHash,
+  pinManifest,
   pinnedOperation,
+  prepareManifestPin,
   resolveTier,
 } from "./connectors"
 import { openControlDb } from "./control-db"
-import { signedPin } from "./test-fixtures"
+import { controlAuthorization, signedPin } from "./test-fixtures"
 
 // Synthetic connectors: example.com hosts, made-up scopes, no real client ids or tokens.
 function mail(version = 1): ConnectorManifest {
@@ -284,6 +286,48 @@ describe("pinManifest", () => {
     signedPin(db, mail(2), "owner")
     expect(row(db).health).toBe("healthy")
     expect(row(db).consecutive_failures).toBe(0)
+  })
+})
+
+describe("pinManifest as a first pin (#627)", () => {
+  it("pins a name that has no row", () => {
+    const db = openControlDb(":memory:")
+    const authorization = controlAuthorization(
+      db,
+      prepareManifestPin(db, mail())
+    )
+    pinManifest(db, mail(), "owner", authorization, { firstPin: true })
+    expect(row(db)).toMatchObject({
+      enabled: 1,
+      manifest_hash: expectedHash(mail()),
+    })
+    expect(auditRows(db).map((r) => r["action"])).toEqual(["connector.pinned"])
+  })
+
+  it("refuses a validly signed first pin when the name already has a row, and changes nothing", () => {
+    const db = pinned()
+    const higher = mail(2)
+    const prepared = prepareManifestPin(db, higher)
+    const authorization = controlAuthorization(db, prepared)
+    expect(() =>
+      pinManifest(db, higher, "owner", authorization, { firstPin: true })
+    ).toThrow("connector example-mail is already pinned")
+    expect(getPinnedManifest(db, "example-mail")).toEqual(mail())
+    expect(auditRows(db)).toHaveLength(1)
+    // The approval stays unconsumed: the same signature still re-pins without the option.
+    pinManifest(db, higher, "owner", authorization)
+    expect(getPinnedManifest(db, "example-mail")).toEqual(higher)
+  })
+
+  it("refuses an unsigned first pin", () => {
+    const db = openControlDb(":memory:")
+    expect(() =>
+      pinManifest(db, mail(), "owner", undefined, { firstPin: true })
+    ).toThrow()
+    expect(
+      db.prepare("SELECT COUNT(*) AS n FROM connectors").get()?.["n"]
+    ).toBe(0)
+    expect(auditRows(db)).toEqual([])
   })
 })
 

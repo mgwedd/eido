@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateRepinResult",
-  "description": "Response of POST /connector-settings/:name/repin/decision (#97): the connector is pinned to the signed manifest and enabled.",
+  "description": "Response of POST /connector-settings/:name/repin/decision (#97) and POST /connector-settings/:name/pin/decision (#627): the connector is pinned to the signed manifest and enabled.",
   "type": "object",
   "properties": {
     "connector": { "type": "string", "minLength": 1, "maxLength": 64 },

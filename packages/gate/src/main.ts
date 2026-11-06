@@ -39,7 +39,7 @@ import type { Handler, LoopbackHost } from "./internal/http"
 import { fileLog } from "./internal/log"
 import { defaultBackupStampPath } from "./internal/backup-status"
 import { phoneHandler } from "./internal/phone-routes"
-import { readReviewedManifest } from "./internal/repin"
+import { listReviewedManifests, readReviewedManifest } from "./internal/repin"
 import { createPushNotifier } from "./internal/push-notify"
 import {
   generateVapidPrivateKey,
@@ -563,6 +563,7 @@ export async function runGate(
       backupStampPath: config.backupStampPath ?? defaultBackupStampPath(),
       reviewedManifest: (connector: string) =>
         readReviewedManifest(config.dataDir, connector),
+      reviewedManifests: () => listReviewedManifests(config.dataDir),
       notifyPending: notifier?.notifyPending,
       ...(config.push === undefined
         ? {}
