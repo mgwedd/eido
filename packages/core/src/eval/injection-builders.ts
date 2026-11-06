@@ -10,6 +10,7 @@ import {
   PASSAGE_TASK,
   passageMessage,
 } from "../extraction/prompt"
+import { PROPOSE_SYSTEM_PROMPT } from "../propose/prompt"
 import { ANSWER_SYSTEM } from "../ask/ask"
 import { MATERIAL_RULES, fence, toMaterial } from "../inference/fence"
 import type { InferenceRequest } from "../inference/types"
@@ -46,14 +47,7 @@ export const UNFENCED_ASK_SYSTEM = [
   'If the messages do not answer the question, say "no match found". Never say that something did not happen or does not exist.',
 ].join("\n")
 
-export const FENCED_PROPOSE_SYSTEM = [
-  "You propose writes for the owner's request. You only propose: nothing runs until the owner approves it.",
-  'Reply with JSON only: {"result":"intents","intents":[...]} with the intents that carry out the request, or {"result":"none","reason":"..."} when nothing should be done.',
-  "Use only the intent kinds offered for the request. Refer to messages only by the ids listed under Messages you may refer to.",
-  MATERIAL_RULES,
-  COMPACTION_LEGEND,
-  INTENT_PROMPT_TEXT,
-].join("\n\n")
+export const FENCED_PROPOSE_SYSTEM = PROPOSE_SYSTEM_PROMPT
 
 export const UNFENCED_PROPOSE_SYSTEM = [
   "You propose writes for the owner's request. You only propose: nothing runs until the owner approves it.",
