@@ -91,6 +91,18 @@ The gate authenticates Bridge on loopback before sending its vault-held Bridge p
 
 On first setup (#68), use Bridge's **Export TLS certificates** setting to obtain its certificate. Keep only the public certificate in a gate-owned file; never place Bridge's exported private key in Eido's data directory. Compute the SHA-256 digest of the certificate's DER bytes out of band (`openssl x509 -in bridge-cert.pem -outform DER | shasum -a 256` on the Mac), then set `EIDO_BRIDGE_CERT_PATH` to the public PEM file and `EIDO_BRIDGE_CERT_SHA256` to its 64-character lowercase hex digest in the gate's launch configuration. Do not learn the pin by connecting to an unverified loopback port: another local process could be listening there while Bridge is down. The gate checks the file against the configured digest at startup and uses that exact certificate for each TLS connection. Proton documents the export setting at https://proton.me/support/comprehensive-guide-to-bridge-settings.
 
+The tests cover the pin against a fake Bridge with a generated certificate, over implicit TLS and over STARTTLS on both IMAP and SMTP: the pinned certificate connects, and a different certificate or a different fingerprint fails with `handshake_failed` before any LOGIN or AUTH reaches the server.
+
+### Manual check against a real Bridge (#197)
+
+The fake Bridge cannot prove that Bridge itself behaves the same way. Run this once with a live Bridge account, and again after a Bridge upgrade, then write the results (Bridge version, date, each step's outcome) in #197 or the follow-up issue:
+
+1. Set up Bridge and the pin as in `infra/README.md` ("First run", "Certificate pin"), with `EIDO_BRIDGE_TLS` unset (STARTTLS, Bridge's default) and `pnpm --filter @eido/infra bridge health` passing.
+2. STARTTLS: start the gate and run core's Proton sync. INBOX must sync without a gate error. Then point `EIDO_BRIDGE_CERT_PATH` and `EIDO_BRIDGE_CERT_SHA256` at a different certificate and its digest (for example one made with `openssl req -x509` for `example.invalid`): the sync must fail with `handshake_failed`. Restore the real pin.
+3. APPEND: approve an `email.draft` addressed to the assistant's own address. It must appear in Drafts in Proton's web client with the draft flag.
+4. UID MOVE: approve an `email.trash` for that draft, or send it with `email.send` and its `draftId`. The draft must leave Drafts and appear in Trash, not be deleted. The gate refuses the move with `unsupported` when Bridge does not advertise `MOVE`, rather than emulate it with a delete; record that outcome if it happens.
+5. Record anything Bridge does differently from the fake (capability names, folder names for Drafts and Trash, error text) in the issue, with a test for it in `packages/gate/src/internal/bridge/`.
+
 ## What is not decided here
 
 - OS-level isolation: two macOS users, file ownership, sandbox profiles, pf rules (#70), and the live-host isolation test (#56). Until then the two processes may run as the same user, and the split is enforced by configuration, the environment allowlist and the tests.
