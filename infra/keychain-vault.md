@@ -84,3 +84,12 @@ For each new profile audit row, HMAC-SHA-256 covers the JSON tuple `["eido.profi
 To rotate deliberately, stop the gate, set a new unique `EIDO_PROFILE_AUDIT_EPOCH` (1–64 letters, digits, underscores or hyphens), then restart with the same vault. The new epoch gets a fresh key; previous epoch keys, metadata and append-only audit rows remain intact. Do not reuse an epoch name to replace a lost key. Identical subjects correlate within an epoch; rotation intentionally changes their tags.
 
 If the vault loses or changes an initialized epoch's key, the gate refuses profile audit writes. Restore that exact key from an owner-held secure recovery copy, or deliberately rotate to a new epoch. Never remove the fingerprint marker to bypass the refusal. Keychain credentials are excluded from the database backup: a database restore does not restore these keys. Without an old epoch key its tags cannot be recomputed, although the audit hash chain remains verifiable. Historical unkeyed rows remain readable and guessable; this change does not protect them retroactively. Protection applies to a log-only reader without vault or socket access, as stated in ADR 0003.
+
+## Web Push
+
+Web Push also lives in this vault. The gate turns push on only when
+`EIDO_GATE_KEYCHAIN_PATH` is set and `EIDO_PUSH_VAPID_SUBJECT` is a contact URL
+(for example `mailto:you@example.com`). `EIDO_PUSH_WINDOW_MS` optionally sets the
+batching window (default 60000). `pnpm stack:prod` forwards all three to the gate
+alone; restart the stack after setting them. On iPhone, add the app to the Home
+Screen before enabling notifications.

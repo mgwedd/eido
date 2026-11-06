@@ -35,6 +35,8 @@ export const OVERRIDES = [
   "EIDO_GATE_SOCKET",
   "EIDO_GATE_CONTROL_SOCKET",
   "EIDO_GATE_KEYCHAIN_PATH",
+  "EIDO_PUSH_VAPID_SUBJECT",
+  "EIDO_PUSH_WINDOW_MS",
   "EIDO_PROFILE_AUDIT_EPOCH",
   "EIDO_FILE_HELPER_PATH",
   "EIDO_FILE_HELPER_SHA256",
@@ -98,6 +100,12 @@ const HOSTNAME =
 
 const NODE_FLAGS = ["--disable-warning=ExperimentalWarning"]
 const TS_ENTRY = ["--import", "./src/ts-hooks.ts", "./src/main.ts"]
+
+/** `{ [name]: value }` when `name` is set and non-empty in `env`, else `{}`. */
+function gateOnly(env: Env, name: string): Record<string, string> {
+  const value = env[name]
+  return value === undefined || value === "" ? {} : { [name]: value }
+}
 
 /** The value of `name` in `env`, or `fallback` when it is unset or empty. */
 function read(
@@ -210,6 +218,9 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       env["EIDO_GATE_KEYCHAIN_PATH"] === ""
         ? {}
         : { EIDO_GATE_KEYCHAIN_PATH: env["EIDO_GATE_KEYCHAIN_PATH"] }),
+      // Web Push turns on in the gate when a subject is set; it also needs the Keychain vault.
+      ...gateOnly(env, "EIDO_PUSH_VAPID_SUBJECT"),
+      ...gateOnly(env, "EIDO_PUSH_WINDOW_MS"),
       EIDO_WEBAUTHN_RP_ID: read(env, "EIDO_WEBAUTHN_RP_ID", tailnetHost),
       EIDO_WEBAUTHN_ORIGIN: read(env, "EIDO_WEBAUTHN_ORIGIN", url.origin),
       EIDO_GATE_PHONE_HOST: LOOPBACK,
