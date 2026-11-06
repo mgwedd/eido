@@ -102,7 +102,8 @@ import type { WebAuthnConfig } from "./webauthn"
 // ceremony that changes it; file reads (`POST /files`) stay on the data plane. Credential
 // status, login and enrolment need no session: enrolment needs a single-use code the owner
 // issued on the Mac instead (#202). Every other route needs the session cookie (401 without
-// it). Every POST must be application/json (415 otherwise): a browser sends that cross-origin
+// it); each route's tier (RouteTier below) says what more it needs: an `elevated` route answers
+// 403 step_up_required without a step-up in the last five minutes (#643). Every POST must be application/json (415 otherwise): a browser sends that cross-origin
 // only after a CORS preflight, which the gate never answers. No response is cacheable.
 
 export type PhoneState = {
