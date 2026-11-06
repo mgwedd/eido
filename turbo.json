@@ -84,6 +84,9 @@
         "!**/dist/**"
       ]
     },
+    "//#check:eval-report": {
+      "cache": false
+    },
     "//#check:invariants": {
       "inputs": [
         "scripts/check-invariant-tests.ts",

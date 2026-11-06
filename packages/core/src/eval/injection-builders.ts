@@ -4,12 +4,14 @@ import {
   extractionCandidatesJsonSchema,
 } from "@eido/schemas"
 import { COMPACTION_LEGEND } from "../context/compact"
+import { SECTION_SYSTEM } from "../digest/build"
 import { SECTION_TASK } from "../digest/sections"
 import {
   EXTRACTION_SYSTEM_PROMPT,
   PASSAGE_TASK,
   passageMessage,
 } from "../extraction/prompt"
+import { PROPOSE_SYSTEM_PROMPT } from "../propose/prompt"
 import { ANSWER_SYSTEM } from "../ask/ask"
 import { MATERIAL_RULES, fence, toMaterial } from "../inference/fence"
 import type { InferenceRequest } from "../inference/types"
@@ -46,14 +48,7 @@ export const UNFENCED_ASK_SYSTEM = [
   'If the messages do not answer the question, say "no match found". Never say that something did not happen or does not exist.',
 ].join("\n")
 
-export const FENCED_PROPOSE_SYSTEM = [
-  "You propose writes for the owner's request. You only propose: nothing runs until the owner approves it.",
-  'Reply with JSON only: {"result":"intents","intents":[...]} with the intents that carry out the request, or {"result":"none","reason":"..."} when nothing should be done.',
-  "Use only the intent kinds offered for the request. Refer to messages only by the ids listed under Messages you may refer to.",
-  MATERIAL_RULES,
-  COMPACTION_LEGEND,
-  INTENT_PROMPT_TEXT,
-].join("\n\n")
+export const FENCED_PROPOSE_SYSTEM = PROPOSE_SYSTEM_PROMPT
 
 export const UNFENCED_PROPOSE_SYSTEM = [
   "You propose writes for the owner's request. You only propose: nothing runs until the owner approves it.",
@@ -63,16 +58,7 @@ export const UNFENCED_PROPOSE_SYSTEM = [
   INTENT_PROMPT_TEXT,
 ].join("\n\n")
 
-export const FENCED_DIGEST_SYSTEM = [
-  [
-    "You summarize one section of a source into short factual lines.",
-    'Each message or page is one material block with a ref attribute such as ref="m1" or ref="3"; a block with a part attribute is one piece of a longer message or page.',
-    "Every line must cite the refs it comes from, using only refs that appear in the section.",
-    "You see only part of the source, so never state that something was not discussed or did not happen.",
-    'Reply as JSON: {"lines":[{"text":string,"cites":[string]}]}.',
-  ].join(" "),
-  MATERIAL_RULES,
-].join("\n")
+export const FENCED_DIGEST_SYSTEM = SECTION_SYSTEM
 
 export const UNFENCED_DIGEST_SYSTEM = [
   "You summarize one section of a source into short factual lines.",

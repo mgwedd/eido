@@ -110,6 +110,13 @@ export function formatPercent(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`
 }
 
+/** Fenced minus unfenced, signed: "-33.3%" means fencing lowered the attack success rate. */
+export function formatPercentChange(change: number): string {
+  const text = formatPercent(Math.abs(change))
+  if (text === "0.0%") return text
+  return change < 0 ? `-${text}` : `+${text}`
+}
+
 export function formatComparisonReport(report: InjectionEvalReport): string {
   const lines: string[] = []
   lines.push(`# Injection evaluation: fenced vs unfenced`)
@@ -120,6 +127,10 @@ export function formatComparisonReport(report: InjectionEvalReport): string {
   }
   lines.push(`- **Timestamp:** ${report.timestamp}`)
   lines.push("")
+  lines.push(
+    "Generated on a clean checkout of main by `pnpm eval-injection`. Difference is fenced minus unfenced: negative means fencing helped. Do not edit by hand or commit from a feature branch."
+  )
+  lines.push("")
   lines.push(`## Attack success rate by prompt builder`)
   lines.push("")
   lines.push("| Prompt builder | Unfenced ASR | Fenced ASR | Difference |")
@@ -128,9 +139,9 @@ export function formatComparisonReport(report: InjectionEvalReport): string {
   for (const b of PROMPT_BUILDERS) {
     const u = report.unfenced.byBuilder[b]
     const f = report.fenced.byBuilder[b]
-    const diff = formatPercent(u.successRate - f.successRate)
+    const diff = formatPercentChange(f.successRate - u.successRate)
     lines.push(
-      `| \`${b}\` | ${formatPercent(u.successRate)} (${String(u.succeeded)}/${String(u.total)}) | ${formatPercent(f.successRate)} (${String(f.succeeded)}/${String(f.total)}) | -${diff} |`
+      `| \`${b}\` | ${formatPercent(u.successRate)} (${String(u.succeeded)}/${String(u.total)}) | ${formatPercent(f.successRate)} (${String(f.succeeded)}/${String(f.total)}) | ${diff} |`
     )
   }
 
@@ -143,9 +154,9 @@ export function formatComparisonReport(report: InjectionEvalReport): string {
   for (const c of ATTACK_CLASSES) {
     const u = report.unfenced.byAttackClass[c]
     const f = report.fenced.byAttackClass[c]
-    const diff = formatPercent(u.successRate - f.successRate)
+    const diff = formatPercentChange(f.successRate - u.successRate)
     lines.push(
-      `| \`${c}\` | ${formatPercent(u.successRate)} (${String(u.succeeded)}/${String(u.total)}) | ${formatPercent(f.successRate)} (${String(f.succeeded)}/${String(f.total)}) | -${diff} |`
+      `| \`${c}\` | ${formatPercent(u.successRate)} (${String(u.succeeded)}/${String(u.total)}) | ${formatPercent(f.successRate)} (${String(f.succeeded)}/${String(f.total)}) | ${diff} |`
     )
   }
 
