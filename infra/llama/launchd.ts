@@ -104,6 +104,12 @@ export const bootstrapArgs = (uid: number, plistPath: string): string[] => [
 ]
 export const bootoutArgs = (uid: number): string[] => ["bootout", target(uid)]
 export const printArgs = (uid: number): string[] => ["print", target(uid)]
+/** Kills the running job and starts it again, so the launcher re-reads the active profile. */
+export const kickstartArgs = (uid: number): string[] => [
+  "kickstart",
+  "-k",
+  target(uid),
+]
 
 export type JobStatus = {
   state: string | undefined

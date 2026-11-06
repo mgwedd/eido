@@ -1,14 +1,20 @@
 // Entry point: hands process.argv and real files, processes, launchctl, signals and fetch to main().
 import { execFile, spawn } from "node:child_process"
 import {
+  chmodSync,
+  createWriteStream,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
+import { Readable } from "node:stream"
+import { pipeline } from "node:stream/promises"
 import { fileURLToPath } from "node:url"
 
 import { main, type ServerProcess } from "./cli.ts"
@@ -36,9 +42,18 @@ const startServer = (
   return { exited, kill: (signal) => void child.kill(signal) }
 }
 
-if (process.getuid === undefined) {
-  console.error("llama: macOS only")
-  process.exit(1)
+// Follows the lock URL's redirects (GitHub and Hugging Face hand off to their CDNs), but only over
+// https, and writes a new file only: an existing one is never overwritten.
+const download = async (url: string, dest: string): Promise<void> => {
+  const response = await fetch(url, { redirect: "follow" })
+  if (!response.url.startsWith("https://"))
+    throw new Error(`redirected off https to ${response.url}`)
+  if (!response.ok || response.body === null)
+    throw new Error(`HTTP ${response.status}`)
+  await pipeline(
+    Readable.fromWeb(response.body),
+    createWriteStream(dest, { flags: "wx", mode: 0o644 })
+  )
 }
 
 process.exitCode = await main(process.argv.slice(2), {
@@ -62,6 +77,7 @@ process.exitCode = await main(process.argv.slice(2), {
       url,
       init && { ...init, headers: { "content-type": "application/json" } }
     ),
+  download,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   onStopSignal: (handler) => {
     process.once("SIGTERM", handler)
@@ -71,11 +87,23 @@ process.exitCode = await main(process.argv.slice(2), {
     exists: existsSync,
     mkdir: (path) => void mkdirSync(path, { recursive: true }),
     writeFile: (path, text) => writeFileSync(path, text, { mode: 0o644 }),
+    writePrivate: (path, text) => {
+      writeFileSync(path, text, { mode: 0o600 })
+      chmodSync(path, 0o600)
+    },
+    rename: (from, to) => renameSync(from, to),
     remove: (path) => rmSync(path),
+    removeTree: (path) => rmSync(path, { recursive: true, force: true }),
+    list: (dir) =>
+      readdirSync(dir, { withFileTypes: true }).map((entry) => ({
+        name: entry.name,
+        directory: entry.isDirectory(),
+      })),
   },
   env: process.env,
   home: homedir(),
-  uid: process.getuid(),
+  platform: { os: process.platform, arch: process.arch },
+  uid: process.getuid?.(),
   node: process.execPath,
   launcher: fileURLToPath(import.meta.url),
   defaultLockPath: fileURLToPath(new URL("../model.lock", import.meta.url)),

@@ -1,22 +1,35 @@
 import { describe, expect, it } from "vitest"
 
-import { buildConfig, launchEnv, lockPathFrom } from "./config.ts"
+import { buildConfig, dataRoot, launchEnv, lockPathFrom } from "./config.ts"
 
-const lock = { file: "m.gguf", llamaCppBuild: "b11149" }
+const lock = { llamaCppBuild: "b11149" }
+const mac = { os: "darwin", arch: "arm64" } as const
+const windows = { os: "win32", arch: "x64" } as const
 
-describe("buildConfig", () => {
+const fields = (config: ReturnType<typeof buildConfig>) =>
+  Object.fromEntries(Object.entries(config).filter(([key]) => key !== "join"))
+
+describe("buildConfig on macOS", () => {
   it("defaults under Application Support/eido-dev, port 8080", () => {
-    expect(buildConfig({}, "/Users/u", "/repo/infra/model.lock", lock)).toEqual(
-      {
-        lockPath: "/repo/infra/model.lock",
-        modelDir: "/Users/u/Library/Application Support/eido-dev/models",
-        modelPath:
-          "/Users/u/Library/Application Support/eido-dev/models/m.gguf",
-        binary:
-          "/Users/u/Library/Application Support/eido-dev/llama.cpp/b11149/llama-server",
-        port: 8080,
-      }
-    )
+    expect(
+      fields(buildConfig({}, "/Users/u", "/repo/infra/model.lock", lock, mac))
+    ).toEqual({
+      platform: "darwin-arm64",
+      windows: false,
+      lockPath: "/repo/infra/model.lock",
+      modelDir: "/Users/u/Library/Application Support/eido-dev/models",
+      binary:
+        "/Users/u/Library/Application Support/eido-dev/llama.cpp/b11149/llama-server",
+      buildDir:
+        "/Users/u/Library/Application Support/eido-dev/llama.cpp/b11149",
+      port: 8080,
+      stackDir: "/Users/u/Library/Application Support/eido-dev",
+      settingsPath: "/Users/u/Library/Application Support/eido-dev/stack.env",
+      profilesPath:
+        "/Users/u/Library/Application Support/eido-dev/profiles.lock",
+      verifiedPath:
+        "/Users/u/Library/Application Support/eido-dev/verified-profiles",
+    })
   })
 
   it("takes overrides from the environment, ignoring blank ones", () => {
@@ -25,23 +38,62 @@ describe("buildConfig", () => {
       EIDO_MODEL_DIR: " /models ",
       EIDO_LLAMA_SERVER_BIN: "",
       EIDO_LLAMA_PORT: "18091",
+      EIDO_STACK_DIR: "/stack",
     }
     expect(
-      buildConfig(env, "/Users/u", "/repo/infra/model.lock", lock)
-    ).toEqual({
+      fields(buildConfig(env, "/Users/u", "/repo/infra/model.lock", lock, mac))
+    ).toMatchObject({
       lockPath: "/l/model.lock",
       modelDir: "/models",
-      modelPath: "/models/m.gguf",
       binary:
         "/Users/u/Library/Application Support/eido-dev/llama.cpp/b11149/llama-server",
       port: 18091,
+      stackDir: "/stack",
+      settingsPath: "/stack/stack.env",
+      profilesPath: "/stack/profiles.lock",
+      verifiedPath: "/stack/verified-profiles",
     })
   })
 
   it("rejects a port that is not a port", () => {
     expect(() =>
-      buildConfig({ EIDO_LLAMA_PORT: "80a" }, "/Users/u", "/l", lock)
+      buildConfig({ EIDO_LLAMA_PORT: "80a" }, "/Users/u", "/l", lock, mac)
     ).toThrow(/EIDO_LLAMA_PORT/)
+  })
+})
+
+describe("buildConfig on Windows", () => {
+  it("defaults under %LOCALAPPDATA%\\eido-dev, with llama-server.exe", () => {
+    const config = buildConfig(
+      { LOCALAPPDATA: "C:\\Users\\s\\AppData\\Local" },
+      "C:\\Users\\s",
+      "C:\\repo\\infra\\model.lock",
+      lock,
+      windows
+    )
+    expect(fields(config)).toEqual({
+      platform: "win32-x64",
+      windows: true,
+      lockPath: "C:\\repo\\infra\\model.lock",
+      modelDir: "C:\\Users\\s\\AppData\\Local\\eido-dev\\models",
+      binary:
+        "C:\\Users\\s\\AppData\\Local\\eido-dev\\llama.cpp\\b11149\\llama-server.exe",
+      buildDir: "C:\\Users\\s\\AppData\\Local\\eido-dev\\llama.cpp\\b11149",
+      port: 8080,
+      stackDir: "C:\\Users\\s\\AppData\\Local\\eido-dev",
+      settingsPath: "C:\\Users\\s\\AppData\\Local\\eido-dev\\stack.env",
+      profilesPath: "C:\\Users\\s\\AppData\\Local\\eido-dev\\profiles.lock",
+      verifiedPath: "C:\\Users\\s\\AppData\\Local\\eido-dev\\verified-profiles",
+    })
+    expect(config.join("C:\\a", "b")).toBe("C:\\a\\b")
+  })
+})
+
+describe("dataRoot", () => {
+  it("falls back to AppData\\Local under the home directory without LOCALAPPDATA", () => {
+    expect(dataRoot({ LOCALAPPDATA: " " }, "C:\\Users\\s", "win32")).toBe(
+      "C:\\Users\\s\\AppData\\Local\\eido-dev"
+    )
   })
 })
 
@@ -53,20 +105,17 @@ describe("lockPathFrom", () => {
 })
 
 describe("launchEnv", () => {
-  it("writes every resolved setting, so launchd runs the same config", () => {
-    expect(
-      launchEnv({
-        lockPath: "/l",
-        modelDir: "/m",
-        modelPath: "/m/f",
-        binary: "/b",
-        port: 9,
-      })
-    ).toEqual({
+  it("writes every resolved setting but not the active profile, which the launcher reads at each start", () => {
+    const env = launchEnv(
+      buildConfig({ EIDO_LLAMA_PORT: "9" }, "/h", "/l", lock, mac)
+    )
+    expect(env).toEqual({
       EIDO_MODEL_LOCK: "/l",
-      EIDO_MODEL_DIR: "/m",
-      EIDO_LLAMA_SERVER_BIN: "/b",
+      EIDO_MODEL_DIR: "/h/Library/Application Support/eido-dev/models",
+      EIDO_LLAMA_SERVER_BIN:
+        "/h/Library/Application Support/eido-dev/llama.cpp/b11149/llama-server",
       EIDO_LLAMA_PORT: "9",
+      EIDO_STACK_DIR: "/h/Library/Application Support/eido-dev",
     })
   })
 })

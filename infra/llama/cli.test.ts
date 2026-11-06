@@ -2,21 +2,37 @@ import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 
 import { main, type Deps, type ServerProcess } from "./cli.ts"
+import type { Platform } from "./config.ts"
 import type { HttpResponse } from "./server.ts"
 import type { RunResult } from "./verify.ts"
 
 const LOCK = readFileSync(new URL("../model.lock", import.meta.url), "utf8")
 const SHA = "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
 const SIZE = 14439363584
+const QWEN_SHA =
+  "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
+const QWEN_SIZE = 22134528992
+const OSS_SHA =
+  "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+const OSS_SIZE = 12109566624
 const ASSET_SHA =
   "791eb0200a7c846ca925b6274fc21f0f21f537fda2924cc5a47402655816f56e"
 const HOME = "/Users/u"
 const ROOT = `${HOME}/Library/Application Support/eido-dev`
 const MODEL = `${ROOT}/models/gemma-4-26B_q4_0-it.gguf`
+const QWEN = `${ROOT}/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`
+const OSS = `${ROOT}/models/gpt-oss-20b-MXFP4.gguf`
 const BIN = `${ROOT}/llama.cpp/b11149/llama-server`
+const SETTINGS = `${ROOT}/stack.env`
+const PROFILES = `${ROOT}/profiles.lock`
+const RECORD = `${ROOT}/verified-profiles`
 const PLIST = `${HOME}/Library/LaunchAgents/com.eido.llama-server.plist`
 const VERSION = "version: 0.5.0-dev (build 11149, commit d2e54583c)\n"
 const REFERENCE = "<|turn>user\nThanks.<turn|>\n<|turn>model\n"
+const QWEN_PASS = `qwen3.6-35b-a3b ${QWEN_SHA} b11149\n`
+const PRINT = "launchctl print gui/501/com.eido.llama-server"
+const OK: RunResult = { code: 0, stdout: "", stderr: "" }
+const WIN: Platform = { os: "win32", arch: "x64" }
 
 const reply = (status: number, body: unknown): HttpResponse => ({
   status,
@@ -26,6 +42,8 @@ const reply = (status: number, body: unknown): HttpResponse => ({
 const fail = (): never => {
   throw new Error("llama-server was not spawned")
 }
+
+const tick = () => new Promise((r) => setTimeout(r, 0))
 
 type Child = ServerProcess & { killed: string[]; exit: (code: number) => void }
 
@@ -44,14 +62,25 @@ function child(): Child {
   return c
 }
 
+type Answer = HttpResponse | Error
 type Options = {
   sha?: string
   version?: RunResult
   files?: Record<string, string>
-  http?: Record<string, HttpResponse | Error>
+  /** Answers by URL path; a list is answered in turn, its last entry from then on. */
+  http?: Record<string, Answer | Answer[]>
   runs?: Record<string, RunResult>
   env?: Record<string, string>
+  platform?: Platform
+  uid?: number
 }
+
+const SIZES: Record<string, number> = {
+  [MODEL]: SIZE,
+  [QWEN]: QWEN_SIZE,
+  [OSS]: OSS_SIZE,
+}
+const SHAS: Record<string, string> = { [QWEN]: QWEN_SHA, [OSS]: OSS_SHA }
 
 function harness(o: Options = {}) {
   const out: string[] = []
@@ -63,8 +92,11 @@ function harness(o: Options = {}) {
     process: Child
   }[] = []
   const written: Record<string, string> = {}
+  const privately: string[] = []
   const removed: string[] = []
   const made: string[] = []
+  const requests: string[] = []
+  const downloaded: string[] = []
   let stop: () => void = () => {}
   const files: Record<string, string> = {
     "/repo/infra/model.lock": LOCK,
@@ -73,7 +105,7 @@ function harness(o: Options = {}) {
     "/repo/infra/llama/fixtures/gemma-4-26B_q4_0-it.gguf.prompt.txt": REFERENCE,
     ...o.files,
   }
-  const http: Record<string, HttpResponse | Error> = {
+  const http: Record<string, Answer | Answer[]> = {
     "/health": reply(200, { status: "ok" }),
     "/props": reply(200, {
       chat_template: "'<|turn>model\n' + message['content']",
@@ -99,11 +131,11 @@ function harness(o: Options = {}) {
     },
     probe: {
       size: (path) =>
-        Promise.resolve(
-          path in files ? (path === MODEL ? SIZE : 10) : undefined
-        ),
+        Promise.resolve(path in files ? (SIZES[path] ?? 10) : undefined),
       sha256: (path) =>
-        Promise.resolve(path === MODEL ? (o.sha ?? SHA) : ASSET_SHA),
+        Promise.resolve(
+          path === MODEL ? (o.sha ?? SHA) : (SHAS[path] ?? ASSET_SHA)
+        ),
       now: () => (t += 1000),
     },
     run: (command, args) => {
@@ -122,23 +154,53 @@ function harness(o: Options = {}) {
       spawned.push({ command, args, process })
       return process
     },
-    fetch: (url) => {
-      const answer = http[new URL(url).pathname]
+    fetch: (url, init) => {
+      const path = new URL(url).pathname
+      requests.push(init === undefined ? url : `${url} ${init.body}`)
+      const entry = http[path]
+      const answer = Array.isArray(entry)
+        ? entry.length > 1
+          ? entry.shift()
+          : entry[0]
+        : entry
       if (answer === undefined || answer instanceof Error)
         return Promise.reject(answer ?? new Error("ECONNREFUSED"))
       return Promise.resolve(answer)
     },
+    download: (url, dest) => {
+      downloaded.push(`${url} -> ${dest}`)
+      files[dest] = ""
+      return Promise.resolve()
+    },
     sleep: () => Promise.resolve(),
     onStopSignal: (handler) => (stop = handler),
     fs: {
-      exists: (path) => path in files || path in written,
-      mkdir: (path) => made.push(path),
-      writeFile: (path, text) => (written[path] = text),
-      remove: (path) => removed.push(path),
+      exists: (path) => path in files,
+      mkdir: (path) => void made.push(path),
+      writeFile: (path, text) => {
+        written[path] = text
+        files[path] = text
+      },
+      writePrivate: (path, text) => {
+        privately.push(path)
+        written[path] = text
+        files[path] = text
+      },
+      rename: (from, to) => {
+        files[to] = files[from] ?? ""
+        delete files[from]
+      },
+      remove: (path) => {
+        removed.push(path)
+        delete files[path]
+      },
+      removeTree: (path) => void removed.push(`${path}/`),
+      list: () => [],
     },
     env: o.env ?? {},
     home: HOME,
-    uid: 501,
+    platform: o.platform ?? { os: "darwin", arch: "arm64" },
+    uid: o.uid ?? 501,
     node: "/opt/node",
     launcher: "/repo/infra/llama/bin.ts",
     defaultLockPath: "/repo/infra/model.lock",
@@ -148,23 +210,30 @@ function harness(o: Options = {}) {
   }
   return {
     deps,
+    files,
     out,
     err,
     ran,
     spawned,
     written,
+    privately,
     removed,
     made,
+    requests,
+    downloaded,
     stop: () => stop(),
   }
 }
 
 describe("llama verify", () => {
-  it("passes the pinned binary and model, and logs the digest", async () => {
+  it("passes the default profile's binary and model, and logs the digest", async () => {
     const h = harness()
     expect(await main(["verify"], h.deps)).toBe(0)
-    expect(h.out).toContain(`ok: ${MODEL} sha256 ${SHA} (hashed in 1.0 s)`)
-    expect(h.out).toContain(`ok: ${BIN} is b11149 (d2e54583c)`)
+    expect(h.out).toEqual([
+      `pin: profile gemma-4-26b-a4b, gemma-4-26B-A4B-it Q4_0 (QAT) (${MODEL}), llama.cpp b11149`,
+      `ok: ${BIN} is b11149 (d2e54583c)`,
+      `ok: ${MODEL} sha256 ${SHA} (hashed in 1.0 s)`,
+    ])
   })
 
   it("fails on another llama.cpp build before hashing the model", async () => {
@@ -184,13 +253,32 @@ describe("llama verify", () => {
   it("fails and prints usage-free errors on a broken lock", async () => {
     const h = harness({ files: { "/repo/infra/model.lock": "model: x\n" } })
     expect(await main(["verify"], h.deps)).toBe(1)
-    expect(h.err[0]).toMatch(/^FAIL: model\.lock is missing /)
+    expect(h.err[0]).toMatch(/^FAIL: model\.lock line 1: unknown key "model"/)
   })
 
   it("reads the lock from EIDO_MODEL_LOCK", async () => {
     const h = harness({ env: { EIDO_MODEL_LOCK: "/elsewhere/model.lock" } })
     expect(await main(["verify"], h.deps)).toBe(1)
     expect(h.err).toEqual(["FAIL: ENOENT: /elsewhere/model.lock"])
+  })
+
+  it("checks the active profile from the settings file", async () => {
+    const h = harness({
+      files: { [SETTINGS]: "EIDO_LLAMA_MODEL=gpt-oss-20b\n" },
+    })
+    expect(await main(["verify"], h.deps)).toBe(1)
+    expect(h.out[0]).toBe(
+      `pin: profile gpt-oss-20b, gpt-oss-20b MXFP4 (${OSS}), llama.cpp b11149`
+    )
+    expect(h.err).toEqual([`FAIL: no model file at ${OSS}`])
+  })
+
+  it("fails on an active id that is not a profile", async () => {
+    const h = harness({ env: { EIDO_LLAMA_MODEL: "nope" } })
+    expect(await main(["verify"], h.deps)).toBe(1)
+    expect(h.err).toEqual([
+      'FAIL: unknown model profile "nope"; the profiles are gemma-4-26b-a4b, qwen3.6-35b-a3b, gpt-oss-20b',
+    ])
   })
 })
 
@@ -217,10 +305,10 @@ describe("llama launch", () => {
     ])
   })
 
-  it("starts the verified model on loopback with --jinja, then reports ready", async () => {
+  it("starts the default profile on loopback with --jinja and its flags, then reports ready", async () => {
     const h = harness()
     const running = main(["launch"], h.deps)
-    await new Promise((r) => setTimeout(r, 0))
+    await tick()
     expect(h.spawned.map((s) => s.command)).toEqual([BIN])
     const { args, process } = h.spawned[0] ?? fail()
     expect(args.slice(0, 7)).toEqual([
@@ -232,29 +320,93 @@ describe("llama launch", () => {
       "--port",
       "8080",
     ])
+    expect(args.slice(-2)).toEqual(["--reasoning", "off"])
     expect(h.out.at(-1)).toMatch(
-      /^ok: llama-server ready on http:\/\/127\.0\.0\.1:8080 in [\d.]+ s; chat template has <\|turn>model$/
+      /^ok: llama-server ready on http:\/\/127\.0\.0\.1:8080 in [\d.]+ s; profile gemma-4-26b-a4b, chat template has <\|turn>model$/
     )
     process.exit(0)
     expect(await running).toBe(1)
     expect(h.err).toEqual(["llama-server exited with code 0"])
   })
 
+  it("loads the active profile's file, kwargs, flags and marker, and no other file", async () => {
+    const h = harness({
+      files: {
+        [SETTINGS]: "EIDO_LLAMA_MODEL=qwen3.6-35b-a3b\n",
+        [QWEN]: "",
+        [RECORD]: QWEN_PASS,
+      },
+      http: {
+        "/props": reply(200, {
+          chat_template: "{% if messages[1].role == 'developer' %}",
+        }),
+      },
+    })
+    const running = main(["launch"], h.deps)
+    await tick()
+    const { args, process } = h.spawned[0] ?? fail()
+    expect(args[1]).toBe(QWEN)
+    expect(args.filter((a) => a.endsWith(".gguf"))).toEqual([QWEN])
+    expect(args.slice(-2)).toEqual([
+      "--chat-template-kwargs",
+      '{"enable_thinking":false}',
+    ])
+    expect(args).not.toContain("--reasoning")
+    expect(h.out.at(-1)).toMatch(
+      /; profile qwen3\.6-35b-a3b, chat template has messages\[1\]\.role == 'developer'$/
+    )
+    h.stop()
+    expect(await running).toBe(0)
+    expect(process.killed).toEqual(["SIGTERM"])
+  })
+
+  it("lets an exported EIDO_LLAMA_MODEL win over the settings file", async () => {
+    const h = harness({
+      env: { EIDO_LLAMA_MODEL: "gemma-4-26b-a4b" },
+      files: { [SETTINGS]: "EIDO_LLAMA_MODEL=qwen3.6-35b-a3b\n" },
+    })
+    const running = main(["launch"], h.deps)
+    await tick()
+    expect(h.spawned[0]?.args[1]).toBe(MODEL)
+    h.stop()
+    expect(await running).toBe(0)
+  })
+
+  it("refuses an unverified profile before hashing anything", async () => {
+    const h = harness({
+      env: { EIDO_LLAMA_MODEL: "qwen3.6-35b-a3b" },
+      files: { [QWEN]: "" },
+    })
+    expect(await main(["launch"], h.deps)).toBe(1)
+    expect(h.spawned).toEqual([])
+    expect(h.ran).toEqual([])
+    expect(h.err).toEqual([
+      "FAIL: profile qwen3.6-35b-a3b has not passed llama check-template with llama.cpp b11149 on this machine; run llama check-template --model qwen3.6-35b-a3b",
+      "llama-server was not started",
+    ])
+  })
+
+  it("does not count a recorded pass for another file or another build", async () => {
+    for (const record of [
+      `qwen3.6-35b-a3b ${"0".repeat(64)} b11149\n`,
+      `qwen3.6-35b-a3b ${QWEN_SHA} b11000\n`,
+      `gpt-oss-20b ${QWEN_SHA} b11149\n`,
+    ]) {
+      const h = harness({
+        env: { EIDO_LLAMA_MODEL: "qwen3.6-35b-a3b" },
+        files: { [QWEN]: "", [RECORD]: record },
+      })
+      expect(await main(["launch"], h.deps)).toBe(1)
+      expect(h.spawned).toEqual([])
+    }
+  })
+
   it("passes on a crash exit code so launchd sees the failure", async () => {
     const h = harness()
     const running = main(["launch"], h.deps)
-    await new Promise((r) => setTimeout(r, 0))
+    await tick()
     h.spawned[0]?.process.exit(139)
     expect(await running).toBe(139)
-  })
-
-  it("stops llama-server and exits 0 on SIGTERM", async () => {
-    const h = harness()
-    const running = main(["launch"], h.deps)
-    await new Promise((r) => setTimeout(r, 0))
-    h.stop()
-    expect(await running).toBe(0)
-    expect(h.spawned[0]?.process.killed).toEqual(["SIGTERM"])
   })
 
   it("exits 0 when stopped while still waiting for /health", async () => {
@@ -264,7 +416,7 @@ describe("llama launch", () => {
     expect(h.spawned[0]?.process.killed).toEqual(["SIGTERM"])
   })
 
-  it("stops llama-server when the loaded template is not the pinned model's", async () => {
+  it("stops llama-server when the loaded template is not the profile's", async () => {
     const h = harness({
       http: { "/props": reply(200, { chat_template: "<start_of_turn>" }) },
     })
@@ -288,6 +440,26 @@ describe("llama launch", () => {
     expect(h.err).toEqual([
       "FAIL: llama-server exited with code 1 before /health answered",
     ])
+  })
+
+  it("runs on Windows from %LOCALAPPDATA% with llama-server.exe", async () => {
+    const root = "C:\\Users\\s\\AppData\\Local\\eido-dev"
+    const bin = `${root}\\llama.cpp\\b11149\\llama-server.exe`
+    const model = `${root}\\models\\gemma-4-26B_q4_0-it.gguf`
+    const h = harness({
+      platform: WIN,
+      env: { LOCALAPPDATA: "C:\\Users\\s\\AppData\\Local" },
+      files: { [bin]: "", [model]: "" },
+      runs: { [`${bin} --version`]: { code: 0, stdout: "", stderr: VERSION } },
+    })
+    h.deps.probe.size = (p) => Promise.resolve(p === model ? SIZE : undefined)
+    h.deps.probe.sha256 = () => Promise.resolve(SHA)
+    const running = main(["launch"], h.deps)
+    await tick()
+    expect(h.spawned[0]?.command).toBe(bin)
+    expect(h.spawned[0]?.args[1]).toBe(model)
+    h.stop()
+    expect(await running).toBe(0)
   })
 })
 
@@ -326,14 +498,248 @@ describe("llama verify-archive", () => {
     ])
   })
 
+  it("checks the Windows zip on win32", async () => {
+    const zip = "C:\\dl\\llama-b11149-bin-win-vulkan-x64.zip"
+    const h = harness({ platform: WIN, files: { [zip]: "" } })
+    h.deps.probe.sha256 = () =>
+      Promise.resolve(
+        "ca432b775c5dcb5af85bbdcf22b06b6e2dca792f30334b19ef4a45ee4a512446"
+      )
+    expect(await main(["verify-archive", zip], h.deps)).toBe(0)
+    const mac = harness({ platform: WIN, files: { [path]: "" } })
+    expect(await main(["verify-archive", path], mac.deps)).toBe(1)
+    expect(mac.err).toEqual([
+      `FAIL: ${path} is not llama-b11149-bin-win-vulkan-x64.zip`,
+    ])
+  })
+
   it("needs a path", async () => {
     const h = harness()
     expect(await main(["verify-archive"], h.deps)).toBe(2)
   })
 })
 
+describe("llama fetch", () => {
+  it("installs the active profile's model from the lock URL when the build is in place", async () => {
+    const h = harness({ env: { EIDO_LLAMA_MODEL: "gpt-oss-20b" } })
+    h.deps.probe.size = (p) =>
+      Promise.resolve(
+        p === `${OSS}.partial` ? OSS_SIZE : p === OSS ? undefined : 10
+      )
+    h.deps.probe.sha256 = () => Promise.resolve(OSS_SHA)
+    expect(await main(["fetch"], h.deps)).toBe(0)
+    expect(h.downloaded).toEqual([
+      `https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf -> ${OSS}.partial`,
+    ])
+    expect(h.out[0]).toBe("profile gpt-oss-20b: gpt-oss-20b MXFP4")
+    expect(h.out.at(-1)).toBe(
+      "ok: b11149 and profile gpt-oss-20b are installed"
+    )
+  })
+
+  it("re-verifies and downloads nothing when everything is in place", async () => {
+    const h = harness()
+    expect(await main(["fetch", "--model", "gemma-4-26b-a4b"], h.deps)).toBe(0)
+    expect(h.downloaded).toEqual([])
+  })
+
+  it("stops when the build does not match", async () => {
+    const h = harness({
+      version: {
+        code: 0,
+        stdout: "",
+        stderr: "version: 1 (build 1, commit 1234567)",
+      },
+    })
+    expect(await main(["fetch"], h.deps)).toBe(1)
+    expect(h.downloaded).toEqual([])
+  })
+
+  it("stops when the model does not match", async () => {
+    const h = harness({ sha: "0".repeat(64) })
+    expect(await main(["fetch"], h.deps)).toBe(1)
+    expect(h.err[0]).toMatch(/fetch does not replace an existing file/)
+  })
+
+  it("rejects other arguments and unknown profiles", async () => {
+    const h = harness()
+    expect(await main(["fetch", "--modle", "x"], h.deps)).toBe(2)
+    expect(await main(["fetch", "--model", "nope"], h.deps)).toBe(1)
+    expect(h.err.at(-1)).toMatch(/^FAIL: unknown model profile "nope"/)
+  })
+})
+
+describe("llama list", () => {
+  it("shows each profile, whether it is on disk and verified, and the default and active one", async () => {
+    const h = harness({ files: { [QWEN]: "" } })
+    h.deps.probe.size = (p) =>
+      Promise.resolve(p === MODEL ? SIZE : p === QWEN ? 5 : undefined)
+    expect(await main(["list"], h.deps)).toBe(0)
+    expect(h.out).toEqual([
+      "* gemma-4-26b-a4b: gemma-4-26B-A4B-it Q4_0 (QAT), on disk, verified, default, active",
+      "  qwen3.6-35b-a3b: Qwen3.6-35B-A3B UD-Q4_K_M, wrong size (5 bytes), unverified",
+      "  gpt-oss-20b: gpt-oss-20b MXFP4, not on disk, unverified",
+    ])
+  })
+
+  it("marks a profile verified by a recorded pass, and an added one", async () => {
+    const h = harness({
+      files: {
+        [SETTINGS]: "EIDO_LLAMA_MODEL=qwen3.6-35b-a3b\n",
+        [QWEN]: "",
+        [RECORD]: QWEN_PASS,
+        [PROFILES]: `[profile mine]\nmodel: o/r\nquantization: Q8_0\nfile: m.gguf\nsource: https://example.invalid/m.gguf\nsize: 9\nsha256: ${"e".repeat(64)}\n`,
+      },
+    })
+    expect(await main(["list"], h.deps)).toBe(0)
+    expect(h.out.slice(1, 2)).toEqual([
+      "* qwen3.6-35b-a3b: Qwen3.6-35B-A3B UD-Q4_K_M, on disk, verified, active",
+    ])
+    expect(h.out.at(-1)).toBe(
+      "  mine: o/r Q8_0, not on disk, unverified, added"
+    )
+  })
+
+  it("fails when the active id is not a profile", async () => {
+    const h = harness({ files: { [SETTINGS]: "EIDO_LLAMA_MODEL=gone\n" } })
+    expect(await main(["list"], h.deps)).toBe(1)
+    expect(h.out).toHaveLength(3)
+    expect(h.err).toEqual([
+      'FAIL: the active profile "gone" is not in model.lock; run llama use with one of the ids above',
+    ])
+  })
+
+  it("fails on a user profile with the id of a lock profile", async () => {
+    const h = harness({
+      files: {
+        [PROFILES]: `[profile gpt-oss-20b]\nmodel: o/r\nquantization: Q8_0\nfile: m.gguf\nsource: https://example.invalid/m.gguf\nsize: 9\nsha256: ${"e".repeat(64)}\n`,
+      },
+    })
+    expect(await main(["list"], h.deps)).toBe(1)
+    expect(h.err).toEqual([
+      `FAIL: ${PROFILES}: profile gpt-oss-20b is also in model.lock; rename one of them`,
+    ])
+  })
+})
+
+describe("llama use", () => {
+  const verified = { [QWEN]: "", [RECORD]: QWEN_PASS }
+
+  it("writes only EIDO_LLAMA_MODEL to the settings file, privately, and keeps other lines", async () => {
+    const h = harness({
+      files: {
+        ...verified,
+        [SETTINGS]:
+          "# stack\nEIDO_LLAMA_MODEL=gemma-4-26b-a4b\nEIDO_CORE_PORT=4000\n",
+      },
+    })
+    expect(await main(["use", "qwen3.6-35b-a3b"], h.deps)).toBe(0)
+    expect(h.written).toEqual({
+      [SETTINGS]:
+        "# stack\nEIDO_LLAMA_MODEL=qwen3.6-35b-a3b\nEIDO_CORE_PORT=4000\n",
+    })
+    expect(h.privately).toEqual([SETTINGS])
+    expect(h.out).toEqual([
+      `ok: EIDO_LLAMA_MODEL=qwen3.6-35b-a3b in ${SETTINGS}`,
+      "gui/501/com.eido.llama-server is not installed; nothing to restart",
+    ])
+  })
+
+  it("creates the settings file under EIDO_STACK_DIR", async () => {
+    const h = harness({ env: { EIDO_STACK_DIR: "/stack" } })
+    expect(await main(["use", "gemma-4-26b-a4b"], h.deps)).toBe(0)
+    expect(h.made).toEqual(["/stack"])
+    expect(h.written).toEqual({
+      "/stack/stack.env": "EIDO_LLAMA_MODEL=gemma-4-26b-a4b\n",
+    })
+  })
+
+  it("restarts the installed LaunchAgent", async () => {
+    const h = harness({
+      runs: {
+        [PRINT]: OK,
+        "launchctl kickstart -k gui/501/com.eido.llama-server": OK,
+      },
+    })
+    expect(await main(["use", "gemma-4-26b-a4b"], h.deps)).toBe(0)
+    expect(h.ran).toEqual([
+      PRINT,
+      "launchctl kickstart -k gui/501/com.eido.llama-server",
+    ])
+    expect(h.out.at(-1)).toBe(
+      "ok: restarted gui/501/com.eido.llama-server; it verifies and loads gemma-4-26b-a4b"
+    )
+  })
+
+  it("reports a failed restart", async () => {
+    const h = harness({
+      runs: {
+        [PRINT]: OK,
+        "launchctl kickstart -k gui/501/com.eido.llama-server": {
+          code: 113,
+          stdout: "",
+          stderr: "Could not find service\n",
+        },
+      },
+    })
+    expect(await main(["use", "gemma-4-26b-a4b"], h.deps)).toBe(1)
+    expect(h.err).toEqual(["FAIL: launchctl kickstart: Could not find service"])
+  })
+
+  it("notes an exported EIDO_LLAMA_MODEL that still wins", async () => {
+    const h = harness({ env: { EIDO_LLAMA_MODEL: "qwen3.6-35b-a3b" } })
+    expect(await main(["use", "gemma-4-26b-a4b"], h.deps)).toBe(0)
+    expect(h.out[1]).toBe(
+      "note: EIDO_LLAMA_MODEL=qwen3.6-35b-a3b is exported in this shell and wins over the file here"
+    )
+  })
+
+  it("refuses a profile whose file is not on disk, an unverified one and an unknown id, writing nothing", async () => {
+    const missing = harness()
+    expect(await main(["use", "gpt-oss-20b"], missing.deps)).toBe(1)
+    expect(missing.err).toEqual([
+      `FAIL: ${OSS} is not on disk; run llama fetch --model gpt-oss-20b first`,
+    ])
+    const unverified = harness({ files: { [QWEN]: "" } })
+    expect(await main(["use", "qwen3.6-35b-a3b"], unverified.deps)).toBe(1)
+    expect(unverified.err[0]).toMatch(
+      /^FAIL: profile qwen3\.6-35b-a3b has not passed llama check-template/
+    )
+    const unknown = harness()
+    expect(await main(["use", "nope"], unknown.deps)).toBe(1)
+    for (const h of [missing, unverified, unknown])
+      expect(h.written).toEqual({})
+  })
+
+  it("needs an id", async () => {
+    const h = harness()
+    expect(await main(["use"], h.deps)).toBe(2)
+  })
+
+  it("says there is no LaunchAgent to restart on Windows", async () => {
+    const root = "C:\\Users\\s\\AppData\\Local\\eido-dev"
+    const model = `${root}\\models\\gemma-4-26B_q4_0-it.gguf`
+    const h = harness({
+      platform: WIN,
+      uid: undefined,
+      env: { LOCALAPPDATA: "C:\\Users\\s\\AppData\\Local" },
+      files: { [model]: "" },
+    })
+    h.deps.uid = undefined
+    h.deps.probe.size = (p) => Promise.resolve(p === model ? SIZE : undefined)
+    expect(await main(["use", "gemma-4-26b-a4b"], h.deps)).toBe(0)
+    expect(h.written).toEqual({
+      [`${root}\\stack.env`]: "EIDO_LLAMA_MODEL=gemma-4-26b-a4b\n",
+    })
+    expect(h.ran).toEqual([])
+    expect(h.out.at(-1)).toBe(
+      "no LaunchAgent on this platform (#629); stop and rerun llama launch to load gemma-4-26b-a4b"
+    )
+  })
+})
+
 describe("llama check-template", () => {
-  it("passes when the template, the rendered prompt and the JSON schema all check out", async () => {
+  it("checks the running server, and records the pass", async () => {
     const h = harness()
     expect(await main(["check-template"], h.deps)).toBe(0)
     expect(h.out).toEqual([
@@ -341,10 +747,12 @@ describe("llama check-template", () => {
       "ok: rendered prompt",
       "ok: JSON-schema request",
       "ok: template check passed on b11149 with gemma-4-26B_q4_0-it.gguf",
+      `ok: recorded the pass for gemma-4-26b-a4b in ${RECORD}`,
     ])
+    expect(h.written).toEqual({ [RECORD]: `gemma-4-26b-a4b ${SHA} b11149\n` })
   })
 
-  it("fails when the rendered prompt drifts from the reference", async () => {
+  it("fails when the rendered prompt drifts from the reference, and records nothing", async () => {
     const h = harness({
       http: { "/apply-template": reply(200, { prompt: "other" }) },
     })
@@ -352,15 +760,254 @@ describe("llama check-template", () => {
     expect(h.err[0]).toMatch(
       /^FAIL: rendered prompt: rendered prompt differs from the reference at character 0/
     )
+    expect(h.written).toEqual({})
   })
 
-  it("fails without a reference prompt for the pinned file", async () => {
-    const h = harness()
+  it("says so when there is no reference prompt for the file, and still runs the other checks", async () => {
+    const h = harness({
+      http: { "/v1/chat/completions": reply(200, { choices: [] }) },
+    })
     const deps = { ...h.deps, fixtureDir: "/nowhere" }
     expect(await main(["check-template"], deps)).toBe(1)
-    expect(h.err).toEqual([
-      "FAIL: no reference prompt at /nowhere/gemma-4-26B_q4_0-it.gguf.prompt.txt",
+    expect(h.out).toEqual([
+      "note: no reference prompt at /nowhere/gemma-4-26B_q4_0-it.gguf.prompt.txt; the rendered prompt is not compared",
+      "ok: chat template",
     ])
+    expect(h.requests.some((r) => r.includes("/apply-template"))).toBe(false)
+    expect(h.err[0]).toMatch(/^FAIL: JSON-schema request: /)
+  })
+
+  it("will not check an unverified active profile, since launch does not run it", async () => {
+    const h = harness({ env: { EIDO_LLAMA_MODEL: "qwen3.6-35b-a3b" } })
+    expect(await main(["check-template"], h.deps)).toBe(1)
+    expect(h.requests).toEqual([])
+    expect(h.err).toEqual([
+      "FAIL: profile qwen3.6-35b-a3b is not verified, so launch does not run it; run llama check-template --model qwen3.6-35b-a3b",
+    ])
+  })
+
+  it("with --model starts the profile itself, checks it, stops it and records the pass", async () => {
+    const h = harness({
+      files: { [QWEN]: "", [RECORD]: `gemma-4-26b-a4b ${SHA} b11149\n` },
+      http: {
+        "/health": [new Error("ECONNREFUSED"), reply(200, { status: "ok" })],
+        "/props": reply(200, {
+          chat_template: "{% if messages[1].role == 'developer' %}",
+        }),
+      },
+    })
+    expect(
+      await main(["check-template", "--model", "qwen3.6-35b-a3b"], h.deps)
+    ).toBe(0)
+    const { args, process } = h.spawned[0] ?? fail()
+    expect(args[1]).toBe(QWEN)
+    expect(process.killed).toEqual(["SIGTERM"])
+    expect(h.out).toContain(
+      "note: no reference prompt at /repo/infra/llama/fixtures/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf.prompt.txt; the rendered prompt is not compared"
+    )
+    expect(h.written).toEqual({
+      [RECORD]: `gemma-4-26b-a4b ${SHA} b11149\n${QWEN_PASS}`,
+    })
+  })
+
+  it("with --model stops the server and records nothing when a check fails", async () => {
+    const h = harness({
+      files: { [QWEN]: "" },
+      http: { "/health": [new Error("ECONNREFUSED"), reply(200, {})] },
+    })
+    expect(
+      await main(["check-template", "--model", "qwen3.6-35b-a3b"], h.deps)
+    ).toBe(1)
+    expect(h.spawned[0]?.process.killed).toEqual(["SIGTERM"])
+    expect(h.err).toEqual([
+      `FAIL: chat template: /props chat_template does not contain "messages[1].role == 'developer'"`,
+    ])
+    expect(h.written).toEqual({})
+  })
+
+  it("with --model refuses when a server already answers on the port", async () => {
+    const h = harness({ files: { [QWEN]: "" } })
+    expect(
+      await main(["check-template", "--model", "qwen3.6-35b-a3b"], h.deps)
+    ).toBe(1)
+    expect(h.spawned).toEqual([])
+    expect(h.err).toEqual([
+      "FAIL: a server already answers on http://127.0.0.1:8080; stop it so check-template can start qwen3.6-35b-a3b there",
+    ])
+  })
+
+  it("with --model fails without starting anything when the model is not on disk", async () => {
+    const h = harness({ http: { "/health": new Error("ECONNREFUSED") } })
+    expect(
+      await main(["check-template", "--model", "gpt-oss-20b"], h.deps)
+    ).toBe(1)
+    expect(h.spawned).toEqual([])
+    expect(h.err).toEqual([
+      `FAIL: no model file at ${OSS}`,
+      "llama-server was not started",
+    ])
+  })
+
+  it("rejects other arguments", async () => {
+    const h = harness()
+    expect(await main(["check-template", "qwen"], h.deps)).toBe(2)
+  })
+})
+
+describe("llama add", () => {
+  const REPO = "example/Model-GGUF"
+  const REV = "1".repeat(40)
+  const FILE_SHA = "f".repeat(64)
+  const pathsInfo = `/api/models/${REPO}/paths-info/${REV}`
+  const entry = (path: string) =>
+    reply(200, [
+      { type: "file", path, size: 7, lfs: { oid: FILE_SHA, size: 7 } },
+    ])
+
+  it("pins the repo's current revision and the Hub's size and sha256 in the user's profiles file", async () => {
+    const h = harness({
+      http: {
+        [`/api/models/${REPO}`]: reply(200, { sha: REV }),
+        [pathsInfo]: entry("Model-Q5_K_M.gguf"),
+      },
+    })
+    expect(await main(["add", REPO, "Model-Q5_K_M.gguf"], h.deps)).toBe(0)
+    expect(h.requests).toEqual([
+      `https://huggingface.co/api/models/${REPO}`,
+      `https://huggingface.co${pathsInfo} {"paths":["Model-Q5_K_M.gguf"]}`,
+    ])
+    expect(h.written).toEqual({
+      [PROFILES]: [
+        `# llama add ${REPO} Model-Q5_K_M.gguf --revision ${REV}`,
+        "[profile model-q5_k_m]",
+        `model: ${REPO}`,
+        "quantization: Q5_K_M",
+        "file: Model-Q5_K_M.gguf",
+        `source: https://huggingface.co/${REPO}/resolve/${REV}/Model-Q5_K_M.gguf`,
+        "size: 7",
+        `sha256: ${FILE_SHA}`,
+        "",
+      ].join("\n"),
+    })
+    expect(h.written[`/repo/infra/model.lock`]).toBeUndefined()
+    expect(h.out.slice(1)).toEqual([
+      "next:",
+      "  llama fetch --model model-q5_k_m",
+      "  llama check-template --model model-q5_k_m",
+      "  then run the model eval (#28) before relying on it",
+    ])
+  })
+
+  it("appends to an existing file with the given revision, id, marker and kwargs", async () => {
+    const before = `[profile mine]\nmodel: o/r\nquantization: Q8_0\nfile: m.gguf\nsource: https://example.invalid/m.gguf\nsize: 9\nsha256: ${"e".repeat(64)}\n`
+    const h = harness({
+      files: { [PROFILES]: before },
+      http: { [pathsInfo]: entry("sub/Model-Q5_K_M.gguf") },
+    })
+    expect(
+      await main(
+        [
+          "add",
+          REPO,
+          "sub/Model-Q5_K_M.gguf",
+          "--revision",
+          REV,
+          "--id",
+          "big",
+          "--marker",
+          "<|im_start|>",
+          "--kwargs",
+          '{"enable_thinking": false}',
+        ],
+        h.deps
+      )
+    ).toBe(0)
+    expect(h.requests).toHaveLength(1)
+    const text = h.written[PROFILES] ?? ""
+    expect(text.startsWith(`${before}\n# llama add`)).toBe(true)
+    expect(text).toContain("[profile big]\n")
+    expect(text).toContain("file: Model-Q5_K_M.gguf\n")
+    expect(text).toContain(`/resolve/${REV}/sub/Model-Q5_K_M.gguf\n`)
+    expect(text).toContain("chat_template_marker: <|im_start|>\n")
+    expect(text).toContain('chat_template_kwargs: {"enable_thinking": false}\n')
+  })
+
+  it("writes nothing when the id clashes with model.lock or the kwargs are not JSON", async () => {
+    const http = { [pathsInfo]: entry("Model-Q5_K_M.gguf") }
+    const clash = harness({ http })
+    expect(
+      await main(
+        [
+          "add",
+          REPO,
+          "Model-Q5_K_M.gguf",
+          "--revision",
+          REV,
+          "--id",
+          "gpt-oss-20b",
+        ],
+        clash.deps
+      )
+    ).toBe(1)
+    expect(clash.err).toEqual([
+      `FAIL: ${PROFILES}: profile gpt-oss-20b is also in model.lock; rename one of them`,
+    ])
+    const bad = harness({ http })
+    expect(
+      await main(
+        [
+          "add",
+          REPO,
+          "Model-Q5_K_M.gguf",
+          "--revision",
+          REV,
+          "--kwargs",
+          "off",
+        ],
+        bad.deps
+      )
+    ).toBe(1)
+    expect(bad.err).toEqual([
+      "FAIL: profile model-q5_k_m: chat_template_kwargs must be a JSON object",
+    ])
+    const again = harness({
+      http,
+      files: {
+        [PROFILES]: `[profile model-q5_k_m]\nmodel: o/r\nquantization: Q8_0\nfile: m.gguf\nsource: https://example.invalid/m.gguf\nsize: 9\nsha256: ${"e".repeat(64)}\n`,
+      },
+    })
+    expect(
+      await main(
+        ["add", REPO, "Model-Q5_K_M.gguf", "--revision", REV],
+        again.deps
+      )
+    ).toBe(1)
+    expect(again.err).toEqual([
+      `FAIL: ${PROFILES} line 10: profile model-q5_k_m appears twice`,
+    ])
+    for (const h of [clash, bad, again]) expect(h.written).toEqual({})
+  })
+
+  it("fails on a file the Hub does not have", async () => {
+    const h = harness({ http: { [pathsInfo]: reply(200, []) } })
+    expect(await main(["add", REPO, "x.gguf", "--revision", REV], h.deps)).toBe(
+      1
+    )
+    expect(h.err).toEqual([`FAIL: ${REPO} has no file x.gguf at ${REV}`])
+    expect(h.written).toEqual({})
+  })
+
+  it("rejects missing arguments and unknown or repeated flags", async () => {
+    const h = harness()
+    for (const args of [
+      ["add"],
+      ["add", REPO],
+      ["add", REPO, "a.gguf", "--rev", REV],
+      ["add", REPO, "a.gguf", "--id"],
+      ["add", REPO, "a.gguf", "--id", "a", "--id", "b"],
+    ])
+      expect(await main(args, h.deps)).toBe(2)
+    expect(h.requests).toEqual([])
   })
 })
 
@@ -372,6 +1019,7 @@ describe("llama plan", () => {
     expect(h.out[1]).toContain(
       `<key>EIDO_LLAMA_SERVER_BIN</key>\n    <string>${BIN}</string>`
     )
+    expect(h.out[1]).not.toContain("EIDO_LLAMA_MODEL")
     expect(h.out[2]).toBe(`launchctl bootstrap gui/501 ${PLIST}`)
     expect(h.written).toEqual({})
     expect(h.ran).toEqual([])
@@ -381,37 +1029,17 @@ describe("llama plan", () => {
 describe("llama install", () => {
   it("writes the plist and bootstraps the agent", async () => {
     const h = harness({
-      runs: {
-        [`launchctl bootstrap gui/501 ${PLIST}`]: {
-          code: 0,
-          stdout: "",
-          stderr: "",
-        },
-      },
+      runs: { [`launchctl bootstrap gui/501 ${PLIST}`]: OK },
     })
     expect(await main(["install"], h.deps)).toBe(0)
     expect(Object.keys(h.written)).toEqual([PLIST])
     expect(h.made).toEqual([`${HOME}/Library/Logs/eido`])
-    expect(h.ran).toEqual([
-      "launchctl print gui/501/com.eido.llama-server",
-      `launchctl bootstrap gui/501 ${PLIST}`,
-    ])
+    expect(h.ran).toEqual([PRINT, `launchctl bootstrap gui/501 ${PLIST}`])
   })
 
   it("boots out an already loaded agent first", async () => {
     const h = harness({
-      runs: {
-        "launchctl print gui/501/com.eido.llama-server": {
-          code: 0,
-          stdout: "",
-          stderr: "",
-        },
-        [`launchctl bootstrap gui/501 ${PLIST}`]: {
-          code: 0,
-          stdout: "",
-          stderr: "",
-        },
-      },
+      runs: { [PRINT]: OK, [`launchctl bootstrap gui/501 ${PLIST}`]: OK },
     })
     expect(await main(["install"], h.deps)).toBe(0)
     expect(h.ran[1]).toBe("launchctl bootout gui/501/com.eido.llama-server")
@@ -444,6 +1072,16 @@ describe("llama install", () => {
     expect(noModel.err[0]).toMatch(/^FAIL: no model file at \/empty\//)
     expect(noModel.written).toEqual({})
   })
+
+  it("installs nothing for an unverified active profile, which launchd would restart in a loop", async () => {
+    const h = harness({
+      env: { EIDO_LLAMA_MODEL: "qwen3.6-35b-a3b" },
+      files: { [QWEN]: "" },
+    })
+    expect(await main(["install"], h.deps)).toBe(1)
+    expect(h.ran).toEqual([])
+    expect(h.written).toEqual({})
+  })
 })
 
 describe("llama uninstall", () => {
@@ -451,16 +1089,8 @@ describe("llama uninstall", () => {
     const h = harness({
       files: { [PLIST]: "" },
       runs: {
-        "launchctl print gui/501/com.eido.llama-server": {
-          code: 0,
-          stdout: "",
-          stderr: "",
-        },
-        "launchctl bootout gui/501/com.eido.llama-server": {
-          code: 0,
-          stdout: "",
-          stderr: "",
-        },
+        [PRINT]: OK,
+        "launchctl bootout gui/501/com.eido.llama-server": OK,
       },
     })
     expect(await main(["uninstall"], h.deps)).toBe(0)
@@ -477,11 +1107,7 @@ describe("llama uninstall", () => {
     const h = harness({
       files: { [PLIST]: "" },
       runs: {
-        "launchctl print gui/501/com.eido.llama-server": {
-          code: 0,
-          stdout: "",
-          stderr: "",
-        },
+        [PRINT]: OK,
         "launchctl bootout gui/501/com.eido.llama-server": {
           code: 3,
           stdout: "",
@@ -501,7 +1127,7 @@ describe("llama status", () => {
   it("reports the job, a loopback-only listener and /health", async () => {
     const h = harness({
       runs: {
-        "launchctl print gui/501/com.eido.llama-server": {
+        [PRINT]: {
           code: 0,
           stdout: "\tstate = running\n\truns = 2\n\tpid = 77\n",
           stderr: "",
@@ -544,13 +1170,7 @@ describe("llama status", () => {
 
   it("fails when nothing answers", async () => {
     const h = harness({
-      runs: {
-        "launchctl print gui/501/com.eido.llama-server": {
-          code: 0,
-          stdout: "",
-          stderr: "",
-        },
-      },
+      runs: { [PRINT]: OK },
       http: { "/health": new Error("ECONNREFUSED") },
     })
     expect(await main(["status"], h.deps)).toBe(1)
@@ -564,12 +1184,26 @@ describe("llama status", () => {
   })
 })
 
+describe("launchd commands outside macOS", () => {
+  for (const command of ["plan", "install", "uninstall", "status"])
+    it(`${command} fails clearly on Windows and runs nothing`, async () => {
+      const h = harness({ platform: WIN })
+      h.deps.uid = undefined
+      expect(await main([command], h.deps)).toBe(1)
+      expect(h.err).toEqual([
+        `FAIL: llama ${command} needs launchd and is not supported on this platform yet (#629)`,
+      ])
+      expect(h.ran).toEqual([])
+      expect(h.written).toEqual({})
+    })
+})
+
 describe("usage", () => {
   it("rejects an unknown command", async () => {
     const h = harness()
     expect(await main(["start"], h.deps)).toBe(2)
     expect(h.err).toEqual([
-      "usage: llama verify|verify-archive PATH|launch|check-template|plan|install|uninstall|status",
+      "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|check-template [--model ID]|plan|install|uninstall|status",
     ])
   })
 })
