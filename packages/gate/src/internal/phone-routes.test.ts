@@ -3324,4 +3324,20 @@ describe("phoneHandler: Google sign-in (#662)", () => {
       expect([reply.status, code(reply)]).toEqual([503, "unavailable"])
     }
   )
+
+  it("includes googleRedirectUri and per-target clientIdConfigured status on GET /connector-settings", async () => {
+    const cookie = await signIn()
+    const reply = await call("GET", "/connector-settings", { cookie })
+    expect(reply.status).toBe(200)
+    const checked = validateGateConnectorSettings(reply.body)
+    if (!checked.ok) throw new Error("settings failed validation")
+    expect(checked.value.googleRedirectUri).toBe(
+      `${ORIGIN}/api/gate/connect/google/callback`
+    )
+    expect(checked.value.googleTargets).toEqual({
+      gmail: { clientIdConfigured: true },
+      "gmail-read": { clientIdConfigured: false },
+      drive: { clientIdConfigured: false },
+    })
+  })
 })

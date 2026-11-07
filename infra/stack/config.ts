@@ -66,6 +66,7 @@ export const PASS_THROUGH = {
     // Web Push turns on in the gate when a subject is set; it also needs the Keychain vault.
     "EIDO_PUSH_VAPID_SUBJECT",
     "EIDO_PUSH_WINDOW_MS",
+    "EIDO_GOOGLE_CLIENT_ID",
     "EIDO_GMAIL_CLIENT_ID",
     "EIDO_GMAIL_READ_CLIENT_ID",
     "EIDO_DRIVE_CLIENT_ID",

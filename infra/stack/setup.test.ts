@@ -190,6 +190,19 @@ describe("runSetup", () => {
     })
   })
 
+  it("skips Gmail client id prompts when EIDO_GOOGLE_CLIENT_ID is set in env or stack.env", async () => {
+    const f = fake({
+      env: {
+        EIDO_GATE_KEYCHAIN_PATH: KEYCHAIN,
+        EIDO_PUSH_VAPID_SUBJECT: "mailto:a@example.invalid",
+        EIDO_GOOGLE_CLIENT_ID: "google.example.invalid",
+      },
+      answers: [],
+    })
+    await runSetup(f.deps, PATH, {})
+    expect(f.questions).toEqual([])
+  })
+
   it("refuses an invalid answer and leaves the key unset", async () => {
     const f = fake({ answers: ["not-a-contact", "", ""] })
     await runSetup(f.deps, PATH, {})

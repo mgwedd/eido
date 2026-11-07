@@ -488,3 +488,71 @@ describe("SimpleFIN", () => {
     expect(input(simplefin, "Setup token").value).toBe("")
   })
 })
+
+describe("Google client ID checklist", () => {
+  it("renders 4-step checklist and copyable redirect URI when unconfigured", async () => {
+    const REDIRECT_URI =
+      "https://host.ts.net:8443/api/gate/connect/google/callback"
+    const gate = fakeGate({
+      "GET /connector-settings": () =>
+        json(200, {
+          connectors: [],
+          googleRedirectUri: REDIRECT_URI,
+          googleTargets: {
+            gmail: { clientIdConfigured: false },
+            "gmail-read": { clientIdConfigured: false },
+            drive: { clientIdConfigured: false },
+          },
+        }),
+      "GET /file-roots": () => json(200, { roots: [] }),
+      "GET /auth/step-up": () => json(200, { expiresAt: FUTURE }),
+    })
+    vi.stubGlobal("fetch", gate.fetch)
+
+    await render()
+
+    const gmailCard = card("Gmail")
+    expect(gmailCard.textContent).toContain("Not configured")
+    expect(gmailCard.textContent).toContain(
+      "Set up Google Cloud credentials to connect:"
+    )
+    expect(gmailCard.textContent).toContain("Enable Gmail API")
+    expect(gmailCard.textContent).toContain("Configure OAuth consent screen")
+    expect(gmailCard.textContent).toContain(
+      "Create OAuth client ID (Web application)"
+    )
+    expect(gmailCard.textContent).toContain("EIDO_GOOGLE_CLIENT_ID")
+    expect(gmailCard.textContent).toContain(REDIRECT_URI)
+
+    // Verify links
+    const links = Array.from(gmailCard.querySelectorAll("a"))
+    expect(links.map((a) => a.href)).toEqual([
+      "https://console.cloud.google.com/apis/library/gmail.googleapis.com",
+      "https://console.cloud.google.com/apis/credentials/consent",
+      "https://console.cloud.google.com/apis/credentials",
+    ])
+
+    // Verify "Connect with Google" is not rendered
+    expect(gmailCard.textContent).not.toContain("Connect with Google")
+
+    // Check Drive card
+    const driveCard = card("Drive")
+    expect(driveCard.textContent).toContain("Not configured")
+    expect(driveCard.textContent).toContain("Enable Google Drive API")
+    const driveLinks = Array.from(driveCard.querySelectorAll("a"))
+    expect(driveLinks.map((a) => a.href)).toEqual([
+      "https://console.cloud.google.com/apis/library/drive.googleapis.com",
+      "https://console.cloud.google.com/apis/credentials/consent",
+      "https://console.cloud.google.com/apis/credentials",
+    ])
+
+    // Test copy button
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    })
+    await click(gmailCard, "Copy")
+    expect(writeText).toHaveBeenCalledWith(REDIRECT_URI)
+  })
+})

@@ -3,7 +3,11 @@ import {
   validateGateGoogleConnectPrepared,
   validateGateGoogleConnectStarted,
 } from "@eido/schemas"
-import type { GateGoogleConnectPrepared } from "@eido/schemas"
+import type {
+  GateGoogleConnectPrepared,
+  GateGoogleConnectStarted,
+} from "@eido/schemas"
+import { DRIVE_READONLY_SCOPE } from "./connect/oauth"
 import {
   FLOW_TTL_MS,
   googleCallback,
@@ -176,6 +180,20 @@ describe("prepareGoogleConnect", () => {
     expect((await prepared()).clientSecretStored).toBe(true)
   })
 
+  it("reuses the stored client secret across targets sharing a client id", async () => {
+    google.clientIds.drive = CLIENT_ID
+    const prep1 = await prepareGoogleConnect(google, "drive")
+    expect((prep1.body as GateGoogleConnectPrepared).clientSecretStored).toBe(
+      false
+    )
+
+    await vault.set(key("api_key"), SECRET)
+    const prep2 = await prepareGoogleConnect(google, "drive")
+    expect((prep2.body as GateGoogleConnectPrepared).clientSecretStored).toBe(
+      true
+    )
+  })
+
   it("answers 503 for a client with no id", async () => {
     const reply = await prepareGoogleConnect(google, "drive")
     expect([reply.status, code(reply)]).toEqual([503, "unavailable"])
@@ -266,6 +284,55 @@ describe("googleCallback", () => {
     await callback({ state: url.searchParams.get("state") ?? "", code: CODE })
     expect(exchanges[0]?.get("client_secret")).toBe(SECRET)
     expect(await vault.get(key("api_key"))).toBe(SECRET)
+  })
+
+  it("reuses stored secret for another target sharing client ID and lets target override it", async () => {
+    google.clientIds.drive = CLIENT_ID
+    tokenAnswer = () =>
+      Response.json({ refresh_token: REFRESH, scope: DRIVE_READONLY_SCOPE })
+    await vault.set(key("api_key"), SECRET)
+
+    // Drive has no target-specific secret, reuses SECRET from gmail
+    const prep = await prepareGoogleConnect(google, "drive")
+    const prepBody = prep.body as GateGoogleConnectPrepared
+    expect(prepBody.clientSecretStored).toBe(true)
+    const auth = controlAuthorization(s.db, prepBody.approval)
+    const startReply = await startGoogleConnect(
+      google,
+      { authorization: auth, target: "drive" },
+      T0
+    )
+    const startBody = startReply.body as GateGoogleConnectStarted
+    const state =
+      new URL(startBody.authorizationUrl).searchParams.get("state") ?? ""
+    await callback({ state, code: CODE })
+    expect(exchanges[0]?.get("client_secret")).toBe(SECRET)
+    expect(
+      await vault.get({ connector: "drive", kind: "api_key", client: "read" })
+    ).toBe(SECRET)
+
+    // Override drive with a distinct secret
+    exchanges.length = 0
+    await vault.set(
+      { connector: "drive", kind: "api_key", client: "read" },
+      OTHER_SECRET
+    )
+    const prep2 = await prepareGoogleConnect(google, "drive")
+    const auth2 = controlAuthorization(
+      s.db,
+      (prep2.body as GateGoogleConnectPrepared).approval
+    )
+    const start2 = await startGoogleConnect(
+      google,
+      { authorization: auth2, target: "drive" },
+      T0
+    )
+    const state2 =
+      new URL(
+        (start2.body as GateGoogleConnectStarted).authorizationUrl
+      ).searchParams.get("state") ?? ""
+    await callback({ state: state2, code: CODE })
+    expect(exchanges[0]?.get("client_secret")).toBe(OTHER_SECRET)
   })
 
   it("reports an unpinned connector without probing it", async () => {

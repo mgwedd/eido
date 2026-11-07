@@ -348,6 +348,22 @@ describe("runDoctor", () => {
     expect(checks.filter((c) => c.status === "fail")).toEqual([])
   })
 
+  it("passes Gmail check with EIDO_GOOGLE_CLIENT_ID alone", async () => {
+    const m = machine()
+    const env: Record<string, string | undefined> = { ...m.deps.env }
+    delete env["EIDO_GMAIL_CLIENT_ID"]
+    delete env["EIDO_GMAIL_READ_CLIENT_ID"]
+    env["EIDO_GOOGLE_CLIENT_ID"] = "google.example.invalid"
+    m.deps.env = env
+    const gmailCheck = (await only(m, "gmail"))[0]
+    expect(gmailCheck).toEqual({
+      id: "gmail",
+      platforms: ["darwin", "win32", "linux"],
+      status: "ok",
+      summary: "Google OAuth client id is set",
+    })
+  })
+
   it("fails a wrong llama build, a missing model and a wrong hash", async () => {
     const m = machine()
     m.commands.set(

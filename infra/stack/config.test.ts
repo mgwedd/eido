@@ -374,6 +374,7 @@ describe("settings passed through", () => {
       input({
         env: {
           EIDO_PUSH_VAPID_SUBJECT: "mailto:owner@example.invalid",
+          EIDO_GOOGLE_CLIENT_ID: "google.example.invalid",
           EIDO_GMAIL_CLIENT_ID: "send.example.invalid",
           EIDO_BRIDGE_HOST: "127.0.0.1",
           EIDO_DEV_VAULT: "1",
@@ -384,6 +385,7 @@ describe("settings passed through", () => {
     )
     expect(byName(config, "gate").env).toMatchObject({
       EIDO_PUSH_VAPID_SUBJECT: "mailto:owner@example.invalid",
+      EIDO_GOOGLE_CLIENT_ID: "google.example.invalid",
       EIDO_GMAIL_CLIENT_ID: "send.example.invalid",
       EIDO_BRIDGE_HOST: "127.0.0.1",
       EIDO_DEV_VAULT: "1",
@@ -391,6 +393,9 @@ describe("settings passed through", () => {
     })
     expect(byName(config, "gate").env).not.toHaveProperty("EIDO_LLAMA_PORT")
     expect(byName(config, "core").env["EIDO_LLAMA_PORT"]).toBe("8081")
+    expect(byName(config, "core").env).not.toHaveProperty(
+      "EIDO_GOOGLE_CLIENT_ID"
+    )
     expect(byName(config, "core").env).not.toHaveProperty(
       "EIDO_GMAIL_CLIENT_ID"
     )

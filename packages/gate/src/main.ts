@@ -97,6 +97,7 @@ const CONTROL_SOCKET_MODE = 0o600
 export const DRIVE_CONNECTOR = "drive"
 export const DRIVE_CLIENT_ID_ENV = "EIDO_DRIVE_CLIENT_ID"
 export const GMAIL_READ_CLIENT_ID_ENV = "EIDO_GMAIL_READ_CLIENT_ID"
+export const GOOGLE_CLIENT_ID_ENV = "EIDO_GOOGLE_CLIENT_ID"
 /**
  * The read connectors whose OAuth client the gate refreshes in the egress proxy: the variable
  * naming each client's id, and the pinned read its health probe makes.
@@ -287,7 +288,10 @@ export function gateConfig(
   }
   const port = env["EIDO_GATE_PHONE_PORT"] ?? ""
   const bridge = bridgeConfig(env)
-  const gmailClientId = env["EIDO_GMAIL_CLIENT_ID"] ?? ""
+  const googleClientId = env[GOOGLE_CLIENT_ID_ENV] ?? ""
+  const specificGmailId = env["EIDO_GMAIL_CLIENT_ID"] ?? ""
+  const gmailClientId =
+    specificGmailId !== "" ? specificGmailId : googleClientId
   const vault = vaultConfig(env)
   const epoch = env["EIDO_PROFILE_AUDIT_EPOCH"] ?? "1"
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(epoch))
@@ -316,7 +320,8 @@ export function gateConfig(
   }
   const readClientIds = Object.fromEntries(
     READ_CONNECTORS.flatMap(({ connector, clientIdEnv }) => {
-      const id = env[clientIdEnv] ?? ""
+      const specific = env[clientIdEnv] ?? ""
+      const id = specific !== "" ? specific : googleClientId
       return id === "" ? [] : [[connector, id]]
     })
   )
@@ -415,9 +420,11 @@ export function googleConfig(
     throw new Error(
       `${GOOGLE_REDIRECT_URI_ENV} must be an https URL on ${webOrigin} ending in ${GOOGLE_CALLBACK_PATH}`
     )
+  const shared = env[GOOGLE_CLIENT_ID_ENV] ?? ""
   const clientIds = Object.fromEntries(
     Object.entries(GOOGLE_CLIENT_ID_ENVS).flatMap(([target, name]) => {
-      const id = env[name] ?? ""
+      const specific = env[name] ?? ""
+      const id = specific !== "" ? specific : shared
       return id === "" ? [] : [[target, id]]
     })
   )

@@ -125,4 +125,24 @@ describeStates("Admin connectors", [
     role: "alert",
     message: "The Google sign-in expired or was already used. Start it again.",
   },
+  {
+    state: "Google connector unconfigured",
+    render: body({
+      state: {
+        status: "ready",
+        connectors: [],
+        folders: 3,
+        googleRedirectUri:
+          "https://mac.tailnet.ts.net:8443/api/gate/connect/google/callback",
+        googleTargets: {
+          gmail: { clientIdConfigured: false },
+          "gmail-read": { clientIdConfigured: false },
+          drive: { clientIdConfigured: false },
+        },
+      },
+    }),
+    role: "status",
+    selector: '[data-region="google-checklist-uri-gmail"]',
+    message: "https://mac.tailnet.ts.net:8443/api/gate/connect/google/callback",
+  },
 ])

@@ -32,11 +32,17 @@ export async function refreshGoogleToken(
   options: GoogleRefreshOptions,
   refreshToken: string
 ): Promise<RefreshResult> {
-  const clientSecret = await options.vault.get({
-    connector: options.connector,
-    kind: "api_key",
-    client: options.client,
-  })
+  const clientSecret =
+    (await options.vault.get({
+      connector: options.connector,
+      kind: "api_key",
+      client: options.client,
+    })) ??
+    (await options.vault.get({
+      connector: "google",
+      kind: "api_key",
+      client: "none",
+    }))
   if (!options.clientId || !clientSecret)
     return { ok: false, error: "temporarily_unavailable" }
   const response = await (options.fetch ?? fetch)(GOOGLE_TOKEN_URL, {

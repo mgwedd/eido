@@ -19,7 +19,7 @@ The same command connects a connector for the first time and reconnects one late
   - `EIDO_GATE_CONTROL_SOCKET`;
   - `EIDO_GATE_KEYCHAIN_PATH` (see `infra/keychain-vault.md`), or `EIDO_DEV_VAULT=1` with `EIDO_GATE_VAULT_FILE` for development;
 
-  The command writes the same vault the gate reads. Google's client ids live in the gate's environment only (`EIDO_GMAIL_CLIENT_ID`, `EIDO_GMAIL_READ_CLIENT_ID`, `EIDO_DRIVE_CLIENT_ID`); the gate runs the Google sign-in itself.
+  The command writes the same vault the gate reads. Google's client ids live in the gate's environment only. By default, a single `EIDO_GOOGLE_CLIENT_ID` configures `gmail`, `gmail-read`, and `drive`, and reuses the stored client secret across targets in the gate vault. Optional per-target overrides (`EIDO_GMAIL_CLIENT_ID`, `EIDO_GMAIL_READ_CLIENT_ID`, `EIDO_DRIVE_CLIENT_ID`) take precedence when set, allowing read/write separation across distinct Google Cloud OAuth clients; the gate runs the Google sign-in itself.
 
 - **The gate must be running.** The command asks the gate for connector health before it prompts for anything. If the gate is not reachable, or the connector is not pinned, it stops and nothing is stored.
 - **The connector must already be pinned.** Pin its reviewed manifest first; this command does not pin. On a fresh install, in this order:
@@ -47,7 +47,7 @@ A connector disabled for manifest drift or a missing signed pin is not re-enable
 
 ## Gmail
 
-The Google OAuth client is a **Web application** client in Google Cloud. Its client id is the gate's `EIDO_GMAIL_CLIENT_ID`. Add one authorized redirect URI to it, the gate's callback on the Mac's tailnet name:
+The Google OAuth client is a **Web application** client in Google Cloud. Its client id is the gate's `EIDO_GOOGLE_CLIENT_ID` (or the target override `EIDO_GMAIL_CLIENT_ID`). Add one authorized redirect URI to it, the gate's callback on the Mac's tailnet name:
 
 ```text
 https://<mac>.<tailnet>.ts.net:8443/api/gate/connect/google/callback
@@ -84,13 +84,13 @@ When Google revokes the grant, the gate disables Gmail and `/connectors` shows i
 
 ## The Gmail read client
 
-Gmail has two Google clients. The compose client (`connect gmail`, `gmail.modify`) makes the gate's writes. The read client makes core's reads through the gate's read proxy. It is a second **Web application** OAuth client in Google Cloud, with the same redirect URI; its client id is the gate's `EIDO_GMAIL_READ_CLIENT_ID`.
+Gmail has two Google clients. The compose client (`connect gmail`, `gmail.modify`) makes the gate's writes. The read client makes core's reads through the gate's read proxy. By default, both share the single `EIDO_GOOGLE_CLIENT_ID` client and reuse the stored secret. To separate read and write clients into distinct Google Cloud OAuth clients, set `EIDO_GMAIL_READ_CLIENT_ID` (and optionally `EIDO_GMAIL_CLIENT_ID`) with the same redirect URI.
 
 `connect gmail-read` is the same sign-in as `connect gmail`, with these differences:
 
 - It asks for the `gmail.readonly` permission. Leave the Gmail box ticked on the consent screen; without it the gate refuses the grant.
-- It stores the refresh token and the client secret under the Gmail **read** client. The compose client's grant is left as it was. The first connect asks for the read client's secret; later reconnects reuse the stored one.
-- The gate checks Gmail with both clients: the compose client's profile read, and one pinned profile read through the proxy with the read client. Gmail is healthy only when both work. The gate must run with `EIDO_GMAIL_READ_CLIENT_ID` and `EIDO_GATE_EGRESS_PORT` set, or it has no read check.
+- It stores the refresh token and the client secret under the Gmail **read** client. The compose client's grant is left as it was. The first connect asks for the read client's secret only when no shared secret is in the vault; later reconnects reuse the stored one.
+- The gate checks Gmail with both clients: the compose client's profile read, and one pinned profile read through the proxy with the read client. Gmail is healthy only when both work. The gate must run with `EIDO_GOOGLE_CLIENT_ID` (or `EIDO_GMAIL_READ_CLIENT_ID`) and `EIDO_GATE_EGRESS_PORT` set, or it has no read check.
 
 When Google revokes either grant, the gate disables Gmail with `auth_failed`. Run the connect command for the client whose grant was revoked; Gmail is re-enabled once both checks pass.
 
@@ -101,8 +101,8 @@ Drive is a read connector: core reads it through the gate's read proxy, and the 
 `connect drive` is the same sign-in as Gmail, with these differences:
 
 - It asks for the `drive.readonly` permission. Leave the Drive box ticked on the consent screen; without it the gate refuses the grant.
-- It stores the refresh token and the client secret under the Drive **read** client. The first connect asks for the secret; later reconnects reuse the stored one.
-- The gate checks Drive with one pinned read through the proxy, `changes/startPageToken`. The gate must run with `EIDO_DRIVE_CLIENT_ID` and `EIDO_GATE_EGRESS_PORT` set, or it has no Drive check and the command reports that it could not check Drive.
+- It stores the refresh token and the client secret under the Drive **read** client. The first connect asks for the secret only when no shared secret is stored; later reconnects reuse the stored one.
+- The gate checks Drive with one pinned read through the proxy, `changes/startPageToken`. The gate must run with `EIDO_GOOGLE_CLIENT_ID` (or `EIDO_DRIVE_CLIENT_ID`) and `EIDO_GATE_EGRESS_PORT` set, or it has no Drive check and the command reports that it could not check Drive.
 
 When Google revokes the grant, the gate disables Drive with `auth_failed`. Run `pnpm stack:gate connect drive` again; Drive is re-enabled once the check passes.
 
@@ -110,7 +110,7 @@ When Google revokes the grant, the gate disables Drive with `auth_failed`. Run `
 
 Core's connectors read through the gate's egress proxy, which adds the read client's token to each pinned read. The gate starts the proxy when a read client is configured:
 
-- `EIDO_GMAIL_READ_CLIENT_ID` for Gmail reads, `EIDO_DRIVE_CLIENT_ID` for Drive;
+- `EIDO_GOOGLE_CLIENT_ID` (or `EIDO_GMAIL_READ_CLIENT_ID` for Gmail reads, `EIDO_DRIVE_CLIENT_ID` for Drive);
 - `EIDO_GATE_EGRESS_PORT`, the proxy's port on `127.0.0.1`. It is required with a read client and refused without one;
 - the same vault variables as above.
 
