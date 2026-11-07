@@ -16,6 +16,14 @@ Guidance, not a mandate. A subagent costs a brief, a context rebuild and a repor
 - Reading across many files where you only need the conclusion.
 - Never dispatch two writers on the same files.
 
+## Which model
+
+Set `model` on every dispatch.
+
+- Sonnet is the default for subagents: scoped implementation, a page or a package piece with clear acceptance criteria.
+- Opus for hard or complex work: the gate, approvals and signatures, security-sensitive design, cross-package changes, or a piece Sonnet already got wrong.
+- Haiku for docs and research processing: reading and summarizing files, issues or docs, scans, and doc edits.
+
 ## What a good brief contains
 
 - The issue number. The agent reads the issue itself.
