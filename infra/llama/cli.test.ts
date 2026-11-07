@@ -267,6 +267,49 @@ describe("llama launch", () => {
   })
 })
 
+describe("llama start", () => {
+  it("runs on Windows from %LOCALAPPDATA% with llama-server.exe", async () => {
+    const root = "C:\\Users\\s\\AppData\\Local\\eido-dev"
+    const bin = `${root}\\llama.cpp\\b11149\\llama-server.exe`
+    const model = `${root}\\models\\gemma-4-26B_q4_0-it.gguf`
+    const h = harness({
+      platform: WIN,
+      env: { LOCALAPPDATA: "C:\\Users\\s\\AppData\\Local" },
+      files: { [bin]: "", [model]: "" },
+      runs: { [`${bin} --version`]: { code: 0, stdout: "", stderr: VERSION } },
+    })
+    h.deps.probe.size = (p) => Promise.resolve(p === model ? SIZE : undefined)
+    h.deps.probe.sha256 = () => Promise.resolve(SHA)
+    const running = main(["start"], h.deps)
+    await tick()
+    expect(h.ran).toEqual([`${bin} --version`])
+    expect(h.spawned[0]?.command).toBe(bin)
+    expect(h.spawned[0]?.args[1]).toBe(model)
+    h.stop()
+    expect(await running).toBe(0)
+  })
+
+  it("runs on Linux from ~/.local/share/eido-dev with llama-server", async () => {
+    const root = `${HOME}/.local/share/eido-dev`
+    const bin = `${root}/llama.cpp/b11149/llama-server`
+    const model = `${root}/models/gemma-4-26B_q4_0-it.gguf`
+    const h = harness({
+      platform: { os: "linux", arch: "x64" },
+      files: { [bin]: "", [model]: "" },
+      runs: { [`${bin} --version`]: { code: 0, stdout: "", stderr: VERSION } },
+    })
+    h.deps.probe.size = (p) => Promise.resolve(p === model ? SIZE : undefined)
+    h.deps.probe.sha256 = () => Promise.resolve(SHA)
+    const running = main(["start"], h.deps)
+    await tick()
+    expect(h.ran).toEqual([`${bin} --version`])
+    expect(h.spawned[0]?.command).toBe(bin)
+    expect(h.spawned[0]?.args[1]).toBe(model)
+    h.stop()
+    expect(await running).toBe(0)
+  })
+})
+
 describe("llama verify-archive", () => {
   const path = "/dl/llama-b11149-bin-macos-arm64.tar.gz"
 
@@ -904,6 +947,81 @@ describe("llama install", () => {
     expect(h.ran).toEqual([])
     expect(h.written).toEqual({})
   })
+
+  it("fetches and verifies the Windows release asset and model on win32", async () => {
+    const root = "C:\\Users\\s\\AppData\\Local\\eido-dev"
+    const llamaDir = `${root}\\llama.cpp`
+    const buildDir = `${llamaDir}\\b11149`
+    const staging = `${llamaDir}\\.b11149.partial`
+    const archive = `${llamaDir}\\llama-b11149-bin-win-vulkan-x64.zip.partial`
+    const bin = `${buildDir}\\llama-server.exe`
+    const model = `${root}\\models\\gemma-4-26B_q4_0-it.gguf`
+    const winSha =
+      "ca432b775c5dcb5af85bbdcf22b06b6e2dca792f30334b19ef4a45ee4a512446"
+    const h = harness({
+      platform: WIN,
+      uid: undefined,
+      env: { LOCALAPPDATA: "C:\\Users\\s\\AppData\\Local" },
+      runs: {
+        [`tar -xf ${archive} -C ${staging}`]: OK,
+        [`${bin} --version`]: { code: 0, stdout: "", stderr: VERSION },
+      },
+    })
+    h.deps.uid = undefined
+    h.deps.fs.list = (dir) =>
+      dir === staging ? [{ name: "llama-server.exe", directory: false }] : []
+    h.deps.probe.size = (p) =>
+      Promise.resolve(p === `${model}.partial` ? SIZE : undefined)
+    h.deps.probe.sha256 = (p) => Promise.resolve(p === archive ? winSha : SHA)
+    expect(await main(["install"], h.deps)).toBe(0)
+    expect(h.downloaded).toEqual([
+      `https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-win-vulkan-x64.zip -> ${archive}`,
+      `https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf/resolve/d1c082be9cf3c8a514acf63b8761f4b41935842e/gemma-4-26B_q4_0-it.gguf -> ${model}.partial`,
+    ])
+    expect(h.ran).toEqual([
+      `tar -xf ${archive} -C ${staging}`,
+      `${bin} --version`,
+    ])
+    expect(h.out.at(-1)).toBe(
+      "ok: b11149 and profile gemma-4-26b-a4b are installed"
+    )
+  })
+
+  it("fetches and verifies the Linux release asset and model on linux without xattr", async () => {
+    const root = `${HOME}/.local/share/eido-dev`
+    const llamaDir = `${root}/llama.cpp`
+    const buildDir = `${llamaDir}/b11149`
+    const staging = `${llamaDir}/.b11149.partial`
+    const archive = `${llamaDir}/llama-b11149-bin-ubuntu-vulkan-x64.tar.gz.partial`
+    const bin = `${buildDir}/llama-server`
+    const model = `${root}/models/gemma-4-26B_q4_0-it.gguf`
+    const linuxSha =
+      "d93606c124863e26750f0fa02daba8ae73aa39395507534fcbb57f5e7bbe7b55"
+    const h = harness({
+      platform: { os: "linux", arch: "x64" },
+      runs: {
+        [`tar -xf ${archive} -C ${staging}`]: OK,
+        [`${bin} --version`]: { code: 0, stdout: "", stderr: VERSION },
+      },
+    })
+    h.deps.fs.list = (dir) =>
+      dir === staging ? [{ name: "llama-server", directory: false }] : []
+    h.deps.probe.size = (p) =>
+      Promise.resolve(p === `${model}.partial` ? SIZE : undefined)
+    h.deps.probe.sha256 = (p) => Promise.resolve(p === archive ? linuxSha : SHA)
+    expect(await main(["install"], h.deps)).toBe(0)
+    expect(h.downloaded).toEqual([
+      `https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-ubuntu-vulkan-x64.tar.gz -> ${archive}`,
+      `https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf/resolve/d1c082be9cf3c8a514acf63b8761f4b41935842e/gemma-4-26B_q4_0-it.gguf -> ${model}.partial`,
+    ])
+    expect(h.ran).toEqual([
+      `tar -xf ${archive} -C ${staging}`,
+      `${bin} --version`,
+    ])
+    expect(h.out.at(-1)).toBe(
+      "ok: b11149 and profile gemma-4-26b-a4b are installed"
+    )
+  })
 })
 
 describe("llama uninstall", () => {
@@ -1007,25 +1125,26 @@ describe("llama status", () => {
 })
 
 describe("launchd commands outside macOS", () => {
-  for (const command of ["plan", "install", "uninstall", "status"])
-    it(`${command} fails clearly on Windows and runs nothing`, async () => {
-      const h = harness({ platform: WIN })
-      h.deps.uid = undefined
-      expect(await main([command], h.deps)).toBe(1)
-      expect(h.err).toEqual([
-        `FAIL: llama ${command} needs launchd and is not supported on this platform yet (#629)`,
-      ])
-      expect(h.ran).toEqual([])
-      expect(h.written).toEqual({})
-    })
+  for (const command of ["plan", "uninstall", "status"])
+    for (const platform of [WIN, { os: "linux", arch: "x64" } as const])
+      it(`${command} fails clearly on ${platform.os} and runs nothing`, async () => {
+        const h = harness({ platform })
+        h.deps.uid = undefined
+        expect(await main([command], h.deps)).toBe(1)
+        expect(h.err).toEqual([
+          `FAIL: llama ${command} needs launchd and is not supported on this platform yet (#629)`,
+        ])
+        expect(h.ran).toEqual([])
+        expect(h.written).toEqual({})
+      })
 })
 
 describe("usage", () => {
   it("rejects an unknown command", async () => {
     const h = harness()
-    expect(await main(["start"], h.deps)).toBe(2)
+    expect(await main(["stop"], h.deps)).toBe(2)
     expect(h.err).toEqual([
-      "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|check-template [--model ID]|plan|install|uninstall|status",
+      "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|start|check-template [--model ID]|plan|install|uninstall|status",
     ])
   })
 })

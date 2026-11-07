@@ -61,7 +61,7 @@ const replace = (key: string, line: string) =>
 describe("the committed infra/model.lock", () => {
   const lock = parseLock(committed)
 
-  it("pins build b11149 for macOS arm64 and Windows x64 and arm64, with the release digests", () => {
+  it("pins build b11149 for macOS arm64, Windows x64 and arm64, and Linux x64 and arm64, with the release digests", () => {
     expect(lock.llamaCppBuild).toBe("b11149")
     expect(lock.llamaCppCommit).toBe("d2e54583c")
     expect(lock.builds).toEqual([
@@ -88,6 +88,22 @@ describe("the committed infra/model.lock", () => {
           "https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-win-cpu-arm64.zip",
         sha256:
           "95b1f114b601498b546343b97ca381a41ffb16d88dfde19433fb95123f4ef7ca",
+      },
+      {
+        platform: "linux-x64",
+        asset: "llama-b11149-bin-ubuntu-vulkan-x64.tar.gz",
+        source:
+          "https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-ubuntu-vulkan-x64.tar.gz",
+        sha256:
+          "d93606c124863e26750f0fa02daba8ae73aa39395507534fcbb57f5e7bbe7b55",
+      },
+      {
+        platform: "linux-arm64",
+        asset: "llama-b11149-bin-ubuntu-arm64.tar.gz",
+        source:
+          "https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-ubuntu-arm64.tar.gz",
+        sha256:
+          "7a4ca8a91014a399dacb987efbd408621634e9079974f5a4fec80152d65b5e5b",
       },
     ])
   })

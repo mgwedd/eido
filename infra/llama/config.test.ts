@@ -5,6 +5,7 @@ import { buildConfig, dataRoot, launchEnv, lockPathFrom } from "./config.ts"
 const lock = { llamaCppBuild: "b11149" }
 const mac = { os: "darwin", arch: "arm64" } as const
 const windows = { os: "win32", arch: "x64" } as const
+const linux = { os: "linux", arch: "x64" } as const
 
 const fields = (config: ReturnType<typeof buildConfig>) =>
   Object.fromEntries(Object.entries(config).filter(([key]) => key !== "join"))
@@ -86,10 +87,58 @@ describe("buildConfig on Windows", () => {
   })
 })
 
+describe("buildConfig on Linux", () => {
+  it("defaults under ~/.local/share/eido-dev, or $XDG_DATA_HOME/eido-dev", () => {
+    const config = buildConfig(
+      {},
+      "/home/u",
+      "/repo/infra/model.lock",
+      lock,
+      linux
+    )
+    expect(fields(config)).toEqual({
+      platform: "linux-x64",
+      windows: false,
+      lockPath: "/repo/infra/model.lock",
+      modelDir: "/home/u/.local/share/eido-dev/models",
+      binary: "/home/u/.local/share/eido-dev/llama.cpp/b11149/llama-server",
+      buildDir: "/home/u/.local/share/eido-dev/llama.cpp/b11149",
+      port: 8080,
+      stackDir: "/home/u/.local/share/eido-dev",
+      profilesPath: "/home/u/.local/share/eido-dev/profiles.lock",
+      verifiedPath: "/home/u/.local/share/eido-dev/verified-profiles",
+    })
+    expect(config.join("/a", "b")).toBe("/a/b")
+
+    expect(
+      fields(
+        buildConfig(
+          { XDG_DATA_HOME: "/xdg/data" },
+          "/home/u",
+          "/repo/infra/model.lock",
+          lock,
+          linux
+        )
+      )
+    ).toMatchObject({
+      modelDir: "/xdg/data/eido-dev/models",
+      binary: "/xdg/data/eido-dev/llama.cpp/b11149/llama-server",
+      buildDir: "/xdg/data/eido-dev/llama.cpp/b11149",
+      stackDir: "/xdg/data/eido-dev",
+    })
+  })
+})
+
 describe("dataRoot", () => {
   it("falls back to AppData\\Local under the home directory without LOCALAPPDATA", () => {
     expect(dataRoot({ LOCALAPPDATA: " " }, "C:\\Users\\s", "win32")).toBe(
       "C:\\Users\\s\\AppData\\Local\\eido-dev"
+    )
+  })
+
+  it("falls back to .local/share under the home directory without XDG_DATA_HOME", () => {
+    expect(dataRoot({ XDG_DATA_HOME: " " }, "/home/u", "linux")).toBe(
+      "/home/u/.local/share/eido-dev"
     )
   })
 })

@@ -14,8 +14,11 @@ import type { RunResult } from "./verify.ts"
 const MODEL_SHA = "a".repeat(64)
 const MAC_SHA = "b".repeat(64)
 const WIN_SHA = "c".repeat(64)
+const LINUX_SHA = "f".repeat(64)
 const MAC_URL = "https://example.invalid/b100/llama-b100-bin-macos-arm64.tar.gz"
 const WIN_URL = "https://example.invalid/b100/llama-b100-bin-win-vulkan-x64.zip"
+const LINUX_URL =
+  "https://example.invalid/b100/llama-b100-bin-ubuntu-vulkan-x64.tar.gz"
 const MODEL_URL = "https://example.invalid/rev/abc/example.gguf"
 
 const lock = parseLock(`llama_cpp_build: b100
@@ -31,6 +34,11 @@ sha256: ${MAC_SHA}
 asset: llama-b100-bin-win-vulkan-x64.zip
 source: ${WIN_URL}
 sha256: ${WIN_SHA}
+
+[build linux-x64]
+asset: llama-b100-bin-ubuntu-vulkan-x64.tar.gz
+source: ${LINUX_URL}
+sha256: ${LINUX_SHA}
 
 [profile dl]
 model: Example
@@ -52,6 +60,7 @@ chat_template_marker: <y>
 
 const MAC: Platform = { os: "darwin", arch: "arm64" }
 const WIN: Platform = { os: "win32", arch: "x64" }
+const LINUX: Platform = { os: "linux", arch: "x64" }
 const VERSION = "version: 1 (build 100, commit abcdef1)"
 
 type Blob = { size: number; sha256: string }
@@ -72,7 +81,12 @@ type Options = {
 function harness(o: Options = {}) {
   const platform = o.platform ?? MAC
   const path = platform.os === "win32" ? win32 : posix
-  const home = platform.os === "win32" ? "C:\\Users\\s" : "/Users/u"
+  const home =
+    platform.os === "win32"
+      ? "C:\\Users\\s"
+      : platform.os === "linux"
+        ? "/home/u"
+        : "/Users/u"
   const env =
     o.env ??
     (platform.os === "win32"
@@ -277,6 +291,17 @@ describe("fetchModel", () => {
       )
     ).toBe(true)
   })
+
+  it("downloads into ~/.local/share/eido-dev/models on Linux", async () => {
+    const h = harness({
+      platform: LINUX,
+      blobs: { [MODEL_URL]: { size: 1234, sha256: MODEL_SHA } },
+    })
+    expect(await fetchModel(h.deps, profile, h.config)).toBe(true)
+    expect(
+      h.files.has("/home/u/.local/share/eido-dev/models/example.gguf")
+    ).toBe(true)
+  })
 })
 
 describe("fetchBuild on macOS", () => {
@@ -442,9 +467,30 @@ describe("fetchBuild on Windows", () => {
   it("fails without a build pinned for the platform", async () => {
     const h = harness({ platform: { os: "win32", arch: "arm64" } })
     await expect(fetchBuild(h.deps, lock, h.config)).rejects.toThrow(
-      "model.lock has no llama.cpp build for win32-arm64; it has darwin-arm64, win32-x64"
+      "model.lock has no llama.cpp build for win32-arm64; it has darwin-arm64, win32-x64, linux-x64"
     )
     expect(h.downloaded).toEqual([])
+  })
+})
+
+describe("fetchBuild on Linux", () => {
+  const ROOT = "/home/u/.local/share/eido-dev/llama.cpp"
+  const BUILD = `${ROOT}/b100`
+  const ARCHIVE = `${ROOT}/llama-b100-bin-ubuntu-vulkan-x64.tar.gz.partial`
+
+  it("downloads the linux-x64 tar.gz, extracts it with tar, skips xattr and checks llama-server", async () => {
+    const h = harness({
+      platform: LINUX,
+      blobs: { [LINUX_URL]: { size: 10, sha256: LINUX_SHA } },
+      archive: ["llama-b100/llama-server", "llama-b100/libllama.so"],
+    })
+    expect(await fetchBuild(h.deps, lock, h.config)).toBe(true)
+    expect(h.downloaded).toEqual([`${LINUX_URL} -> ${ARCHIVE}`])
+    expect(h.ran).toEqual([
+      `tar -xf ${ARCHIVE} -C ${ROOT}/.b100.partial`,
+      `${BUILD}/llama-server --version`,
+    ])
+    expect(h.files.has(`${BUILD}/llama-server`)).toBe(true)
   })
 })
 
