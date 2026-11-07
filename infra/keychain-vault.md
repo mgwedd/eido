@@ -27,7 +27,7 @@ security unlock-keychain "$HOME/Library/Keychains/eido/eido.keychain-db"
 ```
 
 Set the gate's `EIDO_GATE_KEYCHAIN_PATH` to that path. Credentials are enrolled on
-the Mac with `pnpm --filter @eido/gate connect <connector>` (#98), through the gate's
+the Mac with `pnpm stack:gate connect <connector>` (#98), through the gate's
 vault interface; the runbook is `infra/connectors.md`. The web app never receives
 the credentials. The helper disables Keychain interaction, so a locked keychain
 returns an error instead of displaying a password dialog in a background process.
