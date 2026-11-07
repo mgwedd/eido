@@ -483,7 +483,7 @@ describe("decision result and error", () => {
     expect(
       errorsOf(validateGateApiError({ code: "teapot", message: "x" }))
     ).toEqual([
-      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable", "busy", "handshake_failed", "auth_failed", "things_unavailable", "automation_denied", "step_up_required", "supervisor_unavailable", "supervisor_failed", "stack_not_running", "unsupported_platform"',
+      '$.code: must be one of "not_found", "already_decided", "verification_failed", "invalid_request", "unauthenticated", "misdirected_request", "unsupported_media_type", "tier_changed", "forbidden", "unavailable", "busy", "handshake_failed", "auth_failed", "things_unavailable", "automation_denied", "step_up_required", "supervisor_unavailable", "supervisor_failed", "stack_not_running", "unsupported_platform", "pin_mismatch", "certificate_mismatch", "claim_failed"',
     ])
     expect(
       errorsOf(validateGateApiError({ code: "not_found", message: "" }))
