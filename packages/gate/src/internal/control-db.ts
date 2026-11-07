@@ -240,6 +240,8 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
      certificate_sha256 TEXT NOT NULL
    ) STRICT;`,
+  // The connected Google account's email address for the Admin Connectors page (#672).
+  `ALTER TABLE connectors ADD COLUMN account_email TEXT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

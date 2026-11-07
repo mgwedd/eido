@@ -10,6 +10,7 @@ import {
   GMAIL_WRITERS,
 } from "./gmail-writers"
 import type { ConnectorProbe } from "./connector-connect"
+import { recordConnectorAccountEmail } from "./connector-health"
 import { getPinnedManifest } from "./connectors"
 import type { UpstreamResult, WriteRequest, WriteTransport } from "./executor"
 import { authorizedCall } from "./vault/authorized-call"
@@ -219,16 +220,7 @@ async function sendMail(
   )
     throw new Error("not a Gmail mail write")
   const args = checked.value.args
-  const profileResponse = await call(
-    options,
-    profileReadUrl(options.db, request.connector),
-    request.connector,
-    { method: "GET" }
-  )
-  const profile: unknown = await profileResponse.json()
-  const emailAddress = isRecord(profile) ? profile["emailAddress"] : undefined
-  if (typeof emailAddress !== "string" || emailAddress.length === 0)
-    throw new Error("Gmail profile has no sender identity")
+  const emailAddress = await authenticatedSender(options, request.connector)
   const composer = new MailComposer({
     from: emailAddress,
     to: args.to,
@@ -326,6 +318,7 @@ async function authenticatedSender(
   const emailAddress = isRecord(profile) ? profile["emailAddress"] : undefined
   if (typeof emailAddress !== "string" || emailAddress.length === 0)
     throw new Error("Gmail profile has no sender identity")
+  recordConnectorAccountEmail(options.db, connector, emailAddress)
   return emailAddress
 }
 

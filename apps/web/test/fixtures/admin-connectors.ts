@@ -32,6 +32,14 @@ export const protonMail: Connector = {
   name: "proton-mail",
   scopes: [],
 }
+export const gmailWithAccount: Connector = {
+  ...gmail,
+  accountEmail: "owner@example.invalid",
+}
+export const protonWithPassword: Connector = {
+  ...protonMail,
+  bridgePasswordStored: true,
+}
 export const gmailDegraded: Connector = {
   ...gmail,
   health: "degraded",

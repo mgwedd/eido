@@ -14,7 +14,10 @@ import { payloadHash } from "./canonical"
 import { claimSimpleFin } from "./connect/simplefin-claim"
 import { checkConnector } from "./connector-connect"
 import type { ConnectorProbes } from "./connector-connect"
-import { getConnectorHealth } from "./connector-health"
+import {
+  getConnectorHealth,
+  recordConnectorAccountEmail,
+} from "./connector-health"
 import {
   controlApprovalChallenge,
   prepareControlApproval,
@@ -420,6 +423,7 @@ export async function removeConnectorSecrets(
   for (const key of keys) await vault.delete(key)
   if (connector === PROTON_CONNECTOR)
     state.db.prepare("DELETE FROM bridge_password_pin").run()
+  recordConnectorAccountEmail(state.db, connector, null)
   audit(state.db, "connector.secrets.removed", connector, {
     outcome: "removed",
   })

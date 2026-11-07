@@ -284,3 +284,26 @@ export function disableConnectorAfterAuthFailure(
     })
   }
 }
+
+const ACCOUNT_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+/**
+ * Records or clears a Google connector's connected account email (#672). Only a well-formed email
+ * address is stored; anything else is ignored so a malformed upstream answer or secret can never
+ * land in the column.
+ */
+export function recordConnectorAccountEmail(
+  db: DatabaseSync,
+  name: string,
+  email: string | null
+): void {
+  if (
+    email !== null &&
+    (email.length < 3 || email.length > 254 || !ACCOUNT_EMAIL.test(email))
+  )
+    return
+  db.prepare("UPDATE connectors SET account_email = ? WHERE name = ?").run(
+    email,
+    name
+  )
+}

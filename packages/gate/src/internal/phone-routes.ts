@@ -601,9 +601,13 @@ function connectorSettings(state: PhoneState, now: Clock): Reply {
   const health = new Map(
     getConnectorHealth(state.db).map((connector) => [connector.name, connector])
   )
+  const bridgePasswordStored =
+    state.db
+      .prepare("SELECT certificate_sha256 FROM bridge_password_pin")
+      .get() !== undefined
   const connectors: GateConnectorSettings["connectors"] = state.db
     .prepare(
-      "SELECT name, pinned_at, manifest_hash, last_success_at FROM connectors ORDER BY name"
+      "SELECT name, pinned_at, manifest_hash, last_success_at, account_email FROM connectors ORDER BY name"
     )
     .all()
     .map((row) => {
@@ -613,6 +617,7 @@ function connectorSettings(state: PhoneState, now: Clock): Reply {
       if (stored === undefined || current === undefined) {
         throw new Error("stored connector state is incomplete")
       }
+      const isProton = name === "proton-mail" || name === "proton-calendar"
       return {
         name,
         enabled: stored.enabled,
@@ -630,6 +635,11 @@ function connectorSettings(state: PhoneState, now: Clock): Reply {
           ? { lastSuccessAt: row["last_success_at"] }
           : {}),
         manifestHash: String(row["manifest_hash"]),
+        ...(isProton ? { bridgePasswordStored } : {}),
+        ...(typeof row["account_email"] === "string" &&
+        row["account_email"].length > 0
+          ? { accountEmail: row["account_email"] }
+          : {}),
         ...(stored.drift === null || stored.enabled
           ? {}
           : {

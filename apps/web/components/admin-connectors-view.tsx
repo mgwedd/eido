@@ -274,6 +274,11 @@ function GoogleCard({
       description={scopes === "" ? undefined : scopes}
       badges={<StatusBadge connector={connector} />}
     >
+      {connector?.accountEmail !== undefined ? (
+        <p className="font-mono text-sm break-all text-muted-foreground">
+          {connector.accountEmail}
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-2">
         <GoogleAction
           target={target}
@@ -305,6 +310,9 @@ function BridgeCard({
       description="Proton Mail and Proton Calendar invitations · via Bridge on the Mac"
       badges={<StatusBadge connector={connector} />}
     >
+      {connector?.bridgePasswordStored === true ? (
+        <p className="text-sm text-muted-foreground">Password stored</p>
+      ) : null}
       <AdminSecretField
         label="Bridge password"
         submitLabel="Seal and connect"

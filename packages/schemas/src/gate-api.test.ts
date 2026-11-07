@@ -8,6 +8,7 @@ import {
   validateGateAuditRecordResult,
   validateGateBackupStatus,
   validateGateConnectorHealth,
+  validateGateConnectorSettings,
   validateGateCredentialStatus,
   validateGateDecisionRequest,
   validateGateDecisionResult,
@@ -1144,6 +1145,67 @@ describe("Proton mail read routes", () => {
         lastSuccess: AT,
       }).ok
     ).toBe(false)
+  })
+})
+
+describe("connector settings", () => {
+  const connector = {
+    name: "gmail",
+    enabled: true,
+    pinnedAt: AT,
+    scopes: ["https://scopes.example.invalid/gmail.modify"],
+    health: "healthy",
+    consecutiveFailures: 0,
+    manifestHash: HASH,
+  }
+
+  test("accepts bridgePasswordStored and accountEmail on connectors", () => {
+    expect(
+      validateGateConnectorSettings({
+        connectors: [
+          { ...connector, accountEmail: "owner@example.invalid" },
+          {
+            ...connector,
+            name: "proton-mail",
+            scopes: [],
+            bridgePasswordStored: true,
+          },
+          {
+            ...connector,
+            name: "proton-calendar",
+            scopes: [],
+            bridgePasswordStored: false,
+          },
+        ],
+        asOf: AT,
+      }).ok
+    ).toBe(true)
+  })
+
+  test("refuses a string in bridgePasswordStored, a malformed accountEmail or an unknown secret key", () => {
+    expect(
+      validateGateConnectorSettings({
+        connectors: [
+          {
+            ...connector,
+            name: "proton-mail",
+            bridgePasswordStored: "secret-password",
+          },
+        ],
+      }).ok
+    ).toBe(false)
+    expect(
+      validateGateConnectorSettings({
+        connectors: [{ ...connector, accountEmail: "not-an-email" }],
+      }).ok
+    ).toBe(false)
+    expect(
+      errorsOf(
+        validateGateConnectorSettings({
+          connectors: [{ ...connector, password: "secret" }],
+        })
+      )
+    ).toEqual(["$.connectors[0].password: unknown key"])
   })
 })
 
