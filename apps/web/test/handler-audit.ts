@@ -207,3 +207,13 @@ export function routeFiles(root: string): string[] {
     .map((path) => relative(root, path).split(sep).join("/"))
     .filter((file) => /^app\/(?:.+\/)?route\.tsx?$/.test(file))
 }
+
+/** Every source file under the web app's source directories, with its text. */
+export function webSources(root: string): { file: string; text: string }[] {
+  return SOURCE_DIRS.flatMap((dir) => sourceFiles(join(root, dir))).map(
+    (path) => ({
+      file: relative(root, path).split(sep).join("/"),
+      text: readFileSync(path, "utf8"),
+    })
+  )
+}

@@ -1,0 +1,638 @@
+"use client"
+
+import Link from "next/link"
+import * as React from "react"
+import { Lock, PenLine } from "lucide-react"
+
+import { Badge } from "@eido/ui/components/badge"
+import { Button, buttonVariants } from "@eido/ui/components/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@eido/ui/components/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@eido/ui/components/dialog"
+import { Field, FieldDescription, FieldLabel } from "@eido/ui/components/field"
+import { Input } from "@eido/ui/components/input"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@eido/ui/components/sheet"
+import { Skeleton } from "@eido/ui/components/skeleton"
+import { useIsMobile } from "@eido/ui/hooks/use-mobile"
+import { AdminSecretField } from "@/components/admin-secret-field"
+import { AdminError, AdminUnreachable } from "@/components/admin-shell"
+import { TierChip, useAdmin } from "@/components/admin-step-up"
+import {
+  changeBridgePin,
+  googleName,
+  landingMessage,
+  PROTON,
+  prepareGoogle,
+  readGoogleLanding,
+  resultReason,
+  removeConnector,
+  removeCopy,
+  removeFailure,
+  sealBridgePassword,
+  sealSimpleFin,
+  SIMPLEFIN,
+  startGoogle,
+  type GooglePrepare,
+  type GoogleTarget,
+  type SecretResult,
+} from "@/lib/admin/connectors"
+import {
+  displayName,
+  healthLabel,
+  loadConnectors,
+  type Connector,
+} from "@/lib/connectors"
+import { loadFileRoots } from "@/lib/settings"
+
+export type AdminConnectorsState =
+  | { status: "loading" }
+  | { status: "unreachable" }
+  | { status: "error" }
+  | {
+      status: "ready"
+      connectors: readonly Connector[]
+      /** The allowed-folder count, or null when it could not be read. */
+      folders: number | null
+    }
+
+/** A line the page announces after an action or a return from Google. */
+export type Notice = { role: "status" | "alert"; text: string }
+
+/** What the cards can do; the View wires each to the gate through the Admin prompts. */
+export type ConnectorActions = {
+  sealBridge: (pin: string, read: () => string) => Promise<SecretResult>
+  changePin: (pin: string) => Promise<SecretResult>
+  sealSimpleFin: (read: () => string) => Promise<SecretResult>
+  prepareGoogle: (target: GoogleTarget) => Promise<GooglePrepare>
+  startGoogle: (
+    target: GoogleTarget,
+    prepared: Extract<GooglePrepare, { kind: "ready" }>["prepared"],
+    read: (() => string) | undefined
+  ) => Promise<SecretResult>
+  remove: (id: string) => void
+}
+
+/** "gmail.modify" for a scope address, the part after its last slash. */
+export function scopeName(scope: string): string {
+  return scope.slice(scope.lastIndexOf("/") + 1)
+}
+
+/** Connected, or the gate's word when the connector is degraded, open or disabled. */
+function statusLabel(connector: Connector | undefined): string {
+  if (connector === undefined) return "Not connected"
+  const label = healthLabel(connector)
+  return label === "Healthy" ? "Connected" : label
+}
+
+function StatusBadge({ connector }: { connector: Connector | undefined }) {
+  return (
+    <Badge variant={connector === undefined ? "outline" : "secondary"}>
+      {statusLabel(connector)}
+    </Badge>
+  )
+}
+
+function ConnectorCard({
+  title,
+  description,
+  badges,
+  children,
+}: {
+  title: string
+  description?: string
+  badges: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <Card role="group" aria-label={title}>
+      <CardHeader>
+        <CardTitle className="flex flex-wrap items-center gap-2">
+          <h2 className="font-heading text-base font-medium">{title}</h2>
+          {badges}
+        </CardTitle>
+        {description === undefined ? null : (
+          <CardDescription className="break-words">
+            {description}
+          </CardDescription>
+        )}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">{children}</CardContent>
+    </Card>
+  )
+}
+
+function RemoveButton({
+  id,
+  onRemove,
+}: {
+  id: string
+  onRemove: (id: string) => void
+}) {
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      className="min-h-11"
+      onClick={() => onRemove(id)}
+    >
+      <Lock aria-hidden />
+      Remove
+    </Button>
+  )
+}
+
+/** Sign in with Google: signed; asks for the client secret first only when the vault has none. */
+function GoogleAction({
+  target,
+  label,
+  actions,
+}: {
+  target: GoogleTarget
+  label: string
+  actions: ConnectorActions
+}) {
+  const [busy, setBusy] = React.useState(false)
+  const [secretFor, setSecretFor] = React.useState<Extract<
+    GooglePrepare,
+    { kind: "ready" }
+  > | null>(null)
+  const [notice, setNotice] = React.useState<Notice | null>(null)
+
+  async function begin() {
+    setBusy(true)
+    setNotice(null)
+    const prepared = await actions.prepareGoogle(target)
+    if (prepared.kind === "failed") {
+      setNotice({
+        role: "alert",
+        text: `Could not start ${googleName(target)}: ${prepared.reason}.`,
+      })
+    } else if (!prepared.clientSecretStored) {
+      setSecretFor(prepared)
+    } else {
+      const result = await actions.startGoogle(
+        target,
+        prepared.prepared,
+        undefined
+      )
+      if (result.kind === "sealed")
+        setNotice({ role: "status", text: "Opening Google…" })
+      else if (result.kind !== "cancelled")
+        setNotice({
+          role: "alert",
+          text: `Could not connect ${googleName(target)}: ${resultReason(result)}.`,
+        })
+    }
+    setBusy(false)
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {secretFor === null ? (
+        <Button
+          type="button"
+          variant="outline"
+          disabled={busy}
+          className="min-h-11 self-start"
+          onClick={() => void begin()}
+        >
+          <PenLine aria-hidden />
+          {label}
+        </Button>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <AdminSecretField
+            label="Google client secret"
+            submitLabel="Seal and connect"
+            busyLabel="Sealing…"
+            onSeal={(read) =>
+              actions.startGoogle(target, secretFor.prepared, read)
+            }
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            className="min-h-11 self-start"
+            onClick={() => setSecretFor(null)}
+          >
+            Cancel
+          </Button>
+        </div>
+      )}
+      {notice === null ? null : (
+        <p
+          role={notice.role}
+          className={
+            notice.role === "alert"
+              ? "text-sm text-destructive"
+              : "text-sm text-muted-foreground"
+          }
+        >
+          {notice.text}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function GoogleCard({
+  target,
+  id,
+  connector,
+  actions,
+  onRemove,
+}: {
+  target: GoogleTarget
+  id: string
+  connector: Connector | undefined
+  actions: ConnectorActions
+  onRemove: (id: string) => void
+}) {
+  const scopes = connector?.scopes.map(scopeName).join(", ")
+  return (
+    <ConnectorCard
+      title={displayName(id)}
+      description={scopes === "" ? undefined : scopes}
+      badges={<StatusBadge connector={connector} />}
+    >
+      <div className="flex flex-wrap gap-2">
+        <GoogleAction
+          target={target}
+          label={connector === undefined ? "Connect with Google" : "Reconnect"}
+          actions={actions}
+        />
+        {connector === undefined ? null : (
+          <RemoveButton id={id} onRemove={onRemove} />
+        )}
+      </div>
+    </ConnectorCard>
+  )
+}
+
+function BridgeCard({
+  connector,
+  actions,
+  onRemove,
+}: {
+  connector: Connector | undefined
+  actions: ConnectorActions
+  onRemove: (id: string) => void
+}) {
+  const [pin, setPin] = React.useState("")
+  const pinId = React.useId()
+  return (
+    <ConnectorCard
+      title="Proton (Bridge)"
+      description="Proton Mail and Proton Calendar invitations · via Bridge on the Mac"
+      badges={<StatusBadge connector={connector} />}
+    >
+      <AdminSecretField
+        label="Bridge password"
+        submitLabel="Seal and connect"
+        busyLabel="Sealing…"
+        onSeal={(read) => actions.sealBridge(pin, read)}
+        secondary={{
+          label: "Change pin",
+          busyLabel: "Changing…",
+          run: () => actions.changePin(pin),
+        }}
+      >
+        <Field>
+          <FieldLabel htmlFor={pinId}>Certificate pin (SHA-256)</FieldLabel>
+          <Input
+            id={pinId}
+            value={pin}
+            onChange={(event) => setPin(event.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono"
+          />
+          <FieldDescription>
+            Changing the pin deletes the stored Bridge password.
+          </FieldDescription>
+        </Field>
+      </AdminSecretField>
+      {connector === undefined ? null : (
+        <RemoveButton id={PROTON} onRemove={onRemove} />
+      )}
+    </ConnectorCard>
+  )
+}
+
+function SimpleFinCard({
+  connector,
+  actions,
+}: {
+  connector: Connector | undefined
+  actions: ConnectorActions
+}) {
+  return (
+    <ConnectorCard
+      title="SimpleFIN"
+      badges={
+        <>
+          <Badge variant="outline">Wave 1</Badge>
+          <StatusBadge connector={connector} />
+        </>
+      }
+    >
+      <AdminSecretField
+        label="Setup token"
+        submitLabel="Seal and connect"
+        busyLabel="Sealing…"
+        onSeal={actions.sealSimpleFin}
+      />
+    </ConnectorCard>
+  )
+}
+
+function FoldersCard({ folders }: { folders: number | null }) {
+  return (
+    <ConnectorCard
+      title="Local folders"
+      description={
+        folders === null
+          ? undefined
+          : `${folders} ${folders === 1 ? "folder" : "folders"}`
+      }
+      badges={null}
+    >
+      <Link
+        href="/settings/folders/edit"
+        className={`${buttonVariants({ variant: "outline" })} min-h-11 self-start`}
+      >
+        Allowed folders
+      </Link>
+    </ConnectorCard>
+  )
+}
+
+/** The remove confirmation: a Dialog on desktop, a bottom Sheet on phones. Escape cancels. */
+function RemoveConfirm({
+  id,
+  onConfirm,
+  onCancel,
+}: {
+  id: string | null
+  onConfirm: (id: string) => void
+  onCancel: () => void
+}) {
+  const mobile = useIsMobile()
+  const copy = removeCopy(id ?? "")
+  const onOpenChange = (open: boolean) => {
+    if (!open) onCancel()
+  }
+  const body = (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <span className="font-heading text-base font-medium">{copy.title}</span>
+        <TierChip tier="elevated" />
+      </div>
+      <p className="text-sm text-muted-foreground">{copy.text}</p>
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          variant="destructive"
+          onClick={() => id !== null && onConfirm(id)}
+        >
+          {copy.button}
+        </Button>
+      </div>
+    </div>
+  )
+  if (mobile)
+    return (
+      <Sheet open={id !== null} onOpenChange={onOpenChange}>
+        <SheetContent side="bottom" showCloseButton={false} className="p-4">
+          <SheetHeader className="sr-only">
+            <SheetTitle>{copy.title}</SheetTitle>
+            <SheetDescription>{copy.text}</SheetDescription>
+          </SheetHeader>
+          {body}
+          <SheetFooter className="hidden" />
+        </SheetContent>
+      </Sheet>
+    )
+  return (
+    <Dialog open={id !== null} onOpenChange={onOpenChange}>
+      <DialogContent showCloseButton={false}>
+        <DialogHeader className="sr-only">
+          <DialogTitle>{copy.title}</DialogTitle>
+          <DialogDescription>{copy.text}</DialogDescription>
+        </DialogHeader>
+        {body}
+        <DialogFooter className="hidden" />
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** The page for a state; pure, so every designed state renders on its own. */
+export function AdminConnectorsBody({
+  state,
+  notice,
+  actions,
+  onRetry,
+}: {
+  state: AdminConnectorsState
+  notice: Notice | null
+  actions: ConnectorActions
+  onRetry: () => void
+}) {
+  const [removing, setRemoving] = React.useState<string | null>(null)
+  if (state.status === "unreachable")
+    return <AdminUnreachable onRetry={onRetry} />
+  if (state.status === "error")
+    return (
+      <AdminError
+        message="Could not read the connectors from the gate."
+        onRetry={onRetry}
+      />
+    )
+  if (state.status === "loading")
+    return (
+      <div className="flex flex-col gap-3">
+        <p role="status" className="text-sm text-muted-foreground">
+          Loading connectors…
+        </p>
+        <Skeleton className="h-28 w-full" />
+        <Skeleton className="h-28 w-full" />
+        <Skeleton className="h-28 w-full" />
+      </div>
+    )
+  const find = (name: string) => state.connectors.find((c) => c.name === name)
+  return (
+    <div className="flex flex-col gap-4">
+      <p
+        role="status"
+        data-region="admin-connectors-notice"
+        className="text-sm text-muted-foreground"
+      >
+        {notice?.role === "status" ? notice.text : ""}
+      </p>
+      {notice?.role === "alert" ? (
+        <p role="alert" className="text-sm text-destructive">
+          {notice.text}
+        </p>
+      ) : null}
+      <GoogleCard
+        target="gmail"
+        id="gmail"
+        connector={find("gmail")}
+        actions={actions}
+        onRemove={setRemoving}
+      />
+      <GoogleCard
+        target="drive"
+        id="drive"
+        connector={find("drive")}
+        actions={actions}
+        onRemove={setRemoving}
+      />
+      <BridgeCard
+        connector={find(PROTON)}
+        actions={actions}
+        onRemove={setRemoving}
+      />
+      <SimpleFinCard connector={find(SIMPLEFIN)} actions={actions} />
+      <FoldersCard folders={state.folders} />
+      <RemoveConfirm
+        id={removing}
+        onConfirm={(id) => {
+          setRemoving(null)
+          actions.remove(id)
+        }}
+        onCancel={() => setRemoving(null)}
+      />
+    </div>
+  )
+}
+
+const subscribeNever = () => () => undefined
+const currentSearch = () => window.location.search
+const serverSearch = () => ""
+
+/** Loads the connectors and the folder count, and wires each card to the gate. */
+export function AdminConnectorsView({
+  navigate = (url: string) => window.location.assign(url),
+}: {
+  /** Where Google's consent address goes; the browser's location by default. */
+  navigate?: (url: string) => void
+}) {
+  const admin = useAdmin()
+  const [state, setState] = React.useState<AdminConnectorsState>({
+    status: "loading",
+  })
+  const [notice, setNotice] = React.useState<Notice | null>(null)
+  const [attempt, setAttempt] = React.useState(0)
+  const { sessionEnded } = admin
+
+  const search = React.useSyncExternalStore(
+    subscribeNever,
+    currentSearch,
+    serverSearch
+  )
+  const landing = React.useMemo(() => {
+    const found = readGoogleLanding(search)
+    return found === null
+      ? null
+      : ({
+          role: found.kind === "connected" ? "status" : "alert",
+          text: landingMessage(found),
+        } satisfies Notice)
+  }, [search])
+
+  React.useEffect(() => {
+    const controller = new AbortController()
+    void Promise.all([
+      loadConnectors(controller.signal),
+      loadFileRoots(controller.signal),
+    ]).then(([connectors, roots]) => {
+      if (controller.signal.aborted) return
+      if (connectors.status === "unauthenticated") {
+        sessionEnded()
+        return
+      }
+      if (connectors.status === "offline") setState({ status: "unreachable" })
+      else if (connectors.status === "error") setState({ status: "error" })
+      else
+        setState({
+          status: "ready",
+          connectors: connectors.connectors,
+          folders: roots.status === "ready" ? roots.value.roots.length : null,
+        })
+    })
+    return () => controller.abort()
+  }, [attempt, sessionEnded])
+
+  const reload = React.useCallback(() => setAttempt((n) => n + 1), [])
+  const retry = React.useCallback(() => {
+    setState({ status: "loading" })
+    reload()
+  }, [reload])
+
+  const actions = React.useMemo<ConnectorActions>(() => {
+    const reloaded = async (result: Promise<SecretResult>) => {
+      const outcome = await result
+      if (outcome.kind === "sealed") reload()
+      return outcome
+    }
+    return {
+      sealBridge: (pin, read) =>
+        reloaded(sealBridgePassword(admin.signed, pin, read)),
+      changePin: (pin) => reloaded(changeBridgePin(admin.signed, pin)),
+      sealSimpleFin: (read) => reloaded(sealSimpleFin(admin.signed, read)),
+      prepareGoogle,
+      startGoogle: (target, prepared, read) =>
+        startGoogle(admin.signed, target, prepared, read, navigate),
+      remove: (id) => {
+        void (async () => {
+          const copy = removeCopy(id)
+          const outcome = await admin.elevated(copy.button, () =>
+            removeConnector(id)
+          )
+          if (outcome.kind === "cancelled") return
+          if (outcome.kind === "ok") {
+            setNotice({ role: "status", text: `${displayName(id)} removed.` })
+            reload()
+          } else if (outcome.kind !== "expired")
+            setNotice({
+              role: "alert",
+              text: `Could not remove ${displayName(id)}: ${removeFailure(outcome)}.`,
+            })
+        })()
+      },
+    }
+  }, [admin, navigate, reload])
+
+  return (
+    <AdminConnectorsBody
+      state={state}
+      notice={notice ?? landing}
+      actions={actions}
+      onRetry={retry}
+    />
+  )
+}
