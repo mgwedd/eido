@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Loader2,
   RefreshCw,
+  Shield,
   UserRound,
   WifiOff,
 } from "lucide-react"
@@ -952,17 +953,34 @@ function AboutSection({ info }: { info: AboutInfo }) {
   )
 }
 
-/** Phones reach Profile from here; the desktop sidebar links it directly. */
-function ProfileRow() {
+/** Phones reach Profile and Admin from here; the desktop sidebar links them directly. */
+function PhoneRow({
+  href,
+  label,
+  icon: Icon,
+}: {
+  href: string
+  label: string
+  icon: typeof UserRound
+}) {
   return (
     <Link
-      href="/profile"
+      href={href}
       className="flex min-h-11 items-center gap-3 rounded-xl border bg-card px-4 text-sm font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:hidden"
     >
-      <UserRound aria-hidden className="size-4 text-muted-foreground" />
-      <span className="flex-1">Profile</span>
+      <Icon aria-hidden className="size-4 text-muted-foreground" />
+      <span className="flex-1">{label}</span>
       <ChevronRight aria-hidden className="size-4 text-muted-foreground" />
     </Link>
+  )
+}
+
+function PhoneRows() {
+  return (
+    <>
+      <PhoneRow href="/profile" label="Profile" icon={UserRound} />
+      <PhoneRow href="/admin" label="Admin" icon={Shield} />
+    </>
   )
 }
 
@@ -983,7 +1001,7 @@ function SettingsBody({
         <p role="status" className="sr-only">
           Loading settings…
         </p>
-        <ProfileRow />
+        <PhoneRows />
         <AppearanceSection key="appearance" />
         <NotificationsSection key="notifications" device={pushDevice} />
         <Skeleton className="h-32 w-full" />
@@ -1003,7 +1021,7 @@ function SettingsBody({
   ].some((s) => s.status === "offline" || s.status === "error")
   return (
     <>
-      <ProfileRow />
+      <PhoneRows />
       <AppearanceSection key="appearance" />
       <NotificationsSection key="notifications" device={pushDevice} />
       <PasskeysSection load={state.passkeys} />

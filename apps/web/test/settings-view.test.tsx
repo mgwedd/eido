@@ -136,6 +136,14 @@ test("a phone-only row links to the Profile page", async () => {
   expect(link?.className).toContain("md:hidden")
 })
 
+test("a phone-only row links to the Admin page", async () => {
+  gate(healthy)
+  await render()
+  const link = container.querySelector('a[href="/admin"]')
+  expect(link?.textContent).toBe("Admin")
+  expect(link?.className).toContain("md:hidden")
+})
+
 test("lists passkeys with created time, this device and revoked status", async () => {
   gate(healthy)
   await render()

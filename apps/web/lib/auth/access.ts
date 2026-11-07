@@ -26,6 +26,7 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/connectors", roles: ["owner"] },
   { path: "/settings", roles: ["owner"] },
   { path: "/profile", roles: ["owner"] },
+  { path: "/admin", roles: ["owner"] },
   { path: "/unlock", roles: ["owner"] },
   { path: "/enroll", roles: ["owner"] },
 ]
