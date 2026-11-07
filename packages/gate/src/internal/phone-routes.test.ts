@@ -17,6 +17,8 @@ import {
   validateGateCredentialStatus,
   validateGateDecisionResult,
   validateGateEnrolOptions,
+  validateGateEnrolmentCode,
+  validateGateEnrolmentCodePrepared,
   validateGateIntentHistory,
   validateGateLoginOptions,
   validateGatePendingIntentList,
@@ -42,7 +44,7 @@ import { prepareControlApproval } from "./control-approvals"
 import { loadPolicy, SHIPPED_DEFAULT_PATH } from "./policy"
 import { propose } from "./intents"
 import { revokeCredential } from "./credentials"
-import { issueEnrolmentCode } from "./enrolment"
+import { checkEnrolmentCode, issueEnrolmentCode } from "./enrolment"
 import {
   matchRoute,
   phoneHandler,
@@ -3111,5 +3113,96 @@ describe("phoneHandler: admin routes (#659)", () => {
       503,
       "supervisor_unavailable",
     ])
+  })
+})
+
+describe("phoneHandler: enrolment codes from the Admin page (#660)", () => {
+  async function prepare(cookie: string) {
+    const reply = await call("POST", "/admin/enrolment-codes/prepare", {
+      cookie,
+    })
+    expect(reply.status).toBe(200)
+    const parsed = validateGateEnrolmentCodePrepared(reply.body)
+    if (!parsed.ok) throw new Error("the ceremony does not match the schema")
+    return parsed.value
+  }
+
+  it("needs a session to prepare or issue", async () => {
+    for (const path of [
+      "/admin/enrolment-codes/prepare",
+      "/admin/enrolment-codes",
+    ]) {
+      const reply = await call("POST", path, { body: {} })
+      expect([reply.status, code(reply)]).toEqual([401, "unauthenticated"])
+    }
+  })
+
+  it("issues a working code once the passkey signs the ceremony, and keeps it out of the audit", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const ceremony = await prepare(cookie)
+    const authorization = controlAuthorization(s.db, ceremony)
+    const reply = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: { approval: authorization.request },
+    })
+    expect(reply.status).toBe(201)
+    const issued = validateGateEnrolmentCode(reply.body)
+    if (!issued.ok) throw new Error("the code does not match the schema")
+    expect(
+      checkEnrolmentCode(s.db, "phone", issued.value.code, () => at).ok
+    ).toBe(true)
+    const raw = issued.value.code.replaceAll("-", "")
+    expect(loggedText(s.db)).not.toContain(raw)
+    expect(loggedText(s.db)).not.toContain(issued.value.code)
+    expect(auditRows(s.db).map((row) => row.action)).toContain(
+      "enrolment_code.issued"
+    )
+  })
+
+  it("issues nothing without a valid assertion", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const ceremony = await prepare(cookie)
+    const authorization = controlAuthorization(s.db, ceremony)
+    const request = authorization.request
+    if (typeof request !== "object" || request === null)
+      throw new Error("no approval")
+    const forged = { ...request, nonce: "A".repeat(43) }
+    const reply = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: { approval: forged },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    const unsigned = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: {},
+    })
+    expect(unsigned.status).toBe(400)
+    expect(
+      s.db.prepare("SELECT COUNT(*) AS n FROM enrolment_codes").get()?.["n"]
+    ).toBe(0)
+  })
+
+  it("refuses a ceremony used twice or superseded by a newer one", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const first = controlAuthorization(s.db, await prepare(cookie))
+    const second = controlAuthorization(s.db, await prepare(cookie))
+    const stale = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: { approval: first.request },
+    })
+    expect(stale.status).toBe(403)
+    const used = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: { approval: second.request },
+    })
+    expect(used.status).toBe(201)
+    const again = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: { approval: second.request },
+    })
+    expect(again.status).toBe(403)
   })
 })

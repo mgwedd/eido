@@ -18,9 +18,10 @@ The phone listener (`PHONE_ROUTES` in `packages/gate/src/internal/phone-routes.t
 | `POST /connector-settings/:id/pin`, `POST /connector-settings/:id/pin/decision`     | `manifest.pin` for a connector that has never been pinned, over the reviewed manifest on the Mac (below) |
 | `POST /push/prepare`, `POST /push/subscriptions`                                    | `policy.set` binding one push subscription to its endpoint                                               |
 | `POST /file-roots/prepare`, `POST /file-roots/complete`                             | `policy.set` on target `file-roots` (#574); see `docs/local-files.md`                                    |
+| `POST /admin/enrolment-codes/prepare`, `POST /admin/enrolment-codes`                | `policy.set` on target `enrolment_code` (#660): issues a phone enrolment code from the Admin page        |
 | `GET /file-roots`                                                                   | reads the approved roots; changes nothing                                                                |
 
-Permission overrides (`policy.set` on `permissions`), enrolment codes and passkey revocation stay off the phone listener.
+Permission overrides (`policy.set` on `permissions`) and passkey revocation stay off the phone listener. Enrolment codes are issued on the control socket (`pnpm stack:gate enrol-code`) or by the signed Admin route above; the code is returned once and never logged or audited.
 
 ## Re-pinning a drifted connector: placing the reviewed manifest (#97, #497)
 

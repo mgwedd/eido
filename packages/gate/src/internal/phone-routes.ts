@@ -9,6 +9,7 @@ import {
   validateGateEnrolRequest,
   validateGateLoginRequest,
   validateGatePushRegistration,
+  validateGateEnrolmentCodeRequest,
   validateGateRepinRequest,
 } from "@eido/schemas"
 import type {
@@ -16,6 +17,7 @@ import type {
   GateAuditPage,
   GateConnectorSettings,
   GateCredentialStatus,
+  GateEnrolmentCode,
   GateFileRoots,
   GateDecisionResult,
   GateEnrolOptions,
@@ -54,7 +56,11 @@ import {
   listPasskeys,
 } from "./credentials"
 import { readBackupStatus } from "./backup-status"
-import { checkEnrolmentCode } from "./enrolment"
+import {
+  checkEnrolmentCode,
+  issueSignedEnrolmentCode,
+  prepareEnrolmentCodeIssue,
+} from "./enrolment"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
 import {
@@ -98,9 +104,10 @@ import type { WebAuthnConfig } from "./webauthn"
 // The phone listener (#85): what the PWA calls, through `tailscale serve`, to sign in with its
 // passkey and to list, prepare, edit and decide approvals. It answers only the Host headers it
 // is given (421 otherwise) and only below its base path. Every route outside the table below is
-// 404 before any session check, so the control socket's routes (issuing enrolment codes,
-// revocation, policy; #78) and the data plane's routes do not exist here, signed in or not. The
-// stack admin routes (`/admin/*`, #659) relay the stack supervisor; see admin-routes.ts. The one
+// 404 before any session check, so the control socket's routes (revocation, policy; #78) and the
+// data plane's routes do not exist here, signed in or not. The stack admin routes (`/admin/*`,
+// #659) relay the stack supervisor; see admin-routes.ts. Issuing an enrolment code from the web
+// Admin page (`/admin/enrolment-codes`, #660) is a signed control change. The one
 // exception is the allowed-folder list (`GET /file-roots`, #574), served beside the signed
 // ceremony that changes it; file reads (`POST /files`) stay on the data plane. Credential
 // status, login and enrolment need no session: enrolment needs a single-use code the owner
@@ -192,6 +199,8 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/admin/models", tier: "session" },
   { method: "POST", path: "/admin/models/:id/use", tier: "elevated" },
   { method: "POST", path: "/admin/models/:id/fetch", tier: "elevated" },
+  { method: "POST", path: "/admin/enrolment-codes/prepare", tier: "session" },
+  { method: "POST", path: "/admin/enrolment-codes", tier: "signed" },
 ] as const satisfies readonly PhoneRoute[]
 
 type RoutePath = (typeof PHONE_ROUTES)[number]["path"]
@@ -1046,6 +1055,33 @@ async function registerPush(
   }
 }
 
+// Adding a device adds an approver, so the web Admin page issues a code only with the owner's
+// passkey over the prepared ceremony (#660). The code is in this one response and nowhere else.
+async function issueEnrolmentCodeRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateEnrolmentCodeRequest(body.value)
+  if (!checked.ok) return invalid("an enrolment code request", checked.errors)
+  try {
+    const issued = issueSignedEnrolmentCode(
+      state.db,
+      { config: state.webAuthn, request: checked.value.approval },
+      now
+    )
+    const reply: GateEnrolmentCode = {
+      code: issued.code,
+      expiresAt: issued.expiresAt.toISOString(),
+    }
+    return { status: 201, body: reply }
+  } catch {
+    return apiError(403, "verification_failed", "enrolment code refused")
+  }
+}
+
 function route(
   state: PhoneState,
   request: GateRequest,
@@ -1128,6 +1164,10 @@ function route(
         : registerPush(state, request)
     case "/push/prepare":
       return preparePush(state, request)
+    case "/admin/enrolment-codes/prepare":
+      return { status: 200, body: prepareEnrolmentCodeIssue(state.db) }
+    case "/admin/enrolment-codes":
+      return issueEnrolmentCodeRoute(state, request, now)
     case "/push/:id/remove":
       removePushSubscription(state.db, matched.id)
       return { status: 200, body: { id: matched.id } }
