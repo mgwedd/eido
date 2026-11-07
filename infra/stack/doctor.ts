@@ -33,6 +33,7 @@ import {
   type StackConfig,
 } from "./config.ts"
 import { describeListeners, listenersOn, type Exec } from "./ports.ts"
+import { tailscaleBin } from "./process-control.ts"
 import type { FileStat } from "./settings.ts"
 import { parsePidRecord } from "./supervise.ts"
 
@@ -267,12 +268,13 @@ const START_TAILSCALE: Record<Platform, string> = {
 async function checkTailscale(
   deps: DoctorDeps
 ): Promise<{ check: Check; host?: string }> {
-  const run = await deps.exec("tailscale", ["status", "--json"])
+  const bin = tailscaleBin(deps.platform)
+  const run = await deps.exec(bin, ["status", "--json"])
   if (run.code !== 0)
     return {
       check: fail(
         "tailscale",
-        `tailscale status failed: ${run.stderr.trim() || `exit ${run.code}`}`,
+        `${bin} status failed: ${run.stderr.trim() || `exit ${run.code}`}`,
         fix("start-tailscale", START_TAILSCALE[deps.platform])
       ),
     }
