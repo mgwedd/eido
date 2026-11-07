@@ -7,18 +7,22 @@ import {
 } from "../connectors/files"
 import type { AskCitation, AskDeps, AskResult } from "./types"
 
+function normalizeSpaces(input: string): string {
+  return input.trim().replace(/\s+/g, " ")
+}
+
 const NOTE_DIRECT_LOOKUP_PATTERN =
-  /\b(?:have\s+i\s+(?:noted|written|wrote|jotted)|did\s+i\s+(?:note|write|jot)|what\s+did\s+i\s+(?:note|write|jot)|i'?ve\s+(?:noted|written|jotted)|(?:anything|something)\s+(?:i\s+|i'?ve\s+)?(?:noted|written|wrote|jotted)|i\s+(?:wrote|jotted)\s+down|in\s+my\s+(?:private|own|local)?\s*notes|my\s+(?:private|own|local)?\s*notes\s+(?:say|mention|have)|what(?:'s|\s+is)\s+in\s+my\s+(?:private|own|local)?\s*notes|(?:search|look\s+up(?:\s+in)?|check|find\s+in|show(?:\s+me)?)\s+my\s+(?:private|own|local)?\s*notes|(?:any\s+)?notes\s+(?:about|on|regarding))\b/i
+  /\b(?:have i (?:noted|written|wrote|jotted)|did i (?:note|write|jot)|what did i (?:note|write|jot)|i'?ve (?:noted|written|jotted)|(?:anything|something) (?:i |i'?ve )?(?:noted|written|wrote|jotted)|i (?:wrote|jotted) down|in my (?:private |own |local )?notes|my (?:private |own |local )?notes (?:say|mention|have)|what(?:'s| is) in my (?:private |own |local )?notes|(?:search|look up(?: in)?|check|find in|show(?: me)?) my (?:private |own |local )?notes|(?:any )?notes (?:about|on|regarding))\b/i
 
 const NOTE_SYNTHESIS_WORK_PATTERN =
-  /\b(?:summar\w*|based\s+on|turn(?:\s+my\s+notes)?\s+into|synthes\w*|draft|compare|match|rewrite|explain|format|action\s+plan|proposal|create|compose)\b/i
+  /\b(?:summar\w*|based on|turn(?: my notes)? into|synthes\w*|draft|compare|match|rewrite|explain|format|action plan|proposal|create|compose)\b/i
 
 /**
  * Returns true when the request asks directly what is recorded in local notes,
  * without asking to synthesize, transform, or draft from them.
  */
 export function isDirectNoteLookup(question: string): boolean {
-  const folded = question.toLowerCase().replace(/[’‘]/g, "'")
+  const folded = normalizeSpaces(question.toLowerCase().replace(/[’‘]/g, "'"))
   return (
     NOTE_DIRECT_LOOKUP_PATTERN.test(folded) &&
     !NOTE_SYNTHESIS_WORK_PATTERN.test(folded)
@@ -30,7 +34,7 @@ export function isDirectNoteLookup(question: string): boolean {
  * prefixes and notes boilerplate.
  */
 export function extractNoteSearchQuery(question: string): string {
-  let cleaned = question.trim()
+  let cleaned = normalizeSpaces(question)
   while (
     cleaned.length > 0 &&
     (cleaned.endsWith("?") ||
@@ -43,57 +47,57 @@ export function extractNoteSearchQuery(question: string): string {
   }
 
   // Handle "look up X in my notes"
-  const lookUpSuffix = /\s+in\s+my\s+(?:private|own|local)?\s*notes$/i
-  if (/^look\s+up\s+/i.test(cleaned) && lookUpSuffix.test(cleaned)) {
-    cleaned = cleaned.replace(/^look\s+up\s+/i, "").replace(lookUpSuffix, "")
+  const lookUpSuffix = / in my (?:private |own |local )?notes$/i
+  if (/^look up /i.test(cleaned) && lookUpSuffix.test(cleaned)) {
+    cleaned = cleaned.replace(/^look up /i, "").replace(lookUpSuffix, "")
   }
 
   cleaned = cleaned
     .replace(
-      /^(?:search|check|find\s+in|look\s+up\s+in)\s+my\s+(?:private|own|local)?\s*notes\s*(?:for\s+)?/i,
+      /^(?:search|check|find in|look up in) my (?:private |own |local )?notes (?:for )?/i,
       ""
     )
     .replace(
-      /^(?:what\s+did\s+i\s+(?:note|write|jot))\s+(?:(?:anything|something)\s+)?(?:down\s+)?(?:about|on|regarding)\s+/i,
+      /^what did i (?:note|write|jot) (?:(?:anything|something) )?(?:down )?(?:about|on|regarding) /i,
       ""
     )
     .replace(
-      /^(?:what\s+have\s+i\s+(?:noted|written|jotted))\s+(?:(?:anything|something)\s+)?(?:down\s+)?(?:about|on|regarding)\s+/i,
+      /^what have i (?:noted|written|jotted) (?:(?:anything|something) )?(?:down )?(?:about|on|regarding) /i,
       ""
     )
     .replace(
-      /^(?:did\s+i\s+(?:note|write|jot))\s+(?:(?:anything|something)\s+)?(?:down\s+)?(?:about|on|regarding)\s+/i,
+      /^did i (?:note|write|jot) (?:(?:anything|something) )?(?:down )?(?:about|on|regarding) /i,
       ""
     )
     .replace(
-      /^(?:have\s+i\s+(?:noted|written|jotted))\s+(?:(?:anything|something)\s+)?(?:down\s+)?(?:about|on|regarding)\s+/i,
+      /^have i (?:noted|written|jotted) (?:(?:anything|something) )?(?:down )?(?:about|on|regarding) /i,
       ""
     )
     .replace(
-      /^(?:what\s+do\s+my\s+(?:private|own|local)?\s*notes\s+(?:say|mention)\s+(?:about|on|regarding)\s+)/i,
+      /^what do my (?:private |own |local )?notes (?:say|mention) (?:about|on|regarding) /i,
       ""
     )
     .replace(
-      /^(?:what(?:'s|\s+is)\s+in\s+my\s+(?:private|own|local)?\s*notes\s+(?:about|on|regarding)\s+)/i,
+      /^what(?:'s| is) in my (?:private |own |local )?notes (?:about|on|regarding) /i,
       ""
     )
     .replace(
-      /^(?:in\s+my\s+(?:private|own|local)?\s*notes(?:,\s*|\s+))(?:what\s+did\s+i\s+(?:note|write|jot)(?:\s+down)?\s+(?:about|on|regarding)\s+)?/i,
+      /^in my (?:private |own |local )?notes(?:, | )(?:what did i (?:note|write|jot) (?:down )?(?:about|on|regarding) )?/i,
       ""
     )
-    .replace(/^(?:(?:any\s+)?notes\s+(?:about|on|regarding)\s+)/i, "")
+    .replace(/^(?:any )?notes (?:about|on|regarding) /i, "")
     .replace(
-      /^(?:show(?:\s+me)?\s+my\s+(?:private|own|local)?\s*notes\s+(?:about|on|regarding)\s+)/i,
+      /^show(?: me)? my (?:private |own |local )?notes (?:about|on|regarding) /i,
       ""
     )
 
   // Strip remaining inline notes mentions if any
   cleaned = cleaned
-    .replace(/\b(?:in\s+my\s+(?:private|own|local)?\s*notes)\b/gi, "")
+    .replace(/\bin my (?:private |own |local )?notes\b/gi, "")
     .trim()
 
   // Strip leading articles
-  cleaned = cleaned.replace(/^(?:the|a|an)\s+/i, "").trim()
+  cleaned = cleaned.replace(/^(?:the|a|an) /i, "").trim()
 
   const normalized = cleaned.toLowerCase().replace(/[’‘]/g, "'")
   if (
