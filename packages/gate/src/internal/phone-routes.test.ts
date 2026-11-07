@@ -17,6 +17,10 @@ import {
   validateGateCredentialStatus,
   validateGateDecisionResult,
   validateGateEnrolOptions,
+  validateGateEnrolmentCode,
+  validateGateEnrolmentCodePrepared,
+  validateGateGoogleConnectPrepared,
+  validateGateGoogleConnectStarted,
   validateGateIntentHistory,
   validateGateLoginOptions,
   validateGatePendingIntentList,
@@ -39,10 +43,12 @@ import {
 import { checkDrift, manifestHash } from "./connectors"
 import { payloadHash } from "./canonical"
 import { prepareControlApproval } from "./control-approvals"
+import { GoogleFlows } from "./google-connect"
+import { InMemoryVault } from "./vault/vault"
 import { loadPolicy, SHIPPED_DEFAULT_PATH } from "./policy"
 import { propose } from "./intents"
 import { revokeCredential } from "./credentials"
-import { issueEnrolmentCode } from "./enrolment"
+import { checkEnrolmentCode, issueEnrolmentCode } from "./enrolment"
 import {
   matchRoute,
   phoneHandler,
@@ -2349,7 +2355,10 @@ describe("phoneHandler: first pin of a never-pinned connector (#627)", () => {
       state.reviewedManifest = (name) => readReviewedManifest(dataDir, name)
       enrol(auth)
       const cookie = await signIn()
+      // Drive has a committed manifest and is not pinned yet; the placed gmail file wins over
+      // gmail's committed one, as the pinned hash below shows.
       expect((await settings(cookie)).unpinned?.map((u) => u.name)).toEqual([
+        "drive",
         "gmail",
       ])
       const prepared = await prepare(cookie)
@@ -2363,6 +2372,7 @@ describe("phoneHandler: first pin of a never-pinned connector (#627)", () => {
       })
       expect(done.status).toBe(200)
       expect(gmailRow()?.["enabled"]).toBe(1)
+      expect(gmailRow()?.["manifest_hash"]).toBe(manifestHash(reviewed()))
     } finally {
       rmSync(dataDir, { recursive: true, force: true })
     }
@@ -2994,4 +3004,324 @@ describe("tierRefusal", () => {
     expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
     expect(intentState(id)).toBe("pending")
   })
+})
+
+describe("phoneHandler: admin routes (#659)", () => {
+  const JOBS = { processes: [], tasks: [] }
+  const seen: string[] = []
+
+  beforeEach(() => {
+    seen.length = 0
+    const answer =
+      <T>(name: string, value: T) =>
+      (...args: unknown[]) => {
+        seen.push(`${name} ${JSON.stringify(args)}`)
+        return Promise.resolve(value)
+      }
+    state.supervisor = {
+      doctor: answer("doctor", { checks: [] }),
+      jobs: answer("jobs", JOBS),
+      start: answer("start", JOBS),
+      stop: answer("stop", JOBS),
+      restart: answer("restart", JOBS),
+      models: answer("models", { active: "small", profiles: [] }),
+      useModel: answer("useModel", { active: "small", profiles: [] }),
+      fetchModel: answer("fetchModel", JOBS),
+      settings: answer("settings", { sha256: null, settings: {} }),
+      writeSettings: answer("writeSettings", { sha256: null, settings: {} }),
+      loginItem: answer("loginItem", { enabled: false }),
+      setLoginItem: answer("setLoginItem", { enabled: true }),
+    }
+  })
+
+  async function elevate(cookie: string) {
+    const options = await call("POST", "/auth/step-up/options", { cookie })
+    const parsed = validateGateLoginOptions(options.body)
+    if (!parsed.ok) throw new Error("step-up options do not match the schema")
+    const reply = await call("POST", "/auth/step-up", {
+      cookie,
+      body: {
+        assertion: assertion(auth, parsed.value.challenge, { signCount: 1 }),
+      },
+    })
+    if (reply.status !== 200) throw new Error("step-up refused")
+  }
+
+  it.each([
+    ["GET", "/admin/stack"],
+    ["GET", "/admin/doctor"],
+    ["GET", "/admin/models"],
+    ["POST", "/admin/stack/start"],
+    ["POST", "/admin/models/small/use"],
+    ["GET", "/admin/login-item"],
+    ["POST", "/admin/login-item"],
+  ])("refuses %s %s without a session", async (method, path) => {
+    const reply = await call(method, path, { body: { names: ["core"] } })
+    expect([reply.status, code(reply)]).toEqual([401, "unauthenticated"])
+    expect(seen).toEqual([])
+  })
+
+  it("reads the stack, doctor and models with a session alone", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    expect((await call("GET", "/admin/stack", { cookie })).body).toEqual({
+      supervisor: "available",
+      jobs: JOBS,
+    })
+    expect((await call("GET", "/admin/doctor", { cookie })).status).toBe(200)
+    expect((await call("GET", "/admin/models", { cookie })).status).toBe(200)
+    expect(seen).toEqual(["jobs []", "doctor []", "models []"])
+  })
+
+  it.each([
+    ["/admin/stack/start", { names: ["core"] }],
+    ["/admin/stack/stop", { names: ["core"] }],
+    ["/admin/stack/restart", { names: ["llama"] }],
+    ["/admin/models/small/use", {}],
+    ["/admin/models/small/fetch", {}],
+    ["/admin/login-item", { enabled: true }],
+  ])("refuses %s to a session without a step-up", async (path, body) => {
+    enrol(auth)
+    const cookie = await signIn()
+    const reply = await call("POST", path, { cookie, body })
+    expect([reply.status, code(reply)]).toEqual([403, "step_up_required"])
+    expect(seen).toEqual([])
+  })
+
+  it("relays stack and model changes once the session is stepped up", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    await elevate(cookie)
+    const stopped = await call("POST", "/admin/stack/stop", {
+      cookie,
+      body: { names: ["core", "llama"] },
+    })
+    expect(stopped.status).toBe(202)
+    const fetched = await call("POST", "/admin/models/large/fetch", { cookie })
+    expect(fetched.status).toBe(202)
+    expect(seen).toEqual(['stop [["core","llama"]]', 'fetchModel ["large"]'])
+  })
+
+  it("reads start at login with a session and changes it after a step-up (#664)", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const read = await call("GET", "/admin/login-item", { cookie })
+    expect([read.status, read.body]).toEqual([200, { enabled: false }])
+    await elevate(cookie)
+    const changed = await call("POST", "/admin/login-item", {
+      cookie,
+      body: { enabled: true },
+    })
+    expect([changed.status, changed.body]).toEqual([200, { enabled: true }])
+    expect(seen).toEqual(["loginItem []", "setLoginItem [true]"])
+  })
+
+  it("never lets the web app stop the gate or itself", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    await elevate(cookie)
+    const reply = await call("POST", "/admin/stack/stop", {
+      cookie,
+      body: { names: ["gate", "web"] },
+    })
+    expect([reply.status, code(reply)]).toEqual([400, "invalid_request"])
+    expect(seen).toEqual([])
+  })
+
+  it("reports the stack as unavailable when the gate has no supervisor socket", async () => {
+    delete state.supervisor
+    enrol(auth)
+    const cookie = await signIn()
+    expect((await call("GET", "/admin/stack", { cookie })).body).toEqual({
+      supervisor: "unavailable",
+    })
+    const doctor = await call("GET", "/admin/doctor", { cookie })
+    expect([doctor.status, code(doctor)]).toEqual([
+      503,
+      "supervisor_unavailable",
+    ])
+  })
+})
+
+describe("phoneHandler: enrolment codes from the Admin page (#660)", () => {
+  async function prepare(cookie: string) {
+    const reply = await call("POST", "/admin/enrolment-codes/prepare", {
+      cookie,
+    })
+    expect(reply.status).toBe(200)
+    const parsed = validateGateEnrolmentCodePrepared(reply.body)
+    if (!parsed.ok) throw new Error("the ceremony does not match the schema")
+    return parsed.value
+  }
+
+  it("needs a session to prepare or issue", async () => {
+    for (const path of [
+      "/admin/enrolment-codes/prepare",
+      "/admin/enrolment-codes",
+    ]) {
+      const reply = await call("POST", path, { body: {} })
+      expect([reply.status, code(reply)]).toEqual([401, "unauthenticated"])
+    }
+  })
+
+  it("issues a working code once the passkey signs the ceremony, and keeps it out of the audit", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const ceremony = await prepare(cookie)
+    const authorization = controlAuthorization(s.db, ceremony)
+    const reply = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: { approval: authorization.request },
+    })
+    expect(reply.status).toBe(201)
+    const issued = validateGateEnrolmentCode(reply.body)
+    if (!issued.ok) throw new Error("the code does not match the schema")
+    expect(
+      checkEnrolmentCode(s.db, "phone", issued.value.code, () => at).ok
+    ).toBe(true)
+    const raw = issued.value.code.replaceAll("-", "")
+    expect(loggedText(s.db)).not.toContain(raw)
+    expect(loggedText(s.db)).not.toContain(issued.value.code)
+    expect(auditRows(s.db).map((row) => row.action)).toContain(
+      "enrolment_code.issued"
+    )
+  })
+
+  it("issues nothing without a valid assertion", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const ceremony = await prepare(cookie)
+    const authorization = controlAuthorization(s.db, ceremony)
+    const request = authorization.request
+    if (typeof request !== "object" || request === null)
+      throw new Error("no approval")
+    const forged = { ...request, nonce: "A".repeat(43) }
+    const reply = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: { approval: forged },
+    })
+    expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    const unsigned = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: {},
+    })
+    expect(unsigned.status).toBe(400)
+    expect(
+      s.db.prepare("SELECT COUNT(*) AS n FROM enrolment_codes").get()?.["n"]
+    ).toBe(0)
+  })
+
+  it("refuses a ceremony used twice or superseded by a newer one", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const first = controlAuthorization(s.db, await prepare(cookie))
+    const second = controlAuthorization(s.db, await prepare(cookie))
+    const stale = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: { approval: first.request },
+    })
+    expect(stale.status).toBe(403)
+    const used = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: { approval: second.request },
+    })
+    expect(used.status).toBe(201)
+    const again = await call("POST", "/admin/enrolment-codes", {
+      cookie,
+      body: { approval: second.request },
+    })
+    expect(again.status).toBe(403)
+  })
+})
+
+describe("phoneHandler: Google sign-in (#662)", () => {
+  const ORIGIN = "https://eido.example.invalid:8443"
+  const CLIENT_ID = "test-client.apps.example.invalid"
+  const SECRET = ["test", "client", "secret", "662"].join("-")
+
+  beforeEach(() => {
+    state.google = {
+      db: s.db,
+      vault: new InMemoryVault(),
+      flows: new GoogleFlows(),
+      redirectUri: `${ORIGIN}/api/gate/connect/google/callback`,
+      webOrigin: ORIGIN,
+      clientIds: { gmail: CLIENT_ID },
+      fetch: () => Promise.reject(new Error("no Google in this test")),
+    }
+    enrol(auth)
+  })
+
+  it("prepares with a session and starts only with the passkey's signature", async () => {
+    const anonymous = await call("POST", "/admin/connectors/google/prepare", {
+      body: { target: "gmail" },
+    })
+    expect([anonymous.status, code(anonymous)]).toEqual([
+      401,
+      "unauthenticated",
+    ])
+    const cookie = await signIn()
+    const prepared = validateGateGoogleConnectPrepared(
+      (
+        await call("POST", "/admin/connectors/google/prepare", {
+          cookie,
+          body: { target: "gmail" },
+        })
+      ).body
+    )
+    if (!prepared.ok) throw new Error("prepare does not match the schema")
+    expect(prepared.value.clientSecretStored).toBe(false)
+    const started = await call("POST", "/admin/connectors/google/start", {
+      cookie,
+      body: {
+        approval: controlAuthorization(s.db, prepared.value.approval).request,
+        target: "gmail",
+        clientSecret: SECRET,
+      },
+    })
+    const parsed = validateGateGoogleConnectStarted(started.body)
+    if (!parsed.ok) throw new Error("start does not match the schema")
+    expect(
+      new URL(parsed.value.authorizationUrl).searchParams.get("client_id")
+    ).toBe(CLIENT_ID)
+  })
+
+  it("refuses a start body that is not a sign-in request", async () => {
+    const cookie = await signIn()
+    const reply = await call("POST", "/admin/connectors/google/start", {
+      cookie,
+      body: { target: "gmail" },
+    })
+    expect([reply.status, code(reply)]).toEqual([400, "invalid_request"])
+    const target = await call("POST", "/admin/connectors/google/prepare", {
+      cookie,
+      body: { target: "proton" },
+    })
+    expect([target.status, code(target)]).toEqual([400, "invalid_request"])
+  })
+
+  it("sends the browser back to the Admin page from the public callback", async () => {
+    const reply = await call("GET", "/connect/google/callback?state=unknown")
+    expect([reply.status, reply.headers?.["location"]]).toEqual([
+      303,
+      `${ORIGIN}/admin/connectors?error=expired`,
+    ])
+  })
+
+  it.each([
+    ["POST", "/admin/connectors/google/prepare"],
+    ["POST", "/admin/connectors/google/start"],
+    ["GET", "/connect/google/callback"],
+  ])(
+    "answers 503 on %s %s when Google is not configured",
+    async (method, path) => {
+      delete state.google
+      const cookie = await signIn()
+      const reply = await call(method, path, {
+        cookie,
+        body: { target: "gmail" },
+      })
+      expect([reply.status, code(reply)]).toEqual([503, "unavailable"])
+    }
+  )
 })

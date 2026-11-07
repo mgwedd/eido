@@ -20,7 +20,6 @@ import {
   type ModelLock,
   type ModelProfile,
 } from "../llama/lock.ts"
-import { serverArgs } from "../llama/server.ts"
 import { verifyBuild, verifyModel } from "../llama/verify.ts"
 import type { Fetch } from "../tailscale/measure.ts"
 import { parseDnsName } from "../tailscale/serve-routes.ts"
@@ -426,10 +425,6 @@ function checkGmail(deps: DoctorDeps): Check {
 
 type LlamaPaths = { binary: string; modelPath: string; port: number }
 
-/**
- * infra/llama's defaults are the Mac and Windows layouts. On Linux the binary and model sit under
- * the stack dir; the env overrides win.
- */
 function llamaPaths(
   deps: DoctorDeps,
   lock: ModelLock,
@@ -441,21 +436,10 @@ function llamaPaths(
     os: deps.platform,
     arch: process.arch,
   })
-  if (deps.platform !== "linux")
-    return {
-      binary: config.binary,
-      modelPath: modelPathOf(profile, config.modelDir, config.join),
-      port: config.port,
-    }
-  const join = (...parts: string[]) => pathsFor(deps.platform).join(...parts)
-  const root = stackDirOf(deps.platform, deps.env, deps.home)
-  const modelDir = set(deps.env, "EIDO_MODEL_DIR") ?? join(root, "models")
   return {
+    binary: config.binary,
+    modelPath: modelPathOf(profile, config.modelDir, config.join),
     port: config.port,
-    modelPath: modelPathOf(profile, modelDir, join),
-    binary:
-      set(deps.env, "EIDO_LLAMA_SERVER_BIN") ??
-      join(root, "llama.cpp", lock.llamaCppBuild, "llama-server"),
   }
 }
 
@@ -561,13 +545,11 @@ async function checkLlama(deps: DoctorDeps, quick: boolean): Promise<Check[]> {
   } catch {
     status = undefined
   }
-  // The launchd job is macOS only; elsewhere the fix is the server command itself.
+  // The launchd job is macOS only; elsewhere llama start runs the server in the foreground.
   const start =
     deps.platform === "darwin"
       ? "pnpm --filter @eido/infra llama install"
-      : [paths.binary, ...serverArgs(paths.modelPath, paths.port, profile)]
-          .map((arg) => (/^[\w.:/-]+$/.test(arg) ? arg : q(arg)))
-          .join(" ")
+      : "pnpm --filter @eido/infra llama start"
   checks.push(
     status === 200
       ? ok("llama-health", `${health} answers 200`)

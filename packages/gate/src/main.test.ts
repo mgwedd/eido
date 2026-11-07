@@ -325,6 +325,22 @@ describe("gateConfig", () => {
     ).toThrow("the base path must look like /api/gate")
   })
 
+  it("reads the supervisor socket when it is set, and refuses a relative path", () => {
+    expect(gateConfig(BASE).supervisorSocketPath).toBeUndefined()
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_SUPERVISOR_SOCKET: "/d/run/supervisor.sock",
+      }).supervisorSocketPath
+    ).toBe("/d/run/supervisor.sock")
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_SUPERVISOR_SOCKET: "run/supervisor.sock",
+      })
+    ).toThrow("EIDO_GATE_SUPERVISOR_SOCKET must be an absolute path")
+  })
+
   it("names every missing or empty variable", () => {
     expect(() =>
       gateConfig({ EIDO_GATE_DATA_DIR: "/d", EIDO_GATE_SOCKET: "" })
@@ -623,6 +639,7 @@ describe("gateConfig with Bridge", () => {
         tls: "starttls",
         certificatePem: certificate.cert,
         certificateSha256: certificate.sha256,
+        certificatePath: certificate.certPath,
         username: "assistant@example.invalid",
         searchFolders: ["INBOX"],
       },
@@ -729,6 +746,64 @@ describe("gateConfig with Gmail", () => {
         EIDO_DEV_VAULT: "1",
       })
     ).toThrow("EIDO_DEV_VAULT=1 cannot be used with EIDO_GATE_KEYCHAIN_PATH")
+  })
+})
+
+describe("gateConfig with Google sign-in (#662)", () => {
+  const CALLBACK = `${WEBAUTHN.origin}/api/gate/connect/google/callback`
+  const BASE = {
+    EIDO_GATE_DATA_DIR: "/d",
+    EIDO_GATE_SOCKET: "/d/gate.sock",
+    EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+    EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+    EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+    EIDO_GATE_VAULT_FILE: "/vault/dev.json",
+    EIDO_DEV_VAULT: "1",
+  }
+
+  it("is off without a redirect URI", () => {
+    expect(gateConfig(BASE).google).toBeUndefined()
+  })
+
+  it("takes the redirect URI and each client id that is set", () => {
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_GOOGLE_REDIRECT_URI: CALLBACK,
+        EIDO_GMAIL_CLIENT_ID: "test-write-id",
+        EIDO_DRIVE_CLIENT_ID: "test-drive-id",
+        EIDO_GMAIL_READ_CLIENT_ID: "",
+        EIDO_GATE_EGRESS_PORT: "8711",
+      }).google
+    ).toEqual({
+      redirectUri: CALLBACK,
+      clientIds: { gmail: "test-write-id", drive: "test-drive-id" },
+    })
+  })
+
+  it("needs a vault", () => {
+    const noVault: Record<string, string> = { ...BASE }
+    delete noVault["EIDO_GATE_VAULT_FILE"]
+    delete noVault["EIDO_DEV_VAULT"]
+    expect(() =>
+      gateConfig({ ...noVault, EIDO_GOOGLE_REDIRECT_URI: CALLBACK })
+    ).toThrow("Google sign-in needs EIDO_GATE_KEYCHAIN_PATH")
+  })
+
+  it.each([
+    ["not a URL", "callback"],
+    ["plain http", CALLBACK.replace("https:", "http:")],
+    [
+      "another origin",
+      "https://other.example.invalid/api/gate/connect/google/callback",
+    ],
+    ["a query", `${CALLBACK}?x=1`],
+    ["a fragment", `${CALLBACK}#x`],
+    ["another path", `${WEBAUTHN.origin}/api/gate/callback`],
+  ])("refuses a redirect URI with %s", (_name, uri) => {
+    expect(() =>
+      gateConfig({ ...BASE, EIDO_GOOGLE_REDIRECT_URI: uri })
+    ).toThrow("EIDO_GOOGLE_REDIRECT_URI must be")
   })
 })
 

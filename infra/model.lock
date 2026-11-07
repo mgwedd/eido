@@ -24,6 +24,16 @@ asset: llama-b11149-bin-win-cpu-arm64.zip
 source: https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-win-cpu-arm64.zip
 sha256: 95b1f114b601498b546343b97ca381a41ffb16d88dfde19433fb95123f4ef7ca
 
+[build linux-x64]
+asset: llama-b11149-bin-ubuntu-vulkan-x64.tar.gz
+source: https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-ubuntu-vulkan-x64.tar.gz
+sha256: d93606c124863e26750f0fa02daba8ae73aa39395507534fcbb57f5e7bbe7b55
+
+[build linux-arm64]
+asset: llama-b11149-bin-ubuntu-arm64.tar.gz
+source: https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-ubuntu-arm64.tar.gz
+sha256: 7a4ca8a91014a399dacb987efbd408621634e9079974f5a4fec80152d65b5e5b
+
 # Each model profile's size and sha256 are the file's LFS size and oid from the Hugging Face tree API
 # at the pinned revision. The marker is a string found only in that model's embedded chat template.
 # verified: true means the profile passed llama check-template on a real host with this build;

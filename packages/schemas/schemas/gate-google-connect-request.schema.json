@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateGoogleConnectRequest",
+  "description": "Body of POST /admin/connectors/google/start (#662): the passkey assertion over the prepared ceremony, the client to sign in, and the client's OAuth secret when the vault has none. The secret goes to the vault after a successful sign-in and is never sent back.",
+  "type": "object",
+  "properties": {
+    "approval": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "nonce": {
+          "type": "string"
+        },
+        "assertion": {
+          "$ref": "gate-webauthn-assertion.schema.json"
+        }
+      },
+      "required": ["id", "nonce", "assertion"],
+      "additionalProperties": false
+    },
+    "target": {
+      "enum": ["gmail", "gmail-read", "drive"]
+    },
+    "clientSecret": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    }
+  },
+  "required": ["approval", "target"],
+  "additionalProperties": false
+}

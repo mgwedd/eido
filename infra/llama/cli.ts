@@ -10,8 +10,8 @@
 //                          with the size and sha256 the Hub reports at that revision
 //   use ID                 make ID the active profile (EIDO_LLAMA_MODEL in the stack settings
 //                          file), then restart the LaunchAgent when it is installed
-//   launch                 verify, then run llama-server on 127.0.0.1 with --jinja, wait for
-//                          /health and check /props; stays in the foreground (launchd runs this).
+//   launch | start         verify, then run llama-server on 127.0.0.1 with --jinja, wait for
+//                          /health and check /props; stays in the foreground (launchd runs launch).
 //                          Refuses a profile that has not passed check-template.
 //   check-template [--model ID]
 //                          the chat template is the model's, the rendered prompt for a fixed
@@ -20,11 +20,13 @@
 //                          running server; with it, it starts llama-server for that profile, checks
 //                          and stops it. A pass is recorded, which verifies the profile here.
 //   plan                   print the LaunchAgent plist and the launchctl command; changes nothing
-//   install / uninstall    write and bootstrap, or boot out and remove, com.eido.llama-server
+//   install                on macOS, write and bootstrap com.eido.llama-server; on Windows and
+//                          Linux, fetch the pinned build and model (--model ID)
+//   uninstall              boot out and remove com.eido.llama-server
 //   status                 launchd's view of the job, who listens on the port, and /health
-// plan, install, uninstall and status are macOS only (launchd and lsof); the rest also run on
-// Windows. Effects and the platform are passed in, so tests never run a real model, binary,
-// launchctl or network, and cover both platforms on any host.
+// plan, uninstall and status are macOS only (launchd and lsof); the rest also run on Windows and
+// Linux. Effects and the platform are passed in, so tests never run a real model, binary,
+// launchctl or network, and cover every platform on any host.
 import { join, posix, win32 } from "node:path"
 
 import { loopbackOnlyFinding, parseListeners } from "../host/checks.ts"
@@ -124,16 +126,16 @@ export type Deps = {
 export const READY_TIMEOUT_MS = 180_000
 
 const USAGE =
-  "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|check-template [--model ID]|plan|install|uninstall|status"
+  "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|start|check-template [--model ID]|plan|install|uninstall|status"
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 
-type Base = { lock: ModelLock; config: LlamaConfig }
+export type Base = { lock: ModelLock; config: LlamaConfig }
 
 type Loaded = Base & { profile: ModelProfile; modelPath: string }
 
 /** model.lock, plus the user's own profiles when that file exists. */
-function loadBase(deps: Deps): Base {
+export function loadBase(deps: Deps): Base {
   const lockPath = lockPathFrom(deps.env, deps.defaultLockPath)
   const lock = parseLock(deps.readText(lockPath))
   const config = buildConfig(
@@ -573,29 +575,77 @@ async function fetchCommand(
   return 0
 }
 
-/** "on disk" when a file of the pinned size is there; the hash is checked by verify and launch. */
-async function diskState(deps: Deps, path: string, size: number) {
+export type DiskState =
+  | { kind: "present" }
+  | { kind: "missing" }
+  | { kind: "wrong_size"; bytes: number }
+
+/** Present when a file of the pinned size is there; the hash is checked by verify and launch. */
+async function diskOf(
+  deps: Pick<Deps, "probe">,
+  path: string,
+  size: number
+): Promise<DiskState> {
   const actual = await deps.probe.size(path)
-  if (actual === undefined) return "not on disk"
-  return actual === size ? "on disk" : `wrong size (${actual} bytes)`
+  if (actual === undefined) return { kind: "missing" }
+  return actual === size
+    ? { kind: "present" }
+    : { kind: "wrong_size", bytes: actual }
+}
+
+function describeDisk(disk: DiskState): string {
+  switch (disk.kind) {
+    case "present":
+      return "on disk"
+    case "missing":
+      return "not on disk"
+    case "wrong_size":
+      return `wrong size (${disk.bytes} bytes)`
+  }
+}
+
+export type ProfileRow = {
+  profile: ModelProfile
+  disk: DiskState
+  verified: boolean
+  isDefault: boolean
+}
+
+/** Every profile with its file's state on disk and whether it is verified here, and the active id. */
+export async function profileRows(
+  deps: Deps,
+  base: Base
+): Promise<{ active: string; rows: ProfileRow[] }> {
+  const rows: ProfileRow[] = []
+  for (const profile of base.lock.profiles)
+    rows.push({
+      profile,
+      disk: await diskOf(
+        deps,
+        modelPathOf(profile, base.config.modelDir, base.config.join),
+        profile.size
+      ),
+      verified: isVerified(deps, base, profile),
+      isDefault: profile.id === base.lock.defaultProfile,
+    })
+  return { active: activeId(deps, base), rows }
 }
 
 async function list(deps: Deps, base: Base): Promise<number> {
-  const active = activeId(deps, base)
-  for (const profile of base.lock.profiles) {
-    const path = modelPathOf(profile, base.config.modelDir, base.config.join)
+  const { active, rows } = await profileRows(deps, base)
+  for (const { profile, disk, verified, isDefault } of rows) {
     const notes = [
-      await diskState(deps, path, profile.size),
-      isVerified(deps, base, profile) ? "verified" : "unverified",
+      describeDisk(disk),
+      verified ? "verified" : "unverified",
       ...(profile.origin === "user" ? ["added"] : []),
-      ...(profile.id === base.lock.defaultProfile ? ["default"] : []),
+      ...(isDefault ? ["default"] : []),
       ...(profile.id === active ? ["active"] : []),
     ]
     deps.out(
       `${profile.id === active ? "*" : " "} ${profile.id}: ${profile.model} ${profile.quantization}, ${notes.join(", ")}`
     )
   }
-  if (!base.lock.profiles.some((p) => p.id === active)) {
+  if (!rows.some((row) => row.profile.id === active)) {
     deps.err(
       `FAIL: the active profile ${JSON.stringify(active)} is not in model.lock; run llama use with one of the ids above`
     )
@@ -615,10 +665,10 @@ async function use(
   }
   const profile = selectProfile(base.lock, id)
   const path = modelPathOf(profile, base.config.modelDir, base.config.join)
-  const state = await diskState(deps, path, profile.size)
-  if (state !== "on disk") {
+  const disk = await diskOf(deps, path, profile.size)
+  if (disk.kind !== "present") {
     deps.err(
-      `FAIL: ${path} is ${state}; run llama fetch --model ${profile.id} first`
+      `FAIL: ${path} is ${describeDisk(disk)}; run llama fetch --model ${profile.id} first`
     )
     return 1
   }
@@ -756,9 +806,13 @@ async function run(
       return checkTemplate(deps, loadBase(deps), rest)
     case "verify":
     case "launch":
+    case "start":
     case "plan":
-    case "install":
     case "status":
+      break
+    case "install":
+      if (deps.platform.os !== "darwin")
+        return fetchCommand(deps, loadBase(deps), rest)
       break
     default:
       deps.err(USAGE)
@@ -773,6 +827,7 @@ async function run(
     case "verify":
       return (await verify(deps, loaded)) ? 0 : 1
     case "launch":
+    case "start":
       return launch(deps, loaded)
   }
   const uid = launchdUid(deps, command)

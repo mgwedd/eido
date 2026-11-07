@@ -1,13 +1,9 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
-import { createServer } from "node:http"
-import type { IncomingMessage, ServerResponse } from "node:http"
+import { createHash, randomBytes } from "node:crypto"
 
-// OAuth 2.0 for native apps (RFC 8252) for the Mac-side `connect` command (#98): an
-// authorization request with PKCE S256 (RFC 7636) and a `state` value, a loopback redirect to
-// 127.0.0.1 on an ephemeral port, and the code exchange at Google's token endpoint. The listener
-// binds 127.0.0.1 only, takes one callback, then closes; it also closes when the timeout passes.
-// Nothing here prints, logs or stores a token: the caller gets the refresh token back and writes
-// it to the vault.
+// Google OAuth for the gate's own sign-in (#98, #662): an authorization request with PKCE S256
+// (RFC 7636) and a `state` value, redirected to the gate's callback on the web app's origin, and
+// the code exchange at Google's token endpoint. Nothing here prints, logs or stores a token: the
+// caller gets the refresh token back and writes it to the vault.
 
 export const GOOGLE_AUTH_ENDPOINT =
   "https://accounts.google.com/o/oauth2/v2/auth"
@@ -21,8 +17,6 @@ export const GMAIL_READONLY_SCOPE =
 export const DRIVE_READONLY_SCOPE =
   "https://www.googleapis.com/auth/drive.readonly"
 
-export const CALLBACK_PATH = "/oauth2callback"
-const LOOPBACK = "127.0.0.1"
 /** OAuth error codes are short ASCII words; anything else is shown as `invalid_callback`. */
 const ERROR_CODE = /^[a-z_]{1,64}$/
 
@@ -66,120 +60,6 @@ export function authorizationUrl(request: AuthorizationRequest): string {
     prompt: "consent",
   }).toString()
   return url.toString()
-}
-
-export type CallbackResult =
-  | { ok: true; code: string }
-  | {
-      ok: false
-      reason:
-        | "state_mismatch"
-        | "authorization_denied"
-        | "invalid_callback"
-        | "timeout"
-      /** The OAuth `error` code Google sent with a denied authorization. */
-      error?: string
-    }
-
-export type Loopback = {
-  redirectUri: string
-  /** Settles once: on the one callback, or when the timeout passes. The listener is closed by then. */
-  result: Promise<CallbackResult>
-}
-
-function sameState(expected: string, actual: string | null): boolean {
-  if (actual === null) return false
-  const a = Buffer.from(expected)
-  const b = Buffer.from(actual)
-  return a.length === b.length && timingSafeEqual(a, b)
-}
-
-function reply(response: ServerResponse, status: number, text: string): void {
-  response.writeHead(status, {
-    "content-type": "text/plain; charset=utf-8",
-    "cache-control": "no-store",
-    connection: "close",
-  })
-  response.end(`${text}\n`)
-}
-
-function judge(
-  request: IncomingMessage,
-  expectedState: string
-): CallbackResult {
-  const query = new URL(request.url ?? "/", `http://${LOOPBACK}`).searchParams
-  if (!sameState(expectedState, query.get("state")))
-    return { ok: false, reason: "state_mismatch" }
-  const error = query.get("error")
-  if (error !== null)
-    return {
-      ok: false,
-      reason: "authorization_denied",
-      ...(ERROR_CODE.test(error) ? { error } : {}),
-    }
-  const code = query.get("code")
-  if (code === null || code === "")
-    return { ok: false, reason: "invalid_callback" }
-  return { ok: true, code }
-}
-
-/**
- * Starts the loopback listener on 127.0.0.1 with an ephemeral port. Requests to another path,
- * with another method or with a Host other than the listen address are answered 404 or 421 and
- * do not count as the callback. The first request to the callback path settles the result,
- * whatever it carries, and closes the listener.
- */
-export async function startLoopback(options: {
-  state: string
-  timeoutMs: number
-}): Promise<Loopback> {
-  let settle: (result: CallbackResult) => void = () => undefined
-  const result = new Promise<CallbackResult>((resolve) => {
-    settle = resolve
-  })
-  let settled = false
-  let host = ""
-  const server = createServer((request, response) => {
-    const path = new URL(request.url ?? "/", `http://${LOOPBACK}`).pathname
-    if (settled) return reply(response, 410, "This sign-in has finished.")
-    if (request.headers.host !== host)
-      return reply(response, 421, "Wrong host.")
-    if (request.method !== "GET" || path !== CALLBACK_PATH)
-      return reply(response, 404, "Not found.")
-    const outcome = judge(request, options.state)
-    reply(
-      response,
-      outcome.ok ? 200 : 400,
-      outcome.ok
-        ? "Eido received the sign-in. You can close this tab."
-        : "Eido did not accept this sign-in. Return to the terminal."
-    )
-    finish(outcome)
-  })
-  const timer = setTimeout(
-    () => finish({ ok: false, reason: "timeout" }),
-    options.timeoutMs
-  )
-  function finish(outcome: CallbackResult): void {
-    if (settled) return
-    settled = true
-    clearTimeout(timer)
-    server.close(() => settle(outcome))
-    server.closeIdleConnections()
-  }
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject)
-    server.listen(0, LOOPBACK, () => {
-      server.off("error", reject)
-      resolve()
-    })
-  })
-  const address = server.address()
-  // listen() on a TCP host always reports an AddressInfo, never a pipe name or null.
-  const port =
-    typeof address === "object" && address !== null ? address.port : 0
-  host = `${LOOPBACK}:${port}`
-  return { redirectUri: `http://${host}${CALLBACK_PATH}`, result }
 }
 
 export type CodeExchange = {

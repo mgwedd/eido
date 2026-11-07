@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateGoogleConnectPrepared",
+  "description": "Response of POST /admin/connectors/google/prepare (#662): the control ceremony the owner's passkey signs to start a Google sign-in, and whether the gate vault already holds the client's OAuth secret. When it does not, the start request must carry it.",
+  "type": "object",
+  "properties": {
+    "approval": {
+      "$ref": "gate-control-prepared.schema.json"
+    },
+    "clientSecretStored": {
+      "type": "boolean"
+    }
+  },
+  "required": ["approval", "clientSecretStored"],
+  "additionalProperties": false
+}

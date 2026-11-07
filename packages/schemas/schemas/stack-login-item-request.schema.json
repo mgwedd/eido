@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StackLoginItemRequest",
+  "description": "A POST /login-item (#664): true writes the login agent's plist so the stack starts at the next login, false removes it.",
+  "type": "object",
+  "properties": {
+    "enabled": { "type": "boolean" }
+  },
+  "required": ["enabled"],
+  "additionalProperties": false
+}

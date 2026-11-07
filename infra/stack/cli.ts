@@ -11,8 +11,25 @@
 //   doctor  read-only checks, each ok, warn or fail with the command that fixes it; exit 1 on a fail
 //   setup   creates the gate keychain if missing, asks for unset settings, writes stack.env, runs doctor
 //   gate    runs the gate's connect, enrol-code or passkeys script with the stack's gate environment
+// `pnpm stack:install`, `pnpm stack:uninstall` (#629, macOS)
+//   install    writes and loads the login agent com.eido.stack (agent.ts), which runs the
+//              supervisor at login and keeps it running; the supervisor starts the prod stack
+//   uninstall  boots the agent out and removes its plist; the stack's processes keep running
+//   boot       what the agent runs first: `prod --background`, unless a stack process already runs
 // Every command first loads stack.env (settings.ts); a variable set in the environment wins.
 // Start runs doctor's blocking checks before anything else and stops on a failure.
+import {
+  agentBootoutArgs,
+  agentBootstrapArgs,
+  agentEnv,
+  agentLayout,
+  agentPrintArgs,
+  agentState,
+  agentStatusLine,
+  agentTarget,
+  buildAgentPlist,
+  type AgentState,
+} from "./agent.ts"
 import { main as serveRoutes } from "../tailscale/cli.ts"
 import type { Fetch } from "../tailscale/measure.ts"
 import { parseDnsName } from "../tailscale/serve-routes.ts"
@@ -82,6 +99,8 @@ export type Deps = {
   home: string
   repoRoot: string
   nodePath: string
+  /** The user id launchd's gui domain is named by; undefined where there is none (Windows). */
+  uid: number | undefined
   exec: Exec
   /** `pnpm turbo run build` from the repo root with output to the terminal; its exit code. */
   build: () => Promise<number>
@@ -104,7 +123,7 @@ export type Deps = {
 }
 
 const USAGE =
-  "usage: stack dev|prod|stop|status|doctor [--no-serve] [--background] | setup | gate connect|enrol-code|passkeys [args]"
+  "usage: stack dev|prod|stop|status|doctor [--no-serve] [--background] | setup | install | uninstall | boot | gate connect|enrol-code|passkeys [args]"
 
 export const GATE_SCRIPTS = ["connect", "enrol-code", "passkeys"] as const
 type GateScript = (typeof GATE_SCRIPTS)[number]
@@ -121,7 +140,16 @@ type Flags = { serve: boolean; background: boolean }
 
 export type Parsed =
   | {
-      command: "dev" | "prod" | "stop" | "status" | "doctor" | "setup"
+      command:
+        | "dev"
+        | "prod"
+        | "stop"
+        | "status"
+        | "doctor"
+        | "setup"
+        | "install"
+        | "uninstall"
+        | "boot"
       flags: Flags
     }
   | { command: "gate"; script: GateScript; args: string[] }
@@ -132,7 +160,12 @@ export function parseArgs(argv: readonly string[]): Parsed | undefined {
     const [script, ...args] = rest
     return isGateScript(script) ? { command, script, args } : undefined
   }
-  if (command === "setup")
+  if (
+    command === "setup" ||
+    command === "install" ||
+    command === "uninstall" ||
+    command === "boot"
+  )
     return rest.length === 0
       ? { command, flags: { serve: true, background: false } }
       : undefined
@@ -187,13 +220,17 @@ async function tailscaleHost(deps: Deps): Promise<string> {
 }
 
 /** The tailnet host: EIDO_TAILNET_HOST, else Self.DNSName from tailscale when serving, else localhost. */
-async function resolveHost(deps: Deps, serve: boolean): Promise<string> {
+export async function resolveHost(deps: Deps, serve: boolean): Promise<string> {
   const fromEnv = deps.env["EIDO_TAILNET_HOST"]
   if (fromEnv !== undefined && fromEnv !== "") return fromEnv
   return serve ? await tailscaleHost(deps) : "localhost"
 }
 
-function configFor(deps: Deps, mode: Mode, tailnetHost: string): StackConfig {
+export function configFor(
+  deps: Deps,
+  mode: Mode,
+  tailnetHost: string
+): StackConfig {
   return buildStackConfig({
     mode,
     platform: deps.platform,
@@ -214,7 +251,7 @@ function serveDeps(deps: Deps) {
   }
 }
 
-function readRecord(
+export function readRecord(
   deps: Deps,
   config: StackConfig,
   name: ProcessName
@@ -224,7 +261,7 @@ function readRecord(
 }
 
 /** Stops the named processes in reverse start order and removes their pid files. */
-async function stopAll(
+export async function stopAll(
   deps: Deps,
   config: StackConfig,
   names: readonly ProcessName[]
@@ -255,7 +292,7 @@ async function stopAll(
   }
 }
 
-function doctorDeps(deps: Deps): DoctorDeps {
+export function doctorDeps(deps: Deps): DoctorDeps {
   return {
     platform: deps.platform,
     env: deps.env,
@@ -361,6 +398,79 @@ async function gate(
   )
 }
 
+/**
+ * Starts `specs` in order, each once the one before answers, with a pid file each. On a failure
+ * it reports it, stops what it started and returns the failure.
+ */
+export async function launchInOrder(
+  deps: Deps,
+  config: StackConfig,
+  specs: readonly ProcessSpec[],
+  mode: Mode,
+  background: boolean
+): Promise<{ started: Started[]; failure: string | undefined }> {
+  const probe = probeWith(deps.fetch)
+  const { started, failure } = await startInOrder(specs, {
+    launch: (spec) => {
+      const launched = deps.launch(spec, {
+        logFile: logFile(config, spec.name),
+        background,
+        prefixOutput: mode === "dev" && !background,
+      })
+      const record: PidRecord = {
+        name: spec.name,
+        pid: launched.pid,
+        marker: spec.marker,
+        mode,
+      }
+      deps.files.write(
+        pidFile(config, spec.name),
+        `${JSON.stringify(record)}\n`
+      )
+      deps.out(
+        `${spec.name}: started pid ${launched.pid}, log ${logFile(config, spec.name)}`
+      )
+      return launched
+    },
+    ready: (spec, launched) =>
+      waitReady(spec, launched, {
+        probe,
+        clock: deps.clock,
+        // Core reaches the gate only through its data-plane socket.
+        ...(spec.name === "gate"
+          ? { alsoReady: () => deps.files.exists(config.gateSocket) }
+          : {}),
+      }).then((result) => {
+        if (result === undefined)
+          deps.out(`${spec.name}: answers on ${spec.healthUrl}`)
+        return result
+      }),
+  })
+  if (failure !== undefined) {
+    const last = started.at(-1)?.spec.name ?? specs[0]?.name ?? "gate"
+    deps.err(`FAIL: ${failure}; see ${logFile(config, last)}`)
+    await stopAll(
+      deps,
+      config,
+      started.map((s) => s.spec.name)
+    )
+  }
+  return { started, failure }
+}
+
+/** Whether the pid file names a live process that still carries the stack's marker. */
+export async function isRunning(
+  deps: Deps,
+  config: StackConfig,
+  name: ProcessName
+): Promise<boolean> {
+  const record = readRecord(deps, config, name)
+  return (
+    record !== undefined &&
+    (await argsOf(deps.exec, record.pid))?.includes(record.marker) === true
+  )
+}
+
 async function start(deps: Deps, mode: Mode, flags: Flags): Promise<number> {
   if (!(await preflight(deps, flags))) {
     deps.err(
@@ -409,50 +519,14 @@ async function start(deps: Deps, mode: Mode, flags: Flags): Promise<number> {
 
   for (const dir of config.privateDirs) deps.files.ensurePrivateDir(dir)
 
-  const probe = probeWith(deps.fetch)
-  const { started, failure } = await startInOrder(config.processes, {
-    launch: (spec) => {
-      const launched = deps.launch(spec, {
-        logFile: logFile(config, spec.name),
-        background: flags.background,
-        prefixOutput: mode === "dev" && !flags.background,
-      })
-      const record: PidRecord = {
-        name: spec.name,
-        pid: launched.pid,
-        marker: spec.marker,
-        mode,
-      }
-      deps.files.write(
-        pidFile(config, spec.name),
-        `${JSON.stringify(record)}\n`
-      )
-      deps.out(
-        `${spec.name}: started pid ${launched.pid}, log ${logFile(config, spec.name)}`
-      )
-      return launched
-    },
-    ready: (spec, launched) =>
-      waitReady(spec, launched, {
-        probe,
-        clock: deps.clock,
-        // Core reaches the gate only through its data-plane socket.
-        ...(spec.name === "gate"
-          ? { alsoReady: () => deps.files.exists(config.gateSocket) }
-          : {}),
-      }).then((result) => {
-        if (result === undefined)
-          deps.out(`${spec.name}: answers on ${spec.healthUrl}`)
-        return result
-      }),
-  })
-  const names = started.map((s) => s.spec.name)
-  if (failure !== undefined) {
-    const last = started.at(-1)?.spec.name ?? "gate"
-    deps.err(`FAIL: ${failure}; see ${logFile(config, last)}`)
-    await stopAll(deps, config, names)
-    return 1
-  }
+  const { started, failure } = await launchInOrder(
+    deps,
+    config,
+    config.processes,
+    mode,
+    flags.background
+  )
+  if (failure !== undefined) return 1
 
   if (flags.serve) deps.out(`Open ${config.url}`)
   else
@@ -510,7 +584,108 @@ async function stop(deps: Deps): Promise<number> {
     )
   }
   if (left === 0) deps.out("Nothing listens on the stack's ports.")
+  if ((await readAgentState(deps)).kind === "loaded")
+    deps.out(
+      "The login agent is loaded: it starts the stack again at the next login or supervisor restart. To stop that, pnpm stack:uninstall."
+    )
   return 0
+}
+
+/** The agent's state; `unsupported` off macOS or without a user id. */
+export async function readAgentState(deps: Deps): Promise<AgentState> {
+  const uid = deps.platform === "darwin" ? deps.uid : undefined
+  if (uid === undefined) return agentState(undefined, false)
+  const printed = await deps.exec("launchctl", agentPrintArgs(uid))
+  return agentState(
+    printed,
+    deps.files.exists(agentLayout(deps.home).plistPath)
+  )
+}
+
+function agentUid(deps: Deps, command: string): number | undefined {
+  const uid = deps.platform === "darwin" ? deps.uid : undefined
+  if (uid === undefined)
+    deps.err(
+      `FAIL: stack ${command} needs launchd and is macOS only so far; Task Scheduler on Windows is #455`
+    )
+  return uid
+}
+
+/** Writes the agent's plist (and its log directory) without loading it; launchd reads it at login. */
+export function writeAgentPlist(deps: Deps): void {
+  const paths = agentLayout(deps.home)
+  deps.files.ensurePrivateDir(paths.logDir)
+  deps.files.write(
+    paths.plistPath,
+    buildAgentPlist({
+      home: deps.home,
+      node: deps.nodePath,
+      repoRoot: deps.repoRoot,
+      env: agentEnv(deps.env),
+    })
+  )
+}
+
+async function install(deps: Deps): Promise<number> {
+  const uid = agentUid(deps, "install")
+  if (uid === undefined) return 1
+  const paths = agentLayout(deps.home)
+  // bootstrap refuses a label that is already loaded, so a re-install boots the old job out first.
+  if ((await deps.exec("launchctl", agentPrintArgs(uid))).code === 0)
+    await deps.exec("launchctl", agentBootoutArgs(uid))
+  writeAgentPlist(deps)
+  const run = await deps.exec(
+    "launchctl",
+    agentBootstrapArgs(uid, paths.plistPath)
+  )
+  if (run.code !== 0) {
+    deps.err(
+      `FAIL: launchctl bootstrap: ${run.stderr.trim() || `exit ${run.code}`}`
+    )
+    return 1
+  }
+  deps.out(`ok: ${agentTarget(uid)} loaded from ${paths.plistPath}`)
+  deps.out(
+    "It runs the stack supervisor now and at every login, and the supervisor starts the prod stack."
+  )
+  deps.out(`logs: ${paths.outLog} and ${paths.errLog}`)
+  return 0
+}
+
+async function uninstall(deps: Deps): Promise<number> {
+  const uid = agentUid(deps, "uninstall")
+  if (uid === undefined) return 1
+  const paths = agentLayout(deps.home)
+  if ((await deps.exec("launchctl", agentPrintArgs(uid))).code === 0) {
+    const run = await deps.exec("launchctl", agentBootoutArgs(uid))
+    if (run.code !== 0) {
+      deps.err(
+        `FAIL: launchctl bootout: ${run.stderr.trim() || `exit ${run.code}`}`
+      )
+      return 1
+    }
+  }
+  if (deps.files.exists(paths.plistPath)) deps.files.remove(paths.plistPath)
+  deps.out(`ok: ${agentTarget(uid)} is not loaded and its plist is gone`)
+  deps.out(
+    "The stack's processes keep running; stop them with pnpm stack:stop."
+  )
+  return 0
+}
+
+/** The agent's first step: start prod in the background, unless any stack process runs. */
+async function boot(deps: Deps): Promise<number> {
+  const config = configFor(deps, "prod", "localhost")
+  const running: ProcessName[] = []
+  for (const spec of config.processes)
+    if (await isRunning(deps, config, spec.name)) running.push(spec.name)
+  if (running.length > 0) {
+    deps.out(
+      `boot: ${running.join(", ")} already running; the stack is left as it is`
+    )
+    return 0
+  }
+  return await start(deps, "prod", { serve: true, background: true })
 }
 
 async function status(deps: Deps, flags: Flags): Promise<number> {
@@ -519,9 +694,7 @@ async function status(deps: Deps, flags: Flags): Promise<number> {
   let healthy = 0
   for (const spec of config.processes) {
     const record = readRecord(deps, config, spec.name)
-    const running =
-      record !== undefined &&
-      (await argsOf(deps.exec, record.pid))?.includes(record.marker) === true
+    const running = await isRunning(deps, config, spec.name)
     const state =
       record === undefined
         ? "not started by the stack"
@@ -553,7 +726,34 @@ async function status(deps: Deps, flags: Flags): Promise<number> {
     )
     deps.out(`url: ${config.url}`)
   }
+  deps.out(agentStatusLine(await readAgentState(deps)))
   return healthy === config.processes.length && serveCode === 0 ? 0 : 1
+}
+
+/**
+ * The end of setup (#660): with the gate running, issue the first phone enrolment code and say
+ * where to enter it (doctor then reports the stack's own ports as in use, so this does not wait
+ * on doctor). With the gate stopped and doctor clean, say how to get one once the stack is up.
+ */
+async function firstCode(deps: Deps, healthy: boolean): Promise<number> {
+  let host: string
+  try {
+    host = await resolveHost(deps, true)
+  } catch {
+    host = "localhost"
+  }
+  const config = configFor(deps, "prod", host)
+  const enrol = new URL("enroll", config.url).href
+  if (!(await isRunning(deps, config, "gate"))) {
+    if (healthy)
+      deps.out(
+        `To enrol your phone: start the stack (pnpm stack:prod), run pnpm stack:gate enrol-code and enter the code at ${enrol}`
+      )
+    return 0
+  }
+  const code = await gate(deps, "enrol-code", [])
+  if (code === 0) deps.out(`Enter the code on your phone at ${enrol}`)
+  return code
 }
 
 export async function main(
@@ -594,11 +794,20 @@ export async function main(
           settingsPath,
           deps.platform
         )
-        return await doctor(
-          { ...deps, env: applyStackSettings(deps.env, written) },
-          parsed.flags
-        )
+        const setUp: Deps = {
+          ...deps,
+          env: applyStackSettings(deps.env, written),
+        }
+        const checked = await doctor(setUp, parsed.flags)
+        const issued = await firstCode(setUp, checked === 0)
+        return issued === 0 ? checked : issued
       }
+      case "install":
+        return await install(withSettings)
+      case "uninstall":
+        return await uninstall(withSettings)
+      case "boot":
+        return await boot(withSettings)
       case "gate":
         return await gate(withSettings, parsed.script, parsed.args)
     }

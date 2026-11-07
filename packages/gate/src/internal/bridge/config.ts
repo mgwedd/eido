@@ -26,6 +26,8 @@ export type BridgeConfig = {
   /** Exported Bridge certificate, trusted only when its fingerprint matches. */
   certificatePem?: string
   certificateSha256?: string
+  /** Where the exported certificate lives, so a pin change can be checked against it (#661). */
+  certificatePath?: string
   /** The Bridge username, which is also the assistant identity mail is sent from. */
   username: string
   /** Folders searched, in order, to find a message by its Message-ID. */
@@ -126,6 +128,7 @@ export function bridgeConfig(env: Env): BridgeConfig | undefined {
     tls: oneOf(BRIDGE_TLS_MODES, NAMES.tls, env[NAMES.tls] ?? "starttls"),
     certificatePem,
     certificateSha256,
+    certificatePath,
     username,
     searchFolders: folders.length === 0 ? ["INBOX"] : folders,
   }

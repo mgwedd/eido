@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateBridgePin",
+  "description": "Body of POST /admin/secrets/bridge/prepare and /admin/secrets/bridge-pin/prepare, and reply of /admin/secrets/bridge-pin (#661): a Proton Bridge certificate pin, the SHA-256 of the certificate's DER bytes.",
+  "type": "object",
+  "properties": {
+    "certificateSha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "required": ["certificateSha256"],
+  "additionalProperties": false
+}

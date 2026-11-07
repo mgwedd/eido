@@ -398,7 +398,8 @@ function main(): void {
       file === "extraction-candidates.schema.json" ||
       file === "document-type-classification.schema.json" ||
       file === "extracted-fields.schema.json" ||
-      file === "connector-manifest.schema.json"
+      file === "connector-manifest.schema.json" ||
+      file.startsWith("stack-")
   )
   const constName = (name: string): string =>
     `${name.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()}_JSON_SCHEMA`

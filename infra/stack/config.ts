@@ -50,6 +50,7 @@ export const OVERRIDES = [
   "EIDO_FILES_SYNC",
   "EIDO_WEBAUTHN_RP_ID",
   "EIDO_WEBAUTHN_ORIGIN",
+  "EIDO_GOOGLE_REDIRECT_URI",
   "EIDO_GATE_PHONE_BASE_PATH",
   "EIDO_CORE_BASE_PATH",
   "EIDO_GATE_PHONE_ALLOWED_HOSTS",
@@ -305,6 +306,8 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       EIDO_GATE_DATA_DIR: gateDataDir,
       EIDO_GATE_SOCKET: gateSocket,
       EIDO_GATE_CONTROL_SOCKET: controlSocket,
+      // The supervisor's socket (#659), beside the gate's; the gate relays its admin routes there.
+      EIDO_GATE_SUPERVISOR_SOCKET: join(runDir, "supervisor.sock"),
       ...(env["EIDO_PROFILE_AUDIT_EPOCH"] === undefined
         ? {}
         : { EIDO_PROFILE_AUDIT_EPOCH: env["EIDO_PROFILE_AUDIT_EPOCH"] }),
@@ -316,6 +319,12 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       ...passThrough(env, PASS_THROUGH.gate),
       EIDO_WEBAUTHN_RP_ID: read(env, "EIDO_WEBAUTHN_RP_ID", tailnetHost),
       EIDO_WEBAUTHN_ORIGIN: read(env, "EIDO_WEBAUTHN_ORIGIN", url.origin),
+      // Google returns the browser to the gate's callback through the edge's /api/gate mount (#662).
+      EIDO_GOOGLE_REDIRECT_URI: read(
+        env,
+        "EIDO_GOOGLE_REDIRECT_URI",
+        new URL("/api/gate/connect/google/callback", url).toString()
+      ),
       EIDO_GATE_PHONE_HOST: LOOPBACK,
       EIDO_GATE_PHONE_PORT: String(ports.gate),
       // Empty: tailscale serve strips the /api/gate mount prefix (measured, #178).

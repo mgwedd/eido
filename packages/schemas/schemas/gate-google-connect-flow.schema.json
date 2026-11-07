@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateGoogleConnectFlow",
+  "description": "Response of GET /connect/google/flows/{flow} on the control socket (#662): `pending` until Google redirects back, then `connected` with the connector's health, or `failed` with the reason. Unknown and expired flows are 404.",
+  "type": "object",
+  "properties": {
+    "status": {
+      "enum": ["pending", "connected", "failed"]
+    },
+    "reason": {
+      "enum": [
+        "denied",
+        "invalid_callback",
+        "token_endpoint_unreachable",
+        "token_endpoint_refused",
+        "no_refresh_token",
+        "scope_not_granted"
+      ]
+    },
+    "health": {
+      "$ref": "gate-connector-health.schema.json"
+    }
+  },
+  "required": ["status"],
+  "additionalProperties": false
+}

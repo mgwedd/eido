@@ -34,6 +34,9 @@ var SENSITIVE_SEGMENTS = [
   "enrol",
   "enroll",
   "unlock",
+  "admin",
+  // Google's sign-in redirect carries the authorization code (#662).
+  "connect",
 ]
 
 var NETWORK_ONLY_PATHS = ["/healthz", "/sw.js", "/sw-routing.js"]

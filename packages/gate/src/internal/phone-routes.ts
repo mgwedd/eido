@@ -9,6 +9,13 @@ import {
   validateGateEnrolRequest,
   validateGateLoginRequest,
   validateGatePushRegistration,
+  validateGateEnrolmentCodeRequest,
+  validateGateBridgePasswordRequest,
+  validateGateBridgePin,
+  validateGateBridgePinRequest,
+  validateGateSimpleFinSecretRequest,
+  validateGateGoogleConnectRequest,
+  validateGateGoogleConnectTarget,
   validateGateRepinRequest,
 } from "@eido/schemas"
 import type {
@@ -16,6 +23,7 @@ import type {
   GateAuditPage,
   GateConnectorSettings,
   GateCredentialStatus,
+  GateEnrolmentCode,
   GateFileRoots,
   GateDecisionResult,
   GateEnrolOptions,
@@ -31,6 +39,7 @@ import type {
 } from "@eido/schemas"
 import { issueNonce, reject, verifyApproval } from "./approvals"
 import type { PreparedApproval } from "./approvals"
+import { adminRoute } from "./admin-routes"
 import { apiError, NOT_FOUND } from "./http"
 import type { GateRequest, Handler, Reply } from "./http"
 import type { ExecutionResult } from "./executor"
@@ -53,7 +62,28 @@ import {
   listPasskeys,
 } from "./credentials"
 import { readBackupStatus } from "./backup-status"
-import { checkEnrolmentCode } from "./enrolment"
+import {
+  checkEnrolmentCode,
+  issueSignedEnrolmentCode,
+  prepareEnrolmentCodeIssue,
+} from "./enrolment"
+import {
+  prepareBridgeSecret,
+  prepareBridgePin,
+  prepareSimpleFin,
+  removeConnectorSecrets,
+  sealBridgeSecret,
+  setBridgePin,
+  setSimpleFin,
+} from "./connector-secrets"
+import type { ConnectorProbes } from "./connector-connect"
+import type { Vault } from "./vault/vault"
+import {
+  googleCallback,
+  prepareGoogleConnect,
+  startGoogleConnect,
+} from "./google-connect"
+import type { GoogleConnect } from "./google-connect"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
 import {
@@ -91,13 +121,16 @@ import {
   sessionToken,
 } from "./sessions"
 import type { Clock, Elevations } from "./sessions"
+import type { SupervisorClient } from "./supervisor-client"
 import type { WebAuthnConfig } from "./webauthn"
 
 // The phone listener (#85): what the PWA calls, through `tailscale serve`, to sign in with its
 // passkey and to list, prepare, edit and decide approvals. It answers only the Host headers it
 // is given (421 otherwise) and only below its base path. Every route outside the table below is
-// 404 before any session check, so the admin routes (issuing enrolment codes, revocation,
-// policy; #78) and the data plane's routes do not exist here, signed in or not. The one
+// 404 before any session check, so the control socket's routes (revocation, policy; #78) and the
+// data plane's routes do not exist here, signed in or not. The stack admin routes (`/admin/*`,
+// #659) relay the stack supervisor; see admin-routes.ts. Issuing an enrolment code from the web
+// Admin page (`/admin/enrolment-codes`, #660) is a signed control change. The one
 // exception is the allowed-folder list (`GET /file-roots`, #574), served beside the signed
 // ceremony that changes it; file reads (`POST /files`) stay on the data plane. Credential
 // status, login and enrolment need no session: enrolment needs a single-use code the owner
@@ -119,6 +152,18 @@ export type PhoneState = {
   reviewedManifests?: () => string[]
   /** The gate-side native helper that identifies a requested file root (#574); never the phone's. */
   fileHelper?: FileHelper
+  /** The stack supervisor's socket client (#659); undefined when the gate runs outside the stack. */
+  supervisor?: SupervisorClient
+  /** The gate vault the Admin page's signed secret routes seal into (#661); undefined without one. */
+  vault?: Vault
+  /** The Bridge pin the gate runs with and its certificate file (#661); undefined without Bridge. */
+  bridge?: { certificateSha256: string; certificatePath: string }
+  /** Each connector's health probe, run after a new secret is sealed (#661). */
+  probes?: ConnectorProbes
+  /** How the gate claims a SimpleFIN access URL (#661); the global fetch by default. */
+  fetch?: typeof fetch
+  /** Google sign-in through the gate (#662); undefined without a vault and a redirect URI. */
+  google?: GoogleConnect
 }
 
 export type PhoneRoute = {
@@ -179,6 +224,33 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/file-roots", tier: "session" },
   { method: "POST", path: "/file-roots/prepare", tier: "session" },
   { method: "POST", path: "/file-roots/complete", tier: "signed" },
+  { method: "GET", path: "/admin/stack", tier: "session" },
+  { method: "GET", path: "/admin/doctor", tier: "session" },
+  { method: "POST", path: "/admin/stack/start", tier: "elevated" },
+  { method: "POST", path: "/admin/stack/stop", tier: "elevated" },
+  { method: "POST", path: "/admin/stack/restart", tier: "elevated" },
+  { method: "GET", path: "/admin/models", tier: "session" },
+  { method: "POST", path: "/admin/models/:id/use", tier: "elevated" },
+  { method: "POST", path: "/admin/models/:id/fetch", tier: "elevated" },
+  { method: "GET", path: "/admin/login-item", tier: "session" },
+  { method: "POST", path: "/admin/login-item", tier: "elevated" },
+  { method: "POST", path: "/admin/enrolment-codes/prepare", tier: "session" },
+  { method: "POST", path: "/admin/enrolment-codes", tier: "signed" },
+  { method: "POST", path: "/admin/secrets/bridge/prepare", tier: "session" },
+  { method: "POST", path: "/admin/secrets/bridge", tier: "signed" },
+  {
+    method: "POST",
+    path: "/admin/secrets/bridge-pin/prepare",
+    tier: "session",
+  },
+  { method: "POST", path: "/admin/secrets/bridge-pin", tier: "signed" },
+  { method: "POST", path: "/admin/secrets/simplefin/prepare", tier: "session" },
+  { method: "POST", path: "/admin/secrets/simplefin", tier: "signed" },
+  { method: "POST", path: "/admin/connectors/:id/remove", tier: "elevated" },
+  { method: "POST", path: "/admin/connectors/google/prepare", tier: "session" },
+  { method: "POST", path: "/admin/connectors/google/start", tier: "signed" },
+  // Google's redirect after consent: the single-use state it carries is the credential (#662).
+  { method: "GET", path: "/connect/google/callback", tier: "public" },
 ] as const satisfies readonly PhoneRoute[]
 
 type RoutePath = (typeof PHONE_ROUTES)[number]["path"]
@@ -1033,6 +1105,157 @@ async function registerPush(
   }
 }
 
+// Adding a device adds an approver, so the web Admin page issues a code only with the owner's
+// passkey over the prepared ceremony (#660). The code is in this one response and nowhere else.
+async function issueEnrolmentCodeRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateEnrolmentCodeRequest(body.value)
+  if (!checked.ok) return invalid("an enrolment code request", checked.errors)
+  try {
+    const issued = issueSignedEnrolmentCode(
+      state.db,
+      { config: state.webAuthn, request: checked.value.approval },
+      now
+    )
+    const reply: GateEnrolmentCode = {
+      code: issued.code,
+      expiresAt: issued.expiresAt.toISOString(),
+    }
+    return { status: 201, body: reply }
+  } catch {
+    return apiError(403, "verification_failed", "enrolment code refused")
+  }
+}
+
+// Connector secrets from the Admin page (#661): see connector-secrets.ts. Each body is parsed
+// with its schema; the secret goes on to the vault and is never part of a reply.
+async function bridgeSecretPrepare(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateBridgePin(body.value)
+  if (!checked.ok) return invalid("a Bridge pin", checked.errors)
+  return prepareBridgeSecret(state, checked.value.certificateSha256)
+}
+
+async function bridgeSecretRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateBridgePasswordRequest(body.value)
+  if (!checked.ok) return invalid("a Bridge password request", checked.errors)
+  return sealBridgeSecret(
+    state,
+    {
+      authorization: {
+        config: state.webAuthn,
+        request: checked.value.approval,
+      },
+      certificateSha256: checked.value.certificateSha256,
+      password: checked.value.password,
+    },
+    () => now().getTime()
+  )
+}
+
+async function bridgePinPrepare(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateBridgePin(body.value)
+  if (!checked.ok) return invalid("a Bridge pin", checked.errors)
+  return prepareBridgePin(state, checked.value.certificateSha256)
+}
+
+async function bridgePinRoute(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateBridgePinRequest(body.value)
+  if (!checked.ok) return invalid("a Bridge pin request", checked.errors)
+  return setBridgePin(state, {
+    authorization: { config: state.webAuthn, request: checked.value.approval },
+    certificateSha256: checked.value.certificateSha256,
+  })
+}
+
+async function simpleFinRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateSimpleFinSecretRequest(body.value)
+  if (!checked.ok) return invalid("a SimpleFIN setup request", checked.errors)
+  return setSimpleFin(
+    state,
+    {
+      authorization: {
+        config: state.webAuthn,
+        request: checked.value.approval,
+      },
+      setupToken: checked.value.setupToken,
+    },
+    () => now().getTime()
+  )
+}
+
+const NO_GOOGLE = () =>
+  apiError(503, "unavailable", "Google sign-in is not configured on the gate")
+
+async function googlePrepareRoute(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  if (state.google === undefined) return NO_GOOGLE()
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateGoogleConnectTarget(body.value)
+  if (!checked.ok) return invalid("a Google client", checked.errors)
+  return prepareGoogleConnect(state.google, checked.value.target)
+}
+
+async function googleStartRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  if (state.google === undefined) return NO_GOOGLE()
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateGoogleConnectRequest(body.value)
+  if (!checked.ok) return invalid("a Google sign-in request", checked.errors)
+  return startGoogleConnect(
+    state.google,
+    {
+      authorization: {
+        config: state.webAuthn,
+        request: checked.value.approval,
+      },
+      target: checked.value.target,
+      ...(checked.value.clientSecret === undefined
+        ? {}
+        : { clientSecret: checked.value.clientSecret }),
+    },
+    now().getTime()
+  )
+}
+
 function route(
   state: PhoneState,
   request: GateRequest,
@@ -1115,6 +1338,32 @@ function route(
         : registerPush(state, request)
     case "/push/prepare":
       return preparePush(state, request)
+    case "/admin/enrolment-codes/prepare":
+      return { status: 200, body: prepareEnrolmentCodeIssue(state.db) }
+    case "/admin/enrolment-codes":
+      return issueEnrolmentCodeRoute(state, request, now)
+    case "/admin/secrets/bridge/prepare":
+      return bridgeSecretPrepare(state, request)
+    case "/admin/secrets/bridge":
+      return bridgeSecretRoute(state, request, now)
+    case "/admin/secrets/bridge-pin/prepare":
+      return bridgePinPrepare(state, request)
+    case "/admin/secrets/bridge-pin":
+      return bridgePinRoute(state, request)
+    case "/admin/secrets/simplefin/prepare":
+      return prepareSimpleFin(state)
+    case "/admin/secrets/simplefin":
+      return simpleFinRoute(state, request, now)
+    case "/admin/connectors/:id/remove":
+      return removeConnectorSecrets(state, matched.id)
+    case "/admin/connectors/google/prepare":
+      return googlePrepareRoute(state, request)
+    case "/admin/connectors/google/start":
+      return googleStartRoute(state, request, now)
+    case "/connect/google/callback":
+      return state.google === undefined
+        ? NO_GOOGLE()
+        : googleCallback(state.google, request.query, () => now().getTime())
     case "/push/:id/remove":
       removePushSubscription(state.db, matched.id)
       return { status: 200, body: { id: matched.id } }
@@ -1129,6 +1378,16 @@ function route(
       return prepareFileRootsRoute(request, state)
     case "/file-roots/complete":
       return completeFileRootsRoute(request, state)
+    case "/admin/stack":
+    case "/admin/doctor":
+    case "/admin/stack/start":
+    case "/admin/stack/stop":
+    case "/admin/stack/restart":
+    case "/admin/models":
+    case "/admin/models/:id/use":
+    case "/admin/models/:id/fetch":
+    case "/admin/login-item":
+      return adminRoute(state.supervisor, path, matched.id, request, jsonBody)
   }
 }
 

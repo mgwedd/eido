@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
-import { validateConnectorManifest } from "@eido/schemas"
+import { REVIEWED_MANIFESTS, validateConnectorManifest } from "@eido/schemas"
 import type { ConnectorManifest } from "@eido/schemas"
 import {
   controlApprovalChallenge,
@@ -219,25 +219,28 @@ export const REVIEWED_MANIFEST_DIR = "reviewed-manifests"
 
 const CONNECTOR_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 
-/** The connector names with a reviewed manifest file placed; empty when the directory is absent. */
+/**
+ * The connector names with a reviewed manifest: a file placed in the data dir, or one committed
+ * in @eido/schemas (ADR 0009, decision 7).
+ */
 export function listReviewedManifests(dataDir: string): string[] {
   let entries: string[]
   try {
     entries = readdirSync(join(dataDir, REVIEWED_MANIFEST_DIR))
   } catch {
-    return []
+    entries = []
   }
-  return entries
+  const placed = entries
     .filter((entry) => entry.endsWith(".json"))
     .map((entry) => entry.slice(0, -".json".length))
     .filter((name) => CONNECTOR_NAME.test(name))
-    .sort()
+  return [...new Set([...placed, ...Object.keys(REVIEWED_MANIFESTS)])].sort()
 }
 
 /**
- * The owner's reviewed manifest for a connector: undefined when no file is placed, `null` when
- * the file is not JSON (the manifest check then refuses it). Only names that cannot leave the
- * directory are read.
+ * The reviewed manifest for a connector: the owner's placed file first, else the committed one
+ * in @eido/schemas; undefined when there is neither, `null` when the placed file is not JSON
+ * (the manifest check then refuses it). Only names that cannot leave the directory are read.
  */
 export function readReviewedManifest(
   dataDir: string,
@@ -251,7 +254,9 @@ export function readReviewedManifest(
       "utf8"
     )
   } catch {
-    return undefined
+    return Object.hasOwn(REVIEWED_MANIFESTS, connector)
+      ? REVIEWED_MANIFESTS[connector]
+      : undefined
   }
   try {
     return JSON.parse(text)

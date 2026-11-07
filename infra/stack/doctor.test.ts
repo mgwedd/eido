@@ -636,13 +636,11 @@ describe("runDoctor on Windows", () => {
     )
   })
 
-  it("gives the llama-server command itself as the start fix", async () => {
+  it("gives llama start as the start fix", async () => {
     const m = windows()
     m.health.status = undefined
-    expect((await only(m, "llama-health"))[0]?.fix?.text).toMatch(
-      new RegExp(
-        `^"${WIN_BIN.replaceAll("\\", "\\\\")}" -m "${WIN_MODEL.replaceAll("\\", "\\\\")}" --jinja --host 127\\.0\\.0\\.1 --port 8080 `
-      )
+    expect((await only(m, "llama-health"))[0]?.fix?.text).toBe(
+      "pnpm --filter @eido/infra llama start"
     )
   })
 
@@ -686,13 +684,14 @@ describe("runDoctor on Windows", () => {
 })
 
 describe("runDoctor on Linux", () => {
-  it("starts tailscaled with systemctl and keeps POSIX paths", async () => {
+  it("starts tailscaled with systemctl, gives llama start as the health fix and keeps POSIX paths", async () => {
     const m = machine()
     m.deps.platform = "linux"
     m.deps.env = {
       EIDO_DEV_VAULT: "1",
       EIDO_GATE_VAULT_FILE: "/home/u/.local/share/eido-dev/gate/vault.json",
     }
+    m.health.status = undefined
     m.commands.set("tailscale status --json", {
       code: 1,
       stdout: "",
@@ -701,6 +700,9 @@ describe("runDoctor on Linux", () => {
     const checks = await runDoctor(m.deps, full)
     expect(checks.find((c) => c.id === "tailscale")?.fix?.text).toBe(
       "sudo systemctl start tailscaled"
+    )
+    expect(checks.find((c) => c.id === "llama-health")?.fix?.text).toBe(
+      "pnpm --filter @eido/infra llama start"
     )
     expect(checks.map((c) => c.id)).not.toContain("settings")
     expect(checks.find((c) => c.id === "vault")?.status).toBe("warn")

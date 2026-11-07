@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StackDoctorReport",
+  "description": "The stack doctor checks (#638) as the supervisor reports them on GET /doctor (#644). Each check is ok, warn or fail, with the fix for a warn or fail when there is one.",
+  "type": "object",
+  "properties": {
+    "checks": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "title": "StackDoctorCheck",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": [
+              "node",
+              "dependencies",
+              "settings",
+              "tailscale",
+              "stack-config",
+              "web-env",
+              "keychain",
+              "vault",
+              "push",
+              "llama-pin",
+              "llama-health",
+              "gmail",
+              "ports"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["ok", "warn", "fail"]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "fix": {
+            "title": "StackDoctorFix",
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "install-node",
+                  "install-dependencies",
+                  "start-tailscale",
+                  "connect-tailscale",
+                  "enable-magicdns",
+                  "create-web-env",
+                  "add-web-env-keys",
+                  "add-base-url",
+                  "fix-settings",
+                  "run-setup",
+                  "use-keychain-file",
+                  "chmod-keychain",
+                  "unlock-keychain",
+                  "install-llama-build",
+                  "download-model",
+                  "start-llama",
+                  "free-port"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "required": ["action", "text"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "status", "summary"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["checks"],
+  "additionalProperties": false
+}

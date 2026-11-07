@@ -11,7 +11,7 @@ Connecting and reconnecting Gmail and the Proton connectors on the Mac: `infra/c
 First run, then every start after it:
 
 ```bash
-pnpm stack:setup               # creates the gate keychain, asks for unset settings, writes stack.env, runs doctor
+pnpm stack:setup               # creates the gate keychain, asks for unset settings, writes stack.env, runs doctor, and issues the first phone enrolment code when the gate is running
 pnpm stack:prod --background   # starts the stack and prints https://<host>.ts.net:8443/
 ```
 
@@ -32,6 +32,19 @@ Start runs doctor's blocking checks first and starts nothing on a failure. It th
 
 The tailnet host is read from `tailscale status --json`. On macOS, data, sockets and pid files live under `~/Library/Application Support/eido-dev` (pid files in `run/`), and one log per process under `~/Library/Logs/eido-dev`. The typed config is `infra/stack/config.ts`; every value is overridable by env, with no secrets: `EIDO_TAILNET_HOST`, `EIDO_EDGE_PORT`, `EIDO_WEB_PORT`, `EIDO_CORE_PORT`, `EIDO_GATE_PHONE_PORT`, `EIDO_STACK_DIR`, `EIDO_STACK_LOG_DIR`, and the gate and core variables listed in `OVERRIDES`. The llama, push, Gmail, Drive, Bridge and development-vault variables are passed through from your environment or `stack.env` when set, and never invented by the stack.
 
+### Start at login (#629, macOS)
+
+```bash
+pnpm stack:install     # writes and loads the LaunchAgent com.eido.stack; it starts the stack now and at every login
+pnpm stack:uninstall   # boots the agent out and removes its plist; the stack keeps running until pnpm stack:stop
+```
+
+The agent runs the stack supervisor (`infra/stack/supervisor-main.ts --start-stack`). The supervisor first runs `stack boot`, which starts the prod stack in the background unless a stack process already runs, and then serves its socket. launchd restarts the supervisor when it exits, after 10 seconds, so a start that fails at login (Tailscale not up yet, say) is tried again. The stack's processes run in their own process groups and outlive a supervisor restart. The stack sets `EIDO_GATE_SUPERVISOR_SOCKET` to `run/supervisor.sock` so the gate can relay the supervisor to the web Admin page (#659): the stack status, doctor and model list with a session, and start, stop, restart and model use or fetch with a step-up. Only core and llama can be started or stopped from there. A gate run without the variable reports the supervisor as unavailable.
+
+The plist is `~/Library/LaunchAgents/com.eido.stack.plist` and the supervisor logs to `~/Library/Logs/eido-dev/stack.out.log` and `stack.err.log`. It passes on `PATH` and `EIDO_STACK_DIR` from the shell that ran `stack:install`; every other setting comes from `stack.env`, so run `stack:install` again after changing `PATH` or the stack dir. `pnpm stack:status` ends with the agent's state from `launchctl print`. `pnpm stack:stop` stops the stack while the agent stays loaded, and says that the next login or supervisor restart starts it again. Windows (a Task Scheduler task) is #455.
+
+The web Admin page can turn start at login on and off too (#664), through the supervisor's `GET` and `POST /login-item` (a step-up to change it). On writes the same plist as `stack:install` but does not load it, so launchd runs it at the next login and no second supervisor starts beside the running one; `stack:status` then reads "installed but not loaded". Off removes the plist and boots the agent out, unless the loaded agent is the supervisor answering, which keeps running until logout. Off macOS the supervisor refuses with `unsupported` and the gate answers 501 `unsupported_platform`.
+
 ### Settings: `stack.env` (#625)
 
 `stack.env` in the stack dir (`~/Library/Application Support/eido-dev/stack.env` on macOS) holds the stack's non-secret settings as `KEY=value` lines. `pnpm stack:setup` writes it; treat it as written by the system rather than by hand. Every stack command loads it, and a variable set in your environment wins over the same key in the file. It must be a regular file with mode 0600, and only these keys are accepted, so a typo or a secret fails with the key's name:
@@ -48,7 +61,7 @@ Secrets never go in it: tokens and passwords live in the gate's vault. `infra/st
 
 ### Windows and Linux
 
-Setup, doctor, settings and `stack:gate` run on Windows and Linux too. The stack dir is `%LOCALAPPDATA%\eido-dev` (logs in `logs\`) on Windows and the XDG data dir on Linux; the gate's sockets are named pipes on Windows. There is no keychain off macOS: setup sets the development file vault (`EIDO_DEV_VAULT=1` and `EIDO_GATE_VAULT_FILE`), and doctor warns that a production vault there is #455. Windows has no mode bits, so the 0600 check on `stack.env` is skipped there, with a doctor note pointing at #455. Starting and stopping the stack on Windows is not supported yet.
+Setup, doctor, settings and `stack:gate` run on Windows and Linux too. The stack dir is `%LOCALAPPDATA%\eido-dev` (logs in `logs\`) on Windows and the XDG data dir on Linux; the gate's sockets are named pipes on Windows. There is no keychain off macOS: setup sets the development file vault (`EIDO_DEV_VAULT=1` and `EIDO_GATE_VAULT_FILE`), and doctor warns that a production vault there is #455. Windows has no mode bits, so the 0600 check on `stack.env` is skipped there, with a doctor note pointing at #455. Starting and stopping the stack on Windows, and starting it at login, are not supported yet.
 
 The WebAuthn origin is `https://<host>:8443`. The gate accepts an origin with a port once #375 lands; until then set `EIDO_WEBAUTHN_ORIGIN=https://<host>` to start it.
 
@@ -151,7 +164,7 @@ pnpm --filter @eido/infra bridge uninstall  # bootout, then remove the plist
 
 1. Install Bridge from Proton's official release. Run `bridge --help` and confirm `--cli` and `--noninteractive` exist in this version.
 2. Log in once, interactively, before `install`: run `bridge --cli`, then `login` and follow the prompts, including two-factor. Run `info` to read the Bridge-generated IMAP and SMTP username and password, and the ports. Quit with `exit`. (Do not run this while the job is loaded: one Bridge at a time.)
-3. Store the Bridge password in the vault with `pnpm --filter @eido/gate connect proton-mail` and `connect proton-calendar` (`infra/connectors.md`). It never goes in the plist, the repo, a script, a log or a command line.
+3. Store the Bridge password in the vault with `pnpm stack:gate connect proton-mail` and `connect proton-calendar` (`infra/connectors.md`). It never goes in the plist, the repo, a script, a log or a command line.
 4. `pnpm --filter @eido/infra bridge install`.
 5. Set the gate's variables (no password among them): `EIDO_BRIDGE_HOST=127.0.0.1` (Bridge's fixed host), `EIDO_BRIDGE_IMAP_PORT` and `EIDO_BRIDGE_SMTP_PORT` from `info`, `EIDO_BRIDGE_USERNAME`, and the certificate pin from the next section. Core's `EIDO_PROTON_USERNAME` is the same address. Defaults are 1143 and 1025, but Bridge takes the next free port, so read them from `info` and never assume them.
 6. Run `pnpm --filter @eido/infra bridge health` with the same variables exported. It reads the greeting on both ports without sending a credential. It expects STARTTLS (Bridge's default); with implicit TLS switched on it reports an unexpected greeting.

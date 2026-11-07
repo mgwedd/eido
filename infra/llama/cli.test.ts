@@ -1,239 +1,33 @@
-import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 
-import { main, type Deps, type ServerProcess } from "./cli.ts"
-import type { Platform } from "./config.ts"
-import type { HttpResponse } from "./server.ts"
-import type { RunResult } from "./verify.ts"
+import { main } from "./cli.ts"
 
-const LOCK = readFileSync(new URL("../model.lock", import.meta.url), "utf8")
-const SHA = "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
-const SIZE = 14439363584
-const QWEN_SHA =
-  "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
-const QWEN_SIZE = 22134528992
-const OSS_SHA =
-  "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
-const OSS_SIZE = 12109566624
-const ASSET_SHA =
-  "791eb0200a7c846ca925b6274fc21f0f21f537fda2924cc5a47402655816f56e"
-const HOME = "/Users/u"
-const ROOT = `${HOME}/Library/Application Support/eido-dev`
-const MODEL = `${ROOT}/models/gemma-4-26B_q4_0-it.gguf`
-const QWEN = `${ROOT}/models/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf`
-const OSS = `${ROOT}/models/gpt-oss-20b-MXFP4.gguf`
-const BIN = `${ROOT}/llama.cpp/b11149/llama-server`
-const SETTINGS = `${ROOT}/stack.env`
-const PROFILES = `${ROOT}/profiles.lock`
-const RECORD = `${ROOT}/verified-profiles`
-const PLIST = `${HOME}/Library/LaunchAgents/com.eido.llama-server.plist`
-const VERSION = "version: 0.5.0-dev (build 11149, commit d2e54583c)\n"
-const REFERENCE = "<|turn>user\nThanks.<turn|>\n<|turn>model\n"
-const QWEN_PASS = `qwen3.6-35b-a3b ${QWEN_SHA} b11149\n`
-const PRINT = "launchctl print gui/501/com.eido.llama-server"
-const OK: RunResult = { code: 0, stdout: "", stderr: "" }
-const WIN: Platform = { os: "win32", arch: "x64" }
-
-const reply = (status: number, body: unknown): HttpResponse => ({
-  status,
-  json: () => Promise.resolve(body),
-})
-
-const fail = (): never => {
-  throw new Error("llama-server was not spawned")
-}
-
-const tick = () => new Promise((r) => setTimeout(r, 0))
-
-type Child = ServerProcess & { killed: string[]; exit: (code: number) => void }
-
-function child(): Child {
-  let exit: (code: number) => void = () => {}
-  const exited = new Promise<number>((resolve) => (exit = resolve))
-  const c: Child = {
-    exited,
-    killed: [],
-    kill: (signal) => {
-      c.killed.push(signal)
-      exit(143)
-    },
-    exit: (code) => exit(code),
-  }
-  return c
-}
-
-type Answer = HttpResponse | Error
-type Options = {
-  sha?: string
-  version?: RunResult
-  files?: Record<string, string>
-  /** Answers by URL path; a list is answered in turn, its last entry from then on. */
-  http?: Record<string, Answer | Answer[]>
-  runs?: Record<string, RunResult>
-  env?: Record<string, string>
-  platform?: Platform
-  uid?: number
-  /** The st_mode the settings store sees for an existing file. */
-  settingsMode?: number
-}
-
-const SIZES: Record<string, number> = {
-  [MODEL]: SIZE,
-  [QWEN]: QWEN_SIZE,
-  [OSS]: OSS_SIZE,
-}
-const SHAS: Record<string, string> = { [QWEN]: QWEN_SHA, [OSS]: OSS_SHA }
-
-function harness(o: Options = {}) {
-  const out: string[] = []
-  const err: string[] = []
-  const ran: string[] = []
-  const spawned: {
-    command: string
-    args: readonly string[]
-    process: Child
-  }[] = []
-  const written: Record<string, string> = {}
-  const privately: string[] = []
-  const removed: string[] = []
-  const made: string[] = []
-  const requests: string[] = []
-  const downloaded: string[] = []
-  let stop: () => void = () => {}
-  const files: Record<string, string> = {
-    "/repo/infra/model.lock": LOCK,
-    [MODEL]: "",
-    [BIN]: "",
-    "/repo/infra/llama/fixtures/gemma-4-26B_q4_0-it.gguf.prompt.txt": REFERENCE,
-    ...o.files,
-  }
-  const http: Record<string, Answer | Answer[]> = {
-    "/health": reply(200, { status: "ok" }),
-    "/props": reply(200, {
-      chat_template: "'<|turn>model\n' + message['content']",
-    }),
-    "/apply-template": reply(200, { prompt: REFERENCE }),
-    "/v1/chat/completions": reply(200, {
-      choices: [
-        {
-          message: {
-            content: '{"city":"a","country":"b","summary":"c","unit":"d"}',
-          },
-        },
-      ],
-    }),
-    ...o.http,
-  }
-  let t = 0
-  const deps: Deps = {
-    readText: (path) => {
-      const text = files[path]
-      if (text === undefined) throw new Error(`ENOENT: ${path}`)
-      return text
-    },
-    probe: {
-      size: (path) =>
-        Promise.resolve(path in files ? (SIZES[path] ?? 10) : undefined),
-      sha256: (path) =>
-        Promise.resolve(
-          path === MODEL ? (o.sha ?? SHA) : (SHAS[path] ?? ASSET_SHA)
-        ),
-      now: () => (t += 1000),
-    },
-    run: (command, args) => {
-      const line = [command, ...args].join(" ")
-      ran.push(line)
-      if (line === `${BIN} --version`)
-        return Promise.resolve(
-          o.version ?? { code: 0, stdout: "", stderr: VERSION }
-        )
-      return Promise.resolve(
-        o.runs?.[line] ?? { code: 1, stdout: "", stderr: "" }
-      )
-    },
-    spawn: (command, args) => {
-      const process = child()
-      spawned.push({ command, args, process })
-      return process
-    },
-    fetch: (url, init) => {
-      const path = new URL(url).pathname
-      requests.push(init === undefined ? url : `${url} ${init.body}`)
-      const entry = http[path]
-      const answer = Array.isArray(entry)
-        ? entry.length > 1
-          ? entry.shift()
-          : entry[0]
-        : entry
-      if (answer === undefined || answer instanceof Error)
-        return Promise.reject(answer ?? new Error("ECONNREFUSED"))
-      return Promise.resolve(answer)
-    },
-    download: (url, dest) => {
-      downloaded.push(`${url} -> ${dest}`)
-      files[dest] = ""
-      return Promise.resolve()
-    },
-    sleep: () => Promise.resolve(),
-    onStopSignal: (handler) => (stop = handler),
-    fs: {
-      exists: (path) => path in files,
-      mkdir: (path) => void made.push(path),
-      writeFile: (path, text) => {
-        written[path] = text
-        files[path] = text
-      },
-      rename: (from, to) => {
-        files[to] = files[from] ?? ""
-        delete files[from]
-      },
-      remove: (path) => {
-        removed.push(path)
-        delete files[path]
-      },
-      removeTree: (path) => void removed.push(`${path}/`),
-      list: () => [],
-    },
-    settings: {
-      read: (path) => files[path],
-      stat: (path) =>
-        path in files
-          ? { isFile: true, mode: o.settingsMode ?? 0o100600, size: 1 }
-          : undefined,
-      write: (path, text) => {
-        privately.push(path)
-        written[path] = text
-        files[path] = text
-      },
-      ensurePrivateDir: (path) => void made.push(path),
-    },
-    env: o.env ?? {},
-    home: HOME,
-    platform: o.platform ?? { os: "darwin", arch: "arm64" },
-    uid: o.uid ?? 501,
-    node: "/opt/node",
-    launcher: "/repo/infra/llama/bin.ts",
-    defaultLockPath: "/repo/infra/model.lock",
-    fixtureDir: "/repo/infra/llama/fixtures",
-    out: (l) => out.push(l),
-    err: (l) => err.push(l),
-  }
-  return {
-    deps,
-    files,
-    out,
-    err,
-    ran,
-    spawned,
-    written,
-    privately,
-    removed,
-    made,
-    requests,
-    downloaded,
-    stop: () => stop(),
-  }
-}
+import {
+  SHA,
+  SIZE,
+  QWEN_SHA,
+  OSS_SHA,
+  OSS_SIZE,
+  ASSET_SHA,
+  HOME,
+  MODEL,
+  QWEN,
+  OSS,
+  BIN,
+  SETTINGS,
+  PROFILES,
+  RECORD,
+  PLIST,
+  VERSION,
+  QWEN_PASS,
+  PRINT,
+  OK,
+  WIN,
+  reply,
+  fail,
+  tick,
+  harness,
+} from "./test-support.ts"
 
 describe("llama verify", () => {
   it("passes the default profile's binary and model, and logs the digest", async () => {
@@ -466,6 +260,49 @@ describe("llama launch", () => {
     h.deps.probe.sha256 = () => Promise.resolve(SHA)
     const running = main(["launch"], h.deps)
     await tick()
+    expect(h.spawned[0]?.command).toBe(bin)
+    expect(h.spawned[0]?.args[1]).toBe(model)
+    h.stop()
+    expect(await running).toBe(0)
+  })
+})
+
+describe("llama start", () => {
+  it("runs on Windows from %LOCALAPPDATA% with llama-server.exe", async () => {
+    const root = "C:\\Users\\s\\AppData\\Local\\eido-dev"
+    const bin = `${root}\\llama.cpp\\b11149\\llama-server.exe`
+    const model = `${root}\\models\\gemma-4-26B_q4_0-it.gguf`
+    const h = harness({
+      platform: WIN,
+      env: { LOCALAPPDATA: "C:\\Users\\s\\AppData\\Local" },
+      files: { [bin]: "", [model]: "" },
+      runs: { [`${bin} --version`]: { code: 0, stdout: "", stderr: VERSION } },
+    })
+    h.deps.probe.size = (p) => Promise.resolve(p === model ? SIZE : undefined)
+    h.deps.probe.sha256 = () => Promise.resolve(SHA)
+    const running = main(["start"], h.deps)
+    await tick()
+    expect(h.ran).toEqual([`${bin} --version`])
+    expect(h.spawned[0]?.command).toBe(bin)
+    expect(h.spawned[0]?.args[1]).toBe(model)
+    h.stop()
+    expect(await running).toBe(0)
+  })
+
+  it("runs on Linux from ~/.local/share/eido-dev with llama-server", async () => {
+    const root = `${HOME}/.local/share/eido-dev`
+    const bin = `${root}/llama.cpp/b11149/llama-server`
+    const model = `${root}/models/gemma-4-26B_q4_0-it.gguf`
+    const h = harness({
+      platform: { os: "linux", arch: "x64" },
+      files: { [bin]: "", [model]: "" },
+      runs: { [`${bin} --version`]: { code: 0, stdout: "", stderr: VERSION } },
+    })
+    h.deps.probe.size = (p) => Promise.resolve(p === model ? SIZE : undefined)
+    h.deps.probe.sha256 = () => Promise.resolve(SHA)
+    const running = main(["start"], h.deps)
+    await tick()
+    expect(h.ran).toEqual([`${bin} --version`])
     expect(h.spawned[0]?.command).toBe(bin)
     expect(h.spawned[0]?.args[1]).toBe(model)
     h.stop()
@@ -1110,6 +947,81 @@ describe("llama install", () => {
     expect(h.ran).toEqual([])
     expect(h.written).toEqual({})
   })
+
+  it("fetches and verifies the Windows release asset and model on win32", async () => {
+    const root = "C:\\Users\\s\\AppData\\Local\\eido-dev"
+    const llamaDir = `${root}\\llama.cpp`
+    const buildDir = `${llamaDir}\\b11149`
+    const staging = `${llamaDir}\\.b11149.partial`
+    const archive = `${llamaDir}\\llama-b11149-bin-win-vulkan-x64.zip.partial`
+    const bin = `${buildDir}\\llama-server.exe`
+    const model = `${root}\\models\\gemma-4-26B_q4_0-it.gguf`
+    const winSha =
+      "ca432b775c5dcb5af85bbdcf22b06b6e2dca792f30334b19ef4a45ee4a512446"
+    const h = harness({
+      platform: WIN,
+      uid: undefined,
+      env: { LOCALAPPDATA: "C:\\Users\\s\\AppData\\Local" },
+      runs: {
+        [`tar -xf ${archive} -C ${staging}`]: OK,
+        [`${bin} --version`]: { code: 0, stdout: "", stderr: VERSION },
+      },
+    })
+    h.deps.uid = undefined
+    h.deps.fs.list = (dir) =>
+      dir === staging ? [{ name: "llama-server.exe", directory: false }] : []
+    h.deps.probe.size = (p) =>
+      Promise.resolve(p === `${model}.partial` ? SIZE : undefined)
+    h.deps.probe.sha256 = (p) => Promise.resolve(p === archive ? winSha : SHA)
+    expect(await main(["install"], h.deps)).toBe(0)
+    expect(h.downloaded).toEqual([
+      `https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-win-vulkan-x64.zip -> ${archive}`,
+      `https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf/resolve/d1c082be9cf3c8a514acf63b8761f4b41935842e/gemma-4-26B_q4_0-it.gguf -> ${model}.partial`,
+    ])
+    expect(h.ran).toEqual([
+      `tar -xf ${archive} -C ${staging}`,
+      `${bin} --version`,
+    ])
+    expect(h.out.at(-1)).toBe(
+      "ok: b11149 and profile gemma-4-26b-a4b are installed"
+    )
+  })
+
+  it("fetches and verifies the Linux release asset and model on linux without xattr", async () => {
+    const root = `${HOME}/.local/share/eido-dev`
+    const llamaDir = `${root}/llama.cpp`
+    const buildDir = `${llamaDir}/b11149`
+    const staging = `${llamaDir}/.b11149.partial`
+    const archive = `${llamaDir}/llama-b11149-bin-ubuntu-vulkan-x64.tar.gz.partial`
+    const bin = `${buildDir}/llama-server`
+    const model = `${root}/models/gemma-4-26B_q4_0-it.gguf`
+    const linuxSha =
+      "d93606c124863e26750f0fa02daba8ae73aa39395507534fcbb57f5e7bbe7b55"
+    const h = harness({
+      platform: { os: "linux", arch: "x64" },
+      runs: {
+        [`tar -xf ${archive} -C ${staging}`]: OK,
+        [`${bin} --version`]: { code: 0, stdout: "", stderr: VERSION },
+      },
+    })
+    h.deps.fs.list = (dir) =>
+      dir === staging ? [{ name: "llama-server", directory: false }] : []
+    h.deps.probe.size = (p) =>
+      Promise.resolve(p === `${model}.partial` ? SIZE : undefined)
+    h.deps.probe.sha256 = (p) => Promise.resolve(p === archive ? linuxSha : SHA)
+    expect(await main(["install"], h.deps)).toBe(0)
+    expect(h.downloaded).toEqual([
+      `https://github.com/ggml-org/llama.cpp/releases/download/b11149/llama-b11149-bin-ubuntu-vulkan-x64.tar.gz -> ${archive}`,
+      `https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf/resolve/d1c082be9cf3c8a514acf63b8761f4b41935842e/gemma-4-26B_q4_0-it.gguf -> ${model}.partial`,
+    ])
+    expect(h.ran).toEqual([
+      `tar -xf ${archive} -C ${staging}`,
+      `${bin} --version`,
+    ])
+    expect(h.out.at(-1)).toBe(
+      "ok: b11149 and profile gemma-4-26b-a4b are installed"
+    )
+  })
 })
 
 describe("llama uninstall", () => {
@@ -1213,25 +1125,26 @@ describe("llama status", () => {
 })
 
 describe("launchd commands outside macOS", () => {
-  for (const command of ["plan", "install", "uninstall", "status"])
-    it(`${command} fails clearly on Windows and runs nothing`, async () => {
-      const h = harness({ platform: WIN })
-      h.deps.uid = undefined
-      expect(await main([command], h.deps)).toBe(1)
-      expect(h.err).toEqual([
-        `FAIL: llama ${command} needs launchd and is not supported on this platform yet (#629)`,
-      ])
-      expect(h.ran).toEqual([])
-      expect(h.written).toEqual({})
-    })
+  for (const command of ["plan", "uninstall", "status"])
+    for (const platform of [WIN, { os: "linux", arch: "x64" } as const])
+      it(`${command} fails clearly on ${platform.os} and runs nothing`, async () => {
+        const h = harness({ platform })
+        h.deps.uid = undefined
+        expect(await main([command], h.deps)).toBe(1)
+        expect(h.err).toEqual([
+          `FAIL: llama ${command} needs launchd and is not supported on this platform yet (#629)`,
+        ])
+        expect(h.ran).toEqual([])
+        expect(h.written).toEqual({})
+      })
 })
 
 describe("usage", () => {
   it("rejects an unknown command", async () => {
     const h = harness()
-    expect(await main(["start"], h.deps)).toBe(2)
+    expect(await main(["stop"], h.deps)).toBe(2)
     expect(h.err).toEqual([
-      "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|check-template [--model ID]|plan|install|uninstall|status",
+      "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|start|check-template [--model ID]|plan|install|uninstall|status",
     ])
   })
 })

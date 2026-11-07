@@ -1,269 +1,18 @@
-import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 
 import type { ServeConfig } from "../tailscale/serve-routes.ts"
+import { gateScriptArgs, main, parseArgs } from "./cli.ts"
+
 import {
-  gateScriptArgs,
-  main,
-  parseArgs,
-  type Deps,
-  type LaunchOptions,
-} from "./cli.ts"
-import type { ProcessSpec } from "./config.ts"
-import type { RunResult } from "./ports.ts"
-import type { FileStat } from "./settings.ts"
-
-const HOST = "node.example.ts.net"
-const STACK = "/home/u/Library/Application Support/eido-dev"
-const RUN = `${STACK}/run`
-const SETTINGS = `${STACK}/stack.env`
-const KEYCHAIN = "/home/u/Library/Keychains/eido/eido.keychain-db"
-const LLAMA_BIN = `${STACK}/llama.cpp/b11149/llama-server`
-const MODEL = `${STACK}/models/gemma-4-26B_q4_0-it.gguf`
-const SECRET = "client-secret-value-never-printed"
-const WEB_ENV = [
-  "AUTH0_DOMAIN=tenant.example.invalid",
-  "AUTH0_CLIENT_ID=abc",
-  `AUTH0_CLIENT_SECRET=${SECRET}`,
-  `AUTH0_SECRET=${SECRET}`,
-  `APP_BASE_URL=http://localhost:3000,https://${HOST}:8443`,
-  "EIDO_OWNER_EMAIL=owner@example.invalid",
-].join("\n")
-const lockText = readFileSync(new URL("../model.lock", import.meta.url), "utf8")
-const gatePackageJson = readFileSync(
-  new URL("../../packages/gate/package.json", import.meta.url),
-  "utf8"
-)
-
-const fixture = (name: string) =>
-  readFileSync(
-    new URL(`../tailscale/fixtures/${name}.json`, import.meta.url),
-    "utf8"
-  )
-const ok = (stdout = ""): RunResult => ({ code: 0, stdout, stderr: "" })
-
-type Proc = {
-  spec: ProcessSpec
-  options: LaunchOptions
-  pid: number
-  alive: boolean
-  exit: (code: number | null) => void
-}
-
-/**
- * A stand-in for a ready Mac: doctor's checks pass (node, node_modules, .env.local, an unlocked
- * keychain, the pinned llama build and model, llama /health), launched processes listen on their
- * port and answer their health check, lsof and ps report them, signals end them, and tailscale
- * keeps a serve config. `env` replaces the default environment, which names the keychain.
- */
-function world(
-  options: {
-    env?: Deps["env"]
-    settings?: { text: string; mode?: number }
-    serve?: ServeConfig
-    foreign?: Record<number, string>
-    failToStart?: string
-    buildCode?: number
-    tailscaleDown?: boolean
-  } = {}
-) {
-  const procs: Proc[] = []
-  const files = new Map<string, string>([
-    ["/repo/package.json", JSON.stringify({ engines: { node: ">=24" } })],
-    ["/repo/node_modules/.modules.yaml", ""],
-    ["/repo/apps/web/.env.local", WEB_ENV],
-    ["/repo/infra/model.lock", lockText],
-    ["/repo/packages/gate/package.json", gatePackageJson],
-  ])
-  const stats = new Map<string, FileStat>([
-    [KEYCHAIN, { isFile: true, mode: 0o100600, size: 1 }],
-    [MODEL, { isFile: true, mode: 0o100644, size: 14439363584 }],
-  ])
-  if (options.settings !== undefined) {
-    files.set(SETTINGS, options.settings.text)
-    stats.set(SETTINGS, {
-      isFile: true,
-      mode: options.settings.mode ?? 0o100600,
-      size: options.settings.text.length,
-    })
-  }
-  const interactive: {
-    command: string
-    args: readonly string[]
-    options: unknown
-  }[] = []
-  const dirs: string[] = []
-  const out: string[] = []
-  const err: string[] = []
-  const tailscaleCalls: string[] = []
-  const serve: ServeConfig = structuredClone(options.serve ?? {})
-  let builds = 0
-  let stopHandler: (() => void) | undefined
-  let nextPid = 1000
-  let now = 0
-
-  const listening = (port: number) => {
-    const foreign = options.foreign?.[port]
-    if (foreign !== undefined) return foreign
-    const proc = procs.find((p) => p.alive && p.spec.port === port)
-    return proc === undefined ? "" : `p${proc.pid}\ncnode\n`
-  }
-
-  const tailscale = (args: readonly string[]): RunResult => {
-    const line = args.join(" ")
-    tailscaleCalls.push(line)
-    if (options.tailscaleDown === true)
-      return {
-        code: 1,
-        stdout: "",
-        stderr: "failed to connect to local tailscaled",
-      }
-    if (line === "status --json") return ok(fixture("status"))
-    if (line === "serve status --json" || line === "funnel status --json")
-      return ok(JSON.stringify(serve))
-    const [, , https, setPath, target] = args
-    if (
-      args[0] === "serve" &&
-      https !== undefined &&
-      setPath !== undefined &&
-      target !== undefined
-    ) {
-      const port = https.replace("--https=", "")
-      serve.TCP = { ...serve.TCP, [port]: { HTTPS: true } }
-      const web = (serve.Web ??= {})
-      const handlers = ((web[`${HOST}:${port}`] ??= {}).Handlers ??= {})
-      handlers[setPath.replace("--set-path=", "")] = { Proxy: target }
-      return ok()
-    }
-    return { code: 1, stdout: "", stderr: `unexpected: ${line}` }
-  }
-
-  const deps: Deps = {
-    platform: "darwin",
-    env: options.env ?? { EIDO_GATE_KEYCHAIN_PATH: KEYCHAIN },
-    home: "/home/u",
-    repoRoot: "/repo",
-    nodePath: "/bin/node",
-    exec: (command, args) => {
-      if (command === "lsof") {
-        const port = Number(args[1]?.replace("-iTCP:", ""))
-        const stdout = listening(port)
-        return Promise.resolve({
-          code: stdout === "" ? 1 : 0,
-          stdout,
-          stderr: "",
-        })
-      }
-      if (command === "ps") {
-        const proc = procs.find((p) => p.alive && String(p.pid) === args.at(-1))
-        return Promise.resolve(
-          proc === undefined
-            ? { code: 1, stdout: "", stderr: "" }
-            : ok(`/bin/node ${proc.spec.args.join(" ")}\n`)
-        )
-      }
-      if (command === "tailscale") return Promise.resolve(tailscale(args))
-      if (command === "security" && args[0] === "show-keychain-info")
-        return Promise.resolve(ok())
-      if (command === LLAMA_BIN && args[0] === "--version")
-        return Promise.resolve({
-          code: 0,
-          stdout: "",
-          stderr: "version: 0.5.0-dev (build 11149, commit d2e54583c)",
-        })
-      return Promise.resolve({ code: 127, stdout: "", stderr: `no ${command}` })
-    },
-    build: () => {
-      builds++
-      return Promise.resolve(options.buildCode ?? 0)
-    },
-    launch: (spec, launchOptions) => {
-      let exit: (code: number | null) => void = () => undefined
-      const exited = new Promise<number | null>((resolve) => {
-        exit = resolve
-      })
-      const proc: Proc = {
-        spec,
-        options: launchOptions,
-        pid: nextPid++,
-        alive: true,
-        exit,
-      }
-      proc.exit = (code) => {
-        proc.alive = false
-        exit(code)
-      }
-      procs.push(proc)
-      if (spec.name === options.failToStart) proc.exit(1)
-      else if (spec.name === "gate")
-        files.set(`${RUN}/gate-data-plane.sock`, "")
-      return { pid: proc.pid, exited }
-    },
-    fetch: (url) => {
-      if (url === "http://127.0.0.1:8080/health")
-        return Promise.resolve(new Response(null, { status: 200 }))
-      const proc = procs.find((p) => p.alive && p.spec.healthUrl === url)
-      return proc === undefined
-        ? Promise.reject(new Error("ECONNREFUSED"))
-        : Promise.resolve(
-            new Response(null, { status: proc.spec.name === "web" ? 204 : 200 })
-          )
-    },
-    clock: {
-      now: () => now,
-      sleep: (ms) => {
-        now += ms
-        return Promise.resolve()
-      },
-    },
-    signalGroup: (pid) => {
-      procs.find((p) => p.pid === pid && p.alive)?.exit(null)
-    },
-    groupAlive: (pid) => procs.some((p) => p.pid === pid && p.alive),
-    files: {
-      exists: (path) => files.has(path),
-      read: (path) => files.get(path),
-      write: (path, text) => {
-        files.set(path, text)
-        stats.set(path, { isFile: true, mode: 0o100600, size: text.length })
-      },
-      remove: (path) => files.delete(path),
-      ensurePrivateDir: (path) => dirs.push(path),
-      stat: (path) => stats.get(path),
-      setMode: () => undefined,
-    },
-    nodeVersion: "v24.3.0",
-    sha256: () =>
-      Promise.resolve(
-        "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
-      ),
-    interactive: (command, args, runOptions) => {
-      interactive.push({ command, args, options: runOptions })
-      return Promise.resolve(0)
-    },
-    ask: () => Promise.resolve(""),
-    onStopSignal: (handler) => {
-      stopHandler = handler
-    },
-    out: (line) => out.push(line),
-    err: (line) => err.push(line),
-  }
-  return {
-    deps,
-    procs,
-    files,
-    stats,
-    interactive,
-    dirs,
-    out,
-    err,
-    serve,
-    tailscaleCalls,
-    builds: () => builds,
-    stop: () => stopHandler?.(),
-    hasStopHandler: () => stopHandler !== undefined,
-  }
-}
+  HOST,
+  STACK,
+  RUN,
+  SETTINGS,
+  KEYCHAIN,
+  SECRET,
+  fixture,
+  world,
+} from "./test-support.ts"
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -288,6 +37,7 @@ describe("parseArgs", () => {
     expect(parseArgs(["restart"])).toBeUndefined()
     expect(parseArgs(["dev", "--watch"])).toBeUndefined()
     expect(parseArgs(["stop", "--background"])).toBeUndefined()
+    expect(parseArgs(["install", "--background"])).toBeUndefined()
   })
 
   it("prints usage and exits 2 on bad arguments", async () => {
@@ -551,7 +301,10 @@ describe("status", () => {
     expect(w.out[2]).toBe(
       "web: running (pid 1002, dev); 127.0.0.1:3000 listener pid 1002 (node); health answers 204"
     )
-    expect(w.out.at(-1)).toBe(`url: https://${HOST}:8443/`)
+    expect(w.out.at(-2)).toBe(`url: https://${HOST}:8443/`)
+    expect(w.out.at(-1)).toBe(
+      "login agent: not installed (pnpm stack:install starts the stack at login)"
+    )
   })
 
   it("exits 1 and says why when nothing runs", async () => {
@@ -565,7 +318,168 @@ describe("status", () => {
       "gate: not started by the stack; 127.0.0.1:8788 nothing listening; health no answer",
       "core: not started by the stack; 127.0.0.1:8789 nothing listening; health no answer",
       "web: stale pid file (pid 4242 is gone); 127.0.0.1:3000 nothing listening; health no answer",
+      "login agent: not installed (pnpm stack:install starts the stack at login)",
     ])
+  })
+
+  it("reports a loaded agent from launchctl print, and a plist without a loaded job", async () => {
+    const loaded = world({ agentLoaded: true })
+    loaded.files.set(PLIST, "<plist/>")
+    await main(["status", "--no-serve"], loaded.deps)
+    expect(loaded.out.at(-1)).toBe(
+      "login agent: loaded (running, pid 777, runs 2, last exit 1)"
+    )
+    const orphan = world({ agentLoaded: true })
+    await main(["status", "--no-serve"], orphan.deps)
+    expect(orphan.out.at(-1)).toBe(
+      "login agent: loaded (running, pid 777, runs 2, last exit 1); its plist is gone, so pnpm stack:uninstall it"
+    )
+    const unloaded = world()
+    unloaded.files.set(PLIST, "<plist/>")
+    await main(["status", "--no-serve"], unloaded.deps)
+    expect(unloaded.out.at(-1)).toBe(
+      "login agent: installed but not loaded; pnpm stack:install loads it"
+    )
+  })
+
+  it("does not ask launchctl off macOS", async () => {
+    const w = world()
+    w.deps.platform = "linux"
+    await main(["status", "--no-serve"], w.deps)
+    expect(w.out.at(-1)).toBe(
+      "login agent: launchd only; not on this platform yet (#455)"
+    )
+    expect(w.launchctlCalls).toEqual([])
+  })
+})
+
+const PLIST = "/home/u/Library/LaunchAgents/com.eido.stack.plist"
+
+describe("install and uninstall", () => {
+  it("writes the plist with PATH and EIDO_STACK_DIR, then bootstraps it", async () => {
+    const w = world({
+      env: {
+        EIDO_GATE_KEYCHAIN_PATH: KEYCHAIN,
+        PATH: "/opt/homebrew/bin:/usr/bin",
+        EIDO_STACK_DIR: STACK,
+        EIDO_GMAIL_CLIENT_ID: "not.passed.example.invalid",
+      },
+    })
+    expect(await main(["install"], w.deps)).toBe(0)
+    expect(w.launchctlCalls).toEqual([
+      "print gui/501/com.eido.stack",
+      `bootstrap gui/501 ${PLIST}`,
+    ])
+    const plist = w.files.get(PLIST) ?? ""
+    expect(plist).toContain(
+      "<string>/repo/infra/stack/supervisor-main.ts</string>\n    <string>--start-stack</string>"
+    )
+    expect(plist).toContain(
+      `<key>EIDO_STACK_DIR</key>\n    <string>${STACK}</string>\n    <key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/bin</string>\n  </dict>`
+    )
+    expect(plist).not.toContain("EIDO_GMAIL_CLIENT_ID")
+    expect(w.dirs).toContain("/home/u/Library/Logs/eido-dev")
+    expect(w.out[0]).toBe(`ok: gui/501/com.eido.stack loaded from ${PLIST}`)
+  })
+
+  it("boots a loaded agent out before loading it again", async () => {
+    const w = world({ agentLoaded: true })
+    expect(await main(["install"], w.deps)).toBe(0)
+    expect(w.launchctlCalls).toEqual([
+      "print gui/501/com.eido.stack",
+      "bootout gui/501/com.eido.stack",
+      `bootstrap gui/501 ${PLIST}`,
+    ])
+  })
+
+  it("reports a failed bootstrap", async () => {
+    const w = world({ launchctlFails: "bootstrap" })
+    expect(await main(["install"], w.deps)).toBe(1)
+    expect(w.err).toEqual([
+      "FAIL: launchctl bootstrap: bootstrap failed: Input/output error",
+    ])
+  })
+
+  it("boots the agent out and removes the plist, and leaves the stack running", async () => {
+    const w = world({ agentLoaded: true })
+    w.files.set(PLIST, "<plist/>")
+    await main(["dev", "--background"], w.deps)
+    expect(await main(["uninstall"], w.deps)).toBe(0)
+    expect(w.agentLoaded()).toBe(false)
+    expect(w.files.has(PLIST)).toBe(false)
+    expect(w.procs.every((p) => p.alive)).toBe(true)
+    expect(w.out.at(-1)).toBe(
+      "The stack's processes keep running; stop them with pnpm stack:stop."
+    )
+  })
+
+  it("removes a plist whose job is not loaded, and reports a failed bootout", async () => {
+    const stale = world()
+    stale.files.set(PLIST, "<plist/>")
+    expect(await main(["uninstall"], stale.deps)).toBe(0)
+    expect(stale.launchctlCalls).toEqual(["print gui/501/com.eido.stack"])
+    expect(stale.files.has(PLIST)).toBe(false)
+    const failing = world({ agentLoaded: true, launchctlFails: "bootout" })
+    failing.files.set(PLIST, "<plist/>")
+    expect(await main(["uninstall"], failing.deps)).toBe(1)
+    expect(failing.files.has(PLIST)).toBe(true)
+  })
+
+  it("refuses off macOS and without a user id", async () => {
+    const windows = world()
+    windows.deps.platform = "win32"
+    expect(await main(["install"], windows.deps)).toBe(1)
+    expect(windows.err).toEqual([
+      "FAIL: stack install needs launchd and is macOS only so far; Task Scheduler on Windows is #455",
+    ])
+    const noUid = world({ uid: undefined })
+    expect(await main(["uninstall"], noUid.deps)).toBe(1)
+    expect(noUid.launchctlCalls).toEqual([])
+  })
+})
+
+describe("stop with the agent loaded", () => {
+  it("says the agent starts the stack again and how to stop that", async () => {
+    const w = world({ agentLoaded: true })
+    await main(["dev", "--background"], w.deps)
+    expect(await main(["stop"], w.deps)).toBe(0)
+    expect(w.procs.some((p) => p.alive)).toBe(false)
+    expect(w.out.at(-1)).toBe(
+      "The login agent is loaded: it starts the stack again at the next login or supervisor restart. To stop that, pnpm stack:uninstall."
+    )
+  })
+})
+
+describe("boot", () => {
+  it("starts prod in the background when nothing runs", async () => {
+    const w = world()
+    expect(await main(["boot"], w.deps)).toBe(0)
+    expect(w.builds()).toBe(1)
+    expect(w.procs.map((p) => [p.spec.name, p.options.background])).toEqual([
+      ["gate", true],
+      ["core", true],
+      ["web", true],
+    ])
+    expect(w.procs[0]?.spec.args.join(" ")).not.toContain("--watch")
+  })
+
+  it("leaves a running stack alone", async () => {
+    const w = world()
+    await main(["prod", "--background"], w.deps)
+    const core = w.procs.find((p) => p.spec.name === "core")
+    core?.exit(0)
+    w.out.length = 0
+    expect(await main(["boot"], w.deps)).toBe(0)
+    expect(w.out).toEqual([
+      "boot: gate, web already running; the stack is left as it is",
+    ])
+    expect(w.procs).toHaveLength(3)
+  })
+
+  it("fails when the start fails", async () => {
+    const w = world({ buildCode: 2 })
+    expect(await main(["boot"], w.deps)).toBe(1)
+    expect(w.procs).toEqual([])
   })
 })
 
@@ -728,8 +642,40 @@ describe("setup", () => {
         .filter((l) => /^[A-Z]/.test(l))
     ).toEqual([`EIDO_GATE_KEYCHAIN_PATH=${KEYCHAIN}`])
     expect(w.out).toContain(`OK   keychain: ${KEYCHAIN} is unlocked, mode 0600`)
-    expect(w.out.at(-1)).toBe("doctor: no failures")
+    expect(w.out.slice(-2)).toEqual([
+      "doctor: no failures",
+      `To enrol your phone: start the stack (pnpm stack:prod), run pnpm stack:gate enrol-code and enter the code at https://${HOST}:8443/enroll`,
+    ])
     expect(code).toBe(0)
+  })
+
+  it("issues the first enrolment code when the gate is running (#660)", async () => {
+    const w = world({ settings: { text: FILLED } })
+    expect(await main(["prod", "--background"], w.deps)).toBe(0)
+    w.interactive.length = 0
+    await main(["setup"], w.deps)
+    expect(w.interactive.map((call) => call.args.at(-1))).toEqual([
+      "./src/enrol-code.ts",
+    ])
+    expect(w.out.at(-1)).toBe(
+      `Enter the code on your phone at https://${HOST}:8443/enroll`
+    )
+  })
+
+  it("gives no enrolment hint when doctor fails with the gate stopped", async () => {
+    const w = world({ settings: { text: FILLED } })
+    w.files.delete("/repo/node_modules/.modules.yaml")
+    expect(await main(["setup"], w.deps)).toBe(1)
+    expect(w.out.at(-1)).toMatch(/^doctor: \d+ failures?$/)
+    expect(w.out.join("\n")).not.toMatch(/enrol/)
+  })
+
+  it("stops with the gate script's exit code when the code is not issued", async () => {
+    const w = world({ settings: { text: FILLED } })
+    expect(await main(["prod", "--background"], w.deps)).toBe(0)
+    w.deps.interactive = () => Promise.resolve(4)
+    expect(await main(["setup"], w.deps)).toBe(4)
+    expect(w.out.at(-1)).not.toMatch(/Enter the code/)
   })
 
   it("parses setup, doctor and gate", () => {

@@ -4,6 +4,12 @@ import { append } from "./audit"
 import { payloadHash } from "./canonical"
 import type { Surface } from "./surface"
 import type { Clock } from "./sessions"
+import {
+  controlApprovalChallenge,
+  prepareControlApproval,
+  withControlApproval,
+} from "./control-approvals"
+import type { ControlAuthorization } from "./control-approvals"
 import { atomically } from "./transaction"
 import { sha256 } from "./webauthn"
 
@@ -11,7 +17,8 @@ import { sha256 } from "./webauthn"
 // only, to enrol a phone for the first time or again after a revoke or a lost phone. The code is
 // 80 random bits in Crockford base32, shown once and stored only as a SHA-256 hash. It expires
 // after ten minutes, works once, and issuing a new one supersedes any earlier unused code.
-// Issuing, consuming and every refusal are audited with hashes only.
+// Issuing, consuming and every refusal are audited with hashes only. The web Admin page issues
+// one too (#660, ADR 0009): a signed control change, since a new device is a new approver.
 
 export const ENROLMENT_CODE_TTL_MS = 10 * 60 * 1000
 
@@ -64,13 +71,41 @@ function audit(
   surface: Surface,
   action: string,
   detail: Record<string, string>
-): void {
-  append(db, {
+): number {
+  return append(db, {
     actor: surface === "admin" ? "owner" : "approver",
     action,
     target: "enrolment_code",
     detailHash: payloadHash(detail),
+  }).seq
+}
+
+function issue(
+  db: DatabaseSync,
+  surface: Surface,
+  now: Clock
+): { code: string; expiresAt: Date; seq: number } {
+  const issued = now()
+  const expiresAt = new Date(issued.getTime() + ENROLMENT_CODE_TTL_MS)
+  const raw = encode(randomBytes(10))
+  const codeHash = hex(raw)
+  const seq = atomically(db, () => {
+    db.prepare(
+      "UPDATE enrolment_codes SET superseded_at = ? WHERE used_at IS NULL AND superseded_at IS NULL"
+    ).run(issued.toISOString())
+    db.prepare(
+      "INSERT INTO enrolment_codes (code_hash, issued_at, expires_at) VALUES (?, ?, ?)"
+    ).run(codeHash, issued.toISOString(), expiresAt.toISOString())
+    return audit(db, surface, "enrolment_code.issued", {
+      outcome: "issued",
+      code_sha256: codeHash,
+      expires_at: expiresAt.toISOString(),
+    })
   })
+  const groups = []
+  for (let i = 0; i < CODE_LENGTH; i += GROUP)
+    groups.push(raw.slice(i, i + GROUP))
+  return { code: groups.join("-"), expiresAt, seq }
 }
 
 /** Issues a fresh enrolment code, superseding any earlier unused one. Admin surface only. */
@@ -85,27 +120,45 @@ export function issueEnrolmentCode(
     })
     return { ok: false, code: "admin_only" }
   }
-  const issued = now()
-  const expiresAt = new Date(issued.getTime() + ENROLMENT_CODE_TTL_MS)
-  const raw = encode(randomBytes(10))
-  const codeHash = hex(raw)
-  atomically(db, () => {
-    db.prepare(
-      "UPDATE enrolment_codes SET superseded_at = ? WHERE used_at IS NULL AND superseded_at IS NULL"
-    ).run(issued.toISOString())
-    db.prepare(
-      "INSERT INTO enrolment_codes (code_hash, issued_at, expires_at) VALUES (?, ?, ?)"
-    ).run(codeHash, issued.toISOString(), expiresAt.toISOString())
-    audit(db, surface, "enrolment_code.issued", {
-      outcome: "issued",
-      code_sha256: codeHash,
-      expires_at: expiresAt.toISOString(),
-    })
-  })
-  const groups = []
-  for (let i = 0; i < CODE_LENGTH; i += GROUP)
-    groups.push(raw.slice(i, i + GROUP))
-  return { ok: true, code: groups.join("-"), expiresAt }
+  const { code, expiresAt } = issue(db, surface, now)
+  return { ok: true, code, expiresAt }
+}
+
+/** The signed control change that issues a code from the phone listener (#660). */
+export const ENROLMENT_CODE_TARGET = "enrolment_code"
+const ISSUE_PAYLOAD = { action: "enrolment_code.issue" }
+
+/** Prepares the signed ceremony for one code; a new one supersedes any earlier unused ceremony. */
+export function prepareEnrolmentCodeIssue(db: DatabaseSync) {
+  const prepared = prepareControlApproval(
+    db,
+    "policy.set",
+    ENROLMENT_CODE_TARGET,
+    ISSUE_PAYLOAD
+  )
+  return { ...prepared, challenge: controlApprovalChallenge(prepared) }
+}
+
+/**
+ * Issues a code once the owner's passkey has signed the prepared ceremony. Throws, issuing
+ * nothing, when the authorization does not verify.
+ */
+export function issueSignedEnrolmentCode(
+  db: DatabaseSync,
+  authorization: ControlAuthorization,
+  now: Clock
+): { code: string; expiresAt: Date } {
+  return withControlApproval(
+    db,
+    "policy.set",
+    ENROLMENT_CODE_TARGET,
+    payloadHash(ISSUE_PAYLOAD),
+    authorization,
+    () => {
+      const { code, expiresAt, seq } = issue(db, "phone", now)
+      return { result: { code, expiresAt }, auditSeq: seq }
+    }
+  )
 }
 
 function refusal(db: DatabaseSync, codeHash: string): ConsumeRefusal {

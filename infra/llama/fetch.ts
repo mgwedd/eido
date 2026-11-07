@@ -3,8 +3,8 @@
 // against the lock, and only then moved into place; on a mismatch the partial file is deleted.
 // What is already installed and matches is left alone, so a rerun only re-verifies. Effects are
 // passed in, so tests use a fake download and never fetch a real build or model. Archives, `.tar.gz`
-// on macOS and `.zip` on Windows, are unpacked with the system `tar` (bsdtar reads both, and ships
-// with macOS and with Windows 10 and later).
+// on macOS and Linux and `.zip` on Windows, are unpacked with the system `tar` (bsdtar reads both,
+// and ships with macOS and with Windows 10 and later).
 import { serverName, type LlamaConfig } from "./config.ts"
 import {
   modelPathOf,
@@ -146,7 +146,7 @@ export async function fetchBuild(
   }
   deps.fs.rename(found, config.buildDir)
   cleanUp()
-  if (!config.windows) {
+  if (config.platform.startsWith("darwin-")) {
     // Only this build's directory: nothing else loses its quarantine flag.
     const xattr = await deps.run("xattr", [
       "-dr",

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateControlPrepared",
+  "description": "Response of a prepare route for a signed connector secret or pin change on the phone listener (#661): the control ceremony the owner's passkey signs. The payload names the action, the connector and any pin, never the secret, so the device can show and check it before it signs.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "purpose": {
+      "const": "policy.set"
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[a-z_]+:[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 1024
+    },
+    "payloadHash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "challenge": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    }
+  },
+  "required": [
+    "id",
+    "purpose",
+    "target",
+    "payload",
+    "payloadHash",
+    "nonce",
+    "challenge"
+  ],
+  "additionalProperties": false
+}
