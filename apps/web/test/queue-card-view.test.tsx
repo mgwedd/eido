@@ -270,6 +270,24 @@ describe("Queue card", () => {
     expect(view.textContent).not.toContain("reason saved")
   })
 
+  test("after a decision focus moves to the Queue clear message", async () => {
+    routed()
+    await render()
+    await click("Reject")
+    await click("Skip")
+    expect(document.activeElement?.textContent).toContain("Queue clear")
+  })
+
+  test("the agent note is a region named by its written-by-the-model heading", async () => {
+    routed()
+    const view = await render()
+    const note = view.querySelector('section[aria-labelledby^="note-"]')
+    expect(note?.getAttribute("aria-labelledby")).toBe("note-intent-a")
+    expect(view.querySelector("#note-intent-a")?.textContent).toContain(
+      "written by the model"
+    )
+  })
+
   test("a 409 on reject removes the card as already decided", async () => {
     routed({ decision: 409 })
     const view = await render()

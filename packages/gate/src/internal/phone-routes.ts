@@ -104,9 +104,10 @@ import type { WebAuthnConfig } from "./webauthn"
 // The phone listener (#85): what the PWA calls, through `tailscale serve`, to sign in with its
 // passkey and to list, prepare, edit and decide approvals. It answers only the Host headers it
 // is given (421 otherwise) and only below its base path. Every route outside the table below is
-// 404 before any session check, so the control socket's routes (revocation, policy; #78) and the data plane's routes do not exist here, signed in or not. The
-// stack admin routes (`/admin/*`, #659) relay the stack supervisor; see admin-routes.ts. Issuing an enrolment code
-// from the web Admin page (`/admin/enrolment-codes`, #660) is a signed control change. The one
+// 404 before any session check, so the control socket's routes (revocation, policy; #78) and the
+// data plane's routes do not exist here, signed in or not. The stack admin routes (`/admin/*`,
+// #659) relay the stack supervisor; see admin-routes.ts. Issuing an enrolment code from the web
+// Admin page (`/admin/enrolment-codes`, #660) is a signed control change. The one
 // exception is the allowed-folder list (`GET /file-roots`, #574), served beside the signed
 // ceremony that changes it; file reads (`POST /files`) stay on the data plane. Credential
 // status, login and enrolment need no session: enrolment needs a single-use code the owner
