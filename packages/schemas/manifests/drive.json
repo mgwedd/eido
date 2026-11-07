@@ -1,0 +1,105 @@
+{
+  "name": "drive",
+  "version": 1,
+  "description": "Read-only Google Drive, through the gate's OAuth egress proxy.",
+  "auth": {
+    "type": "oauth2",
+    "scopes": ["https://www.googleapis.com/auth/drive.readonly"]
+  },
+  "egress": {
+    "hosts": [
+      {
+        "host": "www.googleapis.com",
+        "methods": ["GET"],
+        "pathPrefixes": ["/drive/v3"]
+      }
+    ]
+  },
+  "operations": [
+    {
+      "name": "drive_list_files",
+      "effect": "read",
+      "reversibility": "reversible",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["https://www.googleapis.com/auth/drive.readonly"],
+      "defaultTier": "auto",
+      "routes": [
+        {
+          "host": "www.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/drive/v3/files"
+        },
+        {
+          "host": "www.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/drive/v3/changes"
+        },
+        {
+          "host": "www.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/drive/v3/changes/startPageToken"
+        }
+      ]
+    },
+    {
+      "name": "drive_search_files",
+      "effect": "read",
+      "reversibility": "reversible",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["https://www.googleapis.com/auth/drive.readonly"],
+      "defaultTier": "auto",
+      "routes": [
+        {
+          "host": "www.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/drive/v3/files"
+        }
+      ]
+    },
+    {
+      "name": "drive_get_file_text",
+      "effect": "read",
+      "reversibility": "reversible",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["https://www.googleapis.com/auth/drive.readonly"],
+      "defaultTier": "auto",
+      "routes": [
+        {
+          "host": "www.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/drive/v3/files/{id}"
+        },
+        {
+          "host": "www.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/drive/v3/files/{id}/export"
+        }
+      ]
+    }
+  ],
+  "triggers": [
+    {
+      "kind": "poll",
+      "stream": "files",
+      "intervalSeconds": 60
+    }
+  ],
+  "ledgerMapping": {
+    "source": "drive",
+    "refField": "source_ref"
+  },
+  "health": {
+    "backoff": {
+      "baseMs": 1000,
+      "maxMs": 300000,
+      "jitter": true
+    },
+    "breaker": {
+      "failureThreshold": 5,
+      "halfOpenProbeAfterMs": 60000
+    }
+  }
+}

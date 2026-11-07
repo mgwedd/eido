@@ -25,8 +25,16 @@ describe("readReviewedManifest", () => {
     expect(readReviewedManifest(dir, "files")).toEqual({ name: "files" })
   })
 
-  it("returns undefined when no file is placed", () => {
-    expect(readReviewedManifest(dir, "files")).toBeUndefined()
+  it("falls back to the committed manifest when no file is placed", () => {
+    expect(readReviewedManifest(dir, "files")).toMatchObject({
+      name: "files",
+      version: 1,
+    })
+  })
+
+  it("returns undefined when neither a file nor a committed manifest exists", () => {
+    expect(readReviewedManifest(dir, "notes")).toBeUndefined()
+    expect(readReviewedManifest(dir, "constructor")).toBeUndefined()
   })
 
   it("returns null for a file that is not JSON", () => {
@@ -42,15 +50,26 @@ describe("readReviewedManifest", () => {
 })
 
 describe("listReviewedManifests", () => {
-  it("lists the connector names of the placed manifest files, sorted", () => {
-    for (const file of ["gmail.json", "drive.json", "notes.txt", ".x.json"])
+  it("lists the placed manifest files with the committed ones, sorted and once each", () => {
+    for (const file of ["gmail.json", "zulip.json", "notes.txt", ".x.json"])
       writeFileSync(join(dir, REVIEWED_MANIFEST_DIR, file), "{}")
     writeFileSync(join(dir, REVIEWED_MANIFEST_DIR, "gmail.json.1.tmp"), "{}")
-    expect(listReviewedManifests(dir)).toEqual(["drive", "gmail"])
+    expect(listReviewedManifests(dir)).toEqual([
+      "drive",
+      "files",
+      "gmail",
+      "things",
+      "zulip",
+    ])
   })
 
-  it("is empty when no manifest has been placed", () => {
+  it("lists the committed manifests when none has been placed", () => {
     rmSync(join(dir, REVIEWED_MANIFEST_DIR), { recursive: true })
-    expect(listReviewedManifests(dir)).toEqual([])
+    expect(listReviewedManifests(dir)).toEqual([
+      "drive",
+      "files",
+      "gmail",
+      "things",
+    ])
   })
 })

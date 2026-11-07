@@ -135,6 +135,7 @@ export {
   validateStackSettingsWrite,
 } from "./generated/validators"
 export { validateConnectorManifest } from "./manifest"
+export { REVIEWED_MANIFESTS } from "./reviewed-manifests"
 export { gateAuditDisplayActor } from "./gate-audit-display"
 export {
   parseMoney,

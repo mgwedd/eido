@@ -2351,7 +2351,10 @@ describe("phoneHandler: first pin of a never-pinned connector (#627)", () => {
       state.reviewedManifest = (name) => readReviewedManifest(dataDir, name)
       enrol(auth)
       const cookie = await signIn()
+      // Drive has a committed manifest and is not pinned yet; the placed gmail file wins over
+      // gmail's committed one, as the pinned hash below shows.
       expect((await settings(cookie)).unpinned?.map((u) => u.name)).toEqual([
+        "drive",
         "gmail",
       ])
       const prepared = await prepare(cookie)
@@ -2365,6 +2368,7 @@ describe("phoneHandler: first pin of a never-pinned connector (#627)", () => {
       })
       expect(done.status).toBe(200)
       expect(gmailRow()?.["enabled"]).toBe(1)
+      expect(gmailRow()?.["manifest_hash"]).toBe(manifestHash(reviewed()))
     } finally {
       rmSync(dataDir, { recursive: true, force: true })
     }
