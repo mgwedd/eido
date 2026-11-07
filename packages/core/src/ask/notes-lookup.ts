@@ -8,7 +8,7 @@ import {
 import type { AskCitation, AskDeps, AskResult } from "./types"
 
 const NOTE_DIRECT_LOOKUP_PATTERN =
-  /\b(?:have\s+i\s+(?:noted|written|wrote|jotted)|did\s+i\s+(?:note|write|jot)|what\s+did\s+i\s+(?:note|write|jot)|i'?ve\s+(?:noted|written|jotted)|(?:anything|something)\s+(?:i\s+|i'?ve\s+)?(?:noted|written|wrote|jotted)|i\s+(?:wrote|jotted)\s+down|in\s+my\s+(?:(?:private|own|local)\s+)?notes|my\s+(?:(?:private|own|local)\s+)?notes\s+(?:say|mention|have)|what(?:'s|\s+is)\s+in\s+my\s+(?:(?:private|own|local)\s+)?notes|(?:search|look\s+up(?:\s+in)?|check|find\s+in|show(?:\s+me)?)\s+my\s+(?:(?:private|own|local)\s+)?notes|(?:any\s+)?notes\s+(?:about|on|regarding))\b/i
+  /\b(?:have\s+i\s+(?:noted|written|wrote|jotted)|did\s+i\s+(?:note|write|jot)|what\s+did\s+i\s+(?:note|write|jot)|i'?ve\s+(?:noted|written|jotted)|(?:anything|something)\s+(?:i\s+|i'?ve\s+)?(?:noted|written|wrote|jotted)|i\s+(?:wrote|jotted)\s+down|in\s+my\s+(?:private|own|local)?\s*notes|my\s+(?:private|own|local)?\s*notes\s+(?:say|mention|have)|what(?:'s|\s+is)\s+in\s+my\s+(?:private|own|local)?\s*notes|(?:search|look\s+up(?:\s+in)?|check|find\s+in|show(?:\s+me)?)\s+my\s+(?:private|own|local)?\s*notes|(?:any\s+)?notes\s+(?:about|on|regarding))\b/i
 
 const NOTE_SYNTHESIS_WORK_PATTERN =
   /\b(?:summar\w*|based\s+on|turn(?:\s+my\s+notes)?\s+into|synthes\w*|draft|compare|match|rewrite|explain|format|action\s+plan|proposal|create|compose)\b/i
@@ -30,57 +30,66 @@ export function isDirectNoteLookup(question: string): boolean {
  * prefixes and notes boilerplate.
  */
 export function extractNoteSearchQuery(question: string): string {
-  let cleaned = question
-    .trim()
-    .replace(/[?!."']+$/, "")
-    .trim()
+  let cleaned = question.trim()
+  while (
+    cleaned.length > 0 &&
+    (cleaned.endsWith("?") ||
+      cleaned.endsWith("!") ||
+      cleaned.endsWith(".") ||
+      cleaned.endsWith('"') ||
+      cleaned.endsWith("'"))
+  ) {
+    cleaned = cleaned.slice(0, -1).trimEnd()
+  }
+
+  // Handle "look up X in my notes"
+  const lookUpSuffix = /\s+in\s+my\s+(?:private|own|local)?\s*notes$/i
+  if (/^look\s+up\s+/i.test(cleaned) && lookUpSuffix.test(cleaned)) {
+    cleaned = cleaned.replace(/^look\s+up\s+/i, "").replace(lookUpSuffix, "")
+  }
 
   cleaned = cleaned
     .replace(
-      /^(?:search|check|find\s+in|look\s+up\s+in)\s+my\s+(?:(?:private|own|local)\s+)?notes\s+(?:for\s+)?/i,
+      /^(?:search|check|find\s+in|look\s+up\s+in)\s+my\s+(?:private|own|local)?\s*notes\s*(?:for\s+)?/i,
       ""
     )
     .replace(
-      /^(?:look\s+up\s+)(.*?)(?:\s+in\s+my\s+(?:(?:private|own|local)\s+)?notes)$/i,
-      "$1"
-    )
-    .replace(
-      /^(?:what\s+did\s+i\s+(?:note|write|jot)(?:\s+(?:anything|something))?(?:\s+down)?\s*(?:about|on|regarding)?\s+)/i,
+      /^(?:what\s+did\s+i\s+(?:note|write|jot))\s+(?:(?:anything|something)\s+)?(?:down\s+)?(?:about|on|regarding)\s+/i,
       ""
     )
     .replace(
-      /^(?:what\s+have\s+i\s+(?:noted|written|jotted)(?:\s+(?:anything|something))?(?:\s+down)?\s*(?:about|on|regarding)?\s+)/i,
+      /^(?:what\s+have\s+i\s+(?:noted|written|jotted))\s+(?:(?:anything|something)\s+)?(?:down\s+)?(?:about|on|regarding)\s+/i,
       ""
     )
     .replace(
-      /^(?:did\s+i\s+(?:note|write|jot)(?:\s+(?:anything|something))?(?:\s+down)?\s*(?:about|on|regarding)?\s+)/i,
+      /^(?:did\s+i\s+(?:note|write|jot))\s+(?:(?:anything|something)\s+)?(?:down\s+)?(?:about|on|regarding)\s+/i,
       ""
     )
     .replace(
-      /^(?:have\s+i\s+(?:noted|written|jotted)(?:\s+(?:anything|something))?(?:\s+down)?\s*(?:about|on|regarding)?\s+)/i,
+      /^(?:have\s+i\s+(?:noted|written|jotted))\s+(?:(?:anything|something)\s+)?(?:down\s+)?(?:about|on|regarding)\s+/i,
       ""
     )
     .replace(
-      /^(?:what\s+do\s+my\s+(?:(?:private|own|local)\s+)?notes\s+(?:say|mention)\s+(?:about|on|regarding)\s+)/i,
+      /^(?:what\s+do\s+my\s+(?:private|own|local)?\s*notes\s+(?:say|mention)\s+(?:about|on|regarding)\s+)/i,
       ""
     )
     .replace(
-      /^(?:what(?:'s|\s+is)\s+in\s+my\s+(?:(?:private|own|local)\s+)?notes\s+(?:about|on|regarding)\s+)/i,
+      /^(?:what(?:'s|\s+is)\s+in\s+my\s+(?:private|own|local)?\s*notes\s+(?:about|on|regarding)\s+)/i,
       ""
     )
     .replace(
-      /^(?:in\s+my\s+(?:(?:private|own|local)\s+)?notes(?:,\s*|\s+))(?:what\s+did\s+i\s+(?:note|write|jot)(?:\s+down)?\s+(?:about|on|regarding)\s+)?/i,
+      /^(?:in\s+my\s+(?:private|own|local)?\s*notes(?:,\s*|\s+))(?:what\s+did\s+i\s+(?:note|write|jot)(?:\s+down)?\s+(?:about|on|regarding)\s+)?/i,
       ""
     )
     .replace(/^(?:(?:any\s+)?notes\s+(?:about|on|regarding)\s+)/i, "")
     .replace(
-      /^(?:show(?:\s+me)?\s+my\s+(?:(?:private|own|local)\s+)?notes\s+(?:about|on|regarding)\s+)/i,
+      /^(?:show(?:\s+me)?\s+my\s+(?:private|own|local)?\s*notes\s+(?:about|on|regarding)\s+)/i,
       ""
     )
 
   // Strip remaining inline notes mentions if any
   cleaned = cleaned
-    .replace(/\b(?:in\s+my\s+(?:(?:private|own|local)\s+)?notes)\b/gi, "")
+    .replace(/\b(?:in\s+my\s+(?:private|own|local)?\s*notes)\b/gi, "")
     .trim()
 
   // Strip leading articles
@@ -99,7 +108,22 @@ export function extractNoteSearchQuery(question: string): string {
     return ""
   }
 
-  return cleaned.replace(/^[,\s:]+|[,\s:]+$/g, "").trim()
+  while (
+    cleaned.length > 0 &&
+    (cleaned.startsWith(",") ||
+      cleaned.startsWith(":") ||
+      cleaned.startsWith(" "))
+  ) {
+    cleaned = cleaned.slice(1).trimStart()
+  }
+  while (
+    cleaned.length > 0 &&
+    (cleaned.endsWith(",") || cleaned.endsWith(":") || cleaned.endsWith(" "))
+  ) {
+    cleaned = cleaned.slice(0, -1).trimEnd()
+  }
+
+  return cleaned.trim()
 }
 
 function figures(
