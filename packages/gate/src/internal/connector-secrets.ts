@@ -36,14 +36,14 @@ export const SIMPLEFIN_CONNECTOR = "simplefin"
 /** The stack setting holding the Bridge pin; the gate reads it at start (bridge/config.ts). */
 const BRIDGE_PIN_SETTING = "EIDO_BRIDGE_CERT_SHA256"
 
-const BRIDGE_PASSWORD_TARGET = `connector_secret:${PROTON_CONNECTOR}`
+const BRIDGE_SECRET_TARGET = `connector_secret:${PROTON_CONNECTOR}`
 const BRIDGE_PIN_TARGET = `connector_pin:${PROTON_CONNECTOR}`
 const SIMPLEFIN_TARGET = `connector_secret:${SIMPLEFIN_CONNECTOR}`
 
 /** Both Proton connectors sign in to Bridge with the one stored password. */
 const PROTON_CONNECTORS = [PROTON_CONNECTOR, PROTON_CALENDAR_CONNECTOR]
 
-const bridgePasswordPayload = (certificateSha256: string) => ({
+const bridgeSecretPayload = (certificateSha256: string) => ({
   action: "connector.secret.set",
   connector: PROTON_CONNECTOR,
   certificateSha256,
@@ -195,7 +195,7 @@ function pinMismatch(): Reply {
   )
 }
 
-export function prepareBridgePassword(
+export function prepareBridgeSecret(
   state: SecretState,
   certificateSha256: string
 ): Reply {
@@ -205,14 +205,14 @@ export function prepareBridgePassword(
     status: 200,
     body: prepare(
       state.db,
-      BRIDGE_PASSWORD_TARGET,
-      bridgePasswordPayload(certificateSha256)
+      BRIDGE_SECRET_TARGET,
+      bridgeSecretPayload(certificateSha256)
     ),
   }
 }
 
 /** Seals the Bridge password, for the pin the gate runs with only. */
-export async function setBridgePassword(
+export async function sealBridgeSecret(
   state: SecretState,
   input: {
     authorization: ControlAuthorization
@@ -228,8 +228,8 @@ export async function setBridgePassword(
   try {
     approve(
       state.db,
-      BRIDGE_PASSWORD_TARGET,
-      bridgePasswordPayload(input.certificateSha256),
+      BRIDGE_SECRET_TARGET,
+      bridgeSecretPayload(input.certificateSha256),
       input.authorization,
       "connector.secret.set",
       PROTON_CONNECTOR

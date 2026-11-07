@@ -66,11 +66,11 @@ import {
   prepareEnrolmentCodeIssue,
 } from "./enrolment"
 import {
-  prepareBridgePassword,
+  prepareBridgeSecret,
   prepareBridgePin,
   prepareSimpleFin,
   removeConnectorSecrets,
-  setBridgePassword,
+  sealBridgeSecret,
   setBridgePin,
   setSimpleFin,
 } from "./connector-secrets"
@@ -1116,7 +1116,7 @@ async function issueEnrolmentCodeRoute(
 
 // Connector secrets from the Admin page (#661): see connector-secrets.ts. Each body is parsed
 // with its schema; the secret goes on to the vault and is never part of a reply.
-async function bridgePasswordPrepare(
+async function bridgeSecretPrepare(
   state: PhoneState,
   request: GateRequest
 ): Promise<Reply> {
@@ -1124,10 +1124,10 @@ async function bridgePasswordPrepare(
   if (!body.ok) return body.reply
   const checked = validateGateBridgePin(body.value)
   if (!checked.ok) return invalid("a Bridge pin", checked.errors)
-  return prepareBridgePassword(state, checked.value.certificateSha256)
+  return prepareBridgeSecret(state, checked.value.certificateSha256)
 }
 
-async function bridgePasswordRoute(
+async function bridgeSecretRoute(
   state: PhoneState,
   request: GateRequest,
   now: Clock
@@ -1136,7 +1136,7 @@ async function bridgePasswordRoute(
   if (!body.ok) return body.reply
   const checked = validateGateBridgePasswordRequest(body.value)
   if (!checked.ok) return invalid("a Bridge password request", checked.errors)
-  return setBridgePassword(
+  return sealBridgeSecret(
     state,
     {
       authorization: { config: state.webAuthn, request: checked.value.approval },
@@ -1278,9 +1278,9 @@ function route(
     case "/admin/enrolment-codes":
       return issueEnrolmentCodeRoute(state, request, now)
     case "/admin/secrets/bridge/prepare":
-      return bridgePasswordPrepare(state, request)
+      return bridgeSecretPrepare(state, request)
     case "/admin/secrets/bridge":
-      return bridgePasswordRoute(state, request, now)
+      return bridgeSecretRoute(state, request, now)
     case "/admin/secrets/bridge-pin/prepare":
       return bridgePinPrepare(state, request)
     case "/admin/secrets/bridge-pin":
