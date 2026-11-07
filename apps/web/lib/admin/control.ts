@@ -103,13 +103,17 @@ export type ControlSpec<T> = {
 
 /** What preparing a signed change came to; `mismatch` means the gate prepared something else. */
 export type PrepareOutcome =
-  | GateOutcome<GateControlPrepared>
-  | { kind: "mismatch" }
+  GateOutcome<GateControlPrepared> | { kind: "mismatch" }
 
 /** Prepares the change and checks it on this device before anything is shown for signing. */
 export async function prepareControl(
-  spec: Pick<ControlSpec<unknown>, "preparePath" | "prepareBody" | "target" | "payload">,
-  pick: (value: unknown) => ValidationResult<GateControlPrepared> = validateGateControlPrepared
+  spec: Pick<
+    ControlSpec<unknown>,
+    "preparePath" | "prepareBody" | "target" | "payload"
+  >,
+  pick: (
+    value: unknown
+  ) => ValidationResult<GateControlPrepared> = validateGateControlPrepared
 ): Promise<PrepareOutcome> {
   const outcome = await callGate(spec.preparePath, pick, {
     method: "POST",

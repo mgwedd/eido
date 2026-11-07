@@ -47,12 +47,17 @@ function ElevatedChip() {
   )
 }
 
-/** The gate is not answering at all: every Admin page shows this in place of its content. */
+/**
+ * The gate is not answering at all: every Admin page shows this in place of its content. The
+ * alert is the message alone, so Retry is not read as part of it.
+ */
 export function AdminUnreachable({ onRetry }: { onRetry: () => void }) {
   return (
-    <Alert role="alert">
+    <Alert role="none">
       <ServerOff aria-hidden />
-      <AlertDescription>Can&apos;t reach the gate on the host.</AlertDescription>
+      <AlertDescription role="alert">
+        Can&apos;t reach the gate on the host.
+      </AlertDescription>
       <AlertAction>
         <Button size="sm" variant="outline" onClick={onRetry}>
           <RefreshCw aria-hidden />
@@ -72,8 +77,8 @@ export function AdminError({
   onRetry: () => void
 }) {
   return (
-    <Alert role="alert" variant="destructive">
-      <AlertDescription>{message}</AlertDescription>
+    <Alert role="none" variant="destructive">
+      <AlertDescription role="alert">{message}</AlertDescription>
       <AlertAction>
         <Button size="sm" variant="outline" onClick={onRetry}>
           <RefreshCw aria-hidden />

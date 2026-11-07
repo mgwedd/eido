@@ -282,11 +282,11 @@ export function AdminProvider({
   // Drop the chip the moment the step-up ends, so the next elevated action asks again.
   React.useEffect(() => {
     if (until === null) return
-    const left = Date.parse(until) - Date.now()
-    if (left <= 0) {
-      setUntil(null)
-      return
-    }
+    // Clamped to setTimeout's 32-bit limit; the gate grants five minutes.
+    const left = Math.min(
+      Math.max(Date.parse(until) - Date.now(), 0),
+      2 ** 31 - 1
+    )
     const timer = setTimeout(() => setUntil(null), left)
     return () => clearTimeout(timer)
   }, [until])

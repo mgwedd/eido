@@ -29,7 +29,7 @@ export type NavItem = {
 /**
  * Ordered navigation. An entry is added by the PR that ships its page, so there is
  * never a nav item without a working route (nav.test.ts checks every href).
- * Today's page is #34, Queue #33, Ask #35, Ledger #55, Activity #36, Documents #55, Profile #81, Admin #663.
+ * Today's page is #34, Queue #33, Ask #35, Ledger #55, Activity #36, Documents #55, Profile #81, Admin issue 663.
  */
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/", label: "Today", icon: Sun, phone: true, shortcut: "g t" },
@@ -78,7 +78,13 @@ export const NAV_ITEMS: readonly NavItem[] = [
     phone: false,
     shortcut: "g s",
   },
-  { href: "/admin", label: "Admin", icon: Shield, phone: false, phoneHeader: false },
+  {
+    href: "/admin",
+    label: "Admin",
+    icon: Shield,
+    phone: false,
+    phoneHeader: false,
+  },
   {
     href: "/profile",
     label: "Profile",

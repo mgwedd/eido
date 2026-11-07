@@ -27,8 +27,7 @@ export function loadElevation(
 }
 
 export type StepUpOutcome =
-  | GateOutcome<{ expiresAt: string }>
-  | { kind: "cancelled" }
+  GateOutcome<{ expiresAt: string }> | { kind: "cancelled" }
 
 /**
  * Steps the session up with the device passkey: a challenge from the gate, the passkey with
@@ -67,9 +66,6 @@ export async function stepUp(): Promise<StepUpOutcome> {
 
 /** "4:12": the minutes and seconds left until `expiresAt`, never below 0:00. */
 export function remaining(expiresAt: string, now: number): string {
-  const seconds = Math.max(
-    0,
-    Math.ceil((Date.parse(expiresAt) - now) / 1000)
-  )
+  const seconds = Math.max(0, Math.ceil((Date.parse(expiresAt) - now) / 1000))
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
 }
