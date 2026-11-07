@@ -199,6 +199,8 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/admin/models", tier: "session" },
   { method: "POST", path: "/admin/models/:id/use", tier: "elevated" },
   { method: "POST", path: "/admin/models/:id/fetch", tier: "elevated" },
+  { method: "GET", path: "/admin/login-item", tier: "session" },
+  { method: "POST", path: "/admin/login-item", tier: "elevated" },
   { method: "POST", path: "/admin/enrolment-codes/prepare", tier: "session" },
   { method: "POST", path: "/admin/enrolment-codes", tier: "signed" },
 ] as const satisfies readonly PhoneRoute[]
@@ -1190,6 +1192,7 @@ function route(
     case "/admin/models":
     case "/admin/models/:id/use":
     case "/admin/models/:id/fetch":
+    case "/admin/login-item":
       return adminRoute(state.supervisor, path, matched.id, request, jsonBody)
   }
 }

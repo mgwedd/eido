@@ -28,6 +28,7 @@ const supervisor = createSupervisor({
   stack: { ...stack, out: log, err: log },
   llama: { ...llamaEffects(), out: log, err: log },
   uid,
+  pid: process.pid,
   writeSettings: writeAtomic,
   log,
 })

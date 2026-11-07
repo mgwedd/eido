@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "StackError",
-  "description": "A refusal from the stack supervisor (#644).",
+  "description": "A refusal from the stack supervisor (#644). unsupported: the route needs launchd, on macOS only so far (#455).",
   "type": "object",
   "properties": {
     "error": {
@@ -13,6 +13,7 @@
         "stack_not_running",
         "unavailable",
         "busy",
+        "unsupported",
         "failed"
       ]
     },

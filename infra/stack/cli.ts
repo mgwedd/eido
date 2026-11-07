@@ -592,7 +592,7 @@ async function stop(deps: Deps): Promise<number> {
 }
 
 /** The agent's state; `unsupported` off macOS or without a user id. */
-async function readAgentState(deps: Deps): Promise<AgentState> {
+export async function readAgentState(deps: Deps): Promise<AgentState> {
   const uid = deps.platform === "darwin" ? deps.uid : undefined
   if (uid === undefined) return agentState(undefined, false)
   const printed = await deps.exec("launchctl", agentPrintArgs(uid))
@@ -611,13 +611,9 @@ function agentUid(deps: Deps, command: string): number | undefined {
   return uid
 }
 
-async function install(deps: Deps): Promise<number> {
-  const uid = agentUid(deps, "install")
-  if (uid === undefined) return 1
+/** Writes the agent's plist (and its log directory) without loading it; launchd reads it at login. */
+export function writeAgentPlist(deps: Deps): void {
   const paths = agentLayout(deps.home)
-  // bootstrap refuses a label that is already loaded, so a re-install boots the old job out first.
-  if ((await deps.exec("launchctl", agentPrintArgs(uid))).code === 0)
-    await deps.exec("launchctl", agentBootoutArgs(uid))
   deps.files.ensurePrivateDir(paths.logDir)
   deps.files.write(
     paths.plistPath,
@@ -628,6 +624,16 @@ async function install(deps: Deps): Promise<number> {
       env: agentEnv(deps.env),
     })
   )
+}
+
+async function install(deps: Deps): Promise<number> {
+  const uid = agentUid(deps, "install")
+  if (uid === undefined) return 1
+  const paths = agentLayout(deps.home)
+  // bootstrap refuses a label that is already loaded, so a re-install boots the old job out first.
+  if ((await deps.exec("launchctl", agentPrintArgs(uid))).code === 0)
+    await deps.exec("launchctl", agentBootoutArgs(uid))
+  writeAgentPlist(deps)
   const run = await deps.exec(
     "launchctl",
     agentBootstrapArgs(uid, paths.plistPath)

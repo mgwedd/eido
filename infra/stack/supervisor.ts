@@ -7,6 +7,7 @@
 //   GET  /models, POST /models/use        the model profiles; make one active
 //   POST /models/fetch                    download a profile's model as a task GET /jobs reports
 //   GET  /settings, POST /settings        stack.env, with the file's SHA-256 a write must name
+//   GET  /login-item, POST /login-item    start at login: the login agent's plist, macOS only (#664)
 // Every other route is 404. Starts, stops and fetches run after the reply (202); GET /jobs shows
 // their progress. It parents nothing: core runs from its pid file as `pnpm stack:*` starts it, and
 // llama-server is launchd's job.
@@ -14,11 +15,13 @@ import { createHash } from "node:crypto"
 
 import {
   validateStackJobRequest,
+  validateStackLoginItemRequest,
   validateStackModelRequest,
   validateStackSettingsWrite,
   type StackDoctorReport,
   type StackError,
   type StackJobStatus,
+  type StackLoginItem,
   type StackModelList,
   type ValidationResult,
 } from "@eido/schemas"
@@ -38,14 +41,17 @@ import {
   printArgs,
 } from "../llama/launchd.ts"
 import { modelPathOf } from "../llama/lock.ts"
+import { agentBootoutArgs, agentLayout } from "./agent.ts"
 import {
   configFor,
   doctorDeps,
   isRunning,
   launchInOrder,
+  readAgentState,
   readRecord,
   resolveHost,
   stopAll,
+  writeAgentPlist,
   type Deps as StackDeps,
 } from "./cli.ts"
 import { pathsFor, stackDirOf, type StackConfig } from "./config.ts"
@@ -67,6 +73,8 @@ export type SupervisorDeps = {
   llama: LlamaDeps
   /** launchd's gui domain; undefined off macOS. */
   uid: number | undefined
+  /** The supervisor's own process id: turning start at login off never boots out its own job. */
+  pid: number
   /** Replaces the file atomically at mode 0600. */
   writeSettings: (path: string, text: string) => void
   log: (line: string) => void
@@ -103,6 +111,8 @@ const LLAMA_NOT_INSTALLED =
   "com.eido.llama-server is not installed; run pnpm --filter @eido/infra llama install"
 const LLAMA_OFF_MAC =
   "llama-server runs under launchd, on macOS only so far (#629)"
+const LOGIN_OFF_MAC =
+  "start at login needs launchd, on macOS only so far; Task Scheduler on Windows is #455"
 
 const clip = (text: string): string =>
   text.length <= MAX_TEXT ? text : `${text.slice(0, MAX_TEXT - 1)}…`
@@ -504,6 +514,45 @@ export function createSupervisor(deps: SupervisorDeps) {
     return { status: 200, body: { sha256: sha256(text), settings: next } }
   }
 
+  /**
+   * Start at login is the login agent's plist: launchd loads it at the next login. Turning it on
+   * writes the plist without loading it now, so no second supervisor starts beside this one;
+   * turning it off removes the plist, and boots the agent out unless the loaded job is this
+   * supervisor, which keeps serving until logout.
+   */
+  async function loginItem(body?: string): Promise<Reply> {
+    const s = stack()
+    const uid = s.platform === "darwin" ? s.uid : undefined
+    if (uid === undefined) return refuse(501, "unsupported", LOGIN_OFF_MAC)
+    let enable: boolean | undefined
+    if (body !== undefined) {
+      const parsed = parseBody(body, validateStackLoginItemRequest)
+      if (!parsed.ok) return parsed.reply
+      enable = parsed.value.enabled
+    }
+    const state = await readAgentState(s)
+    if (enable === true) writeAgentPlist(s)
+    if (enable === false) {
+      if (state.kind === "loaded" && state.job.pid !== deps.pid) {
+        const run = await s.exec("launchctl", agentBootoutArgs(uid))
+        if (run.code !== 0)
+          return refuse(
+            409,
+            "failed",
+            `launchctl bootout: ${run.stderr.trim() || `exit ${run.code}`}`
+          )
+      }
+      const plist = agentLayout(s.home).plistPath
+      if (s.files.exists(plist)) s.files.remove(plist)
+    }
+    if (enable !== undefined)
+      deps.log(`supervisor | start at login ${enable ? "on" : "off"}`)
+    const enabled =
+      enable ??
+      (state.kind === "not loaded" || (state.kind === "loaded" && state.plist))
+    return { status: 200, body: { enabled } satisfies StackLoginItem }
+  }
+
   async function doctor(): Promise<StackDoctorReport> {
     const checks = await runDoctor(doctorDeps(stack()), {
       serve: true,
@@ -547,6 +596,10 @@ export function createSupervisor(deps: SupervisorDeps) {
         return { status: 200, body: readSettings() }
       case "POST /settings":
         return writeSettings(body)
+      case "GET /login-item":
+        return loginItem()
+      case "POST /login-item":
+        return loginItem(body)
       default:
         return refuse(404, "not_found", `no route ${method} ${path}`)
     }

@@ -43,6 +43,8 @@ The agent runs the stack supervisor (`infra/stack/supervisor-main.ts --start-sta
 
 The plist is `~/Library/LaunchAgents/com.eido.stack.plist` and the supervisor logs to `~/Library/Logs/eido-dev/stack.out.log` and `stack.err.log`. It passes on `PATH` and `EIDO_STACK_DIR` from the shell that ran `stack:install`; every other setting comes from `stack.env`, so run `stack:install` again after changing `PATH` or the stack dir. `pnpm stack:status` ends with the agent's state from `launchctl print`. `pnpm stack:stop` stops the stack while the agent stays loaded, and says that the next login or supervisor restart starts it again. Windows (a Task Scheduler task) is #455.
 
+The web Admin page can turn start at login on and off too (#664), through the supervisor's `GET` and `POST /login-item` (a step-up to change it). On writes the same plist as `stack:install` but does not load it, so launchd runs it at the next login and no second supervisor starts beside the running one; `stack:status` then reads "installed but not loaded". Off removes the plist and boots the agent out, unless the loaded agent is the supervisor answering, which keeps running until logout. Off macOS the supervisor refuses with `unsupported` and the gate answers 501 `unsupported_platform`.
+
 ### Settings: `stack.env` (#625)
 
 `stack.env` in the stack dir (`~/Library/Application Support/eido-dev/stack.env` on macOS) holds the stack's non-secret settings as `KEY=value` lines. `pnpm stack:setup` writes it; treat it as written by the system rather than by hand. Every stack command loads it, and a variable set in your environment wins over the same key in the file. It must be a regular file with mode 0600, and only these keys are accepted, so a typo or a secret fails with the key's name:
