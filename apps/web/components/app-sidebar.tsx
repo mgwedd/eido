@@ -17,6 +17,7 @@ import {
 } from "@eido/ui/components/sidebar"
 import { QueuePill, useQueueCount } from "@/components/queue-count"
 import { ShortcutKeys, useOpenLegend } from "@/components/shortcuts-provider"
+import { performSignOut } from "@/lib/auth/sign-out"
 import { isActive, NAV_ITEMS } from "@/lib/nav"
 import { queueLinkName } from "@/lib/queue/badge"
 import { keysOf } from "@/lib/shortcuts"
@@ -106,7 +107,20 @@ function AppSidebar() {
             {/* A plain link: sign-out must be a full navigation, never a prefetch. */}
             <SidebarMenuButton
               className="min-h-10"
-              render={<a href="/auth/logout" />}
+              render={
+                <a
+                  href="/auth/logout"
+                  onClick={(e) => {
+                    const isAuth0 =
+                      typeof process !== "undefined" &&
+                      process.env["NEXT_PUBLIC_AUTH0_ENABLED"] === "true"
+                    if (!isAuth0) {
+                      e.preventDefault()
+                      void performSignOut()
+                    }
+                  }}
+                />
+              }
             >
               <LogOut aria-hidden />
               <span>Sign out</span>

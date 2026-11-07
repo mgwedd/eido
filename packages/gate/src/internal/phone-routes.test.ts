@@ -3417,4 +3417,12 @@ describe("phoneHandler: Google sign-in (#662)", () => {
       expect([reply.status, code(reply)]).toEqual([503, "unavailable"])
     }
   )
+
+  it("returns the public key on GET /auth/jwt-key without authentication", async () => {
+    const reply = await call("GET", "/auth/jwt-key")
+    expect(reply.status).toBe(200)
+    expect(reply.body).toEqual({
+      publicKey: getWebSessionPublicKey(s.db),
+    })
+  })
 })

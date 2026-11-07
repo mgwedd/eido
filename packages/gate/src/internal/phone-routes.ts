@@ -113,6 +113,7 @@ import {
   clearWebSessionCookie,
   elevatedUntil,
   getOrCreateWebSessionKeys,
+  getWebSessionPublicKey,
   hasCredential,
   login,
   logoutSession,
@@ -192,6 +193,7 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/passkey/status", tier: "public" },
   { method: "POST", path: "/auth/login/options", tier: "public" },
   { method: "POST", path: "/auth/login", tier: "public" },
+  { method: "GET", path: "/auth/jwt-key", tier: "public" },
   { method: "POST", path: "/auth/logout", tier: "public" },
   { method: "POST", path: "/auth/step-up/options", tier: "session" },
   { method: "POST", path: "/auth/step-up", tier: "session" },
@@ -1319,6 +1321,11 @@ function route(
       return loginOptions(state, now)
     case "/auth/login":
       return loginRoute(state, request, now)
+    case "/auth/jwt-key":
+      return {
+        status: 200,
+        body: { publicKey: getWebSessionPublicKey(state.db) },
+      }
     case "/auth/logout":
       return logoutRoute(state, request, elevations)
     case "/auth/step-up/options":

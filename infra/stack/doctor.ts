@@ -303,6 +303,18 @@ function checkWebEnv(deps: DoctorDeps, edgeOrigin: string | undefined): Check {
   const join = (...parts: string[]) => pathsFor(deps.platform).join(...parts)
   const relative = join("apps", "web", ".env.local")
   const text = deps.files.read(join(deps.repoRoot, relative))
+  const values = text === undefined ? {} : parseEnv(text)
+  const auth0Configured =
+    set(deps.env, "AUTH0_DOMAIN") !== undefined ||
+    set(values, "AUTH0_DOMAIN") !== undefined ||
+    set(deps.env, "EIDO_ASSISTANT_EMAILS") !== undefined ||
+    set(values, "EIDO_ASSISTANT_EMAILS") !== undefined ||
+    Object.keys(values).some((k) => k.startsWith("AUTH0_"))
+
+  if (!auth0Configured) {
+    return ok("web-env", "passkey sign-in (Auth0 not configured)")
+  }
+
   if (text === undefined)
     return fail(
       "web-env",
@@ -313,7 +325,6 @@ function checkWebEnv(deps: DoctorDeps, edgeOrigin: string | undefined): Check {
       )
     )
   // Only key names leave this function, and whether APP_BASE_URL lists the edge origin.
-  const values = parseEnv(text)
   const missing = WEB_ENV_KEYS.filter((key) => (values[key] ?? "") === "")
   if (missing.length > 0)
     return fail(
