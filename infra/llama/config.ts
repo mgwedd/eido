@@ -63,15 +63,24 @@ export const serverName = (windows: boolean): string =>
 
 /**
  * Eido's per-user data directory: `~/Library/Application Support/eido-dev` on macOS,
- * `%LOCALAPPDATA%\eido-dev` on Windows.
+ * `%LOCALAPPDATA%\eido-dev` on Windows, `$XDG_DATA_HOME/eido-dev` (or `~/.local/share/eido-dev`)
+ * on Linux.
  */
 export function dataRoot(env: Env, home: string, os: NodeJS.Platform): string {
-  if (os === "win32")
-    return win32.join(
-      envValue(env, "LOCALAPPDATA") ?? win32.join(home, "AppData", "Local"),
-      "eido-dev"
-    )
-  return posix.join(home, "Library", "Application Support", "eido-dev")
+  switch (platformOf(os)) {
+    case "darwin":
+      return posix.join(home, "Library", "Application Support", "eido-dev")
+    case "win32":
+      return win32.join(
+        envValue(env, "LOCALAPPDATA") ?? win32.join(home, "AppData", "Local"),
+        "eido-dev"
+      )
+    case "linux":
+      return posix.join(
+        envValue(env, "XDG_DATA_HOME") ?? posix.join(home, ".local", "share"),
+        "eido-dev"
+      )
+  }
 }
 
 export function buildConfig(

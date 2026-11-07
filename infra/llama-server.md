@@ -41,7 +41,7 @@ The web app is served only at `https://<host>.ts.net:8443`. `llama-server` has n
 
 `infra/model.lock` pins one llama.cpp build and a set of model profiles:
 
-- **llama.cpp:** release `b11149` (commit `d2e54583c`), with the SHA-256 of each release asset: `llama-b11149-bin-macos-arm64.tar.gz`, `llama-b11149-bin-win-vulkan-x64.zip` and `llama-b11149-bin-win-cpu-arm64.zip`.
+- **llama.cpp:** release `b11149` (commit `d2e54583c`), with the SHA-256 of each release asset: `llama-b11149-bin-macos-arm64.tar.gz`, `llama-b11149-bin-win-vulkan-x64.zip`, `llama-b11149-bin-win-cpu-arm64.zip`, `llama-b11149-bin-ubuntu-vulkan-x64.tar.gz` and `llama-b11149-bin-ubuntu-arm64.tar.gz`.
 - **Profiles:** each `[profile <id>]` names a GGUF file, its `source` URL at a fixed revision, its size and SHA-256, a `chat_template_marker` unique to that model's template, and optional `chat_template_kwargs` and extra `flags`. `default_profile` names the one used when none is chosen.
 
 The curated profiles:
@@ -69,14 +69,14 @@ The MVP starts on the default. Llama 3.1 8B Q4_0, the earlier stand-in from #69,
 
 Each can be overridden by env; none is a secret.
 
-| What                  | macOS default                                                           | Windows default                                              | Env                     |
-| --------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------- |
-| lock file             | `infra/model.lock` in this checkout                                     | the same                                                     | `EIDO_MODEL_LOCK`       |
-| model directory       | `~/Library/Application Support/eido-dev/models`                         | `%LOCALAPPDATA%\eido-dev\models`                             | `EIDO_MODEL_DIR`        |
-| `llama-server`        | `~/Library/Application Support/eido-dev/llama.cpp/<build>/llama-server` | `%LOCALAPPDATA%\eido-dev\llama.cpp\<build>\llama-server.exe` | `EIDO_LLAMA_SERVER_BIN` |
-| port (on `127.0.0.1`) | `8080`, the same variable core reads                                    | the same                                                     | `EIDO_LLAMA_PORT`       |
-| stack directory       | `~/Library/Application Support/eido-dev`                                | `%LOCALAPPDATA%\eido-dev`                                    | `EIDO_STACK_DIR`        |
-| active profile        | `EIDO_LLAMA_MODEL` in `<stack dir>/stack.env`, else `default_profile`   | the same                                                     | `EIDO_LLAMA_MODEL`      |
+| What                  | macOS default                                                           | Windows default                                              | Linux default (`$XDG_DATA_HOME`, else `~/.local/share`) | Env                     |
+| --------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------- | ----------------------- |
+| lock file             | `infra/model.lock` in this checkout                                     | the same                                                     | the same                                                | `EIDO_MODEL_LOCK`       |
+| model directory       | `~/Library/Application Support/eido-dev/models`                         | `%LOCALAPPDATA%\eido-dev\models`                             | `<data>/eido-dev/models`                                | `EIDO_MODEL_DIR`        |
+| `llama-server`        | `~/Library/Application Support/eido-dev/llama.cpp/<build>/llama-server` | `%LOCALAPPDATA%\eido-dev\llama.cpp\<build>\llama-server.exe` | `<data>/eido-dev/llama.cpp/<build>/llama-server`        | `EIDO_LLAMA_SERVER_BIN` |
+| port (on `127.0.0.1`) | `8080`, the same variable core reads                                    | the same                                                     | the same                                                | `EIDO_LLAMA_PORT`       |
+| stack directory       | `~/Library/Application Support/eido-dev`                                | `%LOCALAPPDATA%\eido-dev`                                    | `<data>/eido-dev`                                       | `EIDO_STACK_DIR`        |
+| active profile        | `EIDO_LLAMA_MODEL` in `<stack dir>/stack.env`, else `default_profile`   | the same                                                     | the same                                                | `EIDO_LLAMA_MODEL`      |
 
 The active profile is, in order: an exported `EIDO_LLAMA_MODEL`, then `EIDO_LLAMA_MODEL` in `stack.env`, then the lock's `default_profile`. The launcher loads only the active profile's file. It never falls back to another file.
 
@@ -139,9 +139,10 @@ pnpm --filter @eido/infra llama list            # the profiles and their state
 pnpm --filter @eido/infra llama add REPO FILE   # add a Hugging Face GGUF to your own profiles
 pnpm --filter @eido/infra llama use ID          # make ID the active profile, restart the LaunchAgent
 pnpm --filter @eido/infra llama launch          # verify, then run llama-server in the foreground (launchd runs this)
+pnpm --filter @eido/infra llama start           # alias for launch (what doctor names off macOS)
 pnpm --filter @eido/infra llama check-template  # against the running server; --model ID starts and checks that profile
 pnpm --filter @eido/infra llama plan            # print the LaunchAgent plist and launchctl command; changes nothing
-pnpm --filter @eido/infra llama install         # write ~/Library/LaunchAgents/com.eido.llama-server.plist and bootstrap it
+pnpm --filter @eido/infra llama install         # macOS: write ~/Library/LaunchAgents/com.eido.llama-server.plist and bootstrap it; Windows and Linux: fetch
 pnpm --filter @eido/infra llama uninstall       # boot it out and remove the plist
 pnpm --filter @eido/infra llama status          # launchd's view, who listens on the port, /health
 ```
@@ -154,9 +155,9 @@ pnpm --filter @eido/infra llama status          # launchd's view, who listens on
 4. Checks that `/props` reports a chat template containing the profile's `chat_template_marker` (or any template, for a profile without one). If not, it stops the server and exits 1.
 5. Stays in the foreground. It exits non-zero if the server dies, and on SIGTERM it stops the server and exits 0.
 
-### Windows
+### Windows and Linux
 
-`fetch`, `verify`, `verify-archive`, `list`, `add`, `use`, `launch` and `check-template` run on Windows (x64 with the Vulkan build, arm64 with the CPU build), with the paths in the table above. There is no LaunchAgent: run `llama launch` in a terminal, and after `llama use`, stop it and run it again. `plan`, `install`, `uninstall` and `status` need launchd and lsof; on Windows they print `not supported on this platform yet (#629)` and exit 1.
+`fetch`, `install` (which runs `fetch` off macOS), `verify`, `verify-archive`, `list`, `add`, `use`, `launch`, `start` and `check-template` run on Windows (x64 with the Vulkan build, arm64 with the CPU build) and Linux (x64 with the Vulkan build, arm64 with the CPU build), with the paths in the table above. There is no LaunchAgent: run `llama start` (or `llama launch`) in a terminal, and after `llama use`, stop it and run it again. `plan`, `uninstall` and `status` need launchd and lsof; on Windows and Linux they print `not supported on this platform yet (#629)` and exit 1.
 
 ### LaunchAgent
 

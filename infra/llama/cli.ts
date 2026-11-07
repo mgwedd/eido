@@ -10,8 +10,8 @@
 //                          with the size and sha256 the Hub reports at that revision
 //   use ID                 make ID the active profile (EIDO_LLAMA_MODEL in the stack settings
 //                          file), then restart the LaunchAgent when it is installed
-//   launch                 verify, then run llama-server on 127.0.0.1 with --jinja, wait for
-//                          /health and check /props; stays in the foreground (launchd runs this).
+//   launch | start         verify, then run llama-server on 127.0.0.1 with --jinja, wait for
+//                          /health and check /props; stays in the foreground (launchd runs launch).
 //                          Refuses a profile that has not passed check-template.
 //   check-template [--model ID]
 //                          the chat template is the model's, the rendered prompt for a fixed
@@ -20,11 +20,13 @@
 //                          running server; with it, it starts llama-server for that profile, checks
 //                          and stops it. A pass is recorded, which verifies the profile here.
 //   plan                   print the LaunchAgent plist and the launchctl command; changes nothing
-//   install / uninstall    write and bootstrap, or boot out and remove, com.eido.llama-server
+//   install                on macOS, write and bootstrap com.eido.llama-server; on Windows and
+//                          Linux, fetch the pinned build and model (--model ID)
+//   uninstall              boot out and remove com.eido.llama-server
 //   status                 launchd's view of the job, who listens on the port, and /health
-// plan, install, uninstall and status are macOS only (launchd and lsof); the rest also run on
-// Windows. Effects and the platform are passed in, so tests never run a real model, binary,
-// launchctl or network, and cover both platforms on any host.
+// plan, uninstall and status are macOS only (launchd and lsof); the rest also run on Windows and
+// Linux. Effects and the platform are passed in, so tests never run a real model, binary,
+// launchctl or network, and cover every platform on any host.
 import { join, posix, win32 } from "node:path"
 
 import { loopbackOnlyFinding, parseListeners } from "../host/checks.ts"
@@ -124,7 +126,7 @@ export type Deps = {
 export const READY_TIMEOUT_MS = 180_000
 
 const USAGE =
-  "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|check-template [--model ID]|plan|install|uninstall|status"
+  "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|start|check-template [--model ID]|plan|install|uninstall|status"
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 
@@ -804,9 +806,13 @@ async function run(
       return checkTemplate(deps, loadBase(deps), rest)
     case "verify":
     case "launch":
+    case "start":
     case "plan":
-    case "install":
     case "status":
+      break
+    case "install":
+      if (deps.platform.os !== "darwin")
+        return fetchCommand(deps, loadBase(deps), rest)
       break
     default:
       deps.err(USAGE)
@@ -821,6 +827,7 @@ async function run(
     case "verify":
       return (await verify(deps, loaded)) ? 0 : 1
     case "launch":
+    case "start":
       return launch(deps, loaded)
   }
   const uid = launchdUid(deps, command)
