@@ -66,7 +66,20 @@ export async function connectedRoute(
   if (request.method !== "POST") return undefined
   const match = CONNECTED_PATH.exec(request.path)
   if (match === null) return undefined
-  const name = match[1] ?? ""
+  return checkConnector(db, match[1] ?? "", probes, now)
+}
+
+/**
+ * Runs a connector's health probe after it gets a new credential, re-enabling it when its old
+ * credential was refused. The control socket's connected route and the Admin page's signed
+ * secret routes (#661) both use it.
+ */
+export async function checkConnector(
+  db: DatabaseSync,
+  name: string,
+  probes: ConnectorProbes | undefined,
+  now: () => number
+): Promise<Reply> {
   const row = db
     .prepare(
       "SELECT enabled, last_error, drift_json FROM connectors WHERE name = ?"

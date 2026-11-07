@@ -10,6 +10,10 @@ import {
   validateGateLoginRequest,
   validateGatePushRegistration,
   validateGateEnrolmentCodeRequest,
+  validateGateBridgePasswordRequest,
+  validateGateBridgePin,
+  validateGateBridgePinRequest,
+  validateGateSimpleFinSecretRequest,
   validateGateRepinRequest,
 } from "@eido/schemas"
 import type {
@@ -61,6 +65,17 @@ import {
   issueSignedEnrolmentCode,
   prepareEnrolmentCodeIssue,
 } from "./enrolment"
+import {
+  prepareBridgePassword,
+  prepareBridgePin,
+  prepareSimpleFin,
+  removeConnectorSecrets,
+  setBridgePassword,
+  setBridgePin,
+  setSimpleFin,
+} from "./connector-secrets"
+import type { ConnectorProbes } from "./connector-connect"
+import type { Vault } from "./vault/vault"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
 import {
@@ -131,6 +146,14 @@ export type PhoneState = {
   fileHelper?: FileHelper
   /** The stack supervisor's socket client (#659); undefined when the gate runs outside the stack. */
   supervisor?: SupervisorClient
+  /** The gate vault the Admin page's signed secret routes seal into (#661); undefined without one. */
+  vault?: Vault
+  /** The Bridge pin the gate runs with and its certificate file (#661); undefined without Bridge. */
+  bridge?: { certificateSha256: string; certificatePath: string }
+  /** Each connector's health probe, run after a new secret is sealed (#661). */
+  probes?: ConnectorProbes
+  /** How the gate claims a SimpleFIN access URL (#661); the global fetch by default. */
+  fetch?: typeof fetch
 }
 
 export type PhoneRoute = {
@@ -201,6 +224,13 @@ export const PHONE_ROUTES = [
   { method: "POST", path: "/admin/models/:id/fetch", tier: "elevated" },
   { method: "POST", path: "/admin/enrolment-codes/prepare", tier: "session" },
   { method: "POST", path: "/admin/enrolment-codes", tier: "signed" },
+  { method: "POST", path: "/admin/secrets/bridge/prepare", tier: "session" },
+  { method: "POST", path: "/admin/secrets/bridge", tier: "signed" },
+  { method: "POST", path: "/admin/secrets/bridge-pin/prepare", tier: "session" },
+  { method: "POST", path: "/admin/secrets/bridge-pin", tier: "signed" },
+  { method: "POST", path: "/admin/secrets/simplefin/prepare", tier: "session" },
+  { method: "POST", path: "/admin/secrets/simplefin", tier: "signed" },
+  { method: "POST", path: "/admin/connectors/:id/remove", tier: "elevated" },
 ] as const satisfies readonly PhoneRoute[]
 
 type RoutePath = (typeof PHONE_ROUTES)[number]["path"]
@@ -1082,6 +1112,83 @@ async function issueEnrolmentCodeRoute(
   }
 }
 
+// Connector secrets from the Admin page (#661): see connector-secrets.ts. Each body is parsed
+// with its schema; the secret goes on to the vault and is never part of a reply.
+async function bridgePasswordPrepare(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateBridgePin(body.value)
+  if (!checked.ok) return invalid("a Bridge pin", checked.errors)
+  return prepareBridgePassword(state, checked.value.certificateSha256)
+}
+
+async function bridgePasswordRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateBridgePasswordRequest(body.value)
+  if (!checked.ok) return invalid("a Bridge password request", checked.errors)
+  return setBridgePassword(
+    state,
+    {
+      authorization: { config: state.webAuthn, request: checked.value.approval },
+      certificateSha256: checked.value.certificateSha256,
+      password: checked.value.password,
+    },
+    () => now().getTime()
+  )
+}
+
+async function bridgePinPrepare(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateBridgePin(body.value)
+  if (!checked.ok) return invalid("a Bridge pin", checked.errors)
+  return prepareBridgePin(state, checked.value.certificateSha256)
+}
+
+async function bridgePinRoute(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateBridgePinRequest(body.value)
+  if (!checked.ok) return invalid("a Bridge pin request", checked.errors)
+  return setBridgePin(state, {
+    authorization: { config: state.webAuthn, request: checked.value.approval },
+    certificateSha256: checked.value.certificateSha256,
+  })
+}
+
+async function simpleFinRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateSimpleFinSecretRequest(body.value)
+  if (!checked.ok) return invalid("a SimpleFIN setup request", checked.errors)
+  return setSimpleFin(
+    state,
+    {
+      authorization: { config: state.webAuthn, request: checked.value.approval },
+      setupToken: checked.value.setupToken,
+    },
+    () => now().getTime()
+  )
+}
+
 function route(
   state: PhoneState,
   request: GateRequest,
@@ -1168,6 +1275,20 @@ function route(
       return { status: 200, body: prepareEnrolmentCodeIssue(state.db) }
     case "/admin/enrolment-codes":
       return issueEnrolmentCodeRoute(state, request, now)
+    case "/admin/secrets/bridge/prepare":
+      return bridgePasswordPrepare(state, request)
+    case "/admin/secrets/bridge":
+      return bridgePasswordRoute(state, request, now)
+    case "/admin/secrets/bridge-pin/prepare":
+      return bridgePinPrepare(state, request)
+    case "/admin/secrets/bridge-pin":
+      return bridgePinRoute(state, request)
+    case "/admin/secrets/simplefin/prepare":
+      return prepareSimpleFin(state)
+    case "/admin/secrets/simplefin":
+      return simpleFinRoute(state, request, now)
+    case "/admin/connectors/:id/remove":
+      return removeConnectorSecrets(state, matched.id)
     case "/push/:id/remove":
       removePushSubscription(state.db, matched.id)
       return { status: 200, body: { id: matched.id } }

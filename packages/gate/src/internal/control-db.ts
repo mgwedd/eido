@@ -234,6 +234,12 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      payload_hash TEXT NOT NULL,
      approval_id TEXT NOT NULL REFERENCES control_approvals(id)
    ) STRICT;`,
+  // The Bridge certificate pin the stored Bridge password belongs to (#661). When the gate runs
+  // with another pin, it deletes the password before anything can send it to the new endpoint.
+  `CREATE TABLE bridge_password_pin (
+     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+     certificate_sha256 TEXT NOT NULL
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {
