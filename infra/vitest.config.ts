@@ -29,6 +29,12 @@ export default defineConfig({
         "stack/effects.ts", // real processes, signals, files, clock and fetch for the CLI and the supervisor; no logic
         "llama/bin.ts", // entry point: hands process.argv and real files, processes, launchctl, signals and fetch to main()
         "host/bin.ts", // entry point: hands process.argv and the real fdesetup and tailscale to main()
+        ...(process.platform === "win32"
+          ? [
+              "backup/**/*.ts", // macOS-only backup via launchd/Keychain (#629)
+              "stack/supervisor-server.ts", // Unix domain sockets not supported on Windows (ADR 0003)
+            ]
+          : []),
       ],
       reporter: ["text", "json-summary", "cobertura"],
       thresholds: {
