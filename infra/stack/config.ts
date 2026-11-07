@@ -305,6 +305,8 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       EIDO_GATE_DATA_DIR: gateDataDir,
       EIDO_GATE_SOCKET: gateSocket,
       EIDO_GATE_CONTROL_SOCKET: controlSocket,
+      // The supervisor's socket (#659), beside the gate's; the gate relays its admin routes there.
+      EIDO_GATE_SUPERVISOR_SOCKET: join(runDir, "supervisor.sock"),
       ...(env["EIDO_PROFILE_AUDIT_EPOCH"] === undefined
         ? {}
         : { EIDO_PROFILE_AUDIT_EPOCH: env["EIDO_PROFILE_AUDIT_EPOCH"] }),

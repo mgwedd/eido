@@ -325,6 +325,22 @@ describe("gateConfig", () => {
     ).toThrow("the base path must look like /api/gate")
   })
 
+  it("reads the supervisor socket when it is set, and refuses a relative path", () => {
+    expect(gateConfig(BASE).supervisorSocketPath).toBeUndefined()
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_SUPERVISOR_SOCKET: "/d/run/supervisor.sock",
+      }).supervisorSocketPath
+    ).toBe("/d/run/supervisor.sock")
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_GATE_SUPERVISOR_SOCKET: "run/supervisor.sock",
+      })
+    ).toThrow("EIDO_GATE_SUPERVISOR_SOCKET must be an absolute path")
+  })
+
   it("names every missing or empty variable", () => {
     expect(() =>
       gateConfig({ EIDO_GATE_DATA_DIR: "/d", EIDO_GATE_SOCKET: "" })

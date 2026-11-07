@@ -73,6 +73,7 @@ describe("buildStackConfig", () => {
       EIDO_GATE_DATA_DIR: `${stackDir}/gate`,
       EIDO_GATE_SOCKET: `${stackDir}/run/gate-data-plane.sock`,
       EIDO_GATE_CONTROL_SOCKET: `${stackDir}/run/gate-control.sock`,
+      EIDO_GATE_SUPERVISOR_SOCKET: `${stackDir}/run/supervisor.sock`,
       EIDO_WEBAUTHN_RP_ID: HOST,
       EIDO_WEBAUTHN_ORIGIN: `https://${HOST}:8443`,
       EIDO_GATE_PHONE_HOST: "127.0.0.1",

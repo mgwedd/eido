@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest"
 import {
+  validateGateAdminStack,
+  validateGateApiError,
   validateStackJobRequest,
   validateStackJobStatus,
   validateStackModelRequest,
@@ -73,5 +75,25 @@ describe("stack supervisor schemas (#644)", () => {
         tasks: [],
       }).ok
     ).toBe(false)
+  })
+
+  test("the admin stack status is the jobs, or the supervisor marked unavailable (#659)", () => {
+    const jobs = { processes: [], tasks: [] }
+    expect(validateGateAdminStack({ supervisor: "available", jobs }).ok).toBe(
+      true
+    )
+    expect(validateGateAdminStack({ supervisor: "unavailable" }).ok).toBe(true)
+    expect(validateGateAdminStack({ supervisor: "available" }).ok).toBe(false)
+    expect(validateGateAdminStack({ supervisor: "unavailable", jobs }).ok).toBe(
+      false
+    )
+  })
+
+  test.each([
+    "supervisor_unavailable",
+    "supervisor_failed",
+    "stack_not_running",
+  ])("the gate's error codes include %s", (code) => {
+    expect(validateGateApiError({ code, message: "x" }).ok).toBe(true)
   })
 })

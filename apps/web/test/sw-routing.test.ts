@@ -79,6 +79,8 @@ describe("classifyRequest", () => {
       "network-only"
     )
     expect(classify("/api/gate/file-roots")).toBe("network-only")
+    expect(classify("/api/gate/admin/stack")).toBe("network-only")
+    expect(classify("/admin", { mode: "navigate" })).toBe("network-only")
   })
 
   test("writes, cross-origin, probes and the worker itself bypass the cache", () => {
