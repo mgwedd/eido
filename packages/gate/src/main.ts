@@ -73,6 +73,8 @@ import { KeychainVault } from "./internal/vault/keychain-vault"
 import type { WebAuthnConfig } from "./internal/webauthn"
 import { initializeProfileAudit } from "./internal/profile-audit"
 import type { ProfileAudit } from "./internal/profile-audit"
+import { GOOGLE_CALLBACK_PATH, GoogleFlows } from "./internal/google-connect"
+import type { GoogleTarget } from "./internal/google-connect"
 
 // The gate process (ADR 0003). It owns eido-control.db and opens no other database. It
 // listens on two local sockets: the data-plane socket, the only path the data plane is given,
@@ -128,6 +130,17 @@ export const BASIC_URL_READ_CONNECTORS = [
 export const EGRESS_PORT_ENV = "EIDO_GATE_EGRESS_PORT"
 /** The stack supervisor's Unix socket (#659), set by the stack; unset, the admin routes answer 503. */
 export const SUPERVISOR_SOCKET_ENV = "EIDO_GATE_SUPERVISOR_SOCKET"
+/**
+ * Where Google returns the browser after consent (#662): the gate's own callback on the web
+ * app's origin, `https://<host>.ts.net:8443/api/gate/connect/google/callback`. The stack sets it.
+ */
+export const GOOGLE_REDIRECT_URI_ENV = "EIDO_GOOGLE_REDIRECT_URI"
+/** Each Google target's client id variable, as the `connect` command names the targets. */
+const GOOGLE_CLIENT_ID_ENVS = {
+  gmail: "EIDO_GMAIL_CLIENT_ID",
+  "gmail-read": GMAIL_READ_CLIENT_ID_ENV,
+  drive: DRIVE_CLIENT_ID_ENV,
+} as const satisfies Record<GoogleTarget, string>
 
 export type EgressProxyConfig = {
   vault: VaultConfig
@@ -176,6 +189,11 @@ export type GateConfig = {
   supervisorSocketPath?: string
   /** The gate vault the Admin page's connector secret routes seal into (#661). */
   vault?: VaultConfig
+  /** Google sign-in through the gate (#662); absent without EIDO_GOOGLE_REDIRECT_URI. */
+  google?: {
+    redirectUri: string
+    clientIds: Partial<Record<GoogleTarget, string>>
+  }
   /** The calendar connector's sent record tracker (#21, #290). */
   calendarTracker?: CalendarTracker
   /** Overrides the stored attendees reader for policy (#168, #290). */
@@ -322,6 +340,8 @@ export function gateConfig(
     )
   if (hasReadClient && egressPort === "")
     throw new Error(`a read connector needs ${EGRESS_PORT_ENV}`)
+  const google = googleConfig(env, config.webAuthn.origin)
+  if (google !== undefined) requireVault("Google sign-in")
   const positive = (name: string, fallback: number): number => {
     const value = env[name]
     if (value === undefined || value === "") return fallback
@@ -336,6 +356,7 @@ export function gateConfig(
       ? {}
       : { fileHelper: { path: fileHelperPath, sha256: fileHelperSha256 } }),
     ...(vault === undefined ? {} : { vault, profileAudit: { vault, epoch } }),
+    ...(google === undefined ? {} : { google }),
     ...(port === "" ? {} : { phone: phoneConfig(env, port) }),
     ...(bridge === undefined ? {} : { bridge: bridgeVault(env, bridge) }),
     ...(gmailClientId === ""
@@ -368,6 +389,39 @@ export function gateConfig(
           },
         }),
   }
+}
+
+/** The Google sign-in settings, or undefined when no redirect URI is set. */
+export function googleConfig(
+  env: Readonly<Record<string, string | undefined>>,
+  webOrigin: string
+): GateConfig["google"] {
+  const redirectUri = env[GOOGLE_REDIRECT_URI_ENV] ?? ""
+  if (redirectUri === "") return undefined
+  // Google sends the code to this address, so it must be the web app's own HTTPS origin.
+  let url: URL
+  try {
+    url = new URL(redirectUri)
+  } catch {
+    throw new Error(`${GOOGLE_REDIRECT_URI_ENV} must be a URL`)
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.origin !== webOrigin ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    !url.pathname.endsWith(GOOGLE_CALLBACK_PATH)
+  )
+    throw new Error(
+      `${GOOGLE_REDIRECT_URI_ENV} must be an https URL on ${webOrigin} ending in ${GOOGLE_CALLBACK_PATH}`
+    )
+  const clientIds = Object.fromEntries(
+    Object.entries(GOOGLE_CLIENT_ID_ENVS).flatMap(([target, name]) => {
+      const id = env[name] ?? ""
+      return id === "" ? [] : [[target, id]]
+    })
+  )
+  return { redirectUri: url.toString(), clientIds }
 }
 
 function bridgeVault(
@@ -590,8 +644,21 @@ export async function runGate(
     // A stored Bridge password belongs to the pin it was sealed under (#661).
     if (bridge !== undefined && secretVault !== undefined)
       await reconcileBridgePin(db, secretVault, bridge.certificateSha256)
+    const google =
+      config.google === undefined || secretVault === undefined
+        ? undefined
+        : {
+            db,
+            vault: secretVault,
+            flows: new GoogleFlows(),
+            redirectUri: config.google.redirectUri,
+            webOrigin: config.webAuthn.origin,
+            clientIds: config.google.clientIds,
+            probes,
+          }
     const state = () => ({
       probes,
+      ...(google === undefined ? {} : { google }),
       ...(secretVault === undefined ? {} : { vault: secretVault }),
       ...(bridge === undefined ? {} : { bridge }),
       fileHelper: nativeFiles,

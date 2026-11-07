@@ -1,0 +1,97 @@
+{
+  "name": "files",
+  "version": 1,
+  "description": "Allowed local folders: untrusted reads and reversible writes through the gate.",
+  "auth": {
+    "type": "none",
+    "scopes": []
+  },
+  "egress": {
+    "hosts": []
+  },
+  "operations": [
+    {
+      "name": "files_search",
+      "effect": "read",
+      "reversibility": "reversible",
+      "sensitivity": "sensitive",
+      "authScopes": [],
+      "untrustedOutput": true,
+      "defaultTier": "auto"
+    },
+    {
+      "name": "file_read_text",
+      "effect": "read",
+      "reversibility": "reversible",
+      "sensitivity": "sensitive",
+      "authScopes": [],
+      "untrustedOutput": true,
+      "defaultTier": "auto"
+    },
+    {
+      "name": "file_read_pdf_text",
+      "effect": "read",
+      "reversibility": "reversible",
+      "sensitivity": "sensitive",
+      "authScopes": [],
+      "untrustedOutput": true,
+      "defaultTier": "auto"
+    },
+    {
+      "name": "file_create",
+      "intentKind": "file.create",
+      "effect": "write",
+      "reversibility": "reversible",
+      "sensitivity": "sensitive",
+      "authScopes": [],
+      "untrustedOutput": false,
+      "defaultTier": "auto"
+    },
+    {
+      "name": "file_rename",
+      "intentKind": "file.rename",
+      "effect": "write",
+      "reversibility": "reversible",
+      "sensitivity": "sensitive",
+      "authScopes": [],
+      "untrustedOutput": false,
+      "defaultTier": "auto"
+    },
+    {
+      "name": "file_move",
+      "intentKind": "file.move",
+      "effect": "write",
+      "reversibility": "reversible",
+      "sensitivity": "sensitive",
+      "authScopes": [],
+      "untrustedOutput": false,
+      "defaultTier": "auto"
+    },
+    {
+      "name": "file_delete",
+      "intentKind": "file.delete",
+      "effect": "write",
+      "reversibility": "reversible",
+      "sensitivity": "sensitive",
+      "authScopes": [],
+      "untrustedOutput": false,
+      "defaultTier": "approval"
+    }
+  ],
+  "triggers": [],
+  "ledgerMapping": {
+    "source": "files",
+    "refField": "source_ref"
+  },
+  "health": {
+    "backoff": {
+      "baseMs": 1000,
+      "maxMs": 300000,
+      "jitter": true
+    },
+    "breaker": {
+      "failureThreshold": 5,
+      "halfOpenProbeAfterMs": 60000
+    }
+  }
+}

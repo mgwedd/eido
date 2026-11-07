@@ -1,0 +1,159 @@
+{
+  "name": "things",
+  "version": 1,
+  "description": "Things 3 over macOS AppleScript: task management read and written by the gate; core syncs items and proposes intents.",
+  "auth": {
+    "type": "macos-automation",
+    "scopes": ["Things3"]
+  },
+  "egress": {
+    "hosts": []
+  },
+  "operations": [
+    {
+      "name": "list_todos",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "get_todo",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "list_deadline",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "list_projects",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "get_project",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "list_areas",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "list_tags",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "add_todo",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "intentKind": "things.add_todo",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "update_todo",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "approval",
+      "intentKind": "things.update_todo",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "schedule_todo",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "approval",
+      "intentKind": "things.schedule_todo",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "complete_todo",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "approval",
+      "intentKind": "things.complete_todo",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "cancel_todo",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "approval",
+      "intentKind": "things.cancel_todo",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["Things3"]
+    },
+    {
+      "name": "add_project",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "approval",
+      "intentKind": "things.add_project",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["Things3"]
+    }
+  ],
+  "triggers": [
+    {
+      "kind": "poll",
+      "stream": "todos",
+      "intervalSeconds": 60
+    }
+  ],
+  "ledgerMapping": {
+    "source": "things",
+    "refField": "source_ref"
+  },
+  "health": {
+    "backoff": {
+      "baseMs": 1000,
+      "maxMs": 300000,
+      "jitter": true
+    },
+    "breaker": {
+      "failureThreshold": 3,
+      "halfOpenProbeAfterMs": 60000
+    }
+  }
+}

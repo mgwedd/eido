@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateGoogleConnectTarget",
+  "description": "Body of POST /admin/connectors/google/prepare (#662): the Google OAuth client to sign in. `gmail` is Gmail's compose client, `gmail-read` its read client, `drive` Drive's read client.",
+  "type": "object",
+  "properties": {
+    "target": {
+      "enum": ["gmail", "gmail-read", "drive"]
+    }
+  },
+  "required": ["target"],
+  "additionalProperties": false
+}

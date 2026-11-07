@@ -1,0 +1,257 @@
+{
+  "name": "gmail",
+  "version": 1,
+  "description": "Gmail through the Gmail REST API: core reads through the gate's egress proxy and proposes intents; the gate's executor writes.",
+  "auth": {
+    "type": "oauth2",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.modify"
+    ]
+  },
+  "egress": {
+    "hosts": [
+      {
+        "host": "gmail.googleapis.com",
+        "methods": ["GET", "POST"],
+        "pathPrefixes": ["/gmail/v1/users/me"]
+      },
+      {
+        "host": "oauth2.googleapis.com",
+        "methods": ["POST"],
+        "pathPrefixes": ["/token"]
+      }
+    ]
+  },
+  "operations": [
+    {
+      "name": "mail_search",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "routes": [
+        {
+          "host": "gmail.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/gmail/v1/users/me/messages"
+        },
+        {
+          "host": "gmail.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/gmail/v1/users/me/history"
+        },
+        {
+          "host": "gmail.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/gmail/v1/users/me/profile"
+        }
+      ],
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.readonly"]
+    },
+    {
+      "name": "mail_thread",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "routes": [
+        {
+          "host": "gmail.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/gmail/v1/users/me/threads/{id}"
+        }
+      ],
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.readonly"]
+    },
+    {
+      "name": "mail_get",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "routes": [
+        {
+          "host": "gmail.googleapis.com",
+          "method": "GET",
+          "pathPattern": "/gmail/v1/users/me/messages/{id}"
+        }
+      ],
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.readonly"]
+    },
+    {
+      "name": "attachment_text",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "routes": [],
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.readonly"]
+    },
+    {
+      "name": "draft_create",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "intentKind": "email.draft",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.modify"]
+    },
+    {
+      "name": "label",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "intentKind": "email.label",
+      "routes": [
+        {
+          "host": "gmail.googleapis.com",
+          "method": "POST",
+          "pathPattern": "/gmail/v1/users/me/messages/batchModify"
+        }
+      ],
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.modify"]
+    },
+    {
+      "name": "archive",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "intentKind": "email.archive",
+      "routes": [
+        {
+          "host": "gmail.googleapis.com",
+          "method": "POST",
+          "pathPattern": "/gmail/v1/users/me/messages/batchModify"
+        }
+      ],
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.modify"]
+    },
+    {
+      "name": "mark_read",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "intentKind": "email.markRead",
+      "routes": [
+        {
+          "host": "gmail.googleapis.com",
+          "method": "POST",
+          "pathPattern": "/gmail/v1/users/me/messages/batchModify"
+        }
+      ],
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.modify"]
+    },
+    {
+      "name": "send",
+      "effect": "write",
+      "reversibility": "irreversible",
+      "defaultTier": "approval",
+      "intentKind": "email.send",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.modify"]
+    },
+    {
+      "name": "reply",
+      "effect": "write",
+      "reversibility": "irreversible",
+      "defaultTier": "approval",
+      "intentKind": "email.reply",
+      "routes": [
+        {
+          "host": "gmail.googleapis.com",
+          "method": "POST",
+          "pathPattern": "/gmail/v1/users/me/messages/send"
+        }
+      ],
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.modify"]
+    },
+    {
+      "name": "forward",
+      "effect": "write",
+      "reversibility": "irreversible",
+      "defaultTier": "approval",
+      "intentKind": "email.forward",
+      "routes": [
+        {
+          "host": "gmail.googleapis.com",
+          "method": "POST",
+          "pathPattern": "/gmail/v1/users/me/messages/send"
+        }
+      ],
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.modify"]
+    },
+    {
+      "name": "trash",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "approval",
+      "intentKind": "email.trash",
+      "routes": [
+        {
+          "host": "gmail.googleapis.com",
+          "method": "POST",
+          "pathPattern": "/gmail/v1/users/me/messages/batchModify"
+        }
+      ],
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.modify"]
+    },
+    {
+      "name": "restore_trash",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "approval",
+      "intentKind": "email.untrash",
+      "routes": [
+        {
+          "host": "gmail.googleapis.com",
+          "method": "POST",
+          "pathPattern": "/gmail/v1/users/me/messages/batchModify"
+        }
+      ],
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["https://www.googleapis.com/auth/gmail.modify"]
+    }
+  ],
+  "triggers": [
+    {
+      "kind": "poll",
+      "stream": "INBOX",
+      "intervalSeconds": 60
+    }
+  ],
+  "ledgerMapping": {
+    "source": "gmail",
+    "refField": "source_ref"
+  },
+  "health": {
+    "backoff": {
+      "baseMs": 1000,
+      "maxMs": 300000,
+      "jitter": true
+    },
+    "breaker": {
+      "failureThreshold": 3,
+      "halfOpenProbeAfterMs": 60000
+    }
+  }
+}

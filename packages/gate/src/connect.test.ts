@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
-import { request } from "node:http"
 import type { Server } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ConnectorManifest } from "@eido/schemas"
-import { connect, GMAIL_CLIENT_ID_ENV, openInBrowser } from "./connect"
-import type { ConnectIo } from "./connect"
+import { connect as runConnect, openInBrowser } from "./connect"
+import type { ConnectDeps, ConnectIo } from "./connect"
 import { CONTROL_SOCKET_ENV } from "./enrol-code"
 import { BRIDGE_PASSWORD_KEY } from "./internal/bridge/bridge"
 import type { ConnectorProbe } from "./internal/connector-connect"
@@ -15,6 +14,8 @@ import { egressProbe } from "./internal/egress"
 import { gmailProbe as gateGmailProbe } from "./internal/gmail-transport"
 import { close, createGateServer, listen } from "./internal/http"
 import { controlHandler } from "./internal/routes"
+import { googleCallback, GoogleFlows } from "./internal/google-connect"
+import type { GoogleConnect, GoogleTarget } from "./internal/google-connect"
 import {
   loggedText,
   MAIL_OPS,
@@ -26,12 +27,7 @@ import type { Setup } from "./internal/test-fixtures"
 import { FileVault } from "./internal/vault/file-vault"
 import { InMemoryVault } from "./internal/vault/vault"
 import type { VaultKey } from "./internal/vault/vault"
-import {
-  allProbes,
-  DRIVE_CLIENT_ID_ENV,
-  GMAIL_READ_CLIENT_ID_ENV,
-  READ_CONNECTORS,
-} from "./main"
+import { allProbes, READ_CONNECTORS } from "./main"
 
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 const GMAIL_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
@@ -75,36 +71,55 @@ let err: string[]
 let answers: Array<string | undefined>
 let questions: string[]
 let callbacks: Array<Promise<number>>
+let flows: GoogleFlows
+let clientIds: Partial<Record<GoogleTarget, string>>
+let googleFetch: typeof fetch
+/** Whether the running gate has Google sign-in configured. */
+let gateHasGoogle: boolean
 
-/** Sends one GET to the loopback listener, as the browser would after the redirect. */
-function browserGet(url: string): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const target = new URL(url)
-    request(
-      {
-        host: target.hostname,
-        port: target.port,
-        path: `${target.pathname}${target.search}`,
-        agent: false,
-      },
-      (response) => {
-        response.resume()
-        response.on("end", () => resolve(response.statusCode ?? 0))
-      }
-    )
-      .on("error", reject)
-      .end()
-  })
+const WEB_ORIGIN = "https://eido.example.invalid:8443"
+const NOW = new Date("2026-11-02T09:00:00.000Z")
+
+/** The gate's Google sign-in, as runGate builds it, over this test's vault, probes and Google. */
+function gateGoogle(): GoogleConnect {
+  return {
+    db: s.db,
+    vault,
+    flows,
+    redirectUri: `${WEB_ORIGIN}/api/gate/connect/google/callback`,
+    webOrigin: WEB_ORIGIN,
+    clientIds,
+    probes,
+    fetch: (input, init) => googleFetch(input, init),
+  }
 }
 
-/** A browser that completes the Google sign-in: it redirects back with `answer` added. */
+/**
+ * A browser that completes the Google sign-in: Google redirects it to the gate's callback on
+ * the phone listener with `answer`, as the edge forwards it.
+ */
 const signIn =
   (answer: (state: string) => Record<string, string>) => (url: string) => {
     const auth = new URL(url).searchParams
-    const redirect = auth.get("redirect_uri") ?? ""
+    expect(auth.get("redirect_uri")).toBe(gateGoogle().redirectUri)
     const query = new URLSearchParams(answer(auth.get("state") ?? ""))
-    callbacks.push(browserGet(`${redirect}?${query.toString()}`))
+    callbacks.push(
+      googleCallback(gateGoogle(), query, () => NOW.getTime()).then(
+        (reply) => reply.status
+      )
+    )
   }
+
+/** Runs the command; `deps.fetch` is also the Google the gate reaches. */
+function connect(
+  args: readonly string[],
+  environment: Readonly<Record<string, string | undefined>>,
+  terminal: ConnectIo,
+  deps: ConnectDeps = {}
+): Promise<number> {
+  if (deps.fetch !== undefined) googleFetch = deps.fetch
+  return runConnect(args, environment, terminal, { pollMs: 2, ...deps })
+}
 
 function io(openBrowser: (url: string) => void = () => undefined): ConnectIo {
   return {
@@ -140,7 +155,6 @@ function tokenEndpoint(
 
 const env = (extra: Record<string, string> = {}) => ({
   [CONTROL_SOCKET_ENV]: socket,
-  [GMAIL_CLIENT_ID_ENV]: CLIENT_ID,
   ...extra,
 })
 
@@ -373,11 +387,24 @@ beforeEach(async () => {
   answers = []
   questions = []
   callbacks = []
+  flows = new GoogleFlows()
+  gateHasGoogle = true
+  clientIds = {
+    gmail: CLIENT_ID,
+    "gmail-read": GMAIL_READ_CLIENT_ID,
+    drive: DRIVE_CLIENT_ID,
+  }
+  googleFetch = () => Promise.reject(new Error("no Google in this test"))
   server = createGateServer(
     "control",
     controlHandler(
-      () => ({ db: s.db, policy: s.policy, probes }),
-      () => new Date("2026-11-02T09:00:00.000Z")
+      () => ({
+        db: s.db,
+        policy: s.policy,
+        probes,
+        ...(gateHasGoogle ? { google: gateGoogle() } : {}),
+      }),
+      () => NOW
     ),
     () => undefined
   )
@@ -459,12 +486,11 @@ describe("connect gmail", () => {
       ["gmail"],
       env(),
       io(signIn(() => ({ state: "forged-state", code: AUTH_CODE }))),
-      { vault, fetch: google.send }
+      { vault, fetch: google.send, signInTimeoutMs: 50 }
     )
     expect(status).toBe(1)
-    expect(err).toEqual([
-      "The sign-in answer did not match this request, so it was refused. Nothing was stored.",
-    ])
+    expect(await Promise.all(callbacks)).toEqual([303])
+    expect(err).toEqual(["No sign-in arrived in time. Nothing was stored."])
     expect(google.send).not.toHaveBeenCalled()
     expect(await vault.get(REFRESH_KEY)).toBeUndefined()
     expect(await vault.get(SECRET_KEY)).toBeUndefined()
@@ -480,9 +506,7 @@ describe("connect gmail", () => {
       { vault, fetch: google.send }
     )
     expect(status).toBe(1)
-    expect(err).toEqual([
-      "Google did not grant access (access_denied). Nothing was stored.",
-    ])
+    expect(err).toEqual(["Google did not grant access. Nothing was stored."])
     expect(google.send).not.toHaveBeenCalled()
     expect(await vault.get(REFRESH_KEY)).toBeUndefined()
     expect(await vault.get(SECRET_KEY)).toBeUndefined()
@@ -537,16 +561,46 @@ describe("connect gmail", () => {
     expect(err).toEqual(["No client secret was given. Nothing was stored."])
   })
 
-  it("needs the gate's Gmail client id", async () => {
+  it("reports a sign-in the gate no longer holds as expired", async () => {
+    await vault.set(SECRET_KEY, CLIENT_SECRET)
     const status = await connect(
       ["gmail"],
-      { [CONTROL_SOCKET_ENV]: socket },
-      io(),
+      env(),
+      io(() => {
+        // A gate restart forgets every pending sign-in.
+        flows = new GoogleFlows()
+      }),
       { vault }
     )
-    expect(status).toBe(2)
+    expect(status).toBe(1)
     expect(err).toEqual([
-      "EIDO_GMAIL_CLIENT_ID is not set; use the gate's Gmail client id",
+      "The sign-in expired before it finished. Nothing was stored.",
+    ])
+  })
+
+  it("stops when the gate stops answering about the sign-in", async () => {
+    await vault.set(SECRET_KEY, CLIENT_SECRET)
+    const status = await connect(
+      ["gmail"],
+      env(),
+      io(() => {
+        gateHasGoogle = false
+      }),
+      { vault }
+    )
+    expect(status).toBe(1)
+    expect(err).toEqual([
+      "The gate did not answer about the sign-in: Google sign-in is not configured on the gate",
+    ])
+  })
+
+  it("needs the gate's Gmail client id", async () => {
+    clientIds = {}
+    const status = await connect(["gmail"], env(), io(), { vault })
+    expect(status).toBe(1)
+    expect(questions).toEqual([])
+    expect(err).toEqual([
+      "The gate could not start the Gmail sign-in: the gate has no client id for this Google client",
     ])
   })
 
@@ -568,7 +622,7 @@ describe("connect gmail", () => {
 })
 
 describe("connect drive", () => {
-  const driveEnv = () => env({ [DRIVE_CLIENT_ID_ENV]: DRIVE_CLIENT_ID })
+  const driveEnv = () => env()
 
   it("signs in for drive.readonly, stores the read grant, and the gate's probe finds it healthy", async () => {
     answers = [DRIVE_SECRET]
@@ -696,12 +750,11 @@ describe("connect drive", () => {
       ["drive"],
       driveEnv(),
       io(signIn(() => ({ state: "forged-state", code: AUTH_CODE }))),
-      { vault, fetch: google.send }
+      { vault, fetch: google.send, signInTimeoutMs: 50 }
     )
     expect(status).toBe(1)
-    expect(err).toEqual([
-      "The sign-in answer did not match this request, so it was refused. Nothing was stored.",
-    ])
+    expect(await Promise.all(callbacks)).toEqual([303])
+    expect(err).toEqual(["No sign-in arrived in time. Nothing was stored."])
     expect(google.send).not.toHaveBeenCalled()
     expect(await vault.get(driveKey("refresh_token"))).toBeUndefined()
     expect(await vault.get(driveKey("api_key"))).toBeUndefined()
@@ -723,7 +776,7 @@ describe("connect drive", () => {
     expect(status).toBe(1)
     expect(refuse).toHaveBeenCalledTimes(1)
     expect(err).toEqual([
-      "Google refused the authorization code (invalid_grant). Nothing was stored.",
+      "Google refused the authorization code. Nothing was stored.",
     ])
     expect(await vault.get(driveKey("refresh_token"))).toBeUndefined()
     expect(await vault.get(driveKey("api_key"))).toBeUndefined()
@@ -748,10 +801,11 @@ describe("connect drive", () => {
   })
 
   it("needs the gate's Drive client id", async () => {
+    clientIds = { gmail: CLIENT_ID }
     const status = await connect(["drive"], env(), io(), { vault })
-    expect(status).toBe(2)
+    expect(status).toBe(1)
     expect(err).toEqual([
-      "EIDO_DRIVE_CLIENT_ID is not set; use the gate's Drive client id",
+      "The gate could not start the Drive sign-in: the gate has no client id for this Google client",
     ])
   })
 })
@@ -762,8 +816,7 @@ describe("connect gmail-read", () => {
     kind,
     client: "read",
   })
-  const readEnv = () =>
-    env({ [GMAIL_READ_CLIENT_ID_ENV]: GMAIL_READ_CLIENT_ID })
+  const readEnv = () => env()
 
   /**
    * A fake Google for both Gmail clients. The token endpoint grants GMAIL_READ_REFRESH for
@@ -961,12 +1014,11 @@ describe("connect gmail-read", () => {
       ["gmail-read"],
       readEnv(),
       io(signIn(() => ({ state: "forged-state", code: AUTH_CODE }))),
-      { vault, fetch: google.send }
+      { vault, fetch: google.send, signInTimeoutMs: 50 }
     )
     expect(status).toBe(1)
-    expect(err).toEqual([
-      "The sign-in answer did not match this request, so it was refused. Nothing was stored.",
-    ])
+    expect(await Promise.all(callbacks)).toEqual([303])
+    expect(err).toEqual(["No sign-in arrived in time. Nothing was stored."])
     expect(google.send).not.toHaveBeenCalled()
     expect(await vault.get(readKey("refresh_token"))).toBeUndefined()
     expect(await vault.get(readKey("api_key"))).toBeUndefined()
@@ -992,10 +1044,11 @@ describe("connect gmail-read", () => {
   })
 
   it("needs the gate's Gmail read client id", async () => {
+    clientIds = { gmail: CLIENT_ID }
     const status = await connect(["gmail-read"], env(), io(), { vault })
-    expect(status).toBe(2)
+    expect(status).toBe(1)
     expect(err).toEqual([
-      "EIDO_GMAIL_READ_CLIENT_ID is not set; use the gate's Gmail client id",
+      "The gate could not start the Gmail sign-in: the gate has no client id for this Google client",
     ])
   })
 })
