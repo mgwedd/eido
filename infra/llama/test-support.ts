@@ -91,6 +91,8 @@ export const SIZES: Record<string, number> = {
 }
 export const SHAS: Record<string, string> = { [QWEN]: QWEN_SHA, [OSS]: OSS_SHA }
 
+const norm = (p: string) => p.replace(/\\/g, "/")
+
 export function harness(o: Options = {}) {
   const out: string[] = []
   const err: string[] = []
@@ -134,16 +136,22 @@ export function harness(o: Options = {}) {
   let t = 0
   const deps: Deps = {
     readText: (path) => {
-      const text = files[path]
+      const text = files[path] ?? files[norm(path)]
       if (text === undefined) throw new Error(`ENOENT: ${path}`)
       return text
     },
     probe: {
       size: (path) =>
-        Promise.resolve(path in files ? (SIZES[path] ?? 10) : undefined),
+        Promise.resolve(
+          path in files || norm(path) in files
+            ? (SIZES[path] ?? SIZES[norm(path)] ?? 10)
+            : undefined
+        ),
       sha256: (path) =>
         Promise.resolve(
-          path === MODEL ? (o.sha ?? SHA) : (SHAS[path] ?? ASSET_SHA)
+          path === MODEL || norm(path) === MODEL
+            ? (o.sha ?? SHA)
+            : (SHAS[path] ?? SHAS[norm(path)] ?? ASSET_SHA)
         ),
       now: () => (t += 1000),
     },
@@ -184,19 +192,21 @@ export function harness(o: Options = {}) {
     sleep: () => Promise.resolve(),
     onStopSignal: (handler) => (stop = handler),
     fs: {
-      exists: (path) => path in files,
+      exists: (path) => path in files || norm(path) in files,
       mkdir: (path) => void made.push(path),
       writeFile: (path, text) => {
         written[path] = text
         files[path] = text
       },
       rename: (from, to) => {
-        files[to] = files[from] ?? ""
+        files[to] = files[from] ?? files[norm(from)] ?? ""
         delete files[from]
+        delete files[norm(from)]
       },
       remove: (path) => {
         removed.push(path)
         delete files[path]
+        delete files[norm(path)]
       },
       removeTree: (path) => void removed.push(`${path}/`),
       list: () => [],

@@ -1,3 +1,4 @@
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 
 import { main } from "./cli.ts"
@@ -635,7 +636,7 @@ describe("llama check-template", () => {
     const deps = { ...h.deps, fixtureDir: "/nowhere" }
     expect(await main(["check-template"], deps)).toBe(1)
     expect(h.out).toEqual([
-      "note: no reference prompt at /nowhere/gemma-4-26B_q4_0-it.gguf.prompt.txt; the rendered prompt is not compared",
+      `note: no reference prompt at ${join("/nowhere", "gemma-4-26B_q4_0-it.gguf.prompt.txt")}; the rendered prompt is not compared`,
       "ok: chat template",
     ])
     expect(h.requests.some((r) => r.includes("/apply-template"))).toBe(false)
@@ -668,7 +669,7 @@ describe("llama check-template", () => {
     expect(args[1]).toBe(QWEN)
     expect(process.killed).toEqual(["SIGTERM"])
     expect(h.out).toContain(
-      "note: no reference prompt at /repo/infra/llama/fixtures/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf.prompt.txt; the rendered prompt is not compared"
+      `note: no reference prompt at ${join("/repo/infra/llama/fixtures", "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf.prompt.txt")}; the rendered prompt is not compared`
     )
     expect(h.written).toEqual({
       [RECORD]: `gemma-4-26b-a4b ${SHA} b11149\n${QWEN_PASS}`,
