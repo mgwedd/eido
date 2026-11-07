@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StackLoginItem",
+  "description": "Whether the stack starts at login (#664): enabled while the login agent com.eido.stack has its plist in ~/Library/LaunchAgents, so launchd runs it at the next login. macOS only; elsewhere the supervisor refuses with unsupported.",
+  "type": "object",
+  "properties": {
+    "enabled": { "type": "boolean" }
+  },
+  "required": ["enabled"],
+  "additionalProperties": false
+}

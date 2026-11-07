@@ -127,6 +127,8 @@ export {
   validateStackError,
   validateStackJobRequest,
   validateStackJobStatus,
+  validateStackLoginItem,
+  validateStackLoginItemRequest,
   validateStackModelList,
   validateStackModelRequest,
   validateStackSettings,

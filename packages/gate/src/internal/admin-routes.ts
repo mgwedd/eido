@@ -1,5 +1,6 @@
 import {
   validateStackJobRequest,
+  validateStackLoginItemRequest,
   validateStackModelRequest,
 } from "@eido/schemas"
 import type { GateAdminStack } from "@eido/schemas"
@@ -14,7 +15,8 @@ import type { SupervisorClient } from "./supervisor-client"
 // The admin routes (#659, ADR 0009 Decisions 4 to 6): the phone listener relays the stack
 // supervisor's doctor, jobs and models over its owner-only socket. Reads need the session;
 // start, stop, restart, and choosing or fetching a model need a step-up (the route table in
-// phone-routes.ts gives each its tier). The gate adds nothing to what the supervisor answers
+// phone-routes.ts gives each its tier). Start at login (#664) reads with the session and changes
+// with a step-up, on macOS only. The gate adds nothing to what the supervisor answers
 // and passes on no supervisor text it has not schema-checked.
 
 export type AdminPath =
@@ -26,6 +28,7 @@ export type AdminPath =
   | "/admin/models"
   | "/admin/models/:id/use"
   | "/admin/models/:id/fetch"
+  | "/admin/login-item"
 
 type Body = { ok: true; value: unknown } | { ok: false; reply: Reply }
 
@@ -51,6 +54,12 @@ export function supervisorFailure(error: unknown): Reply {
         409,
         "stack_not_running",
         "core and llama are not running"
+      )
+    case "unsupported":
+      return apiError(
+        501,
+        "unsupported_platform",
+        "start at login needs launchd, on macOS only so far"
       )
     default:
       return apiError(502, "supervisor_failed", "the stack supervisor failed")
@@ -114,6 +123,19 @@ export async function adminRoute(
       return path === "/admin/models/:id/use"
         ? relay(() => supervisor.useModel(id), 200)
         : relay(() => supervisor.fetchModel(id), 202)
+    }
+    case "/admin/login-item": {
+      if (request.method === "GET") {
+        return relay(() => supervisor.loginItem(), 200)
+      }
+      const read = await body(request)
+      if (!read.ok) return read.reply
+      const checked = validateStackLoginItemRequest(read.value)
+      if (!checked.ok) {
+        return apiError(400, "invalid_request", "enabled must be true or false")
+      }
+      const { enabled } = checked.value
+      return relay(() => supervisor.setLoginItem(enabled), 200)
     }
     case "/admin/stack/start":
     case "/admin/stack/stop":

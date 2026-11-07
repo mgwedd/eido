@@ -51,6 +51,8 @@ function fake(fail?: Error): { client: SupervisorClient; calls: Call[] } {
       fetchModel: answer("fetchModel", JOBS),
       settings: answer("settings", { sha256: null, settings: {} }),
       writeSettings: answer("writeSettings", { sha256: null, settings: {} }),
+      loginItem: answer("loginItem", { enabled: false }),
+      setLoginItem: answer("setLoginItem", { enabled: true }),
     },
   }
 }
@@ -80,6 +82,11 @@ describe("supervisorFailure", () => {
       new SupervisorRequestError(409, "stack_not_running", "x"),
       409,
       "stack_not_running",
+    ],
+    [
+      new SupervisorRequestError(501, "unsupported", "x"),
+      501,
+      "unsupported_platform",
     ],
     [
       new SupervisorRequestError(200, "bad_response", "x"),
@@ -249,6 +256,43 @@ describe("adminRoute", () => {
     )
     expect(reply).toBe(refusal)
   })
+
+  it("reads start at login on GET and sets it on POST", async () => {
+    const { client, calls } = fake()
+    const get: GateRequest = { ...REQUEST, method: "GET" }
+    expect(
+      await adminRoute(client, "/admin/login-item", "", get, json({}))
+    ).toEqual({ status: 200, body: { enabled: false } })
+    expect(
+      await adminRoute(
+        client,
+        "/admin/login-item",
+        "",
+        REQUEST,
+        json({ enabled: true })
+      )
+    ).toEqual({ status: 200, body: { enabled: true } })
+    expect(calls).toEqual([
+      { method: "loginItem", args: [] },
+      { method: "setLoginItem", args: [true] },
+    ])
+  })
+
+  it.each([[{ enabled: "yes" }], [{}], [{ enabled: true, plist: "/tmp/x" }]])(
+    "refuses the start at login body %j",
+    async (body) => {
+      const { client, calls } = fake()
+      const reply = await adminRoute(
+        client,
+        "/admin/login-item",
+        "",
+        REQUEST,
+        json(body)
+      )
+      expect([reply.status, codeOf(reply)]).toEqual([400, "invalid_request"])
+      expect(calls).toEqual([])
+    }
+  )
 
   it("maps a busy supervisor on a job to 503 busy", async () => {
     const { client } = fake(new SupervisorRequestError(409, "busy", "x"))
