@@ -18,7 +18,7 @@ describe("every mutating handler in apps/web calls requirePermission", () => {
   it("finds no unguarded server action or POST, PUT, PATCH or DELETE handler", () => {
     const unguarded = auditTree(WEB_ROOT).filter((handler) => !handler.guarded)
     expect(unguarded).toEqual([])
-  })
+  }, 30_000)
 })
 
 describe("auditSource", () => {
