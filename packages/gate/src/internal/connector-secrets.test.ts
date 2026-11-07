@@ -83,6 +83,8 @@ function supervisor(): SupervisorClient {
     models: refuse,
     useModel: refuse,
     fetchModel: refuse,
+    loginItem: refuse,
+    setLoginItem: refuse,
     settings: () => Promise.resolve({ sha256: "a".repeat(64), settings: {} }),
     writeSettings: (write) => {
       writes.push(write)

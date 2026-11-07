@@ -3,12 +3,14 @@ import {
   validateStackDoctorReport,
   validateStackError,
   validateStackJobStatus,
+  validateStackLoginItem,
   validateStackModelList,
   validateStackSettings,
   type StackDoctorReport,
   type StackError,
   type StackJobRequest,
   type StackJobStatus,
+  type StackLoginItem,
   type StackModelList,
   type StackSettings,
   type StackSettingsWrite,
@@ -59,6 +61,9 @@ export type SupervisorClient = {
   /** Resolves on 202 with the status that lists the new download task. */
   fetchModel: (id: string) => Promise<StackJobStatus>
   settings: () => Promise<StackSettings>
+  /** Whether the stack starts at login (#664); refused with `unsupported` off macOS. */
+  loginItem: () => Promise<StackLoginItem>
+  setLoginItem: (enabled: boolean) => Promise<StackLoginItem>
   writeSettings: (write: StackSettingsWrite) => Promise<StackSettings>
 }
 
@@ -205,6 +210,20 @@ export function createSupervisorClient(
         200,
         validateStackSettings,
         "StackSettings"
+      ),
+    loginItem: async () =>
+      check(
+        await call(resolved, "GET", "/login-item"),
+        200,
+        validateStackLoginItem,
+        "StackLoginItem"
+      ),
+    setLoginItem: async (enabled) =>
+      check(
+        await call(resolved, "POST", "/login-item", { enabled }),
+        200,
+        validateStackLoginItem,
+        "StackLoginItem"
       ),
     writeSettings: async (write) =>
       check(

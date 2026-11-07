@@ -116,6 +116,41 @@ describe("createSupervisorClient", () => {
     ])
   })
 
+  test("reads and sets start at login, and raises unsupported off macOS (#664)", async () => {
+    const s = await supervisor({
+      "GET /login-item": { status: 200, body: { enabled: false } },
+      "POST /login-item": { status: 200, body: { enabled: true } },
+    })
+    const client = createSupervisorClient({ socketPath: s.socketPath })
+    expect(await client.loginItem()).toEqual({ enabled: false })
+    expect(await client.setLoginItem(true)).toEqual({ enabled: true })
+    expect(s.seen).toEqual([
+      "GET /login-item",
+      'POST /login-item {"enabled":true}',
+    ])
+    const linux = await supervisor({
+      "GET /login-item": {
+        status: 501,
+        body: { error: "unsupported", message: "macOS only" },
+      },
+    })
+    const off = createSupervisorClient({ socketPath: linux.socketPath })
+    await expect(off.loginItem()).rejects.toMatchObject({
+      status: 501,
+      code: "unsupported",
+    })
+  })
+
+  test("rejects a start at login reply that is not a boolean", async () => {
+    const s = await supervisor({
+      "GET /login-item": { status: 200, body: { enabled: "yes" } },
+    })
+    const client = createSupervisorClient({ socketPath: s.socketPath })
+    await expect(client.loginItem()).rejects.toMatchObject({
+      code: "bad_response",
+    })
+  })
+
   test("raises the supervisor's refusal with its code", async () => {
     const s = await supervisor({
       "POST /settings": {

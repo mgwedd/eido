@@ -3021,6 +3021,8 @@ describe("phoneHandler: admin routes (#659)", () => {
       fetchModel: answer("fetchModel", JOBS),
       settings: answer("settings", { sha256: null, settings: {} }),
       writeSettings: answer("writeSettings", { sha256: null, settings: {} }),
+      loginItem: answer("loginItem", { enabled: false }),
+      setLoginItem: answer("setLoginItem", { enabled: true }),
     }
   })
 
@@ -3043,6 +3045,8 @@ describe("phoneHandler: admin routes (#659)", () => {
     ["GET", "/admin/models"],
     ["POST", "/admin/stack/start"],
     ["POST", "/admin/models/small/use"],
+    ["GET", "/admin/login-item"],
+    ["POST", "/admin/login-item"],
   ])("refuses %s %s without a session", async (method, path) => {
     const reply = await call(method, path, { body: { names: ["core"] } })
     expect([reply.status, code(reply)]).toEqual([401, "unauthenticated"])
@@ -3067,6 +3071,7 @@ describe("phoneHandler: admin routes (#659)", () => {
     ["/admin/stack/restart", { names: ["llama"] }],
     ["/admin/models/small/use", {}],
     ["/admin/models/small/fetch", {}],
+    ["/admin/login-item", { enabled: true }],
   ])("refuses %s to a session without a step-up", async (path, body) => {
     enrol(auth)
     const cookie = await signIn()
@@ -3087,6 +3092,20 @@ describe("phoneHandler: admin routes (#659)", () => {
     const fetched = await call("POST", "/admin/models/large/fetch", { cookie })
     expect(fetched.status).toBe(202)
     expect(seen).toEqual(['stop [["core","llama"]]', 'fetchModel ["large"]'])
+  })
+
+  it("reads start at login with a session and changes it after a step-up (#664)", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const read = await call("GET", "/admin/login-item", { cookie })
+    expect([read.status, read.body]).toEqual([200, { enabled: false }])
+    await elevate(cookie)
+    const changed = await call("POST", "/admin/login-item", {
+      cookie,
+      body: { enabled: true },
+    })
+    expect([changed.status, changed.body]).toEqual([200, { enabled: true }])
+    expect(seen).toEqual(["loginItem []", "setLoginItem [true]"])
   })
 
   it("never lets the web app stop the gate or itself", async () => {

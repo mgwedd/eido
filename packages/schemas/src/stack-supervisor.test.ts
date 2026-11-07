@@ -4,6 +4,8 @@ import {
   validateGateApiError,
   validateStackJobRequest,
   validateStackJobStatus,
+  validateStackLoginItem,
+  validateStackLoginItemRequest,
   validateStackModelRequest,
   validateStackSettings,
   validateStackSettingsWrite,
@@ -23,6 +25,17 @@ describe("stack supervisor schemas (#644)", () => {
     expect(validateStackModelRequest({ id: "gemma-4-26b-a4b" }).ok).toBe(true)
     expect(validateStackModelRequest({ id: "../model" }).ok).toBe(false)
     expect(validateStackModelRequest({ id: "Gemma" }).ok).toBe(false)
+  })
+
+  test("start at login is a boolean, both ways (#664)", () => {
+    expect(validateStackLoginItem({ enabled: false }).ok).toBe(true)
+    expect(validateStackLoginItem({ enabled: "yes" }).ok).toBe(false)
+    expect(validateStackLoginItem({}).ok).toBe(false)
+    expect(validateStackLoginItemRequest({ enabled: true }).ok).toBe(true)
+    expect(validateStackLoginItemRequest({ enabled: 1 }).ok).toBe(false)
+    expect(
+      validateStackLoginItemRequest({ enabled: true, plist: "/tmp/x" }).ok
+    ).toBe(false)
   })
 
   test("settings take a hash or null, and only known keys", () => {
@@ -93,6 +106,7 @@ describe("stack supervisor schemas (#644)", () => {
     "supervisor_unavailable",
     "supervisor_failed",
     "stack_not_running",
+    "unsupported_platform",
   ])("the gate's error codes include %s", (code) => {
     expect(validateGateApiError({ code, message: "x" }).ok).toBe(true)
   })

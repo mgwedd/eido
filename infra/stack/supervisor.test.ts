@@ -40,6 +40,7 @@ function setup(
     stack?: Parameters<typeof world>[0]
     llama?: Parameters<typeof harness>[0]
     uid?: number | null
+    pid?: number
   } = {}
 ) {
   const w = world(options.stack)
@@ -50,6 +51,7 @@ function setup(
     stack: w.deps,
     llama: h.deps,
     uid: options.uid === null ? undefined : (options.uid ?? 501),
+    pid: options.pid ?? 4242,
     writeSettings: (path, text) => {
       written.push({ path, text })
       w.files.set(path, text)
@@ -574,6 +576,150 @@ describe("settings", () => {
     expect(bad.status).toBe(400)
     expect(errorOf(bad).error).toBe("invalid_body")
     expect(written).toEqual([])
+  })
+})
+
+describe("start at login (#664)", () => {
+  const AGENT_PLIST = "/home/u/Library/LaunchAgents/com.eido.stack.plist"
+  const PRINT_AGENT = "print gui/501/com.eido.stack"
+  const loginBody = (enabled: unknown) => body({ enabled })
+
+  it("reads start at login from the agent's plist, loaded or not", async () => {
+    const off = setup()
+    expect(await off.supervisor.handle("GET", "/login-item", "")).toEqual({
+      status: 200,
+      body: { enabled: false },
+    })
+    const installed = setup()
+    installed.w.files.set(AGENT_PLIST, "<plist/>")
+    expect(
+      (await installed.supervisor.handle("GET", "/login-item", "")).body
+    ).toEqual({ enabled: true })
+    // Loaded now, but its plist is gone: it does not start at the next login.
+    const orphan = setup({ stack: { agentLoaded: true } })
+    expect(
+      (await orphan.supervisor.handle("GET", "/login-item", "")).body
+    ).toEqual({ enabled: false })
+  })
+
+  it("turns it on by writing the agent's plist, without loading a second supervisor now", async () => {
+    const { w, supervisor, log } = setup({
+      stack: {
+        env: {
+          PATH: "/opt/homebrew/bin:/usr/bin",
+          EIDO_GMAIL_CLIENT_ID: "not.passed.example.invalid",
+        },
+      },
+    })
+    const reply = await supervisor.handle(
+      "POST",
+      "/login-item",
+      loginBody(true)
+    )
+    expect(reply).toEqual({ status: 200, body: { enabled: true } })
+    const plist = w.files.get(AGENT_PLIST) ?? ""
+    expect(plist).toContain("<string>com.eido.stack</string>")
+    expect(plist).toContain(
+      "<string>/repo/infra/stack/supervisor-main.ts</string>\n    <string>--start-stack</string>"
+    )
+    expect(plist).toContain(
+      "<key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/bin</string>"
+    )
+    expect(plist).not.toContain("EIDO_GMAIL_CLIENT_ID")
+    expect(w.dirs).toContain("/home/u/Library/Logs/eido-dev")
+    expect(w.launchctlCalls).toEqual([PRINT_AGENT])
+    expect(log).toEqual(["supervisor | start at login on"])
+    expect((await supervisor.handle("GET", "/login-item", "")).body).toEqual({
+      enabled: true,
+    })
+  })
+
+  it("turns it off by removing the plist, and keeps its own job loaded", async () => {
+    // The fake launchctl reports the loaded agent as pid 777: this supervisor.
+    const { w, supervisor } = setup({ stack: { agentLoaded: true }, pid: 777 })
+    w.files.set(AGENT_PLIST, "<plist/>")
+    const reply = await supervisor.handle(
+      "POST",
+      "/login-item",
+      loginBody(false)
+    )
+    expect(reply).toEqual({ status: 200, body: { enabled: false } })
+    expect(w.files.has(AGENT_PLIST)).toBe(false)
+    expect(w.launchctlCalls).toEqual([PRINT_AGENT])
+    expect(w.agentLoaded()).toBe(true)
+  })
+
+  it("boots out a loaded agent that is another process", async () => {
+    const { w, supervisor } = setup({ stack: { agentLoaded: true } })
+    w.files.set(AGENT_PLIST, "<plist/>")
+    const reply = await supervisor.handle(
+      "POST",
+      "/login-item",
+      loginBody(false)
+    )
+    expect(reply.status).toBe(200)
+    expect(w.launchctlCalls).toEqual([
+      PRINT_AGENT,
+      "bootout gui/501/com.eido.stack",
+    ])
+    expect(w.agentLoaded()).toBe(false)
+    expect(w.files.has(AGENT_PLIST)).toBe(false)
+  })
+
+  it("keeps the plist when the bootout fails", async () => {
+    const { w, supervisor } = setup({
+      stack: { agentLoaded: true, launchctlFails: "bootout" },
+    })
+    w.files.set(AGENT_PLIST, "<plist/>")
+    const reply = await supervisor.handle(
+      "POST",
+      "/login-item",
+      loginBody(false)
+    )
+    expect(reply).toEqual({
+      status: 409,
+      body: {
+        error: "failed",
+        message: "launchctl bootout: bootout failed: Input/output error",
+      },
+    })
+    expect(w.files.has(AGENT_PLIST)).toBe(true)
+  })
+
+  it("refuses a body that is not a boolean, and changes nothing", async () => {
+    const { w, supervisor } = setup()
+    const reply = await supervisor.handle(
+      "POST",
+      "/login-item",
+      loginBody("yes")
+    )
+    expect(reply.status).toBe(400)
+    expect(errorOf(reply).error).toBe("invalid_body")
+    expect(w.files.has(AGENT_PLIST)).toBe(false)
+    expect(w.launchctlCalls).toEqual([])
+  })
+
+  it.each([
+    ["on Linux", "linux", 501],
+    ["on Windows", "win32", 501],
+    ["without a user id", "darwin", undefined],
+  ] as const)("refuses %s, reading or changing", async (_, platform, uid) => {
+    const { w, supervisor } = setup({ stack: { uid } })
+    w.deps.platform = platform
+    for (const [method, text] of [
+      ["GET", ""],
+      ["POST", loginBody(true)],
+    ] as const) {
+      const reply = await supervisor.handle(method, "/login-item", text)
+      expect(reply.status).toBe(501)
+      expect(errorOf(reply)).toEqual({
+        error: "unsupported",
+        message:
+          "start at login needs launchd, on macOS only so far; Task Scheduler on Windows is #455",
+      })
+    }
+    expect(w.files.has(AGENT_PLIST)).toBe(false)
+    expect(w.launchctlCalls).toEqual([])
   })
 })
 

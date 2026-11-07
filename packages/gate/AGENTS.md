@@ -6,4 +6,5 @@
 - Every change ships with tests.
 - Never log token values or payload bodies.
 - Everything outside `src/index.ts` is internal; do not export it.
-- The admin routes (`src/internal/admin-routes.ts`) only relay the stack supervisor over its socket (`EIDO_GATE_SUPERVISOR_SOCKET`). Reads need a session, changes need a step-up (`elevated`), and no supervisor text reaches a reply unchecked.
+- The admin routes (`src/internal/admin-routes.ts`) only relay the stack supervisor over its socket (`EIDO_GATE_SUPERVISOR_SOCKET`). Reads need a session, changes need a step-up (`elevated`), and no supervisor text reaches a reply unchecked. Start at login (`/admin/login-item`, #664) follows the same rule; off macOS it answers 501 `unsupported_platform`.
+- The connector secret routes (`src/internal/connector-secrets.ts`, #661) take a secret only with a signed `policy.set` ceremony whose payload never holds it. The secret goes to the vault and nowhere else: not into a reply, a log line or an audit row.
