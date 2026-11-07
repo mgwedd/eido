@@ -461,6 +461,7 @@ describe("Proton Bridge", () => {
     const pin = input(bridge, "Certificate pin (SHA-256)")
     typeInto(pin, PIN)
     await click(bridge, "Change pin")
+    await waitFor(() => bridge.querySelector('[role="alert"]') !== null)
     expect(bridge.querySelector('[role="alert"]')?.textContent).toBe(
       "Not saved: the gate prepared a different change than asked, so nothing was signed. The field is cleared; type it again."
     )
