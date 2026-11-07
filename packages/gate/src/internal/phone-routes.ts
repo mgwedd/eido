@@ -228,7 +228,11 @@ export const PHONE_ROUTES = [
   { method: "POST", path: "/admin/enrolment-codes", tier: "signed" },
   { method: "POST", path: "/admin/secrets/bridge/prepare", tier: "session" },
   { method: "POST", path: "/admin/secrets/bridge", tier: "signed" },
-  { method: "POST", path: "/admin/secrets/bridge-pin/prepare", tier: "session" },
+  {
+    method: "POST",
+    path: "/admin/secrets/bridge-pin/prepare",
+    tier: "session",
+  },
   { method: "POST", path: "/admin/secrets/bridge-pin", tier: "signed" },
   { method: "POST", path: "/admin/secrets/simplefin/prepare", tier: "session" },
   { method: "POST", path: "/admin/secrets/simplefin", tier: "signed" },
@@ -1139,7 +1143,10 @@ async function bridgeSecretRoute(
   return sealBridgeSecret(
     state,
     {
-      authorization: { config: state.webAuthn, request: checked.value.approval },
+      authorization: {
+        config: state.webAuthn,
+        request: checked.value.approval,
+      },
       certificateSha256: checked.value.certificateSha256,
       password: checked.value.password,
     },
@@ -1184,7 +1191,10 @@ async function simpleFinRoute(
   return setSimpleFin(
     state,
     {
-      authorization: { config: state.webAuthn, request: checked.value.approval },
+      authorization: {
+        config: state.webAuthn,
+        request: checked.value.approval,
+      },
       setupToken: checked.value.setupToken,
     },
     () => now().getTime()
