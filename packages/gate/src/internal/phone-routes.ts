@@ -109,18 +109,23 @@ import {
 } from "./push-subscriptions"
 import {
   beginLogin,
+  clearGateSessionCookie,
+  clearWebSessionCookie,
+  elevatedUntil,
+  getOrCreateWebSessionKeys,
   hasCredential,
-  onlyRevokedCredentials,
   login,
+  logoutSession,
+  onlyRevokedCredentials,
   sessionCookie,
   sessionCredential,
-  elevatedUntil,
-  stepUp,
-  useElevation,
   sessionExpiry,
   sessionToken,
+  stepUp,
+  useElevation,
+  webSessionCookie,
 } from "./sessions"
-import type { Clock, Elevations } from "./sessions"
+import type { Clock, Elevations, WebSessionKeyPair } from "./sessions"
 import type { SupervisorClient } from "./supervisor-client"
 import type { WebAuthnConfig } from "./webauthn"
 
@@ -143,6 +148,7 @@ export type PhoneState = {
   db: DatabaseSync
   policy: Policy
   webAuthn: WebAuthnConfig
+  webSessionKeyPair?: WebSessionKeyPair
   nudge?: { threshold: number; windowMs: number }
   push?: { publicKey: () => Promise<string>; notifyPending: () => void }
   backupStampPath?: string
@@ -186,6 +192,7 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/passkey/status", tier: "public" },
   { method: "POST", path: "/auth/login/options", tier: "public" },
   { method: "POST", path: "/auth/login", tier: "public" },
+  { method: "POST", path: "/auth/logout", tier: "public" },
   { method: "POST", path: "/auth/step-up/options", tier: "session" },
   { method: "POST", path: "/auth/step-up", tier: "session" },
   { method: "GET", path: "/auth/step-up", tier: "session" },
@@ -401,7 +408,14 @@ async function loginRoute(
   if (!body.ok) return body.reply
   const checked = validateGateLoginRequest(body.value)
   if (!checked.ok) return invalid("a login request", checked.errors)
-  const result = login(state.db, state.webAuthn, checked.value.assertion, now)
+  const keys = state.webSessionKeyPair ?? getOrCreateWebSessionKeys(state.db)
+  const result = login(
+    state.db,
+    state.webAuthn,
+    checked.value.assertion,
+    now,
+    keys
+  )
   if (!result.ok) {
     return apiError(403, "verification_failed", "the login was refused")
   }
@@ -409,7 +423,32 @@ async function loginRoute(
   return {
     status: 200,
     body: session,
-    headers: { "set-cookie": sessionCookie(result.token) },
+    headers: {
+      "set-cookie": [
+        sessionCookie(result.token),
+        webSessionCookie(result.webSessionToken),
+      ],
+    },
+  }
+}
+
+async function logoutRoute(
+  state: PhoneState,
+  request: GateRequest,
+  elevations: Elevations
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const token = sessionToken(request.headers.cookie)
+  if (token !== undefined) {
+    logoutSession(state.db, elevations, token)
+  }
+  return {
+    status: 200,
+    body: { ok: true },
+    headers: {
+      "set-cookie": [clearGateSessionCookie(), clearWebSessionCookie()],
+    },
   }
 }
 
@@ -444,19 +483,26 @@ async function enrolRoute(
   if (!body.ok) return body.reply
   const checked = validateGateEnrolRequest(body.value)
   if (!checked.ok) return invalid("an enrolment request", checked.errors)
+  const keys = state.webSessionKeyPair ?? getOrCreateWebSessionKeys(state.db)
   const result = enrolWithCode(
     state.db,
     state.webAuthn,
     checked.value.code,
     checked.value.registration,
-    now
+    now,
+    keys
   )
   if (!result.ok) return apiError(403, "verification_failed", ENROL_REFUSED)
   const session: GateSession = { expiresAt: result.expiresAt.toISOString() }
   return {
     status: 200,
     body: session,
-    headers: { "set-cookie": sessionCookie(result.token) },
+    headers: {
+      "set-cookie": [
+        sessionCookie(result.token),
+        webSessionCookie(result.webSessionToken),
+      ],
+    },
   }
 }
 
@@ -1273,6 +1319,8 @@ function route(
       return loginOptions(state, now)
     case "/auth/login":
       return loginRoute(state, request, now)
+    case "/auth/logout":
+      return logoutRoute(state, request, elevations)
     case "/auth/step-up/options":
       return loginOptions(state, now)
     case "/auth/step-up":

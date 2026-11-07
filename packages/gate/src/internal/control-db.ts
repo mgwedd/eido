@@ -240,6 +240,13 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
      certificate_sha256 TEXT NOT NULL
    ) STRICT;`,
+  // The gate's Ed25519 keypair for signing web session cookies (#678).
+  `CREATE TABLE web_session_keys (
+     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+     private_key_jwk TEXT NOT NULL,
+     public_key_jwk TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {
