@@ -1,6 +1,6 @@
 # Connecting and reconnecting connectors (#98)
 
-A connector is connected on the Mac, never through the web app. The credential goes straight into the gate vault. The running gate then checks it and reports the result on `/connectors`.
+A connector is connected on the Mac with this command, or, for Proton and SimpleFIN, from the Admin page with a passkey signature (#661, see `docs/gate-signed-control-changes.md`). The credential goes straight into the gate vault. The running gate then checks it and reports the result on `/connectors`.
 
 ```bash
 pnpm --filter @eido/gate connect gmail
@@ -128,7 +128,7 @@ With a read client configured, `connected` checks the connector with one pinned 
 
 Both Proton connectors use the one Bridge password, read with `info` in `bridge --cli` (see "Proton Bridge LaunchAgent" in `infra/README.md`). The command asks for it without showing it as you type, and stores it in the gate vault.
 
-Each connector is checked separately. After a new Bridge password, run the command for both `proton-mail` and `proton-calendar`, so that each is checked and, if it was disabled, re-enabled.
+Changing the Bridge certificate pin from the Admin page deletes the stored password first; enter it again after the stack restarts. Each connector is checked separately. After a new Bridge password, run the command for both `proton-mail` and `proton-calendar`, so that each is checked and, if it was disabled, re-enabled.
 
 ## SimpleFIN
 

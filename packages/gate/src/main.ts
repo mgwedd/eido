@@ -39,6 +39,10 @@ import type { Handler, LoopbackHost } from "./internal/http"
 import { fileLog } from "./internal/log"
 import { defaultBackupStampPath } from "./internal/backup-status"
 import { phoneHandler } from "./internal/phone-routes"
+import {
+  reconcileBridgePin,
+  SIMPLEFIN_CONNECTOR,
+} from "./internal/connector-secrets"
 import { createSupervisorClient } from "./internal/supervisor-client"
 import { listReviewedManifests, readReviewedManifest } from "./internal/repin"
 import { createPushNotifier } from "./internal/push-notify"
@@ -107,7 +111,7 @@ export const READ_CONNECTORS = [
     probeUrl: "https://www.googleapis.com/drive/v3/changes/startPageToken",
   },
 ] as const
-export const SIMPLEFIN_CONNECTOR = "simplefin"
+export { SIMPLEFIN_CONNECTOR }
 export const SIMPLEFIN_ENV = "EIDO_GATE_SIMPLEFIN"
 /**
  * The read connectors whose credential is an access URL in the vault (`auth: basic-url`, #51):
@@ -170,6 +174,8 @@ export type GateConfig = {
   backupStampPath?: string
   /** The stack supervisor's socket (#659); absent outside the stack, so the admin routes answer 503. */
   supervisorSocketPath?: string
+  /** The gate vault the Admin page's connector secret routes seal into (#661). */
+  vault?: VaultConfig
   /** The calendar connector's sent record tracker (#21, #290). */
   calendarTracker?: CalendarTracker
   /** Overrides the stored attendees reader for policy (#168, #290). */
@@ -329,7 +335,7 @@ export function gateConfig(
     ...(fileHelperPath === ""
       ? {}
       : { fileHelper: { path: fileHelperPath, sha256: fileHelperSha256 } }),
-    ...(vault === undefined ? {} : { profileAudit: { vault, epoch } }),
+    ...(vault === undefined ? {} : { vault, profileAudit: { vault, epoch } }),
     ...(port === "" ? {} : { phone: phoneConfig(env, port) }),
     ...(bridge === undefined ? {} : { bridge: bridgeVault(env, bridge) }),
     ...(gmailClientId === ""
@@ -570,8 +576,24 @@ export async function runGate(
       config.supervisorSocketPath === undefined
         ? undefined
         : createSupervisorClient({ socketPath: config.supervisorSocketPath })
+    const secretVault =
+      config.vault === undefined ? undefined : vaultFactory(config.vault)
+    const bridgePin = config.bridge?.config
+    const bridge =
+      bridgePin?.certificateSha256 === undefined ||
+      bridgePin.certificatePath === undefined
+        ? undefined
+        : {
+            certificateSha256: bridgePin.certificateSha256,
+            certificatePath: bridgePin.certificatePath,
+          }
+    // A stored Bridge password belongs to the pin it was sealed under (#661).
+    if (bridge !== undefined && secretVault !== undefined)
+      await reconcileBridgePin(db, secretVault, bridge.certificateSha256)
     const state = () => ({
       probes,
+      ...(secretVault === undefined ? {} : { vault: secretVault }),
+      ...(bridge === undefined ? {} : { bridge }),
       fileHelper: nativeFiles,
       files: fileReads,
       ...runningGate(),

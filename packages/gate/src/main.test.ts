@@ -639,6 +639,7 @@ describe("gateConfig with Bridge", () => {
         tls: "starttls",
         certificatePem: certificate.cert,
         certificateSha256: certificate.sha256,
+        certificatePath: certificate.certPath,
         username: "assistant@example.invalid",
         searchFolders: ["INBOX"],
       },
