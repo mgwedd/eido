@@ -257,6 +257,7 @@ describe("Edit and approve", () => {
     expect(document.querySelector('[role="status"]')?.textContent).toBe(
       "Approved"
     )
+    expect(document.activeElement?.textContent).toContain("Queue clear")
   })
 
   test("a tier change is refused with the design's message and nothing is signed", async () => {
@@ -315,6 +316,7 @@ describe("Edit and approve", () => {
       "Edit saved. The passkey prompt did not complete, so the edited intent is waiting in the queue."
     )
     expect(document.querySelector("h2")?.id).toBe("card-intent-b")
+    expect(document.activeElement?.id).toBe("card-intent-b")
   })
 
   test("an intent decided elsewhere meanwhile closes the editor and leaves the card", async () => {
@@ -347,5 +349,69 @@ describe("Edit and approve", () => {
     expect(document.querySelector('[role="status"]')?.textContent).toBe(
       "The gate could not be reached."
     )
+    expect(document.activeElement?.id).toBe("card-intent-b")
+  })
+
+  test("after a successful edit-and-approve with remaining cards, focus moves to the next card heading", async () => {
+    signApproval.mockResolvedValue({
+      ok: true,
+      value: { intentId: "intent-b", state: "approved" },
+    })
+    const secondIntent = {
+      ...intent,
+      id: "intent-c",
+      kind: "calendar.event",
+    }
+    requests.length = 0
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        requests.push({
+          url: `${init?.method ?? "GET"} ${url}`,
+          body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
+        })
+        if (url.endsWith("/approvals"))
+          return Promise.resolve(
+            Response.json({
+              intents: [intent, secondIntent],
+            })
+          )
+        if (url.endsWith("/nonce"))
+          return Promise.resolve(
+            Response.json({
+              intentId: url.split("/").at(-2),
+              kind: url.includes("intent-c") ? "calendar.event" : "email.reply",
+              origin: "reactive",
+              state: "pending",
+              payload: PAYLOAD,
+              payloadHash: HASH,
+              nonce: "n".repeat(43),
+              documentIds: [],
+            })
+          )
+        if (url.endsWith("/history"))
+          return Promise.resolve(Response.json({ intentId: "x", entries: [] }))
+        if (url.endsWith("/edit"))
+          return Promise.resolve(Response.json(OK.body, { status: OK.status }))
+        return Promise.resolve(new Response(null, { status: 500 }))
+      })
+    )
+    const container = document.createElement("div")
+    document.body.append(container)
+    const root = createRoot(container)
+    roots.push(root)
+    act(() => {
+      root.render(<QueueView />)
+    })
+    await settle()
+
+    await press("e")
+    await type("Subject", "Re: new")
+    await submit()
+
+    expect(document.querySelector('[role="status"]')?.textContent).toBe(
+      "Approved"
+    )
+    expect(document.activeElement?.id).toBe("card-intent-c")
   })
 })
