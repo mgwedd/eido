@@ -11,7 +11,7 @@ Connecting and reconnecting Gmail and the Proton connectors on the Mac: `infra/c
 First run, then every start after it:
 
 ```bash
-pnpm stack:setup               # creates the gate keychain, asks for unset settings, writes stack.env, runs doctor
+pnpm stack:setup               # creates the gate keychain, asks for unset settings, writes stack.env, runs doctor, and issues the first phone enrolment code when the gate is running
 pnpm stack:prod --background   # starts the stack and prints https://<host>.ts.net:8443/
 ```
 

@@ -724,6 +724,32 @@ async function status(deps: Deps, flags: Flags): Promise<number> {
   return healthy === config.processes.length && serveCode === 0 ? 0 : 1
 }
 
+/**
+ * The end of setup (#660): with the gate running, issue the first phone enrolment code and say
+ * where to enter it (doctor then reports the stack's own ports as in use, so this does not wait
+ * on doctor). With the gate stopped and doctor clean, say how to get one once the stack is up.
+ */
+async function firstCode(deps: Deps, healthy: boolean): Promise<number> {
+  let host: string
+  try {
+    host = await resolveHost(deps, true)
+  } catch {
+    host = "localhost"
+  }
+  const config = configFor(deps, "prod", host)
+  const enrol = new URL("enroll", config.url).href
+  if (!(await isRunning(deps, config, "gate"))) {
+    if (healthy)
+      deps.out(
+        `To enrol your phone: start the stack (pnpm stack:prod), run pnpm stack:gate enrol-code and enter the code at ${enrol}`
+      )
+    return 0
+  }
+  const code = await gate(deps, "enrol-code", [])
+  if (code === 0) deps.out(`Enter the code on your phone at ${enrol}`)
+  return code
+}
+
 export async function main(
   argv: readonly string[],
   deps: Deps
@@ -762,10 +788,13 @@ export async function main(
           settingsPath,
           deps.platform
         )
-        return await doctor(
-          { ...deps, env: applyStackSettings(deps.env, written) },
-          parsed.flags
-        )
+        const setUp: Deps = {
+          ...deps,
+          env: applyStackSettings(deps.env, written),
+        }
+        const checked = await doctor(setUp, parsed.flags)
+        const issued = await firstCode(setUp, checked === 0)
+        return issued === 0 ? checked : issued
       }
       case "install":
         return await install(withSettings)

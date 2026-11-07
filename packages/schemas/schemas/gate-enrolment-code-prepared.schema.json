@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateEnrolmentCodePrepared",
+  "description": "Response of POST /admin/enrolment-codes/prepare on the phone listener (#660): the signed control ceremony for issuing one enrolment code. The payload is fixed, so the device checks target, payload and payloadHash before it signs.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "purpose": {
+      "const": "policy.set"
+    },
+    "target": {
+      "const": "enrolment_code"
+    },
+    "payload": {
+      "const": "{\"action\":\"enrolment_code.issue\"}"
+    },
+    "payloadHash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "challenge": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    }
+  },
+  "required": [
+    "id",
+    "purpose",
+    "target",
+    "payload",
+    "payloadHash",
+    "nonce",
+    "challenge"
+  ],
+  "additionalProperties": false
+}

@@ -642,8 +642,40 @@ describe("setup", () => {
         .filter((l) => /^[A-Z]/.test(l))
     ).toEqual([`EIDO_GATE_KEYCHAIN_PATH=${KEYCHAIN}`])
     expect(w.out).toContain(`OK   keychain: ${KEYCHAIN} is unlocked, mode 0600`)
-    expect(w.out.at(-1)).toBe("doctor: no failures")
+    expect(w.out.slice(-2)).toEqual([
+      "doctor: no failures",
+      `To enrol your phone: start the stack (pnpm stack:prod), run pnpm stack:gate enrol-code and enter the code at https://${HOST}:8443/enroll`,
+    ])
     expect(code).toBe(0)
+  })
+
+  it("issues the first enrolment code when the gate is running (#660)", async () => {
+    const w = world({ settings: { text: FILLED } })
+    expect(await main(["prod", "--background"], w.deps)).toBe(0)
+    w.interactive.length = 0
+    await main(["setup"], w.deps)
+    expect(w.interactive.map((call) => call.args.at(-1))).toEqual([
+      "./src/enrol-code.ts",
+    ])
+    expect(w.out.at(-1)).toBe(
+      `Enter the code on your phone at https://${HOST}:8443/enroll`
+    )
+  })
+
+  it("gives no enrolment hint when doctor fails with the gate stopped", async () => {
+    const w = world({ settings: { text: FILLED } })
+    w.files.delete("/repo/node_modules/.modules.yaml")
+    expect(await main(["setup"], w.deps)).toBe(1)
+    expect(w.out.at(-1)).toMatch(/^doctor: \d+ failures?$/)
+    expect(w.out.join("\n")).not.toMatch(/enrol/)
+  })
+
+  it("stops with the gate script's exit code when the code is not issued", async () => {
+    const w = world({ settings: { text: FILLED } })
+    expect(await main(["prod", "--background"], w.deps)).toBe(0)
+    w.deps.interactive = () => Promise.resolve(4)
+    expect(await main(["setup"], w.deps)).toBe(4)
+    expect(w.out.at(-1)).not.toMatch(/Enter the code/)
   })
 
   it("parses setup, doctor and gate", () => {

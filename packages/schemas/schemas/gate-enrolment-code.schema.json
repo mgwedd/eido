@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateEnrolmentCode",
-  "description": "Response of POST /enrolment-codes on the gate's control socket (#78): a single-use code for enrolling a phone, shown once on the Mac. Only its hash is stored; it expires ten minutes after issue and supersedes any earlier unused code.",
+  "description": "Response of POST /enrolment-codes on the gate's control socket (#78) and of the signed POST /admin/enrolment-codes on the phone listener (#660): a single-use code for enrolling a device, shown once. Only its hash is stored; it expires ten minutes after issue and supersedes any earlier unused code.",
   "type": "object",
   "properties": {
     "code": {
