@@ -19,6 +19,8 @@ import {
   validateGateEnrolOptions,
   validateGateEnrolmentCode,
   validateGateEnrolmentCodePrepared,
+  validateGateGoogleConnectPrepared,
+  validateGateGoogleConnectStarted,
   validateGateIntentHistory,
   validateGateLoginOptions,
   validateGatePendingIntentList,
@@ -41,6 +43,8 @@ import {
 import { checkDrift, manifestHash } from "./connectors"
 import { payloadHash } from "./canonical"
 import { prepareControlApproval } from "./control-approvals"
+import { GoogleFlows } from "./google-connect"
+import { InMemoryVault } from "./vault/vault"
 import { loadPolicy, SHIPPED_DEFAULT_PATH } from "./policy"
 import { propose } from "./intents"
 import { revokeCredential } from "./credentials"
@@ -3228,4 +3232,96 @@ describe("phoneHandler: enrolment codes from the Admin page (#660)", () => {
     })
     expect(again.status).toBe(403)
   })
+})
+
+describe("phoneHandler: Google sign-in (#662)", () => {
+  const ORIGIN = "https://eido.example.invalid:8443"
+  const CLIENT_ID = "test-client.apps.example.invalid"
+  const SECRET = ["test", "client", "secret", "662"].join("-")
+
+  beforeEach(() => {
+    state.google = {
+      db: s.db,
+      vault: new InMemoryVault(),
+      flows: new GoogleFlows(),
+      redirectUri: `${ORIGIN}/api/gate/connect/google/callback`,
+      webOrigin: ORIGIN,
+      clientIds: { gmail: CLIENT_ID },
+      fetch: () => Promise.reject(new Error("no Google in this test")),
+    }
+    enrol(auth)
+  })
+
+  it("prepares with a session and starts only with the passkey's signature", async () => {
+    const anonymous = await call("POST", "/admin/connectors/google/prepare", {
+      body: { target: "gmail" },
+    })
+    expect([anonymous.status, code(anonymous)]).toEqual([
+      401,
+      "unauthenticated",
+    ])
+    const cookie = await signIn()
+    const prepared = validateGateGoogleConnectPrepared(
+      (
+        await call("POST", "/admin/connectors/google/prepare", {
+          cookie,
+          body: { target: "gmail" },
+        })
+      ).body
+    )
+    if (!prepared.ok) throw new Error("prepare does not match the schema")
+    expect(prepared.value.clientSecretStored).toBe(false)
+    const started = await call("POST", "/admin/connectors/google/start", {
+      cookie,
+      body: {
+        approval: controlAuthorization(s.db, prepared.value.approval).request,
+        target: "gmail",
+        clientSecret: SECRET,
+      },
+    })
+    const parsed = validateGateGoogleConnectStarted(started.body)
+    if (!parsed.ok) throw new Error("start does not match the schema")
+    expect(
+      new URL(parsed.value.authorizationUrl).searchParams.get("client_id")
+    ).toBe(CLIENT_ID)
+  })
+
+  it("refuses a start body that is not a sign-in request", async () => {
+    const cookie = await signIn()
+    const reply = await call("POST", "/admin/connectors/google/start", {
+      cookie,
+      body: { target: "gmail" },
+    })
+    expect([reply.status, code(reply)]).toEqual([400, "invalid_request"])
+    const target = await call("POST", "/admin/connectors/google/prepare", {
+      cookie,
+      body: { target: "proton" },
+    })
+    expect([target.status, code(target)]).toEqual([400, "invalid_request"])
+  })
+
+  it("sends the browser back to the Admin page from the public callback", async () => {
+    const reply = await call("GET", "/connect/google/callback?state=unknown")
+    expect([reply.status, reply.headers?.["location"]]).toEqual([
+      303,
+      `${ORIGIN}/admin/connectors?error=expired`,
+    ])
+  })
+
+  it.each([
+    ["POST", "/admin/connectors/google/prepare"],
+    ["POST", "/admin/connectors/google/start"],
+    ["GET", "/connect/google/callback"],
+  ])(
+    "answers 503 on %s %s when Google is not configured",
+    async (method, path) => {
+      delete state.google
+      const cookie = await signIn()
+      const reply = await call(method, path, {
+        cookie,
+        body: { target: "gmail" },
+      })
+      expect([reply.status, code(reply)]).toEqual([503, "unavailable"])
+    }
+  )
 })

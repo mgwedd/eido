@@ -80,6 +80,11 @@ describe("classifyRequest", () => {
     )
     expect(classify("/api/gate/file-roots")).toBe("network-only")
     expect(classify("/api/gate/admin/stack")).toBe("network-only")
+    expect(
+      classify("/api/gate/connect/google/callback?state=s&code=c", {
+        mode: "navigate",
+      })
+    ).toBe("network-only")
     expect(classify("/admin", { mode: "navigate" })).toBe("network-only")
   })
 

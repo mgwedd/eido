@@ -14,6 +14,8 @@ import {
   validateGateBridgePin,
   validateGateBridgePinRequest,
   validateGateSimpleFinSecretRequest,
+  validateGateGoogleConnectRequest,
+  validateGateGoogleConnectTarget,
   validateGateRepinRequest,
 } from "@eido/schemas"
 import type {
@@ -76,6 +78,12 @@ import {
 } from "./connector-secrets"
 import type { ConnectorProbes } from "./connector-connect"
 import type { Vault } from "./vault/vault"
+import {
+  googleCallback,
+  prepareGoogleConnect,
+  startGoogleConnect,
+} from "./google-connect"
+import type { GoogleConnect } from "./google-connect"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
 import {
@@ -154,6 +162,8 @@ export type PhoneState = {
   probes?: ConnectorProbes
   /** How the gate claims a SimpleFIN access URL (#661); the global fetch by default. */
   fetch?: typeof fetch
+  /** Google sign-in through the gate (#662); undefined without a vault and a redirect URI. */
+  google?: GoogleConnect
 }
 
 export type PhoneRoute = {
@@ -237,6 +247,10 @@ export const PHONE_ROUTES = [
   { method: "POST", path: "/admin/secrets/simplefin/prepare", tier: "session" },
   { method: "POST", path: "/admin/secrets/simplefin", tier: "signed" },
   { method: "POST", path: "/admin/connectors/:id/remove", tier: "elevated" },
+  { method: "POST", path: "/admin/connectors/google/prepare", tier: "session" },
+  { method: "POST", path: "/admin/connectors/google/start", tier: "signed" },
+  // Google's redirect after consent: the single-use state it carries is the credential (#662).
+  { method: "GET", path: "/connect/google/callback", tier: "public" },
 ] as const satisfies readonly PhoneRoute[]
 
 type RoutePath = (typeof PHONE_ROUTES)[number]["path"]
@@ -1201,6 +1215,47 @@ async function simpleFinRoute(
   )
 }
 
+const NO_GOOGLE = () =>
+  apiError(503, "unavailable", "Google sign-in is not configured on the gate")
+
+async function googlePrepareRoute(
+  state: PhoneState,
+  request: GateRequest
+): Promise<Reply> {
+  if (state.google === undefined) return NO_GOOGLE()
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateGoogleConnectTarget(body.value)
+  if (!checked.ok) return invalid("a Google client", checked.errors)
+  return prepareGoogleConnect(state.google, checked.value.target)
+}
+
+async function googleStartRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  if (state.google === undefined) return NO_GOOGLE()
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateGoogleConnectRequest(body.value)
+  if (!checked.ok) return invalid("a Google sign-in request", checked.errors)
+  return startGoogleConnect(
+    state.google,
+    {
+      authorization: {
+        config: state.webAuthn,
+        request: checked.value.approval,
+      },
+      target: checked.value.target,
+      ...(checked.value.clientSecret === undefined
+        ? {}
+        : { clientSecret: checked.value.clientSecret }),
+    },
+    now().getTime()
+  )
+}
+
 function route(
   state: PhoneState,
   request: GateRequest,
@@ -1301,6 +1356,14 @@ function route(
       return simpleFinRoute(state, request, now)
     case "/admin/connectors/:id/remove":
       return removeConnectorSecrets(state, matched.id)
+    case "/admin/connectors/google/prepare":
+      return googlePrepareRoute(state, request)
+    case "/admin/connectors/google/start":
+      return googleStartRoute(state, request, now)
+    case "/connect/google/callback":
+      return state.google === undefined
+        ? NO_GOOGLE()
+        : googleCallback(state.google, request.query, () => now().getTime())
     case "/push/:id/remove":
       removePushSubscription(state.db, matched.id)
       return { status: 200, body: { id: matched.id } }

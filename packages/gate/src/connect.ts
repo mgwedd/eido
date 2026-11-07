@@ -10,43 +10,37 @@ import {
   GateRequestError,
   GateUnavailableError,
 } from "./internal/client"
-import {
-  authorizationUrl,
-  DRIVE_READONLY_SCOPE,
-  exchangeCode,
-  GMAIL_MODIFY_SCOPE,
-  GMAIL_READONLY_SCOPE,
-  oauthState,
-  pkcePair,
-  startLoopback,
-} from "./internal/connect/oauth"
-import type { CallbackResult, ExchangeResult } from "./internal/connect/oauth"
+import type {
+  GateConnectorHealth,
+  GateGoogleConnectFlow,
+  GateGoogleConnectStarted,
+} from "@eido/schemas"
+import type { FlowFailure, GoogleTarget } from "./internal/google-connect"
 import { promptHidden } from "./internal/connect/prompt"
 import { claimSimpleFin } from "./internal/connect/simplefin-claim"
 import type { ClaimResult } from "./internal/connect/simplefin-claim"
 import { GMAIL_CONNECTOR } from "./internal/gmail-writers"
-import type { Vault, VaultClient, VaultKey } from "./internal/vault/vault"
+import type { Vault } from "./internal/vault/vault"
 import {
   createVault,
-  DRIVE_CLIENT_ID_ENV,
   DRIVE_CONNECTOR,
-  GMAIL_READ_CLIENT_ID_ENV,
   SIMPLEFIN_CONNECTOR,
   vaultConfig,
 } from "./main"
 
 // `pnpm --filter @eido/gate connect <connector>`: run on the Mac, as the gate user, to connect
 // or reconnect a connector (#98). Gmail's compose client, Gmail's read client (`gmail-read`,
-// #529) and Drive's read client (#516) sign in through Google in the browser (OAuth for native apps, RFC 8252: a one-shot loopback listener on
-// 127.0.0.1, PKCE S256 and a state check); the
-// Proton connectors take the Bridge password at a no-echo prompt. SimpleFIN (#51) takes a setup
-// token at a no-echo prompt and claims the access URL from bridge.simplefin.org. The credential goes to the
-// gate vault and nowhere else: it is never printed, logged, passed in argv or env, or written to
-// a file. Then the running gate checks the connector over its control socket, audits the
-// connect with hashes only, and this prints the connector's health. The runbook is
-// infra/connectors.md.
+// #529) and Drive's read client (#516) sign in through Google in the browser: the running gate
+// starts the flow over its control socket and holds the PKCE verifier, and Google redirects to
+// the gate's own callback on the tailnet name (#662), the same flow the Admin page uses. The
+// command prompts for the client secret only when the gate's vault has none, opens the consent
+// page and waits for the gate's outcome. The Proton connectors take the Bridge password at a
+// no-echo prompt. SimpleFIN (#51) takes a setup token at a no-echo prompt and claims the access
+// URL from bridge.simplefin.org. The credential goes to the gate vault and nowhere else: it is
+// never printed, logged, passed in argv or env, or written to a file. Then the gate checks the
+// connector, audits the connect with hashes only, and this prints the connector's health. The
+// runbook is infra/connectors.md.
 
-export const GMAIL_CLIENT_ID_ENV = "EIDO_GMAIL_CLIENT_ID"
 /** The command's name for Gmail's read client; the gate checks it as the `gmail` connector. */
 const GMAIL_READ_TARGET = "gmail-read"
 const TARGETS = [
@@ -59,15 +53,13 @@ const TARGETS = [
 ] as const
 type Target = (typeof TARGETS)[number]
 const USAGE = `usage: pnpm --filter @eido/gate connect <${TARGETS.join("|")}>`
-/** How long the browser sign-in may take before the listener closes. */
+/** How long the browser sign-in may take before the command stops waiting. */
 const SIGN_IN_TIMEOUT_MS = 5 * 60_000
 
-/** One Google OAuth client the command signs in: where its grant goes and what it must carry. */
+/** One Google OAuth client the command signs in, as the gate names it. */
 type GoogleClient = {
+  target: GoogleTarget
   connector: string
-  client: VaultClient
-  clientIdEnv: string
-  scope: string
   /** The product named in messages: "Gmail", "Drive". */
   label: string
   /** What the stored grant is called in the confirmation line. */
@@ -76,26 +68,20 @@ type GoogleClient = {
 
 const GOOGLE_CLIENTS = {
   [GMAIL_CONNECTOR]: {
+    target: "gmail",
     connector: GMAIL_CONNECTOR,
-    client: "write",
-    clientIdEnv: GMAIL_CLIENT_ID_ENV,
-    scope: GMAIL_MODIFY_SCOPE,
     label: "Gmail",
     credential: "Gmail credential",
   },
   [GMAIL_READ_TARGET]: {
+    target: "gmail-read",
     connector: GMAIL_CONNECTOR,
-    client: "read",
-    clientIdEnv: GMAIL_READ_CLIENT_ID_ENV,
-    scope: GMAIL_READONLY_SCOPE,
     label: "Gmail",
     credential: "Gmail read credential",
   },
   [DRIVE_CONNECTOR]: {
+    target: "drive",
     connector: DRIVE_CONNECTOR,
-    client: "read",
-    clientIdEnv: DRIVE_CLIENT_ID_ENV,
-    scope: DRIVE_READONLY_SCOPE,
     label: "Drive",
     credential: "Drive credential",
   },
@@ -107,12 +93,6 @@ const googleClient = (name: Target): GoogleClient | undefined =>
   name === DRIVE_CONNECTOR
     ? GOOGLE_CLIENTS[name]
     : undefined
-
-const vaultKey = (google: GoogleClient, kind: VaultKey["kind"]): VaultKey => ({
-  connector: google.connector,
-  kind,
-  client: google.client,
-})
 
 export type ConnectIo = {
   out: (line: string) => void
@@ -127,100 +107,113 @@ export type ConnectDeps = {
   vault?: Vault
   fetch?: typeof fetch
   signInTimeoutMs?: number
+  /** How often the command asks the gate whether the sign-in finished; default 1 s. */
+  pollMs?: number
 }
 
 const isTarget = (name: string): name is Target =>
   TARGETS.some((target) => target === name)
 
-const CALLBACK_MESSAGES = {
-  state_mismatch:
-    "The sign-in answer did not match this request, so it was refused",
-  authorization_denied: "Google did not grant access",
-  invalid_callback: "The sign-in answer carried no authorization code",
-  timeout: "No sign-in arrived in time",
-} as const satisfies Record<
-  Extract<CallbackResult, { ok: false }>["reason"],
-  string
->
-
-const exchangeMessage = (
-  reason: Extract<ExchangeResult, { ok: false }>["reason"],
-  label: string
-): string =>
+const failureMessage = (reason: FlowFailure, label: string): string =>
   ({
+    denied: "Google did not grant access",
+    invalid_callback: "The sign-in answer carried no authorization code",
     token_endpoint_unreachable: "Google's token endpoint could not be reached",
     token_endpoint_refused: "Google refused the authorization code",
     no_refresh_token: "Google returned no refresh token",
     scope_not_granted: `The ${label} permission was not granted; tick it on the consent screen`,
   })[reason]
 
-const withCode = (message: string, code: string | undefined) =>
-  code === undefined ? `${message}.` : `${message} (${code}).`
+type Step =
+  { ok: true; health?: GateConnectorHealth } | { ok: false; status: number }
 
-type Step = { ok: true } | { ok: false; status: number }
+const wait = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
 
+type ConnectClient = ReturnType<typeof createConnectClient>
+
+/** Asks the gate to start the sign-in, giving the client secret only when the gate has none. */
+async function startGoogle(
+  google: GoogleClient,
+  client: ConnectClient,
+  io: ConnectIo
+): Promise<GateGoogleConnectStarted | undefined> {
+  try {
+    return await client.googleStart({ target: google.target })
+  } catch (error) {
+    if (
+      !(error instanceof GateRequestError) ||
+      error.code !== "client_secret_required"
+    )
+      throw error
+  }
+  const clientSecret = await io.prompt(
+    "Google OAuth client secret (not shown): "
+  )
+  if (clientSecret === undefined || clientSecret === "") {
+    io.err("No client secret was given. Nothing was stored.")
+    return undefined
+  }
+  return client.googleStart({ target: google.target, clientSecret })
+}
+
+/**
+ * Google sign-in through the gate (#662): the gate holds the PKCE verifier and receives Google's
+ * redirect on its own callback, so this only opens the consent page and waits for the outcome.
+ */
 async function connectGoogle(
   google: GoogleClient,
-  env: Readonly<Record<string, string | undefined>>,
-  vault: Vault,
+  client: ConnectClient,
   io: ConnectIo,
   deps: ConnectDeps
 ): Promise<Step> {
-  const clientId = env[google.clientIdEnv] ?? ""
-  const secretKey = vaultKey(google, "api_key")
-  let secret = await vault.get(secretKey)
-  const newSecret = secret === undefined
-  if (secret === undefined) {
-    secret = await io.prompt("Google OAuth client secret (not shown): ")
-    if (secret === undefined || secret === "") {
-      io.err("No client secret was given. Nothing was stored.")
+  let started: GateGoogleConnectStarted | undefined
+  try {
+    started = await startGoogle(google, client, io)
+  } catch (error) {
+    io.err(
+      `The gate could not start the ${google.label} sign-in: ${error instanceof Error ? error.message : String(error)}`
+    )
+    return { ok: false, status: 1 }
+  }
+  if (started === undefined) return { ok: false, status: 1 }
+  io.out("Sign in to Google at this address (opening it in the browser):")
+  io.out(started.authorizationUrl)
+  io.openBrowser(started.authorizationUrl)
+  const deadline = Date.now() + (deps.signInTimeoutMs ?? SIGN_IN_TIMEOUT_MS)
+  for (;;) {
+    let outcome: GateGoogleConnectFlow
+    try {
+      outcome = await client.googleFlow(started.flow)
+    } catch (error) {
+      io.err(
+        error instanceof GateRequestError && error.status === 404
+          ? "The sign-in expired before it finished. Nothing was stored."
+          : `The gate did not answer about the sign-in: ${error instanceof Error ? error.message : String(error)}`
+      )
       return { ok: false, status: 1 }
     }
+    if (outcome.status === "connected") {
+      io.out(`Stored the ${google.credential} in the gate vault.`)
+      return {
+        ok: true,
+        ...(outcome.health === undefined ? {} : { health: outcome.health }),
+      }
+    }
+    if (outcome.status === "failed") {
+      io.err(
+        `${failureMessage(outcome.reason ?? "token_endpoint_refused", google.label)}. Nothing was stored.`
+      )
+      return { ok: false, status: 1 }
+    }
+    if (Date.now() >= deadline) {
+      io.err("No sign-in arrived in time. Nothing was stored.")
+      return { ok: false, status: 1 }
+    }
+    await wait(deps.pollMs ?? 1000)
   }
-  const pkce = pkcePair()
-  const state = oauthState()
-  const loopback = await startLoopback({
-    state,
-    timeoutMs: deps.signInTimeoutMs ?? SIGN_IN_TIMEOUT_MS,
-  })
-  const url = authorizationUrl({
-    clientId,
-    redirectUri: loopback.redirectUri,
-    scope: google.scope,
-    state,
-    challenge: pkce.challenge,
-  })
-  io.out("Sign in to Google at this address (opening it in the browser):")
-  io.out(url)
-  io.openBrowser(url)
-  const callback = await loopback.result
-  if (!callback.ok) {
-    io.err(
-      `${withCode(CALLBACK_MESSAGES[callback.reason], callback.error)} Nothing was stored.`
-    )
-    return { ok: false, status: 1 }
-  }
-  const exchanged = await exchangeCode({
-    fetch: deps.fetch ?? fetch,
-    clientId,
-    clientSecret: secret,
-    code: callback.code,
-    verifier: pkce.verifier,
-    redirectUri: loopback.redirectUri,
-    scope: google.scope,
-  })
-  if (!exchanged.ok) {
-    io.err(
-      `${withCode(exchangeMessage(exchanged.reason, google.label), exchanged.error)} Nothing was stored.`
-    )
-    return { ok: false, status: 1 }
-  }
-  await vault.set(vaultKey(google, "refresh_token"), exchanged.refreshToken)
-  if (newSecret) await vault.set(secretKey, secret)
-  // A cached access token belongs to the old grant; the gate's next call refreshes from the new one.
-  await vault.delete(vaultKey(google, "access_token"))
-  io.out(`Stored the ${google.credential} in the gate vault.`)
-  return { ok: true }
 }
 
 async function connectBridge(vault: Vault, io: ConnectIo): Promise<Step> {
@@ -308,14 +301,10 @@ export async function connect(
   const google = googleClient(target)
   // The connector the gate pins and checks: both Gmail clients are the `gmail` connector.
   const name = google?.connector ?? target
-  if (google !== undefined && (env[google.clientIdEnv] ?? "") === "") {
-    io.err(
-      `${google.clientIdEnv} is not set; use the gate's ${google.label} client id`
-    )
-    return 2
-  }
-  const vault = deps.vault ?? selectVault(env, io)
-  if (vault === undefined) return 2
+  // Google credentials go to the vault through the gate; the others are sealed here.
+  const vault =
+    google === undefined ? (deps.vault ?? selectVault(env, io)) : undefined
+  if (google === undefined && vault === undefined) return 2
   const client = createConnectClient({ socketPath })
   // Check the gate before asking for any secret: the connector must be pinned, and the gate
   // must be running to check it afterwards.
@@ -337,13 +326,16 @@ export async function connect(
   }
   const stored =
     google !== undefined
-      ? await connectGoogle(google, env, vault, io, deps)
-      : target === SIMPLEFIN_CONNECTOR
-        ? await connectSimpleFin(vault, io, deps)
-        : await connectBridge(vault, io)
+      ? await connectGoogle(google, client, io, deps)
+      : vault === undefined
+        ? { ok: false as const, status: 2 }
+        : target === SIMPLEFIN_CONNECTOR
+          ? await connectSimpleFin(vault, io, deps)
+          : await connectBridge(vault, io)
   if (!stored.ok) return stored.status
   try {
-    const checked = await client.connected(name)
+    // The gate checks a Google connector itself once the grant is stored.
+    const checked = stored.health ?? (await client.connected(name))
     const row = checked.connectors.find((connector) => connector.name === name)
     if (row?.health === "healthy") {
       io.out(`${name}: healthy`)

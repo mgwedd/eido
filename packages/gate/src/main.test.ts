@@ -749,6 +749,64 @@ describe("gateConfig with Gmail", () => {
   })
 })
 
+describe("gateConfig with Google sign-in (#662)", () => {
+  const CALLBACK = `${WEBAUTHN.origin}/api/gate/connect/google/callback`
+  const BASE = {
+    EIDO_GATE_DATA_DIR: "/d",
+    EIDO_GATE_SOCKET: "/d/gate.sock",
+    EIDO_GATE_CONTROL_SOCKET: "/d/control.sock",
+    EIDO_WEBAUTHN_RP_ID: WEBAUTHN.rpId,
+    EIDO_WEBAUTHN_ORIGIN: WEBAUTHN.origin,
+    EIDO_GATE_VAULT_FILE: "/vault/dev.json",
+    EIDO_DEV_VAULT: "1",
+  }
+
+  it("is off without a redirect URI", () => {
+    expect(gateConfig(BASE).google).toBeUndefined()
+  })
+
+  it("takes the redirect URI and each client id that is set", () => {
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_GOOGLE_REDIRECT_URI: CALLBACK,
+        EIDO_GMAIL_CLIENT_ID: "test-write-id",
+        EIDO_DRIVE_CLIENT_ID: "test-drive-id",
+        EIDO_GMAIL_READ_CLIENT_ID: "",
+        EIDO_GATE_EGRESS_PORT: "8711",
+      }).google
+    ).toEqual({
+      redirectUri: CALLBACK,
+      clientIds: { gmail: "test-write-id", drive: "test-drive-id" },
+    })
+  })
+
+  it("needs a vault", () => {
+    const noVault: Record<string, string> = { ...BASE }
+    delete noVault["EIDO_GATE_VAULT_FILE"]
+    delete noVault["EIDO_DEV_VAULT"]
+    expect(() =>
+      gateConfig({ ...noVault, EIDO_GOOGLE_REDIRECT_URI: CALLBACK })
+    ).toThrow("Google sign-in needs EIDO_GATE_KEYCHAIN_PATH")
+  })
+
+  it.each([
+    ["not a URL", "callback"],
+    ["plain http", CALLBACK.replace("https:", "http:")],
+    [
+      "another origin",
+      "https://other.example.invalid/api/gate/connect/google/callback",
+    ],
+    ["a query", `${CALLBACK}?x=1`],
+    ["a fragment", `${CALLBACK}#x`],
+    ["another path", `${WEBAUTHN.origin}/api/gate/callback`],
+  ])("refuses a redirect URI with %s", (_name, uri) => {
+    expect(() =>
+      gateConfig({ ...BASE, EIDO_GOOGLE_REDIRECT_URI: uri })
+    ).toThrow("EIDO_GOOGLE_REDIRECT_URI must be")
+  })
+})
+
 describe("runGate with Gmail", () => {
   it("routes an auto mark read through the pinned Gmail connector and stores its inverse", async () => {
     const c = {

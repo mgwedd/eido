@@ -1,6 +1,6 @@
 # Connecting and reconnecting connectors (#98)
 
-A connector is connected on the Mac with this command, or, for Proton and SimpleFIN, from the Admin page with a passkey signature (#661, see `docs/gate-signed-control-changes.md`). The credential goes straight into the gate vault. The running gate then checks it and reports the result on `/connectors`.
+A connector is connected on the Mac with this command, or from the Admin page with a passkey signature (Proton and SimpleFIN #661, Google #662; see `docs/gate-signed-control-changes.md`). The credential goes straight into the gate vault. The running gate then checks it and reports the result on `/connectors`.
 
 ```bash
 pnpm --filter @eido/gate connect gmail
@@ -18,11 +18,8 @@ The same command connects a connector for the first time and reconnects one late
 - **Gate user and environment.** Run the command as the gate user, with the gate's own vault and socket variables:
   - `EIDO_GATE_CONTROL_SOCKET`;
   - `EIDO_GATE_KEYCHAIN_PATH` (see `infra/keychain-vault.md`), or `EIDO_DEV_VAULT=1` with `EIDO_GATE_VAULT_FILE` for development;
-  - `EIDO_GMAIL_CLIENT_ID` for Gmail;
-  - `EIDO_GMAIL_READ_CLIENT_ID` for the Gmail read client, the same id the gate's read proxy uses (see "The read proxy");
-  - `EIDO_DRIVE_CLIENT_ID` for Drive, the same id the gate's read proxy uses (see "The read proxy").
 
-  The command writes the same vault the gate reads.
+  The command writes the same vault the gate reads. Google's client ids live in the gate's environment only (`EIDO_GMAIL_CLIENT_ID`, `EIDO_GMAIL_READ_CLIENT_ID`, `EIDO_DRIVE_CLIENT_ID`); the gate runs the Google sign-in itself.
 
 - **The gate must be running.** The command asks the gate for connector health before it prompts for anything. If the gate is not reachable, or the connector is not pinned, it stops and nothing is stored.
 - **The connector must already be pinned.** Pin its reviewed manifest first; this command does not pin. On a fresh install, in this order:
@@ -34,7 +31,7 @@ The same command connects a connector for the first time and reconnects one late
 
 1. It checks that the gate is running and that the connector is pinned.
 2. It takes the credential:
-   - **Gmail and Drive:** a Google sign-in in the browser (below).
+   - **Gmail and Drive:** a Google sign-in in the browser, run by the gate (below).
    - **Proton:** the Bridge password at a prompt.
    - **SimpleFIN:** a setup token at a prompt, claimed for an access URL (below).
 3. It writes the credential to the gate vault. The credential is never printed, logged, passed in arguments or the environment, or written to a file.
@@ -50,34 +47,36 @@ A connector disabled for manifest drift or a missing signed pin is not re-enable
 
 ## Gmail
 
-The Google OAuth client is a **Desktop app** client in Google Cloud. Its client id is the gate's `EIDO_GMAIL_CLIENT_ID`.
+The Google OAuth client is a **Web application** client in Google Cloud. Its client id is the gate's `EIDO_GMAIL_CLIENT_ID`. Add one authorized redirect URI to it, the gate's callback on the Mac's tailnet name:
 
-The first connect asks for the client secret, which is not shown as you type. The secret is stored in the vault only once sign-in succeeds; later reconnects reuse the stored one.
-
-The sign-in follows OAuth for native apps (RFC 8252):
-
-1. The command opens a listener on `127.0.0.1`, on a port the system picks.
-   - It accepts one callback and then closes.
-   - It gives up after 5 minutes.
-2. It prints the Google address and opens it in the default browser.
-3. Sign in and grant the Gmail permission. Leave the Gmail box ticked on the consent screen; without it the command refuses the grant.
-4. Google redirects back to the listener. The command then:
-   - checks the request's `state`;
-   - exchanges the code with its PKCE verifier;
-   - stores the refresh token in the vault;
-   - drops any cached access token, so the gate's next call uses the new grant.
-
-A refused or mismatched answer, a Google error, a missing refresh token or a timeout stores nothing. Run the command again.
-
-### Signing in from another computer
-
-The listener is on the Mac's `127.0.0.1`, so the browser must reach that address.
-
-When you run the command over SSH, read the port from the printed address (`redirect_uri=http://127.0.0.1:<port>/…`). Then forward that port from the computer with the browser, and open the printed address there within the 5 minutes:
-
-```bash
-ssh -L <port>:127.0.0.1:<port> <mac>
+```text
+https://<mac>.<tailnet>.ts.net:8443/api/gate/connect/google/callback
 ```
+
+The stack supervisor sets the gate's `EIDO_GOOGLE_REDIRECT_URI` to this address from the web app's URL. It must be `https`, on the web app's origin, with no query, and end in `/connect/google/callback`; the gate refuses to start otherwise. Without it, Google sign-in is off and the Admin page and the command both say so.
+
+Start the sign-in from either place:
+
+- **Admin page**, on the phone or the Mac: Connectors, then Connect on the Google client. The passkey signs the start (`connector_oauth:<client>`); the signed payload names the client id, never the secret.
+- **Command** on the Mac: `pnpm --filter @eido/gate connect gmail`.
+
+The first connect asks for the client secret, which is not shown as you type. The gate holds it in memory until Google's answer checks out and only then stores it in the vault; later reconnects reuse the stored one.
+
+The sign-in:
+
+1. The gate makes a PKCE pair and a single-use `state`, and keeps them in memory for 10 minutes. A gate restart ends every pending sign-in.
+2. The browser opens Google's consent page. Sign in and grant the Gmail permission. Leave the Gmail box ticked on the consent screen; without it the gate refuses the grant.
+3. Google redirects the browser to the gate's callback. The gate:
+   - takes the `state` once; an unknown, used or expired one changes nothing;
+   - exchanges the code with its PKCE verifier;
+   - stores the refresh token, and the new client secret if there was one, in the vault;
+   - drops any cached access token, so its next call uses the new grant;
+   - checks the connector and audits `connector.oauth.connected` with hashes only.
+4. The browser lands on the Admin page's connector list with the outcome. The command, which polls the gate, prints the connector's health.
+
+A Google error, a refused code, a missing refresh token, an unticked permission or a timeout stores nothing. Start again.
+
+The browser can be on any device on the tailnet, so there is no port to forward over SSH.
 
 ### Reconnecting
 
@@ -85,11 +84,11 @@ When Google revokes the grant, the gate disables Gmail and `/connectors` shows i
 
 ## The Gmail read client
 
-Gmail has two Google clients. The compose client (`connect gmail`, `gmail.modify`) makes the gate's writes. The read client makes core's reads through the gate's read proxy. It is a second **Desktop app** OAuth client in Google Cloud; its client id is `EIDO_GMAIL_READ_CLIENT_ID`, in both the gate's environment and the command's.
+Gmail has two Google clients. The compose client (`connect gmail`, `gmail.modify`) makes the gate's writes. The read client makes core's reads through the gate's read proxy. It is a second **Web application** OAuth client in Google Cloud, with the same redirect URI; its client id is the gate's `EIDO_GMAIL_READ_CLIENT_ID`.
 
 `connect gmail-read` is the same sign-in as `connect gmail`, with these differences:
 
-- It asks for the `gmail.readonly` permission. Leave the Gmail box ticked on the consent screen; without it the command refuses the grant.
+- It asks for the `gmail.readonly` permission. Leave the Gmail box ticked on the consent screen; without it the gate refuses the grant.
 - It stores the refresh token and the client secret under the Gmail **read** client. The compose client's grant is left as it was. The first connect asks for the read client's secret; later reconnects reuse the stored one.
 - The gate checks Gmail with both clients: the compose client's profile read, and one pinned profile read through the proxy with the read client. Gmail is healthy only when both work. The gate must run with `EIDO_GMAIL_READ_CLIENT_ID` and `EIDO_GATE_EGRESS_PORT` set, or it has no read check.
 
@@ -97,11 +96,11 @@ When Google revokes either grant, the gate disables Gmail with `auth_failed`. Ru
 
 ## Drive
 
-Drive is a read connector: core reads it through the gate's read proxy, and the gate holds its read client's grant. The client is a **Desktop app** OAuth client in Google Cloud; its client id is `EIDO_DRIVE_CLIENT_ID`, in both the gate's environment and the command's.
+Drive is a read connector: core reads it through the gate's read proxy, and the gate holds its read client's grant. The client is a **Web application** OAuth client in Google Cloud, with the same redirect URI; its client id is the gate's `EIDO_DRIVE_CLIENT_ID`.
 
 `connect drive` is the same sign-in as Gmail, with these differences:
 
-- It asks for the `drive.readonly` permission. Leave the Drive box ticked on the consent screen; without it the command refuses the grant.
+- It asks for the `drive.readonly` permission. Leave the Drive box ticked on the consent screen; without it the gate refuses the grant.
 - It stores the refresh token and the client secret under the Drive **read** client. The first connect asks for the secret; later reconnects reuse the stored one.
 - The gate checks Drive with one pinned read through the proxy, `changes/startPageToken`. The gate must run with `EIDO_DRIVE_CLIENT_ID` and `EIDO_GATE_EGRESS_PORT` set, or it has no Drive check and the command reports that it could not check Drive.
 

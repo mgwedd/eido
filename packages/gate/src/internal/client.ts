@@ -10,6 +10,8 @@ import {
   validateGateFileHelperResponse,
   validateGateAuditRecordResult,
   validateGateConnectorHealth,
+  validateGateGoogleConnectFlow,
+  validateGateGoogleConnectStarted,
   validateGateEnrolmentCode,
   validateGateIntentHistory,
   validateGateIntentStatus,
@@ -31,6 +33,9 @@ import type {
   GateAuditRecordRequest,
   GateAuditRecordResult,
   GateConnectorHealth,
+  GateGoogleConnectFlow,
+  GateGoogleConnectLocalRequest,
+  GateGoogleConnectStarted,
   GateEnrolmentCode,
   GateIntentHistory,
   GateIntentProposal,
@@ -498,6 +503,10 @@ const CONNECT_CHECK_TIMEOUT_MS = 60_000
 export function createConnectClient(options: IntentClientOptions): {
   health: () => Promise<GateConnectorHealth>
   connected: (connector: string) => Promise<GateConnectorHealth>
+  googleStart: (
+    request: GateGoogleConnectLocalRequest
+  ) => Promise<GateGoogleConnectStarted>
+  googleFlow: (flow: string) => Promise<GateGoogleConnectFlow>
 } {
   const quick = {
     socketPath: options.socketPath,
@@ -525,6 +534,24 @@ export function createConnectClient(options: IntentClientOptions): {
         [200],
         validateGateConnectorHealth,
         "GateConnectorHealth"
+      ),
+    googleStart: async (request) =>
+      expect(
+        await call(quick, "POST", "/connect/google/start", request),
+        [200],
+        validateGateGoogleConnectStarted,
+        "GateGoogleConnectStarted"
+      ),
+    googleFlow: async (flow) =>
+      expect(
+        await call(
+          quick,
+          "GET",
+          `/connect/google/flows/${encodeURIComponent(flow)}`
+        ),
+        [200],
+        validateGateGoogleConnectFlow,
+        "GateGoogleConnectFlow"
       ),
   }
 }

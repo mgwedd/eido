@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateGoogleConnectLocalRequest",
+  "description": "Body of POST /connect/google/start on the control socket (#662): what the Mac-side `connect` command asks the gate to start. The client's OAuth secret is given only when the vault has none.",
+  "type": "object",
+  "properties": {
+    "target": {
+      "enum": ["gmail", "gmail-read", "drive"]
+    },
+    "clientSecret": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    }
+  },
+  "required": ["target"],
+  "additionalProperties": false
+}

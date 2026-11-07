@@ -76,6 +76,7 @@ describe("buildStackConfig", () => {
       EIDO_GATE_SUPERVISOR_SOCKET: `${stackDir}/run/supervisor.sock`,
       EIDO_WEBAUTHN_RP_ID: HOST,
       EIDO_WEBAUTHN_ORIGIN: `https://${HOST}:8443`,
+      EIDO_GOOGLE_REDIRECT_URI: `https://${HOST}:8443/api/gate/connect/google/callback`,
       EIDO_GATE_PHONE_HOST: "127.0.0.1",
       EIDO_GATE_PHONE_PORT: "8788",
       EIDO_GATE_PHONE_BASE_PATH: "",

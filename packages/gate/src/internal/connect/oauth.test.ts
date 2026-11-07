@@ -1,48 +1,12 @@
-import { request } from "node:http"
 import { describe, expect, it, vi } from "vitest"
 import {
   authorizationUrl,
-  CALLBACK_PATH,
   exchangeCode,
   GMAIL_MODIFY_SCOPE,
   oauthState,
   pkcePair,
-  startLoopback,
 } from "./oauth"
 import type { CodeExchange } from "./oauth"
-
-// Talks to the loopback listener with node:http so a test can send a Host header of its choice.
-function get(
-  url: string,
-  options: { host?: string; method?: string } = {}
-): Promise<{ status: number; text: string }> {
-  return new Promise((resolve, reject) => {
-    const target = new URL(url)
-    const outgoing = request(
-      {
-        host: target.hostname,
-        port: target.port,
-        path: `${target.pathname}${target.search}`,
-        method: options.method ?? "GET",
-        headers: options.host === undefined ? {} : { host: options.host },
-        agent: false,
-      },
-      (response) => {
-        let text = ""
-        response.setEncoding("utf8")
-        response.on("data", (chunk: string) => (text += chunk))
-        response.on("end", () =>
-          resolve({ status: response.statusCode ?? 0, text })
-        )
-      }
-    )
-    outgoing.on("error", reject)
-    outgoing.end()
-  })
-}
-
-const callback = (redirectUri: string, query: Record<string, string>) =>
-  `${redirectUri}?${new URLSearchParams(query).toString()}`
 
 describe("pkcePair", () => {
   it("makes a 43-character base64url verifier and a different S256 challenge each time", () => {
@@ -86,120 +50,6 @@ describe("authorizationUrl", () => {
       access_type: "offline",
       prompt: "consent",
     })
-  })
-})
-
-describe("startLoopback", () => {
-  it("listens on 127.0.0.1 on an ephemeral port at the callback path", async () => {
-    const loopback = await startLoopback({ state: "s", timeoutMs: 5000 })
-    const redirect = new URL(loopback.redirectUri)
-    expect(redirect.protocol).toBe("http:")
-    expect(redirect.hostname).toBe("127.0.0.1")
-    expect(Number(redirect.port)).toBeGreaterThan(0)
-    expect(redirect.pathname).toBe(CALLBACK_PATH)
-    await get(callback(loopback.redirectUri, { state: "s", code: "c" }))
-    await loopback.result
-  })
-
-  it("takes the code from a callback whose state matches, then closes", async () => {
-    const loopback = await startLoopback({ state: "s-1", timeoutMs: 5000 })
-    const answer = await get(
-      callback(loopback.redirectUri, { state: "s-1", code: "code-1" })
-    )
-    expect(answer.status).toBe(200)
-    expect(await loopback.result).toEqual({ ok: true, code: "code-1" })
-    await expect(
-      get(callback(loopback.redirectUri, { state: "s-1", code: "code-2" }))
-    ).rejects.toThrow(/ECONNREFUSED/)
-  })
-
-  it("refuses a callback with another state and accepts nothing after it", async () => {
-    const loopback = await startLoopback({ state: "s-1", timeoutMs: 5000 })
-    const answer = await get(
-      callback(loopback.redirectUri, { state: "s-2", code: "code-1" })
-    )
-    expect(answer.status).toBe(400)
-    expect(await loopback.result).toEqual({
-      ok: false,
-      reason: "state_mismatch",
-    })
-    await expect(
-      get(callback(loopback.redirectUri, { state: "s-1", code: "code-1" }))
-    ).rejects.toThrow(/ECONNREFUSED/)
-  })
-
-  it("refuses a callback with no state", async () => {
-    const loopback = await startLoopback({ state: "s-1", timeoutMs: 5000 })
-    await get(callback(loopback.redirectUri, { code: "code-1" }))
-    expect(await loopback.result).toEqual({
-      ok: false,
-      reason: "state_mismatch",
-    })
-  })
-
-  it("reports a denied authorization with Google's error code", async () => {
-    const loopback = await startLoopback({ state: "s-1", timeoutMs: 5000 })
-    await get(
-      callback(loopback.redirectUri, { state: "s-1", error: "access_denied" })
-    )
-    expect(await loopback.result).toEqual({
-      ok: false,
-      reason: "authorization_denied",
-      error: "access_denied",
-    })
-  })
-
-  it("drops an error value that is not a plain OAuth code", async () => {
-    const loopback = await startLoopback({ state: "s-1", timeoutMs: 5000 })
-    await get(
-      callback(loopback.redirectUri, { state: "s-1", error: "<b>x</b>" })
-    )
-    expect(await loopback.result).toEqual({
-      ok: false,
-      reason: "authorization_denied",
-    })
-  })
-
-  it("reports a callback without a code", async () => {
-    const loopback = await startLoopback({ state: "s-1", timeoutMs: 5000 })
-    await get(callback(loopback.redirectUri, { state: "s-1" }))
-    expect(await loopback.result).toEqual({
-      ok: false,
-      reason: "invalid_callback",
-    })
-  })
-
-  it("answers other paths, methods and hosts without taking them as the callback", async () => {
-    const loopback = await startLoopback({ state: "s-1", timeoutMs: 5000 })
-    const origin = new URL(loopback.redirectUri).origin
-    expect((await get(`${origin}/favicon.ico`)).status).toBe(404)
-    expect(
-      (
-        await get(callback(loopback.redirectUri, { state: "s-1", code: "c" }), {
-          method: "POST",
-        })
-      ).status
-    ).toBe(404)
-    expect(
-      (
-        await get(callback(loopback.redirectUri, { state: "s-1", code: "c" }), {
-          host: "attacker.example.invalid",
-        })
-      ).status
-    ).toBe(421)
-    const answer = await get(
-      callback(loopback.redirectUri, { state: "s-1", code: "code-3" })
-    )
-    expect(answer.status).toBe(200)
-    expect(await loopback.result).toEqual({ ok: true, code: "code-3" })
-  })
-
-  it("gives up and closes when no callback arrives in time", async () => {
-    const loopback = await startLoopback({ state: "s-1", timeoutMs: 30 })
-    expect(await loopback.result).toEqual({ ok: false, reason: "timeout" })
-    await expect(
-      get(callback(loopback.redirectUri, { state: "s-1", code: "late" }))
-    ).rejects.toThrow(/ECONNREFUSED/)
   })
 })
 

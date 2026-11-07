@@ -20,6 +20,8 @@ import type {
 import { append, verifyChain } from "./audit"
 import { getConnectorHealth } from "./connector-health"
 import { connectedRoute } from "./connector-connect"
+import { googleControlRoute } from "./google-connect"
+import type { GoogleConnect } from "./google-connect"
 import type { ConnectorProbes } from "./connector-connect"
 import { listPasskeys, revokeByFingerprint } from "./credentials"
 import { issueEnrolmentCode } from "./enrolment"
@@ -66,6 +68,8 @@ export type GateState = {
   webAuthn?: WebAuthnConfig
   /** Health probes by connector name, run after the owner connects one (#98). */
   probes?: ConnectorProbes
+  /** Google sign-in through the gate (#662): the `connect` command starts and polls it here. */
+  google?: GoogleConnect
 }
 
 const MAX_ERRORS = 50
@@ -531,6 +535,10 @@ export function controlHandler(gate: () => GateState, now: Clock): Handler {
       () => now().getTime()
     )
     if (connected !== undefined) return connected
+    const google = await googleControlRoute(request, state.google, () =>
+      now().getTime()
+    )
+    if (google !== undefined) return google
     return (
       connectorHealthRoute(request, state) ??
       readRoute(request, state) ??

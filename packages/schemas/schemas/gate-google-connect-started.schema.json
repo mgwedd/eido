@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateGoogleConnectStarted",
+  "description": "Response of the Google sign-in start routes (#662): Google's consent address, carrying the request's state and PKCE challenge and never a secret, and the flow id the `connect` command polls on the control socket.",
+  "type": "object",
+  "properties": {
+    "authorizationUrl": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^https://accounts\\.google\\.com/"
+    },
+    "flow": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    }
+  },
+  "required": ["authorizationUrl", "flow"],
+  "additionalProperties": false
+}
