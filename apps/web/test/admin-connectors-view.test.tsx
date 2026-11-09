@@ -298,6 +298,7 @@ describe("remove", () => {
     await click(card("Gmail"), "Remove")
     await click(document.body, "Remove Gmail")
     await settle()
+    await waitFor(() => container.querySelector('[role="alert"]') !== null)
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
       "Could not remove Gmail: the gate cannot do this right now."
     )
@@ -391,6 +392,7 @@ describe("Google sign-in", () => {
     })
     await render()
     await click(card("Drive"), "Connect with Google")
+    await waitFor(() => card("Drive").querySelector('[role="alert"]') !== null)
     expect(card("Drive").querySelector('[role="alert"]')?.textContent).toBe(
       "Could not start Drive: the gate cannot do this right now."
     )
@@ -405,6 +407,7 @@ describe("Google sign-in", () => {
     await render()
     await click(card("Drive"), "Connect with Google")
     await sign()
+    await waitFor(() => card("Drive").querySelector('[role="alert"]') !== null)
     expect(card("Drive").querySelector('[role="alert"]')?.textContent).toBe(
       "Could not connect Drive: the passkey signature was refused."
     )
@@ -472,6 +475,7 @@ describe("Proton Bridge", () => {
     const pin = input(bridge, "Certificate pin (SHA-256)")
     typeInto(pin, PIN)
     await click(bridge, "Change pin")
+    await waitFor(() => bridge.querySelector('[role="alert"]') !== null)
     expect(bridge.querySelector('[role="alert"]')?.textContent).toBe(
       "Not saved: the gate prepared a different change than asked, so nothing was signed. The field is cleared; type it again."
     )

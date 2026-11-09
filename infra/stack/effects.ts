@@ -24,13 +24,20 @@ import { sha256File } from "../llama/verify.ts"
 import type { Deps } from "./cli.ts"
 import { platformOf } from "./config.ts"
 import type { RunResult } from "./ports.ts"
+import { processControl } from "./process-control.ts"
 import { lineWriter } from "./supervise.ts"
 
 const repoRoot = join(import.meta.dirname, "..", "..")
 
+const resolveCommand = (command: string) => {
+  if (process.platform === "win32" && command === "tailscale")
+    return "tailscale.exe"
+  return command
+}
+
 const exec = (command: string, args: readonly string[]) =>
   new Promise<RunResult>((resolve) => {
-    execFile(command, [...args], (error, stdout, stderr) => {
+    execFile(resolveCommand(command), [...args], (error, stdout, stderr) => {
       if (error === null) resolve({ code: 0, stdout, stderr })
       // A numeric code is the program's exit status; anything else means it did not run.
       else if (typeof error.code === "number")
@@ -46,12 +53,13 @@ const launch: Deps["launch"] = (spec, options) => {
     `=== ${spec.name} start ${new Date().toISOString()}\n`
   )
   const env = { ...process.env, ...spec.env }
+  const detached = process.platform !== "win32"
   if (options.background) {
     const fd = openSync(options.logFile, "a")
     const child = spawn(spec.command, spec.args, {
       cwd: spec.cwd,
       env,
-      detached: true,
+      detached,
       stdio: ["ignore", fd, fd],
     })
     closeSync(fd)
@@ -64,7 +72,7 @@ const launch: Deps["launch"] = (spec, options) => {
   const child = spawn(spec.command, spec.args, {
     cwd: spec.cwd,
     env,
-    detached: true,
+    detached,
     stdio: ["ignore", "pipe", "pipe"],
   })
   const toLog = (line: string) => appendFileSync(options.logFile, `${line}\n`)
@@ -90,6 +98,14 @@ const launch: Deps["launch"] = (spec, options) => {
 }
 
 const groupAlive = (pid: number) => {
+  if (process.platform === "win32") {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
   try {
     process.kill(-pid, 0)
     return true
@@ -100,8 +116,11 @@ const groupAlive = (pid: number) => {
 }
 
 export function stackEffects(): Deps {
+  const platform = platformOf(process.platform)
+  const control = processControl(platform, exec)
   return {
-    platform: platformOf(process.platform),
+    platform,
+    control,
     env: process.env,
     home: homedir(),
     repoRoot,

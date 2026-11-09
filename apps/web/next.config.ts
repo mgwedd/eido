@@ -23,7 +23,11 @@ const { version } = JSON.parse(readFileSync("./package.json", "utf8")) as {
 }
 
 const nextConfig: NextConfig = {
-  env: { NEXT_PUBLIC_APP_VERSION: version, NEXT_PUBLIC_BUILD_ID: buildId() },
+  env: {
+    NEXT_PUBLIC_APP_VERSION: version,
+    NEXT_PUBLIC_BUILD_ID: buildId(),
+    NEXT_PUBLIC_AUTH0_ENABLED: process.env["AUTH0_DOMAIN"] ? "true" : "false",
+  },
   // `next dev` rewrites apps/web/AGENTS.md on every run unless this is off (#377).
   agentRules: false,
   // `forbidden()` answers refused pages with a real 403 (app/forbidden.tsx, #370).

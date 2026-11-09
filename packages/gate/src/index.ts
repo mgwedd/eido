@@ -41,3 +41,26 @@ export type IntentState = GateIntentState
 export type Tier = GateTier
 export type AuditRecordRequest = GateAuditRecordRequest
 export type AuditRecordResult = GateAuditRecordResult
+
+export {
+  verifyWebSession,
+  webSessionCookie,
+  clearWebSessionCookie,
+  clearGateSessionCookie,
+  publicKeyFromRaw,
+  getWebSessionPublicKey,
+  generateWebSessionKeyPair,
+  SESSION_COOKIE,
+  SESSION_COOKIE_PATH,
+  WEB_SESSION_COOKIE,
+  WEB_SESSION_COOKIE_PATH,
+  WEB_SESSION_TTL_MS,
+} from "./internal/sessions"
+export type {
+  WebSessionClaims,
+  WebSessionKeyPair,
+  WebSessionPayload,
+  WebSessionRole,
+  WebSessionVerificationRefusal,
+  WebSessionVerificationResult,
+} from "./internal/sessions"

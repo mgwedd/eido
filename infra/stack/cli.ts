@@ -53,6 +53,11 @@ import {
   type Exec,
 } from "./ports.ts"
 import {
+  processControl,
+  tailscaleBin,
+  type ProcessControl,
+} from "./process-control.ts"
+import {
   applyStackSettings,
   readStackSettings,
   stackSettingsPath,
@@ -107,6 +112,7 @@ export type Deps = {
   launch: (spec: ProcessSpec, options: LaunchOptions) => Launched
   fetch: Fetch
   clock: Clock
+  control?: ProcessControl
   signalGroup: (pid: number, signal: Signal) => void
   groupAlive: (pid: number) => boolean
   files: Files
@@ -203,18 +209,20 @@ function probeWith(fetch: Fetch): Probe {
   }
 }
 
-async function argsOf(exec: Exec, pid: number): Promise<string | undefined> {
-  const run = await exec("ps", ["-o", "args=", "-p", String(pid)])
-  return run.code === 0 && run.stdout.trim() !== ""
-    ? run.stdout.trim()
-    : undefined
+export async function argsOf(
+  exec: Exec,
+  pid: number,
+  platform: Platform = "linux"
+): Promise<string | undefined> {
+  return processControl(platform, exec).argsOf(pid)
 }
 
 async function tailscaleHost(deps: Deps): Promise<string> {
-  const run = await deps.exec("tailscale", ["status", "--json"])
+  const bin = tailscaleBin(deps.platform)
+  const run = await deps.exec(bin, ["status", "--json"])
   if (run.code !== 0)
     throw new Error(
-      `tailscale status --json failed: ${run.stderr.trim() || `exit ${run.code}`}. Is Tailscale running? Use --no-serve for backends only.`
+      `${bin} status --json failed: ${run.stderr.trim() || `exit ${run.code}`}. Is Tailscale running? Use --no-serve for backends only.`
     )
   return parseDnsName(run.stdout)
 }
@@ -243,8 +251,9 @@ export function configFor(
 }
 
 function serveDeps(deps: Deps) {
+  const bin = tailscaleBin(deps.platform)
   return {
-    tailscale: (args: readonly string[]) => deps.exec("tailscale", args),
+    tailscale: (args: readonly string[]) => deps.exec(bin, args),
     fetch: deps.fetch,
     out: (line: string) => deps.out(`serve | ${line}`),
     err: (line: string) => deps.err(`serve | ${line}`),
@@ -266,10 +275,15 @@ export async function stopAll(
   config: StackConfig,
   names: readonly ProcessName[]
 ) {
+  const control =
+    deps.control ??
+    processControl(deps.platform, deps.exec, {
+      signalGroup: deps.signalGroup,
+      groupAlive: deps.groupAlive,
+    })
   const stopDeps = {
-    argsOf: (pid: number) => argsOf(deps.exec, pid),
-    signalGroup: deps.signalGroup,
-    groupAlive: deps.groupAlive,
+    argsOf: (pid: number) => control.argsOf(pid),
+    control,
     clock: deps.clock,
   }
   for (const name of [...names].reverse()) {
@@ -467,7 +481,9 @@ export async function isRunning(
   const record = readRecord(deps, config, name)
   return (
     record !== undefined &&
-    (await argsOf(deps.exec, record.pid))?.includes(record.marker) === true
+    (await argsOf(deps.exec, record.pid, deps.platform))?.includes(
+      record.marker
+    ) === true
   )
 }
 

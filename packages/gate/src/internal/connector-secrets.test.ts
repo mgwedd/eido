@@ -170,9 +170,10 @@ async function signIn(): Promise<string> {
   const reply = await call("/auth/login", {
     body: { assertion: assertion(auth, options.value.challenge) },
   })
-  const cookie = reply.headers?.["set-cookie"]
-  if (cookie === undefined) throw new Error("login refused")
-  return cookie.split(";")[0] ?? ""
+  const rawCookie = reply.headers?.["set-cookie"]
+  const first = typeof rawCookie === "string" ? rawCookie : rawCookie?.[0]
+  if (typeof first !== "string") throw new Error("login refused")
+  return first.split(";")[0] ?? ""
 }
 
 async function stepUp(cookie: string): Promise<void> {

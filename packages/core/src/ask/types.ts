@@ -51,4 +51,10 @@ export interface AskDeps {
   conversation?: readonly Turn[]
   /** Maps a document source to its stable tag in this conversation. */
   allocateSourceTag?: (sourceRef: string) => Promise<string>
+  /** Configured note root IDs that local notes search and coverage check (default `["notes"]`). */
+  noteRoots?: readonly string[]
+  /** Maximum age in milliseconds before a note root cursor is considered stale (default `15 * 60_000`). */
+  maxNotesStaleMs?: number
+  /** Approved root IDs (from gate configuration) to determine whether notes source is missing. */
+  approvedNoteRoots?: readonly string[]
 }

@@ -33,6 +33,7 @@ import {
   type StackConfig,
 } from "./config.ts"
 import { describeListeners, listenersOn, type Exec } from "./ports.ts"
+import { tailscaleBin } from "./process-control.ts"
 import type { FileStat } from "./settings.ts"
 import { parsePidRecord } from "./supervise.ts"
 
@@ -267,12 +268,13 @@ const START_TAILSCALE: Record<Platform, string> = {
 async function checkTailscale(
   deps: DoctorDeps
 ): Promise<{ check: Check; host?: string }> {
-  const run = await deps.exec("tailscale", ["status", "--json"])
+  const bin = tailscaleBin(deps.platform)
+  const run = await deps.exec(bin, ["status", "--json"])
   if (run.code !== 0)
     return {
       check: fail(
         "tailscale",
-        `tailscale status failed: ${run.stderr.trim() || `exit ${run.code}`}`,
+        `${bin} status failed: ${run.stderr.trim() || `exit ${run.code}`}`,
         fix("start-tailscale", START_TAILSCALE[deps.platform])
       ),
     }
@@ -303,6 +305,18 @@ function checkWebEnv(deps: DoctorDeps, edgeOrigin: string | undefined): Check {
   const join = (...parts: string[]) => pathsFor(deps.platform).join(...parts)
   const relative = join("apps", "web", ".env.local")
   const text = deps.files.read(join(deps.repoRoot, relative))
+  const values = text === undefined ? {} : parseEnv(text)
+  const auth0Configured =
+    set(deps.env, "AUTH0_DOMAIN") !== undefined ||
+    set(values, "AUTH0_DOMAIN") !== undefined ||
+    set(deps.env, "EIDO_ASSISTANT_EMAILS") !== undefined ||
+    set(values, "EIDO_ASSISTANT_EMAILS") !== undefined ||
+    Object.keys(values).some((k) => k.startsWith("AUTH0_"))
+
+  if (!auth0Configured) {
+    return ok("web-env", "passkey sign-in (Auth0 not configured)")
+  }
+
   if (text === undefined)
     return fail(
       "web-env",
@@ -313,7 +327,6 @@ function checkWebEnv(deps: DoctorDeps, edgeOrigin: string | undefined): Check {
       )
     )
   // Only key names leave this function, and whether APP_BASE_URL lists the edge origin.
-  const values = parseEnv(text)
   const missing = WEB_ENV_KEYS.filter((key) => (values[key] ?? "") === "")
   if (missing.length > 0)
     return fail(

@@ -56,6 +56,11 @@ import {
   routePath,
   tierRefusal,
 } from "./phone-routes"
+import {
+  getWebSessionPublicKey,
+  verifyWebSession,
+  WEB_SESSION_COOKIE,
+} from "./sessions"
 import { listReviewedManifests, readReviewedManifest } from "./repin"
 import { DATA_DIR_ENV, placeReviewedManifest } from "../reviewed-manifest"
 import type { ExecutionResult } from "./executor"
@@ -169,8 +174,9 @@ async function signIn(): Promise<string> {
   const reply = await call("POST", "/auth/login", {
     body: { assertion: assertion(auth, parsed.value.challenge) },
   })
-  const cookie = reply.headers?.["set-cookie"]
-  if (cookie === undefined)
+  const rawCookie = reply.headers?.["set-cookie"]
+  const cookie = typeof rawCookie === "string" ? rawCookie : rawCookie?.[0]
+  if (typeof cookie !== "string")
     throw new Error(`login refused: ${String(code(reply))}`)
   return cookie.split(";")[0] ?? ""
 }
@@ -1232,7 +1238,19 @@ describe("phoneHandler: session", () => {
     }
   )
 
-  it("sets the session cookie with its attributes and returns when it ends", async () => {
+  // A web session cookie (eido_web_session) carries zero authority on /api/gate.
+  // The gate reads only eido_gate_session.
+  it.each(gated)(
+    "401s %s %s with only the web session cookie",
+    async (method, path) => {
+      const reply = await call(method, path, {
+        cookie: `${WEB_SESSION_COOKIE}=${"A".repeat(100)}`,
+      })
+      expect([reply.status, code(reply)]).toEqual([401, "unauthenticated"])
+    }
+  )
+
+  it("sets both the gate and web session cookies on login (#678)", async () => {
     enrol(auth)
     const options = await call("POST", "/auth/login/options")
     const parsed = validateGateLoginOptions(options.body)
@@ -1247,9 +1265,73 @@ describe("phoneHandler: session", () => {
       ok: true,
       value: { expiresAt: "2026-10-19T20:00:00.000Z" },
     })
-    expect(reply.headers?.["set-cookie"]).toMatch(
+    const rawCookies = reply.headers?.["set-cookie"]
+    const cookies: readonly string[] =
+      typeof rawCookies === "string" ? [rawCookies] : (rawCookies ?? [])
+    expect(cookies).toHaveLength(2)
+    expect(cookies[0]).toMatch(
       /^eido_gate_session=[A-Za-z0-9_-]{43}; Max-Age=43200; Path=\/api\/gate; HttpOnly; Secure; SameSite=Strict$/
     )
+    expect(cookies[1]).toMatch(
+      /^eido_web_session=[A-Za-z0-9._-]+; Max-Age=43200; Path=\/; HttpOnly; Secure; SameSite=Lax$/
+    )
+
+    // Verify the web session token
+    const secondCookie = cookies[1] ?? ""
+    const webToken = secondCookie.split(";")[0]?.split("=")[1] ?? ""
+    const pubKey = getWebSessionPublicKey(s.db)
+    const verified = verifyWebSession(webToken, pubKey, () => at)
+    expect(verified).toEqual({
+      ok: true,
+      payload: {
+        sub: auth.credentialId,
+        role: "owner",
+        iat: Math.floor(START.getTime() / 1000),
+        exp: Math.floor(new Date("2026-10-19T20:00:00.000Z").getTime() / 1000),
+      },
+    })
+  })
+
+  it("POST /auth/logout invalidates session and elevation, audits session.logged_out, and clears both cookies (#678)", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    // Step up
+    const stepUpOpts = await call("POST", "/auth/step-up/options", { cookie })
+    const parsedOpts = validateGateLoginOptions(stepUpOpts.body)
+    if (!parsedOpts.ok) throw new Error("step up options failed")
+    const steppedUp = await call("POST", "/auth/step-up", {
+      cookie,
+      body: {
+        assertion: assertion(auth, parsedOpts.value.challenge, {
+          signCount: 1,
+        }),
+      },
+    })
+    expect(steppedUp.status).toBe(200)
+    expect((await call("GET", "/auth/step-up", { cookie })).body).toEqual({
+      expiresAt: "2026-10-19T08:05:00.000Z",
+    })
+
+    // Log out
+    const logout = await call("POST", "/auth/logout", { cookie, body: {} })
+    expect(logout.status).toBe(200)
+    expect(logout.body).toEqual({ ok: true })
+    const rawCookies = logout.headers?.["set-cookie"]
+    const cookies = Array.isArray(rawCookies) ? rawCookies : [rawCookies ?? ""]
+    expect(cookies).toEqual([
+      "eido_gate_session=; Max-Age=0; Path=/api/gate; HttpOnly; Secure; SameSite=Strict",
+      "eido_web_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax",
+    ])
+
+    // Subsequent authenticated reads 401
+    expect((await call("GET", "/approvals", { cookie })).status).toBe(401)
+    expect((await call("GET", "/auth/step-up", { cookie })).status).toBe(401)
+
+    // Audited with hashes only
+    const lastAudit = auditRows(s.db).at(-1)
+    expect(lastAudit?.action).toBe("session.logged_out")
+    expect(lastAudit?.actor).toBe("approver")
+    expect(lastAudit?.target).toBe("session")
   })
 
   it("lets a session in until 12 hours after login, then 401s", async () => {
@@ -1814,7 +1896,18 @@ describe("phoneHandler: passkey enrolment with a code (#202)", () => {
     expect(reply.body).toEqual({ expiresAt: "2026-10-19T20:00:00.000Z" })
     expect(credentialIds()).toEqual([auth.credentialId])
     expect(codeUsed(enrolmentCode)).toBe(true)
-    const cookie = (reply.headers?.["set-cookie"] ?? "").split(";")[0] ?? ""
+    const rawCookies = reply.headers?.["set-cookie"]
+    const cookies: readonly string[] =
+      typeof rawCookies === "string" ? [rawCookies] : (rawCookies ?? [])
+    expect(cookies).toHaveLength(2)
+    expect(cookies[0]).toMatch(
+      /^eido_gate_session=[A-Za-z0-9_-]{43}; Max-Age=43200; Path=\/api\/gate; HttpOnly; Secure; SameSite=Strict$/
+    )
+    expect(cookies[1]).toMatch(
+      /^eido_web_session=[A-Za-z0-9._-]+; Max-Age=43200; Path=\/; HttpOnly; Secure; SameSite=Lax$/
+    )
+    const firstCookie = cookies[0] ?? ""
+    const cookie = firstCookie.split(";")[0] ?? ""
     expect((await call("GET", "/approvals", { cookie })).status).toBe(200)
     expect((await call("GET", "/passkey/status", { cookie })).body).toEqual({
       enrolled: true,
@@ -3363,4 +3456,12 @@ describe("phoneHandler: Google sign-in (#662)", () => {
       expect([reply.status, code(reply)]).toEqual([503, "unavailable"])
     }
   )
+
+  it("returns the public key on GET /auth/jwt-key without authentication", async () => {
+    const reply = await call("GET", "/auth/jwt-key")
+    expect(reply.status).toBe(200)
+    expect(reply.body).toEqual({
+      publicKey: getWebSessionPublicKey(s.db),
+    })
+  })
 })
