@@ -29,6 +29,7 @@ import { buildAskPack } from "./pack"
 import { ZOOM_FACTS_RESERVE, buildZoomedAsk } from "./zoom-pack"
 import { routeQuestion } from "../digest/route"
 import { PLAN_SCHEMA, PLAN_SYSTEM, askScope, parsePlan } from "./plan"
+import { directNoteLookup, isDirectNoteLookup } from "./notes-lookup"
 import type { AskCitation, AskDeps, AskResult, SearchPlan } from "./types"
 
 const DEFAULT_SEARCH_LIMIT = 20
@@ -483,5 +484,8 @@ async function run(
  * it waits at most for one running job.
  */
 export function ask(question: string, deps: AskDeps): Promise<AskResult> {
+  if (isDirectNoteLookup(question)) {
+    return directNoteLookup(question, deps)
+  }
   return deps.queue.run("foreground", (client) => run(question, deps, client))
 }
