@@ -282,6 +282,9 @@ BEGIN SELECT RAISE(ABORT, 'link endpoint does not exist'); END;
 CREATE TRIGGER links_immutable BEFORE UPDATE ON links
 BEGIN SELECT RAISE(ABORT, 'links are immutable'); END;
 `,
+  // Preserve the exact verified confirmation while its event waits for triage, including the
+  // extraction threshold and source location. Existing events have no snapshot.
+  `ALTER TABLE events ADD COLUMN proposal_json TEXT CHECK (proposal_json IS NULL OR json_valid(proposal_json));`,
 ]
 
 export const LEDGER_SCHEMA_VERSION = LEDGER_MIGRATIONS.length

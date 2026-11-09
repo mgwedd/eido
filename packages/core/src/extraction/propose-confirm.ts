@@ -12,17 +12,16 @@ export interface ProposeConfirmOptions {
   offsets?: OffsetTable
 }
 
-export async function proposeConfirm(
-  gate: Pick<IntentClient, "propose">,
+export function buildConfirmProposal(
   candidate: ConfirmCandidate,
   options?: ProposeConfirmOptions
-): Promise<string> {
+): Omit<IntentProposal, "origin"> {
   const location =
     options?.offsets !== undefined
       ? lookupOffset(options.offsets, candidate.span.start)
       : null
 
-  const proposal: IntentProposal = {
+  return {
     intent: {
       kind: "confirm.field",
       args: {
@@ -63,12 +62,21 @@ export async function proposeConfirm(
           : {}),
       },
     },
-    origin: "reactive",
     ...(candidate.injectionSuspected
       ? { injection: { reasons: candidate.injectionReasons } }
       : {}),
   }
+}
 
+export async function proposeConfirm(
+  gate: Pick<IntentClient, "propose">,
+  candidate: ConfirmCandidate,
+  options?: ProposeConfirmOptions
+): Promise<string> {
+  const proposal: IntentProposal = {
+    ...buildConfirmProposal(candidate, options),
+    origin: "reactive",
+  }
   const result = await gate.propose(proposal)
   if (result.state === "rejected") {
     throw new Error(

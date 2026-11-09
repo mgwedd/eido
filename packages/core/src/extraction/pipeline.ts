@@ -32,7 +32,12 @@ import {
 import { getDocumentType, setDocumentType } from "../index/document-type"
 import type { CandidateItem, ItemOutcome } from "./verify"
 import { defaultFieldConfidence, verifyItem } from "./verify"
-import { proposeConfirm } from "./propose-confirm"
+import { buildConfirmProposal } from "./propose-confirm"
+import { createCardBuilders } from "../triage/cards"
+import { triageConfigFrom } from "../triage/config"
+import type { TriageConfig } from "../triage/config"
+import { emitEvent } from "../triage/store"
+import { triageTick } from "../triage/tick"
 import { summarize } from "./summary"
 import type {
   ConfirmCandidate,
@@ -71,6 +76,8 @@ export type ExtractorDeps = {
   model: ModelClient
   config: ExtractionConfig
   gate?: Pick<IntentClient, "propose">
+  /** The same local-day budget used by scheduled triage. Defaults to the standard UTC budget. */
+  triage?: TriageConfig
   /** Per-field confidence. Default: 1.0 for a field that verified and parsed. */
   fieldConfidence?: FieldScorer
   log?: (event: ExtractionLogEvent) => void
@@ -620,14 +627,33 @@ export function createExtractor(deps: ExtractorDeps): Extractor {
         })
       }
     })
-    if (deps.gate !== undefined) {
-      for (const candidate of confirmations) {
-        await proposeConfirm(deps.gate, candidate, {
-          documentTitle: doc.title,
-          documentSource: doc.source,
-          offsets: parsed.offsets,
+    // The scanner uses the same field identity, so extraction and later scans share one card.
+    // Store the source and threshold now, while the verified parser locations are available.
+    await writeQueueFor(db).run(() => {
+      for (const candidate of confirmations)
+        emitEvent(db, {
+          source: "extraction",
+          kind: "confirm-field",
+          triggerKey: `extraction:${String(candidate.extractionId)}:confirm`,
+          fireId: candidate.field,
+          ref: `ext:${String(candidate.extractionId)}`,
+          signals: { moneyPresent: candidate.field === "amount" },
+          receivedAt: createdAt,
+          proposal: buildConfirmProposal(candidate, {
+            documentTitle: doc.title,
+            documentSource: doc.source,
+            offsets: parsed.offsets,
+          }),
         })
-      }
+    })
+    if (deps.gate !== undefined && confirmations.length > 0) {
+      const cfg = deps.triage ?? triageConfigFrom({}, "Etc/UTC")
+      const at = new Date(createdAt)
+      await triageTick(
+        { db, gate: deps.gate, cards: createCardBuilders(db, at, cfg) },
+        at,
+        cfg
+      )
     }
     return finish("ok", {
       proposed: outcomes.length,
