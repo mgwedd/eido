@@ -1,9 +1,12 @@
+"use client"
+
 import { LogOut } from "lucide-react"
 
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Button } from "@eido/ui/components/button"
 import { Card, CardContent } from "@eido/ui/components/card"
 import type { ForbiddenReason } from "@/lib/auth/access"
+import { performSignOut } from "@/lib/auth/sign-out"
 
 const MESSAGES: Record<ForbiddenReason, string> = {
   unverified:
@@ -34,13 +37,19 @@ function ForbiddenView({ reason }: { reason: ForbiddenReason | null }) {
               {reason === null ? GENERIC : MESSAGES[reason]}
             </AlertDescription>
           </Alert>
-          {/* A plain link: sign-out must be a full navigation, never a prefetch. */}
           <Button
+            nativeButton={false}
             variant="outline"
             size="lg"
             className="h-12 rounded-xl"
-            nativeButton={false}
-            render={<a href="/auth/logout" />}
+            render={
+              <a
+                href="/auth/logout"
+                onClick={() => {
+                  void performSignOut()
+                }}
+              />
+            }
           >
             <LogOut aria-hidden />
             Sign out

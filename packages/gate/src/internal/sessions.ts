@@ -6,6 +6,11 @@ import { payloadHash } from "./canonical"
 import { newNonce } from "./nonces"
 import { atomically } from "./transaction"
 import {
+  getOrCreateWebSessionKeys,
+  signWebSession,
+  type WebSessionKeyPair,
+} from "./web-sessions"
+import {
   checkCeremony,
   parseAuthenticatorData,
   parseClientData,
@@ -13,6 +18,29 @@ import {
   verifyAssertionSignature,
 } from "./webauthn"
 import type { CeremonyFailure, WebAuthnConfig } from "./webauthn"
+
+export {
+  WEB_SESSION_COOKIE,
+  WEB_SESSION_COOKIE_PATH,
+  WEB_SESSION_TTL_MS,
+  clearGateSessionCookie,
+  clearWebSessionCookie,
+  generateWebSessionKeyPair,
+  getOrCreateWebSessionKeys,
+  getWebSessionPublicKey,
+  publicKeyFromRaw,
+  signWebSession,
+  verifyWebSession,
+  webSessionCookie,
+} from "./web-sessions"
+export type {
+  WebSessionClaims,
+  WebSessionKeyPair,
+  WebSessionPayload,
+  WebSessionRole,
+  WebSessionVerificationRefusal,
+  WebSessionVerificationResult,
+} from "./web-sessions"
 
 // Phone sessions (#85). The phone signs in with its enrolled passkey: the gate issues a
 // single-use login challenge, checks the assertion over it like an approval (ceremony, enrolled
@@ -48,7 +76,7 @@ export type LoginRefusal =
   | "lost_race"
 
 export type LoginResult =
-  | { ok: true; token: string; expiresAt: Date }
+  | { ok: true; token: string; webSessionToken: string; expiresAt: Date }
   | { ok: false; reason: LoginRefusal }
 
 const hex = (value: string) => sha256(value).toString("hex")
@@ -211,12 +239,23 @@ function storeSession(
 export function startSession(
   db: DatabaseSync,
   credentialId: string,
-  at: Date
-): { token: string; expiresAt: Date } {
+  at: Date,
+  keys?: WebSessionKeyPair
+): { token: string; webSessionToken: string; expiresAt: Date } {
   const token = newNonce()
   const expiresAt = new Date(at.getTime() + SESSION_TTL_MS)
   storeSession(db, token, credentialId, at, expiresAt)
-  return { token, expiresAt }
+  const keyPair = keys ?? getOrCreateWebSessionKeys(db)
+  const webSessionToken = signWebSession(
+    {
+      sub: credentialId,
+      role: "owner",
+      iat: Math.floor(at.getTime() / 1000),
+      exp: Math.floor(expiresAt.getTime() / 1000),
+    },
+    keyPair.privateKey
+  )
+  return { token, webSessionToken, expiresAt }
 }
 
 /**
@@ -229,7 +268,8 @@ export function login(
   db: DatabaseSync,
   config: WebAuthnConfig,
   assertion: GateWebAuthnAssertion,
-  now: Clock
+  now: Clock,
+  keys?: WebSessionKeyPair
 ): LoginResult {
   const at = now()
   const checked = checkLogin(db, config, assertion, at)
@@ -256,7 +296,43 @@ export function login(
     )
     return { ok: false, reason: "lost_race" }
   }
-  return { ok: true, token, expiresAt }
+  const keyPair = keys ?? getOrCreateWebSessionKeys(db)
+  const webSessionToken = signWebSession(
+    {
+      sub: checked.credentialId,
+      role: "owner",
+      iat: Math.floor(at.getTime() / 1000),
+      exp: Math.floor(expiresAt.getTime() / 1000),
+    },
+    keyPair.privateKey
+  )
+  return { ok: true, token, webSessionToken, expiresAt }
+}
+
+/**
+ * Invalidates a session by deleting it from `sessions` table and dropping any live elevation
+ * from `elevations`. Appends a `session.logged_out` audit row with hashes only.
+ */
+export function logoutSession(
+  db: DatabaseSync,
+  elevations: Elevations,
+  token: string
+): boolean {
+  const tokenHash = hex(token)
+  elevations.delete(tokenHash)
+  const deleted = db
+    .prepare("DELETE FROM sessions WHERE token_hash = ?")
+    .run(tokenHash)
+  const removed = Number(deleted.changes) > 0
+  if (removed) {
+    append(db, {
+      actor: "approver",
+      action: "session.logged_out",
+      target: "session",
+      detailHash: payloadHash({ session_sha256: tokenHash }),
+    })
+  }
+  return removed
 }
 
 /** The session cookie's value from a Cookie header, or undefined. */

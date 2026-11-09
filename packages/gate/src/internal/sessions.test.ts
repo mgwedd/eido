@@ -6,13 +6,17 @@ import { openControlDb } from "./control-db"
 import {
   beginLogin,
   elevatedUntil,
+  getWebSessionPublicKey,
   hasCredential,
   login,
+  logoutSession,
   sessionCookie,
   sessionCredential,
   sessionExpiry,
   sessionToken,
+  startSession,
   stepUp,
+  verifyWebSession,
 } from "./sessions"
 import type { Elevations } from "./sessions"
 import {
@@ -447,5 +451,96 @@ describe("stepUp", () => {
     at = new Date(START.getTime() + 6 * MINUTE)
     expect(stepUpWith(elevations, second, auth, 2).ok).toBe(true)
     expect(elevations.size).toBe(1)
+  })
+})
+
+describe("web sessions and logoutSession", () => {
+  it("login issues a valid web session token alongside the gate session", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const { challenge } = beginLogin(db, now)
+    const result = login(db, WEBAUTHN, assertion(auth, challenge), now)
+    if (!result.ok) throw new Error("login failed")
+    expect(result.token).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(typeof result.webSessionToken).toBe("string")
+
+    const pubKey = getWebSessionPublicKey(db)
+    const verified = verifyWebSession(result.webSessionToken, pubKey, now)
+    expect(verified).toEqual({
+      ok: true,
+      payload: {
+        sub: auth.credentialId,
+        role: "owner",
+        iat: Math.floor(START.getTime() / 1000),
+        exp: Math.floor(result.expiresAt.getTime() / 1000),
+      },
+    })
+  })
+
+  it("startSession issues a valid web session token", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const session = startSession(db, auth.credentialId, START)
+    expect(session.token).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(typeof session.webSessionToken).toBe("string")
+
+    const pubKey = getWebSessionPublicKey(db)
+    const verified = verifyWebSession(session.webSessionToken, pubKey, now)
+    expect(verified).toEqual({
+      ok: true,
+      payload: {
+        sub: auth.credentialId,
+        role: "owner",
+        iat: Math.floor(START.getTime() / 1000),
+        exp: Math.floor(session.expiresAt.getTime() / 1000),
+      },
+    })
+  })
+
+  it("logoutSession invalidates session, drops elevation, and audits session.logged_out", () => {
+    const auth = testAuthenticator()
+    enrol(auth)
+    const { challenge } = beginLogin(db, now)
+    const result = login(db, WEBAUTHN, assertion(auth, challenge), now)
+    if (!result.ok) throw new Error("login failed")
+
+    const elevations: Elevations = new Map()
+    const { challenge: stepUpChallenge } = beginLogin(db, now)
+    const stepUpResult = stepUp(
+      db,
+      WEBAUTHN,
+      elevations,
+      result.token,
+      assertion(auth, stepUpChallenge, { signCount: 1 }),
+      now
+    )
+    expect(stepUpResult.ok).toBe(true)
+    expect(elevatedUntil(db, elevations, result.token, now)).toBeDefined()
+
+    // Log out
+    const loggedOut = logoutSession(db, elevations, result.token)
+    expect(loggedOut).toBe(true)
+
+    // Elevation dropped
+    expect(elevatedUntil(db, elevations, result.token, now)).toBeUndefined()
+    // Session invalidated in database
+    expect(sessionExpiry(db, result.token, now)).toBeUndefined()
+    expect(
+      db
+        .prepare("SELECT COUNT(*) AS count FROM sessions WHERE token_hash = ?")
+        .get(createHash("sha256").update(result.token).digest("hex"))
+    ).toEqual({ count: 0 })
+
+    // Audited with hashes only
+    const last = auditRows(db).at(-1)
+    expect(last?.action).toBe("session.logged_out")
+    expect(last?.actor).toBe("approver")
+    expect(last?.target).toBe("session")
+    expect(verifyChain(db).ok).toBe(true)
+
+    // Repeat logout returns false and does not audit again
+    const countBefore = auditRows(db).length
+    expect(logoutSession(db, elevations, result.token)).toBe(false)
+    expect(auditRows(db).length).toBe(countBefore)
   })
 })

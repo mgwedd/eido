@@ -184,7 +184,9 @@ async function signIn(
         }),
       }),
   })
-  const cookie = response.headers?.["set-cookie"]?.split(";")[0]
+  const rawCookie = response.headers?.["set-cookie"]
+  const first = typeof rawCookie === "string" ? rawCookie : rawCookie?.[0]
+  const cookie = first?.split(";")[0]
   if (!cookie) throw new Error("login failed")
   return cookie
 }

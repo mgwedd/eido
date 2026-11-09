@@ -12,8 +12,8 @@ export const dynamic = "force-dynamic"
  * HTTP 403; a rewrite in the proxy cannot carry the status itself.
  */
 export default async function ForbiddenPage(): Promise<never> {
-  const session = await auth0.getSession()
-  if (!session) redirect("/auth/login")
+  const session = auth0 ? await auth0.getSession() : null
+  if (!session) redirect(auth0 ? "/auth/login" : "/unlock")
   if (forbiddenReason(session.user) === null) redirect("/")
   forbidden()
 }

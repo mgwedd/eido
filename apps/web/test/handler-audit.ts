@@ -16,6 +16,7 @@ export type Handler = {
 }
 
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"])
+const ROUTE_FILE = /^app\/(?:.+\/)?route\.tsx?$/
 const SOURCE_DIRS = ["app", "components", "hooks", "lib"]
 
 type FunctionNode =
@@ -129,6 +130,10 @@ function guardedBody(body: ts.Node | null): boolean {
 
 /** The mutating handlers in one file. `file` is the path relative to apps/web, with "/". */
 export function auditSource(file: string, text: string): Handler[] {
+  const isRoute = ROUTE_FILE.test(file)
+  const mayUseServer = text.includes("use server")
+  if (!isRoute && !mayUseServer) return []
+
   const source = ts.createSourceFile(
     file,
     text,
@@ -138,7 +143,7 @@ export function auditSource(file: string, text: string): Handler[] {
   )
   const handlers: Handler[] = []
 
-  if (/^app\/(?:.+\/)?route\.tsx?$/.test(file)) {
+  if (isRoute) {
     for (const entry of exportedFunctions(source))
       if (MUTATING.has(entry.name))
         handlers.push({
@@ -149,32 +154,34 @@ export function auditSource(file: string, text: string): Handler[] {
         })
   }
 
-  if (hasUseServer(source.statements)) {
-    for (const entry of exportedFunctions(source))
-      handlers.push({
-        file,
-        name: entry.name,
-        kind: "action",
-        guarded: guardedBody(entry.body),
-      })
-  }
+  if (mayUseServer) {
+    if (hasUseServer(source.statements)) {
+      for (const entry of exportedFunctions(source))
+        handlers.push({
+          file,
+          name: entry.name,
+          kind: "action",
+          guarded: guardedBody(entry.body),
+        })
+    }
 
-  const visit = (node: ts.Node): void => {
-    if (
-      isFunctionNode(node) &&
-      node.body !== undefined &&
-      ts.isBlock(node.body) &&
-      hasUseServer(node.body.statements)
-    )
-      handlers.push({
-        file,
-        name: functionName(node),
-        kind: "action",
-        guarded: callsRequirePermission(node.body),
-      })
-    ts.forEachChild(node, visit)
+    const visit = (node: ts.Node): void => {
+      if (
+        isFunctionNode(node) &&
+        node.body !== undefined &&
+        ts.isBlock(node.body) &&
+        hasUseServer(node.body.statements)
+      )
+        handlers.push({
+          file,
+          name: functionName(node),
+          kind: "action",
+          guarded: callsRequirePermission(node.body),
+        })
+      ts.forEachChild(node, visit)
+    }
+    ts.forEachChild(source, visit)
   }
-  ts.forEachChild(source, visit)
 
   return handlers
 }
@@ -205,7 +212,7 @@ export function auditTree(root: string): Handler[] {
 export function routeFiles(root: string): string[] {
   return sourceFiles(join(root, "app"))
     .map((path) => relative(root, path).split(sep).join("/"))
-    .filter((file) => /^app\/(?:.+\/)?route\.tsx?$/.test(file))
+    .filter((file) => ROUTE_FILE.test(file))
 }
 
 /** Every source file under the web app's source directories, with its text. */

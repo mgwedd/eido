@@ -31,7 +31,7 @@ describe("openControlDb", () => {
     { timeout: DISK_TIMEOUT_MS },
     () => {
       const db = openControlDb(tempPath())
-      expect(version(db)).toBe(17)
+      expect(version(db)).toBe(18)
       const connectorColumns = db
         .prepare("PRAGMA table_info(connectors)")
         .all()
@@ -71,7 +71,7 @@ describe("openControlDb", () => {
       )
       first.close()
       const second = openControlDb(path) // re-running migration 1 would throw "table already exists"
-      expect(version(second)).toBe(17)
+      expect(version(second)).toBe(18)
       expect(
         second.prepare("SELECT COUNT(*) AS n FROM audit_log").get()?.["n"]
       ).toBe(1)
@@ -81,7 +81,7 @@ describe("openControlDb", () => {
 
   it("works with :memory:", () => {
     const db = openControlDb(":memory:")
-    expect(version(db)).toBe(17)
+    expect(version(db)).toBe(18)
     db.close()
   })
 
@@ -121,7 +121,7 @@ describe("openControlDb", () => {
       legacy.close()
 
       const upgraded = openControlDb(path)
-      expect(version(upgraded)).toBe(17)
+      expect(version(upgraded)).toBe(18)
       expect(
         upgraded
           .prepare(
