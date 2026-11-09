@@ -7,6 +7,7 @@ import { openIndex } from "../../index/index"
 import { search } from "../../index/search"
 import { textPdf } from "../../parsers/fixtures.test-support"
 import { createFilesFacade, fileSourceRef } from "./reads"
+import type { FileRootSyncCursor } from "./notes"
 
 const databases: DatabaseSync[] = []
 afterEach(() => {
@@ -353,6 +354,79 @@ describe("allowed local file reads and indexing", () => {
       })
     ).rejects.toMatchObject({ code: "path_not_allowed" })
     expect(f.propose).toHaveBeenCalledTimes(1)
+  })
+
+  it("normalizes text bodies to NFC and \\n in file_read_text and performScan", async () => {
+    const f = fixture()
+    // Decomposed e + combining acute: e\u0301 (NFD) and \r\n line breaks
+    const nfdText = "Cafe\u0301\r\nSecond line\rThird line"
+    f.docs.set("note.md", encoded(nfdText))
+    const read = await f.facade.file_read_text({
+      root: "docs",
+      path: "note.md",
+    })
+    expect(read.text).toBe("Café\nSecond line\nThird line")
+
+    await f.facade.sync("docs")
+    const docRow = f.db
+      .prepare(
+        "SELECT body FROM document_text WHERE sha256 = (SELECT sha256 FROM document_heads WHERE source_ref = ?)"
+      )
+      .get(fileSourceRef("docs", "note.md")) as { body: string }
+    expect(docRow.body).toBe("Café\nSecond line\nThird line")
+  })
+
+  it("classifies file MIME types correctly and records detailed cursor state", async () => {
+    const f = fixture()
+    f.docs.set("doc.md", encoded("# Markdown"))
+    f.docs.set("guide.markdown", encoded("# Full Markdown"))
+    f.docs.set("plain.txt", encoded("Plain text"))
+    f.docs.set("table.csv", encoded("a,b,c"))
+    f.docs.set("config.json", encoded('{"key":"value"}'))
+    f.docs.set("page.html", encoded("<html></html>"))
+    f.docs.set("page.htm", encoded("<htm></htm>"))
+    f.docs.set("cal.ics", encoded("BEGIN:VCALENDAR"))
+    f.docs.set("deploy.yaml", encoded("key: value"))
+    f.docs.set("deploy.yml", encoded("key: value"))
+    f.docs.set("app.log", encoded("2026-11-07 INFO"))
+    f.docs.set("image.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47]))
+
+    const result = await f.facade.sync("docs")
+    expect(result.coverage).toBe("complete")
+
+    const rows = f.db
+      .prepare(
+        "SELECT t.title, d.mime FROM documents d JOIN document_text t ON t.sha256 = d.sha256 WHERE d.source = 'files'"
+      )
+      .all() as { title: string; mime: string }[]
+    const mimeMap = new Map(rows.map((r) => [r.title, r.mime]))
+
+    expect(mimeMap.get("doc.md")).toBe("text/markdown")
+    expect(mimeMap.get("guide.markdown")).toBe("text/markdown")
+    expect(mimeMap.get("plain.txt")).toBe("text/plain")
+    expect(mimeMap.get("table.csv")).toBe("text/csv")
+    expect(mimeMap.get("config.json")).toBe("application/json")
+    expect(mimeMap.get("page.html")).toBe("text/html")
+    expect(mimeMap.get("page.htm")).toBe("text/html")
+    expect(mimeMap.get("cal.ics")).toBe("text/calendar")
+    expect(mimeMap.get("deploy.yaml")).toBe("application/yaml")
+    expect(mimeMap.get("deploy.yml")).toBe("application/yaml")
+    expect(mimeMap.get("app.log")).toBe("text/x-log")
+    expect(mimeMap.get("image.png")).toBe("application/octet-stream")
+
+    // Verify cursor stored in cursors table
+    const cursorRow = f.db
+      .prepare(
+        "SELECT cursor FROM cursors WHERE connector = 'files' AND stream = 'docs'"
+      )
+      .get() as { cursor: string }
+    const cursor = JSON.parse(cursorRow.cursor) as FileRootSyncCursor
+    expect(cursor).toEqual({
+      partial: false,
+      indexedFiles: 12,
+      noteCount: 3, // doc.md, guide.markdown, plain.txt
+      skippedCount: 0,
+    })
   })
 
   it("rejects a helper operation mismatch and invalid search text", async () => {
