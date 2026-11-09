@@ -6,7 +6,7 @@ import { consumeEnrolmentCode } from "./enrolment"
 import type { ConsumeRefusal } from "./enrolment"
 import { newNonce } from "./nonces"
 import { startSession } from "./sessions"
-import type { Clock } from "./sessions"
+import type { Clock, WebSessionKeyPair } from "./sessions"
 import type { Surface } from "./surface"
 import { atomically } from "./transaction"
 import {
@@ -55,7 +55,13 @@ export type RegisterResult =
   { ok: true; credentialId: string } | { ok: false; code: RegistrationRefusal }
 
 export type EnrolResult =
-  | { ok: true; credentialId: string; token: string; expiresAt: Date }
+  | {
+      ok: true
+      credentialId: string
+      token: string
+      webSessionToken: string
+      expiresAt: Date
+    }
   | { ok: false; code: RegistrationRefusal | ConsumeRefusal }
 
 export type RevokeResult =
@@ -266,7 +272,8 @@ export function enrolWithCode(
   config: WebAuthnConfig,
   code: string,
   registration: Registration,
-  now: Clock
+  now: Clock,
+  keys?: WebSessionKeyPair
 ): EnrolResult {
   const refuse = (refusal: RegistrationRefusal): EnrolResult => {
     audit(
@@ -288,7 +295,7 @@ export function enrolWithCode(
     const consumed = consumeEnrolmentCode(db, "phone", code, () => at)
     if (!consumed.ok) return consumed
     storeCredential(db, "phone", registration, accepted, at)
-    const session = startSession(db, registration.credentialId, at)
+    const session = startSession(db, registration.credentialId, at, keys)
     return { ok: true, credentialId: registration.credentialId, ...session }
   })
 }

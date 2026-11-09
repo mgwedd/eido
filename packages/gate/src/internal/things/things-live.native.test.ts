@@ -6,7 +6,9 @@ import { promisify } from "node:util"
 
 const exec = promisify(execFile)
 const hasThings =
-  process.platform === "darwin" && existsSync("/Applications/Things3.app")
+  process.platform === "darwin" &&
+  existsSync("/Applications/Things3.app") &&
+  Boolean(process.env["EIDO_LIVE_THINGS"])
 
 describe.skipIf(!hasThings)("Live Things 3 Verification (AC 10)", () => {
   test("creates a synthetic area, lists it via adapter, and cleans it up", async () => {

@@ -64,7 +64,7 @@ const closing = (server: Server) =>
     server.close()
   })
 
-describe("prepareSocketDir", () => {
+describe.skipIf(process.platform === "win32")("prepareSocketDir", () => {
   it("creates a missing directory at 0700", () => {
     const dir = join(tempDir(), "run")
     prepareSocketDir(dir, uid)
@@ -95,7 +95,7 @@ describe("prepareSocketDir", () => {
   })
 })
 
-describe("clearStaleSocket", () => {
+describe.skipIf(process.platform === "win32")("clearStaleSocket", () => {
   it("removes a socket nothing answers on, and leaves a missing one alone", async () => {
     const dir = tempDir()
     const path = join(dir, "s.sock")
@@ -128,7 +128,7 @@ describe("clearStaleSocket", () => {
   })
 })
 
-describe("serveSupervisor", () => {
+describe.skipIf(process.platform === "win32")("serveSupervisor", () => {
   it("answers through the routes on a 0600 socket", async () => {
     const path = join(tempDir(), "run", "supervisor.sock")
     const seen: string[] = []
@@ -206,15 +206,18 @@ describe("serveSupervisor", () => {
 })
 
 describe("writeAtomic", () => {
-  it("replaces the file at 0600 and leaves no temp file", () => {
-    const dir = tempDir()
-    const path = join(dir, "stack.env")
-    writeFileSync(path, "old\n", { mode: 0o644 })
-    writeAtomic(path, "new\n")
-    expect(readFileSync(path, "utf8")).toBe("new\n")
-    expect(statSync(path).mode & 0o777).toBe(0o600)
-    expect(readdirSync(dir)).toEqual(["stack.env"])
-  })
+  it.skipIf(process.platform === "win32")(
+    "replaces the file at 0600 and leaves no temp file",
+    () => {
+      const dir = tempDir()
+      const path = join(dir, "stack.env")
+      writeFileSync(path, "old\n", { mode: 0o644 })
+      writeAtomic(path, "new\n")
+      expect(readFileSync(path, "utf8")).toBe("new\n")
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+      expect(readdirSync(dir)).toEqual(["stack.env"])
+    }
+  )
 
   it("removes the temp file when the rename fails", () => {
     const dir = tempDir()

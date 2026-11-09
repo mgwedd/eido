@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
+import type { IntentProposal } from "@eido/gate"
 import { scoreEvent } from "./score"
 import type { EventKind, ScoreSignals } from "./score"
 
@@ -17,6 +18,7 @@ export type NewEvent = {
   ref: string
   signals: ScoreSignals
   receivedAt: string
+  proposal?: Omit<IntentProposal, "origin">
 }
 
 /** A queued event, as the card builders see it. */
@@ -28,6 +30,7 @@ export type TriageEvent = {
   fireId: string
   ref: string
   score: number
+  proposalJson?: string
 }
 
 /** An event that went to the digest, for the brief's overflow line. */
@@ -50,8 +53,8 @@ export function emitEvent(
   const inserted = db
     .prepare(
       `INSERT OR IGNORE INTO events
-         (id, source, kind, trigger_key, fire_id, ref, score, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, source, kind, trigger_key, fire_id, ref, score, received_at, proposal_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -61,7 +64,8 @@ export function emitEvent(
       event.fireId,
       event.ref,
       scoreEvent(event.kind, event.signals),
-      event.receivedAt
+      event.receivedAt,
+      event.proposal === undefined ? null : JSON.stringify(event.proposal)
     )
   if (inserted.changes > 0) return { id, deduped: false }
   const existing = db
@@ -81,6 +85,9 @@ function toEvent(row: Row): TriageEvent {
     fireId: String(row["fire_id"]),
     ref: String(row["ref"]),
     score: Number(row["score"]),
+    ...(typeof row["proposal_json"] === "string"
+      ? { proposalJson: row["proposal_json"] }
+      : {}),
   }
 }
 

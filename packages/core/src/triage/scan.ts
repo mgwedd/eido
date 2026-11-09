@@ -117,12 +117,14 @@ function ledgerEvents(
   // Extractions with a field the owner still has to confirm.
   const confirm = db
     .prepare(
-      `SELECT x.id, json_type(x.fields_json, '$.amount') IS NOT NULL AS money
-       FROM extractions x
+      `SELECT x.id, c.field, json_type(x.fields_json, '$.amount') IS NOT NULL AS money
+       FROM extractions x JOIN extraction_field_confidence c ON c.extraction_id = x.id
        WHERE x.status = 'extracted' AND x.confirmed_at IS NULL AND x.created_at > ?
-         AND EXISTS (SELECT 1 FROM extraction_field_confidence c
-                     WHERE c.extraction_id = x.id AND c.confidence < ?)
-       ORDER BY x.id`
+         AND json_extract(x.fields_json, '$.' || c.field || '.confirmed_at') IS NULL
+         AND (c.confidence < ? OR json_extract(x.fields_json, '$.' || c.field || '.status') = 'parse_failed')
+         AND NOT EXISTS (SELECT 1 FROM events e WHERE e.kind = 'confirm-field'
+           AND e.ref = 'ext:' || x.id AND e.fire_id = 'extracted' AND e.disposition = 'card')
+       ORDER BY x.id, c.field`
     )
     .all(since.toISOString(), cfg.scan.confirmThreshold)
   for (const row of confirm as Row[]) {
@@ -130,7 +132,7 @@ function ledgerEvents(
       source: "extraction",
       kind: "confirm-field",
       triggerKey: `extraction:${String(row["id"])}:confirm`,
-      fireId: "extracted",
+      fireId: String(row["field"]),
       ref: `ext:${String(row["id"])}`,
       signals: { moneyPresent: Number(row["money"]) === 1 },
       receivedAt,

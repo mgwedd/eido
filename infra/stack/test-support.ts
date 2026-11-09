@@ -197,7 +197,8 @@ export function world(
             : ok(`/bin/node ${proc.spec.args.join(" ")}\n`)
         )
       }
-      if (command === "tailscale") return Promise.resolve(tailscale(args))
+      if (command === "tailscale" || command === "tailscale.exe")
+        return Promise.resolve(tailscale(args))
       if (command === "security" && args[0] === "show-keychain-info")
         return Promise.resolve(ok())
       if (command === LLAMA_BIN && args[0] === "--version")

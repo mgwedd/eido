@@ -11,10 +11,29 @@ import { ingestBatch } from "../../index/ingest"
 import type { IndexedDocument, DocumentHeadChange } from "../../index/ingest"
 import { search } from "../../index/search"
 import { writeQueueFor } from "../../db/write-queue"
+import type { FileRootSyncCursor } from "./notes"
 
 const MAX_BYTES = 8 * 1024 * 1024
 const SCAN_BYTES = 16 * 1024 * 1024
-const TEXT = /\.(?:txt|md|csv|json|html?|log|ya?ml|ics)$/i
+const TEXT = /\.(?:txt|md|markdown|csv|json|html?|log|ya?ml|ics)$/i
+
+export function normalizeTextBody(raw: string): string {
+  return raw.replace(/\r\n?/g, "\n").normalize("NFC")
+}
+
+export function classifyFileMime(path: string): string {
+  if (/\.(?:md|markdown)$/i.test(path)) return "text/markdown"
+  if (/\.txt$/i.test(path)) return "text/plain"
+  if (/\.csv$/i.test(path)) return "text/csv"
+  if (/\.json$/i.test(path)) return "application/json"
+  if (/\.(?:html|htm)$/i.test(path)) return "text/html"
+  if (/\.ics$/i.test(path)) return "text/calendar"
+  if (/\.(?:yaml|yml)$/i.test(path)) return "application/yaml"
+  if (/\.log$/i.test(path)) return "text/x-log"
+  if (/\.pdf$/i.test(path)) return "application/pdf"
+  return "application/octet-stream"
+}
+
 export const fileSourceRef = (root: string, path: string) =>
   JSON.stringify([root, path])
 
@@ -83,7 +102,8 @@ export function createFilesFacade({
   }
   const text = (data: Uint8Array) => {
     try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(data)
+      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(data)
+      return normalizeTextBody(decoded)
     } catch {
       throw new FileError("invalid_text")
     }
@@ -108,7 +128,8 @@ export function createFilesFacade({
     let dirs = 0,
       count = 0,
       budget = SCAN_BYTES,
-      partial = false
+      partial = false,
+      skippedCount = 0
     const assigned = await entityId?.()
     while (pending.length > 0 && dirs < 128 && count < 1000) {
       const directory = pending.shift()
@@ -120,13 +141,18 @@ export function createFilesFacade({
       } catch (error) {
         if (directory === "") throw error
         partial = true
+        skippedCount += 1
         continue
       }
       if (listed.op !== "list") throw new FileError("read_failed")
-      partial ||= listed.truncated
+      if (listed.truncated) {
+        partial = true
+        skippedCount += 1
+      }
       for (const entry of listed.entries) {
         if (count >= 1000) {
           partial = true
+          skippedCount += 1
           break
         }
         const path =
@@ -135,11 +161,15 @@ export function createFilesFacade({
           checkRelativeFilePath(path)
         } catch {
           partial = true
+          skippedCount += 1
           continue
         }
         if (entry.kind === "directory") {
           if (pending.length + dirs < 128) pending.push(path)
-          else partial = true
+          else {
+            partial = true
+            skippedCount += 1
+          }
           continue
         }
         count += 1
@@ -149,17 +179,22 @@ export function createFilesFacade({
         if (TEXT.test(path) || /\.pdf$/i.test(path)) {
           if (budget < 1) {
             partial = true
+            skippedCount += 1
             continue
           }
           try {
             const data = await bytes(root, path, Math.min(MAX_BYTES, budget))
             budget -= data.byteLength
-            body = /\.pdf$/i.test(path) ? await pdfText(data) : text(data)
+            body = /\.pdf$/i.test(path)
+              ? normalizeTextBody(await pdfText(data))
+              : text(data)
           } catch {
             partial = true
+            skippedCount += 1
             continue
           }
         }
+        const mime = classifyFileMime(path)
         const sha256 = createHash("sha256")
           .update(JSON.stringify([root, path, body]))
           .digest("hex")
@@ -167,14 +202,17 @@ export function createFilesFacade({
           sha256,
           source: "files",
           sourceRef: ref,
-          mime: /\.pdf$/i.test(path) ? "application/pdf" : "text/plain",
+          mime,
           title: path,
           body,
           ...(assigned === undefined ? {} : { entityId: assigned }),
         })
       }
     }
-    partial ||= pending.length > 0
+    if (pending.length > 0) {
+      partial = true
+      skippedCount += pending.length
+    }
     const heads: DocumentHeadChange[] = documents.map((doc) => ({
       source: "files",
       sourceRef: doc.sourceRef,
@@ -200,11 +238,21 @@ export function createFilesFacade({
       )
         heads.push({ source: "files", sourceRef: ref, sha256: null })
     }
+    const indexedFiles = documents.length
+    const noteCount = documents.filter(
+      (doc) => doc.mime === "text/markdown" || doc.mime === "text/plain"
+    ).length
+    const cursor: FileRootSyncCursor = {
+      partial,
+      indexedFiles,
+      noteCount,
+      skippedCount,
+    }
     await writeQueueFor(db).run(() =>
       ingestBatch(db, {
         connector: "files",
         stream: root,
-        nextCursor: JSON.stringify({ partial }),
+        nextCursor: JSON.stringify(cursor),
         documents,
         heads,
       })
@@ -212,11 +260,16 @@ export function createFilesFacade({
     return {
       documents,
       coverage: partial ? ("partial" as const) : ("complete" as const),
+      cursor,
     }
   }
   const scans = new Map<
     string,
-    Promise<{ documents: IndexedDocument[]; coverage: "partial" | "complete" }>
+    Promise<{
+      documents: IndexedDocument[]
+      coverage: "partial" | "complete"
+      cursor: FileRootSyncCursor
+    }>
   >()
   function scan(root: string) {
     const existing = scans.get(root)

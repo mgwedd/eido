@@ -2,6 +2,7 @@
 // (spawning, signals, HTTP, the clock) are passed in, so the order and the stop rules are tested
 // without a real process.
 import type { Mode, ProcessName, ProcessSpec } from "./config.ts"
+import type { ProcessControl } from "./process-control.ts"
 
 export type Launched = {
   pid: number
@@ -114,9 +115,11 @@ export type StopDeps = {
   /** The pid's command line, or undefined when no such process runs. */
   argsOf: (pid: number) => Promise<string | undefined>
   /** Signals the process group led by `pid`. */
-  signalGroup: (pid: number, signal: Signal) => void
+  signalGroup?: (pid: number, signal: Signal) => void
   /** Whether any process is left in the group led by `pid`. */
-  groupAlive: (pid: number) => boolean
+  groupAlive?: (pid: number) => boolean
+  /** Process-control adapter. Overrides signalGroup and groupAlive when supplied. */
+  control?: Pick<ProcessControl, "isAlive" | "stop" | "kill">
   clock: Clock
 }
 
@@ -129,8 +132,12 @@ async function waitGone(
   deps: StopDeps,
   ms: number
 ): Promise<boolean> {
+  const isAlive = async () =>
+    deps.control !== undefined
+      ? await deps.control.isAlive(pid)
+      : (deps.groupAlive?.(pid) ?? false)
   const deadline = deps.clock.now() + ms
-  while (deps.groupAlive(pid)) {
+  while (await isAlive()) {
     if (deps.clock.now() >= deadline) return false
     await deps.clock.sleep(POLL_MS)
   }
@@ -138,23 +145,35 @@ async function waitGone(
 }
 
 /**
- * Stops the process group a pid file names: SIGTERM, then SIGKILL after the grace period. A pid
- * whose command line no longer carries the marker belongs to something else now and is left
- * alone. A group whose leader is gone but whose children remain is still stopped.
+ * Stops the process group a pid file names: SIGTERM, then SIGKILL after the grace period (or taskkill
+ * on win32). A pid whose command line no longer carries the marker belongs to something else now and
+ * is left alone. A group whose leader is gone but whose children remain is still stopped.
  */
 export async function stopRecord(
   record: PidRecord,
   deps: StopDeps
 ): Promise<StopOutcome> {
+  const isAlive = async () =>
+    deps.control !== undefined
+      ? await deps.control.isAlive(record.pid)
+      : (deps.groupAlive?.(record.pid) ?? false)
   const args = await deps.argsOf(record.pid)
   if (args === undefined) {
-    if (!deps.groupAlive(record.pid)) return "not running"
+    if (!(await isAlive())) return "not running"
   } else if (!args.includes(record.marker)) {
     return "not ours"
   }
-  deps.signalGroup(record.pid, "SIGTERM")
+  if (deps.control !== undefined) {
+    await deps.control.stop(record.pid)
+  } else {
+    deps.signalGroup?.(record.pid, "SIGTERM")
+  }
   if (await waitGone(record.pid, deps, STOP_GRACE_MS)) return "stopped"
-  deps.signalGroup(record.pid, "SIGKILL")
+  if (deps.control !== undefined) {
+    await deps.control.kill(record.pid)
+  } else {
+    deps.signalGroup?.(record.pid, "SIGKILL")
+  }
   await waitGone(record.pid, deps, 2_000)
   return "killed"
 }

@@ -30,7 +30,7 @@ export type Reply = {
   status: number
   body: unknown
   /** Extra response headers, such as Set-Cookie. */
-  headers?: Readonly<Record<string, string>>
+  headers?: Readonly<Record<string, string | readonly string[]>>
 }
 
 export type Handler = (request: GateRequest) => Promise<Reply> | Reply

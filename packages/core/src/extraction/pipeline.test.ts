@@ -1,4 +1,9 @@
 import type { IntentProposal } from "@eido/gate"
+import { fakeGate } from "../propose/propose.test-support"
+import { createCardBuilders } from "../triage/cards"
+import { triageConfigFrom } from "../triage/config"
+import { scanLedgerEvents } from "../triage/scan"
+import { triageTick } from "../triage/tick"
 import { afterEach, describe, expect, test, vi } from "vitest"
 import { estimateTokens, requiredTokens } from "../inference/budget"
 import { ESTIMATE_BOUNDARY, plainContent } from "../inference/fence"
@@ -364,6 +369,7 @@ describe("per-field confidence", () => {
     expect(result.obligationIds).toHaveLength(0)
     expect(h.counts()["obligations"]).toBe(0)
     expect(gate.propose).toHaveBeenCalledTimes(1)
+    expect(proposed[0]?.origin).toBe("proactive")
     expect((proposed[0]?.intent as { kind?: string } | undefined)?.kind).toBe(
       "confirm.field"
     )
@@ -372,6 +378,63 @@ describe("per-field confidence", () => {
     const rerun = await h.extractor.extractDocument(h.docId)
     expect(rerun.status).toBe("already_processed")
     expect(gate.propose).toHaveBeenCalledTimes(1)
+  })
+
+  test("confirmation proposals share triage's budget and preserve the extraction threshold across scans", async () => {
+    const gate = fakeGate()
+    const cfg = triageConfigFrom({ perDay: 1 }, "Etc/UTC")
+    const reply = items({
+      party: { quote: "Example Supply Co." },
+      action: { quote: "Payment of $4,800.00 is due" },
+      amount: { quote: "$4,800.00" },
+    })
+    h = await harness(INVOICE, [reply], {
+      config: { threshold: 0.9 },
+      deps: {
+        gate,
+        triage: cfg,
+        fieldConfidence: ({ field }) => (field === "action" ? 1 : 0.85),
+      },
+    })
+    const result = await h.extractor.extractDocument(h.docId)
+    expect(result.confirmations.map((c) => c.field).sort()).toEqual([
+      "amount",
+      "party",
+    ])
+    expect(gate.proposals).toMatchObject([
+      {
+        origin: "proactive",
+        intent: {
+          kind: "confirm.field",
+          args: {
+            field: "amount",
+            confidence: 0.85,
+            threshold: 0.9,
+            source: {
+              docSha256: h.docId,
+              messageId: "<m1@example.invalid>",
+            },
+          },
+        },
+      },
+    ])
+    expect(
+      h.db
+        .prepare("SELECT disposition, reason FROM events ORDER BY disposition")
+        .all()
+    ).toEqual([
+      { disposition: "card", reason: null },
+      { disposition: "digest", reason: "budget" },
+    ])
+    const now = new Date("2030-01-02T03:04:05.000Z")
+    expect(await scanLedgerEvents(h.db, now, cfg)).toEqual({ emitted: 0 })
+    await triageTick(
+      { db: h.db, gate, cards: createCardBuilders(h.db, now, cfg) },
+      now,
+      cfg
+    )
+    expect(gate.proposals).toHaveLength(1)
+    expect(h.counts()["obligations"]).toBe(0)
   })
 
   test("maps an escaped quote string by its field and item position", async () => {

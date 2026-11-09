@@ -90,6 +90,7 @@ import type { ProtonMailSource } from "./connectors/proton/index"
 import { syncReplyObligations } from "./obligations/replies"
 import { writeQueueFor } from "./db/write-queue"
 import {
+  createCardBuilders,
   parseTriageOverrides,
   scanLedgerEvents,
   triageConfigFrom,
@@ -768,8 +769,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       }
     })
   }
-  // Cards are proposed through the gate's intent API; no event kind has a card builder yet, so
-  // every event that passes the score floor goes to the digest (#52).
+  // Only ledger-backed confirmation and due-date cards are proposed; other kinds reach the brief.
   let triageScheduling = Promise.resolve()
   // A file still at the index schema (`ledger_pending`) has no events table to read or write.
   const hasEvents =
@@ -790,7 +790,11 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
         )
         const now = new Date()
         const { emitted } = await scanLedgerEvents(db, now, cfg)
-        const result = await triageTick({ db, gate, cards: {} }, now, cfg)
+        const result = await triageTick(
+          { db, gate, cards: createCardBuilders(db, now, cfg) },
+          now,
+          cfg
+        )
         if (emitted > 0 || result.cards + result.digest + result.ledger > 0)
           log("triage_ticked", {
             emitted: String(emitted),

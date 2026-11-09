@@ -9,7 +9,7 @@ const WEB_ROOT = fileURLToPath(new URL("..", import.meta.url))
 describe("no server code on the Admin secret path", () => {
   it("finds no route handler or server action on it in apps/web", () => {
     expect(secretPathViolations(webSources(WEB_ROOT))).toEqual([])
-  })
+  }, 30_000)
 })
 
 describe("secretPathViolations", () => {

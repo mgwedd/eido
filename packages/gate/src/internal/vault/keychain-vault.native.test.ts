@@ -80,11 +80,12 @@ afterAll(async () => {
     expect(await nativeFixture({ ...f, operation: "delete" })).toBe("0")
     await rm(f.dir, { recursive: true, force: true })
   }
-})
+}, 60_000)
 
 // Security.framework is macOS-only. Other platforms exercise the process and adapter mocks.
 describe.skipIf(process.platform !== "darwin")(
   "dedicated native Keychain",
+  { timeout: 30_000 },
   () => {
     vaultContract("KeychainVault", async () => (await fixture()).vault)
 

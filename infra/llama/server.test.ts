@@ -216,7 +216,7 @@ const reference = readFileSync(
     import.meta.url
   ),
   "utf8"
-)
+).replace(/\r\n/g, "\n")
 
 describe("checkRenderedPrompt", () => {
   it("sends the fixed conversation and passes on an exact match", async () => {

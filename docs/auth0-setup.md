@@ -1,6 +1,10 @@
 # Auth0 setup for the web app
 
-The web app (`apps/web`) asks each person to sign in with Auth0 before it shows any page. The tailnet stays the network boundary; sign-in adds a check on the person and gives them a role. Passkey Unlock (#32) still gates approvals in the gate, so sign-in sits on top of it, not in place of it.
+> [!NOTE]
+> Auth0 is **optional**. In single-owner mode (the default), `apps/web` boots cleanly without any `AUTH0_*` environment variables, and the owner signs in directly with their passkey via Gate web sessions (`/unlock` and `/enroll`).
+> Auth0 is only needed when configuring human assistant delegation with distinct role-based access (`owner` vs `assistant`, see #370 and #382).
+
+When configured, the web app (`apps/web`) asks each person to sign in with Auth0 before it shows any page. The tailnet stays the network boundary; sign-in adds a check on the person and gives them a role. Passkey Unlock (#32) still gates approvals in the gate, so sign-in sits on top of it, not in place of it.
 
 This doc rebuilds the tenant from scratch with the `auth0` CLI (tested with 1.38). Replace the placeholders:
 

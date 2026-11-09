@@ -97,8 +97,14 @@ function machine() {
         const group = groups.get(Number(args.at(-1)))
         return Promise.resolve(group === undefined ? missing : ok(`${group}\n`))
       }
+      const canonical = line.replace(/^tailscale\.exe/, "tailscale")
       return Promise.resolve(
-        commands.get(line) ?? { code: 127, stdout: "", stderr: "not found" }
+        commands.get(line) ??
+          commands.get(canonical) ?? {
+            code: 127,
+            stdout: "",
+            stderr: "not found",
+          }
       )
     },
     fetch: (url) =>
@@ -238,8 +244,21 @@ describe("runDoctor", () => {
     })
   })
 
-  it("fails a missing .env.local with the copy command", async () => {
+  it("reports ok when AUTH0_DOMAIN is unset and .env.local is missing", async () => {
     const m = machine()
+    m.files.delete("/repo/apps/web/.env.local")
+    const [check] = await only(m, "web-env")
+    expect(check).toEqual({
+      id: "web-env",
+      platforms: ["darwin", "win32", "linux"],
+      status: "ok",
+      summary: "passkey sign-in (Auth0 not configured)",
+    })
+  })
+
+  it("fails a missing .env.local with the copy command when Auth0 is configured", async () => {
+    const m = machine()
+    m.deps.env = { ...m.deps.env, AUTH0_DOMAIN: "tenant.example.invalid" }
     m.files.delete("/repo/apps/web/.env.local")
     expect((await only(m, "web-env"))[0]?.fix).toEqual({
       action: "create-web-env",
@@ -616,6 +635,7 @@ describe("runDoctor on Windows", () => {
   it("gives Windows fixes for node, Tailscale and .env.local", async () => {
     const m = windows()
     m.deps.nodeVersion = "v22.9.0"
+    m.deps.env = { ...m.deps.env, AUTH0_DOMAIN: "tenant.example.invalid" }
     m.commands.set("tailscale status --json", {
       code: 1,
       stdout: "",
