@@ -1019,9 +1019,18 @@ function QueueView({ initialId }: { initialId?: string }) {
   // After a decision the card is gone: move focus to the next card's heading,
   // or to the "Queue clear" message, so a keyboard or screen-reader user keeps their place.
   const refocus = React.useRef(false)
+  const pendingRefocusId = React.useRef<string | null>(null)
   const clearMessage = React.useRef<HTMLParagraphElement>(null)
   React.useEffect(() => {
-    if (!refocus.current || state.status !== "ready") return
+    if (state.status !== "ready") return
+    if (!refocus.current && !pendingRefocusId.current) return
+
+    if (pendingRefocusId.current) {
+      if (selected?.id !== pendingRefocusId.current && state.intents.length > 0)
+        return
+      pendingRefocusId.current = null
+    }
+
     const target = selected
       ? document.getElementById(`card-${selected.id}`)
       : clearMessage.current
@@ -1038,6 +1047,7 @@ function QueueView({ initialId }: { initialId?: string }) {
   }
 
   const replaced = (id: string, text: string) => {
+    pendingRefocusId.current = id
     setMessage(text)
     setSelectedId(id)
     reload()
