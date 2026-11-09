@@ -5,7 +5,8 @@ import { main, type RunResult } from "./cli.ts"
 
 const tailscale = (args: readonly string[]) =>
   new Promise<RunResult>((resolve) => {
-    execFile("tailscale", [...args], (error, stdout, stderr) => {
+    const bin = process.platform === "win32" ? "tailscale.exe" : "tailscale"
+    execFile(bin, [...args], (error, stdout, stderr) => {
       const code =
         error === null ? 0 : typeof error.code === "number" ? error.code : 1
       resolve({ code, stdout, stderr: stderr || (error?.message ?? "") })

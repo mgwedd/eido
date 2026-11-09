@@ -159,6 +159,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Gate tests
         run: pnpm turbo run test --filter=@eido/gate
+      - name: Infra tests (windows-latest)
+        if: matrix.os == 'windows-latest'
+        run: pnpm turbo run test --filter=@eido/infra
 
   # The gate's confined file helper (packages/gate/native/file-helper, ADR 0006). Rust, no crates; the
   # toolchain comes from the runner's preinstalled rustup, pinned by rust-toolchain.toml.

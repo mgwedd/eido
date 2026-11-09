@@ -97,8 +97,14 @@ function machine() {
         const group = groups.get(Number(args.at(-1)))
         return Promise.resolve(group === undefined ? missing : ok(`${group}\n`))
       }
+      const canonical = line.replace(/^tailscale\.exe/, "tailscale")
       return Promise.resolve(
-        commands.get(line) ?? { code: 127, stdout: "", stderr: "not found" }
+        commands.get(line) ??
+          commands.get(canonical) ?? {
+            code: 127,
+            stdout: "",
+            stderr: "not found",
+          }
       )
     },
     fetch: (url) =>
