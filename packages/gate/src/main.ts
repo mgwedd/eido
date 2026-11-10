@@ -24,6 +24,7 @@ import {
   THINGS_WRITERS,
   createThingsTransport,
 } from "./internal/things/things-writers"
+import { verifyChain } from "./internal/audit"
 import { openControlDb } from "./internal/control-db"
 import { createExecutor } from "./internal/executor"
 import {
@@ -490,6 +491,15 @@ export async function runGate(
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
   const log = fileLog(join(config.dataDir, GATE_LOG_FILE))
   const db: DatabaseSync = openControlDb(join(config.dataDir, CONTROL_DB_FILE))
+  // The chain is otherwise verified only on demand; check it once at startup and say so loudly.
+  // A broken chain does not stop the gate: the owner needs it up to see and repair it.
+  const chain = verifyChain(db)
+  if (!chain.ok) {
+    log("audit_chain_broken", {
+      brokenAtSeq: chain.brokenAtSeq,
+      reason: chain.reason,
+    })
+  }
   const servers: Server[] = []
   let notifier: ReturnType<typeof createPushNotifier> | undefined
   let phone: RunningGate["phone"]

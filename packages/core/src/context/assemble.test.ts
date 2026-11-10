@@ -283,6 +283,61 @@ describe("assembleContext edges and refusal", () => {
     expect(p.droppedMembers).toBe(0)
   })
 
+  describe("header-matched neighbours are bounded", () => {
+    const seedOf = (over: Partial<Parameters<typeof mail>[0]> = {}) =>
+      mail({
+        id: "s",
+        date: "2030-01-02T00:00:00Z",
+        body: "Seed.",
+        from: "Bram Oster",
+        to: ["Ada Quill"],
+        inReplyTo: "<p@example.invalid>",
+        ...over,
+      })
+    const parentOf = (over: Partial<Parameters<typeof mail>[0]> = {}) =>
+      mail({
+        id: "p",
+        date: "2030-01-01T00:00:00Z",
+        body: "Parent.",
+        from: "Ada Quill",
+        to: ["Bram Oster"],
+        ...over,
+      })
+
+    test("a parent in the same account that shares a participant is included", async () => {
+      ingest(db, [parentOf(), seedOf()])
+      const p = await pack(sha("s"))
+      expect(p.members.map((m) => m.sha256)).toContain(sha("p"))
+    })
+
+    test("a parent in another account is left out even when its Message-ID matches", async () => {
+      ingest(db, [parentOf({ mailboxId: "other@example.invalid" }), seedOf()])
+      const p = await pack(sha("s"))
+      expect(p.members.map((m) => m.sha256)).toEqual([sha("s")])
+    })
+
+    test("a parent that shares no participant is left out", async () => {
+      ingest(db, [
+        parentOf({ from: "Cleo Varn", to: ["Dov Pellam"] }),
+        seedOf(),
+      ])
+      const p = await pack(sha("s"))
+      expect(p.members.map((m) => m.sha256)).toEqual([sha("s")])
+    })
+
+    test("sharing only the mailbox owner's own address is not a shared participant", async () => {
+      ingest(db, [
+        parentOf({
+          from: "Cleo Varn",
+          to: ["Dov Pellam", "Owner"],
+        }),
+        seedOf({ from: "Bram Oster", to: ["Owner"] }),
+      ])
+      const p = await pack(sha("s"))
+      expect(p.members.map((m) => m.sha256)).toEqual([sha("s")])
+    })
+  })
+
   test("depth 2: a grandparent is reached through the parent; depth 3 is not", async () => {
     const chain = ["a", "b", "c", "d"].map((id, i) =>
       mail({

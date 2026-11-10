@@ -89,6 +89,10 @@ export function beginLogin(
   const issued = now()
   const expiresAt = new Date(issued.getTime() + LOGIN_CHALLENGE_TTL_MS)
   const challenge = newNonce()
+  // The route is public, so every call adds a row; drop the ones that can no longer be used.
+  db.prepare("DELETE FROM login_challenges WHERE expires_at <= ?").run(
+    issued.toISOString()
+  )
   db.prepare(
     "INSERT INTO login_challenges (challenge, issued_at, expires_at, used_at) VALUES (?, ?, ?, NULL)"
   ).run(challenge, issued.toISOString(), expiresAt.toISOString())

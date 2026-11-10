@@ -577,6 +577,26 @@ describe("settings", () => {
     expect(errorOf(bad).error).toBe("invalid_body")
     expect(written).toEqual([])
   })
+
+  it.each([
+    ["EIDO_DEV_VAULT", "1"],
+    ["EIDO_GATE_VAULT_FILE", "/home/u/vault.json"],
+    ["EIDO_BRIDGE_ALLOW_SELF_SIGNED", "1"],
+    ["EIDO_BRIDGE_HOST", "bridge.example.invalid"],
+  ])(
+    "refuses %s=%s over the endpoint and writes nothing",
+    async (key, value) => {
+      const { supervisor, written } = setup()
+      const reply = await supervisor.handle(
+        "POST",
+        "/settings",
+        body({ expectedSha256: null, set: { [key]: value } })
+      )
+      expect(reply.status).toBe(400)
+      expect(errorOf(reply).error).toBe("invalid_body")
+      expect(written).toEqual([])
+    }
+  )
 })
 
 describe("start at login (#664)", () => {

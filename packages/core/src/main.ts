@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { appendFileSync, mkdirSync } from "node:fs"
+import { appendFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import {
@@ -65,6 +65,7 @@ import type { DigestService } from "./digest/service"
 import { scheduleIngestedDigests } from "./digest/ingest"
 import type { IndexedDocument } from "./index/ingest"
 import { DEFAULT_SECTION_TOKENS } from "./digest/types"
+import { secureDataDir, secureDataFiles } from "./data-perms"
 import { createParser } from "./parsers/index"
 import type { Parser } from "./parsers/index"
 import {
@@ -596,6 +597,17 @@ function gmailParser(dataDir: string | undefined): Parser {
   return createParser({ dataDir })
 }
 
+/** The plane's parser: none only on Windows without Gmail, where the sandbox cannot run. */
+export function dataPlaneParser(
+  dataDir: string | undefined,
+  gmailProxyUrl: string | undefined,
+  platform: NodeJS.Platform = process.platform
+): Parser | undefined {
+  return gmailProxyUrl === undefined && platform === "win32"
+    ? undefined
+    : gmailParser(dataDir)
+}
+
 function createModelQueueProvider(
   modelBaseUrl: string | undefined,
   chatTemplateKwargs?: Readonly<Record<string, unknown>>
@@ -684,11 +696,16 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     config.api.modelBaseUrl,
     config.api.chatTemplateKwargs
   )
-  const parser =
-    config.api.gmailProxyUrl === undefined
-      ? undefined
-      : gmailParser(config.dataDir)
-  mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
+  // The files connector reads PDFs through the same sandboxed child. The sandbox's private scratch
+  // is unsupported on Windows, so without Gmail there the plane starts with no parser and the
+  // files connector parses PDFs in process.
+  const parser = dataPlaneParser(config.dataDir, config.api.gmailProxyUrl)
+  secureDataDir(config.dataDir)
+  const conversationIndexPath = join(
+    dirname(config.dbPath),
+    "conversation-index.db"
+  )
+  secureDataFiles([config.dbPath, conversationIndexPath, config.logPath])
   const log: DataPlane["log"] = (event, fields = {}) => {
     appendFileSync(
       config.logPath,
@@ -697,9 +714,8 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     )
   }
   const db = openDataPlaneDb(config.dbPath, log)
-  const conversationIndex = openConversationIndex(
-    join(dirname(config.dbPath), "conversation-index.db")
-  )
+  const conversationIndex = openConversationIndex(conversationIndexPath)
+  secureDataFiles([config.dbPath, conversationIndexPath])
   const conversationTables = db
     .prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_turns'"
@@ -714,6 +730,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   const profile = createProfileStore(db, { audit: audit.record })
   const files = createFilesFacade({
     db,
+    parser,
     intents: gate,
     files: createFileClient({ socketPath: config.gateSocket }),
     entityId: async () => (await profile.getDefaultEntityId()) ?? undefined,
@@ -827,11 +844,6 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   const accounts = createAccountRegistry()
   let gmailTimer: ReturnType<typeof startSyncTimer> | undefined
   if (config.api.gmailProxyUrl !== undefined) {
-    if (parser === undefined) {
-      throw new Error(
-        "Gmail sync requires a configured sandboxed document parser"
-      )
-    }
     const sync = createGmailSyncRuntime({
       db,
       gate,

@@ -303,6 +303,57 @@ describe("proactive origin", () => {
   })
 })
 
+describe("injection flag", () => {
+  it("raises an auto-tier proposal with an injection flag to pending approval; a clean one stays auto", () => {
+    const s = fresh()
+    const clean = ok(proposeKind(s, sample("calendar.create")))
+    expect(clean).toMatchObject({ tier: "auto", state: "approved" })
+    const flagged = ok(
+      propose(s.db, s.policy, {
+        intent: sample("calendar.create"),
+        origin: "reactive",
+        injection: { reasons: ["fence-tag"] },
+      })
+    )
+    expect(flagged).toMatchObject({ tier: "approval", state: "pending" })
+  })
+
+  it("still refuses a flagged proposal whose operation is forbidden", () => {
+    const s = fresh()
+    const result = propose(s.db, s.policy, {
+      intent: sample("calendar.create"),
+      origin: "reactive",
+      injection: { reasons: ["fence-tag"] },
+    })
+    expect(result.ok).toBe(true)
+    const forbidden = propose(s.db, s.policy, {
+      intent: { kind: "no.such_kind", args: {} },
+      origin: "reactive",
+      injection: { reasons: ["fence-tag"] },
+    })
+    expect(forbidden).toMatchObject({ ok: false })
+  })
+
+  it("keeps an edit of a flagged intent at approval", () => {
+    const s = fresh()
+    const original = ok(
+      propose(s.db, s.policy, {
+        intent: sample("calendar.create"),
+        origin: "reactive",
+        injection: { reasons: ["hidden-characters"] },
+      })
+    )
+    const edited = editIntent(
+      s.db,
+      s.policy,
+      original.intentId,
+      sample("calendar.create", { title: "Moved" }),
+      "approver"
+    )
+    expect(edited).toMatchObject({ ok: true })
+  })
+})
+
 describe("transitions", () => {
   const illegal: Array<[IntentState, IntentState]> = [
     ["approved", "pending"],

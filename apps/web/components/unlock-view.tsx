@@ -17,6 +17,7 @@ import {
   unlock,
   type Environment,
 } from "@/lib/auth/unlock"
+import { clearUserCaches } from "@/lib/clear-user-caches"
 
 type UnlockState =
   | { status: "checking" }
@@ -212,6 +213,8 @@ function UnlockView({
       } else if (result.status.sessionExpiresAt !== null && !expired) {
         router.replace(next)
       } else {
+        // No live session (locked, expired or revoked): drop the cached user data.
+        clearUserCaches()
         setState({
           status: result.status.revoked
             ? "revoked"

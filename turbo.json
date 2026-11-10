@@ -46,6 +46,7 @@
       "inputs": [
         "apps/**/*.{ts,tsx,js,mjs,cjs,json}",
         "packages/**/*.{ts,tsx,js,mjs,cjs,json}",
+        "infra/**/*.{ts,json}",
         ".dependency-cruiser.mts",
         "tsconfig*.json",
         "!**/node_modules/**",
@@ -119,6 +120,8 @@
     "//#check:no-telemetry": {
       "inputs": [
         "apps/**/*.{ts,tsx,js,jsx,mjs,cjs,swift,json}",
+        "packages/**/*.{ts,tsx,js,jsx,mjs,cjs,json}",
+        "infra/**/*.{ts,json}",
         "apps/*/package.json",
         "packages/*/package.json",
         "package.json",

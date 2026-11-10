@@ -267,7 +267,7 @@ The app refuses to start (`instrumentation.ts`) if `EIDO_OWNER_EMAIL` is missing
 
 `apps/web/proxy.ts` enforces this on every request except `/healthz`, `/auth/*`, `/_next/static`, `/_next/image`, the favicon, the PWA manifest and icons, and the service worker files.
 
-What sign-in does not cover: on the tailnet origin, `tailscale serve` sends `/api/gate/*` and `/api/core/*` straight to the gate and core, not through Next, so the proxy never sees those requests. The gate's own checks still guard it there. Every approval route needs the gate's passkey session cookie (`eido_gate_session`, from Unlock), and every decision needs the owner's passkey signature. The Auth0 cookie means nothing to the gate (see the gate test "401s … with only the web app's sign-in cookie").
+What sign-in does not cover: on the tailnet origin, `tailscale serve` sends `/api/gate/*` and `/api/core/*` straight to the gate and core, not through Next, so the proxy never sees those requests. The gate's own checks guard `/api/gate/*` there; `/api/core/*` has no role or session check at all, so the roles below do not limit what a client on the tailnet can call on core (tracked in #613). Every approval route needs the gate's passkey session cookie (`eido_gate_session`, from Unlock), and every decision needs the owner's passkey signature. The Auth0 cookie means nothing to the gate (see the gate test "401s … with only the web app's sign-in cookie").
 
 ### Actions
 

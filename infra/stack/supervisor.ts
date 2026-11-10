@@ -61,7 +61,7 @@ import {
   formatStackSettings,
   isSettingKey,
   readStackSettings,
-  settingProblem,
+  apiSettingProblem,
   stackSettingsPath,
   type StackSettings,
 } from "./settings.ts"
@@ -495,7 +495,7 @@ export function createSupervisor(deps: SupervisorDeps) {
       )
     const next = { ...current.settings }
     for (const [key, value] of Object.entries(parsed.value.set)) {
-      const problem = settingProblem(key, value)
+      const problem = apiSettingProblem(key, value)
       if (problem !== undefined || !isSettingKey(key))
         return refuse(
           400,

@@ -17,7 +17,7 @@ The phone PWA and the Mac browser reach three things: the Next shell, core's API
 | `/api/gate` | `http://127.0.0.1:8788` | the gate's phone listener: passkey session |
 
 - **Eido has its own HTTPS port, 8443.** The origin is `https://<host>.ts.net:8443`. The issue text assumed port 443; that is superseded, because the host runs other tailnet apps that `tailscale serve` exposes on 443, and Eido must not collide with them.
-- **No other route on Eido's port.** Never the gate's admin or enrolment routes (#78): those listen Mac-local only. Routes on other ports belong to other apps and are left alone.
+- **No other route on Eido's port.** Never the gate's control socket (enrolment codes and the other owner-local commands, #78): it is a Unix socket, Mac-local only. The gate's admin routes are not on it: they are phone-listener routes under `/api/gate`, reachable through this origin behind the passkey tiers of ADR 0009. Routes on other ports belong to other apps and are left alone.
 - **Funnel stays off** for Eido's port. Funnel on another port exposes that app, not Eido's backends, which listen on loopback only.
 - **Applied and checked by `infra/tailscale`.** `pnpm --filter @eido/infra serve-routes apply` runs `tailscale serve --bg --https=8443 --set-path=<path> http://127.0.0.1:<port>` once per route (`--bg` makes serve resume after a reboot or `tailscale down`/`up`), then checks `tailscale serve status --json` and `tailscale funnel status --json`. `check` does the check alone. Both read only Eido's port: they fail on any route there other than the three, on a target other than the expected one, on a port that is not plain HTTPS, on a foreground serve session holding the port, and on funnel for the port. `apply` changes nothing while such a route or funnel is present. The port is one flag (`--port`, default 8443), as are the three target ports.
 
@@ -32,6 +32,7 @@ An origin is scheme, host and port, so `https://<host>.ts.net:8443` is a differe
 ## Trust model
 
 - The tailnet is trusted for core reads and profile writes. Core has no auth and no per-request Unlock; it relies on the tailnet and a loopback bind, and answers only its configured Host headers (421 otherwise, #153).
+- Auth0 roles (`docs/auth0-setup.md`) guard the pages Next serves only. `/api/core` is not behind Next and has no role or session check; any client that can reach the tailnet origin can call it (open issue #613).
 - Approvals, the audit log and settings need the gate's passkey session (WebAuthn, #15; 12-hour session, #99).
 - `Tailscale-User-Login` is informational: no auth depends on it.
 

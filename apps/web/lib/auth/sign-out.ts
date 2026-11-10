@@ -3,6 +3,8 @@
 // and clear both eido_gate_session and eido_web_session cookies.
 // Then navigates to /unlock (or /auth/logout if Auth0 is enabled).
 
+import { clearUserCaches } from "@/lib/clear-user-caches"
+
 export async function performSignOut(): Promise<void> {
   try {
     await fetch("/api/gate/auth/logout", {
@@ -12,6 +14,8 @@ export async function performSignOut(): Promise<void> {
   } catch {
     // Continue even if gate call fails (e.g. network partition)
   }
+
+  clearUserCaches()
 
   const isAuth0 =
     typeof process !== "undefined" &&

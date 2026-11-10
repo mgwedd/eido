@@ -51,6 +51,7 @@ import {
   conversationGetRoute,
 } from "./conversation-get-route"
 import { BRIEF_PATH, briefRoute } from "./brief-route"
+import { crossSiteRefused } from "./request-origin"
 import { MAIL_SIGNALS_PATH, mailSignalsRoute } from "./mail-signals-route"
 import { dueSoonRoute } from "./due-soon"
 import { SIMPLEFIN_SYNC_PATH, simplefinSyncRoute } from "./simplefin-sync-route"
@@ -259,6 +260,24 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return failure("misdirected_request", "host not served")
     }
     const method = request.method
+    if (
+      crossSiteRefused({
+        method,
+        secFetchSite: request.headers.get("sec-fetch-site"),
+        origin: request.headers.get("origin"),
+        host,
+        allowedHosts,
+      })
+    ) {
+      const refused = failure(
+        "misdirected_request",
+        "cross-site request refused"
+      )
+      return new Response(refused.body, {
+        status: 403,
+        headers: refused.headers,
+      })
+    }
     const local = routePath(url.pathname, basePath)
     if (local === null) return failure("not_found", "no such route")
     const path = local.replace(/(.)\/$/, "$1")
@@ -476,6 +495,9 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         ...validation.value,
         intent: intent.value,
         origin: "reactive",
+        // Core's API has no caller check, so nothing arriving here may run on the auto tier: the
+        // gate raises auto to approval for a sensitive proposal.
+        sensitivity: "sensitive",
       }
       const result: GateProposeResult = await deps.propose(proposal)
       return json({ id: result.id, tier: result.tier, state: result.state })
@@ -635,6 +657,8 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
           "content-type": result.mime,
           "content-disposition": `attachment; filename="${blobMatch[1]}"`,
           "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+          "content-security-policy": "sandbox",
         },
       })
     }

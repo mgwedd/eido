@@ -39,11 +39,21 @@ describe("scan", () => {
     ])
   })
 
+  test.each(["packages/core/src/init.ts", "infra/stack/init.ts"])(
+    "flags an initializer in %s",
+    (file) => {
+      const files = { [file]: 'Sentry.init({ dsn: "x" })' }
+      expect(scan(Object.keys(files), reader(files))).toEqual([
+        { file, finding: "crash-reporting SDK initialization" },
+      ])
+    }
+  )
+
   test("passes clean manifests and source, and skips other files", () => {
     const files = {
       "apps/web/package.json": '{"dependencies":{"next":"16.0.0"}}',
       "apps/web/src/a.ts": "const segments = path.split('/')",
-      "packages/core/src/a.ts": "Sentry.init()",
+      "scripts/a.ts": "Sentry.init()",
       "broken/package.json": "{not json",
     }
     expect(scan(Object.keys(files), reader(files))).toEqual([])

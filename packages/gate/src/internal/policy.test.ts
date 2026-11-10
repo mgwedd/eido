@@ -637,6 +637,15 @@ describe("createStoredAttendeesReader", () => {
     })
   })
 
+  it("fails closed for a found record with no attendee field, and keeps an explicit empty list as no guests", () => {
+    const store = new Map<string, { attendees?: string[] }>()
+    store.set("evt-bare", {})
+    store.set("evt-empty", { attendees: [] })
+    const reader = createStoredAttendeesReader(store)
+    expect(reader("evt-bare")).toEqual({ ok: false })
+    expect(reader("evt-empty")).toEqual({ ok: true, attendees: [] })
+  })
+
   it("returns { ok: false } for unknown eventUid or read failure", () => {
     const store = {
       get: (uid: string) => {

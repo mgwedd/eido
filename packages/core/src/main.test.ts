@@ -46,6 +46,7 @@ import {
   createProtonSyncRuntime,
   dataPlaneConfig,
   dataPlaneEnv,
+  dataPlaneParser,
   forwardTo,
   holdUntilStopped,
   launchPlan,
@@ -359,6 +360,24 @@ describe("coreApiConfig", () => {
   })
 })
 
+describe("dataPlaneParser", () => {
+  it("is absent on Windows without Gmail, so the plane starts without the sandbox", () => {
+    expect(dataPlaneParser(undefined, undefined, "win32")).toBeUndefined()
+  })
+
+  it("is still required on Windows once Gmail is configured", () => {
+    expect(() =>
+      dataPlaneParser(undefined, "http://127.0.0.1:1", "win32")
+    ).toThrow("Gmail sync requires EIDO_DATA_DIR to configure its parser")
+  })
+
+  it("is required elsewhere even without Gmail", () => {
+    expect(() => dataPlaneParser(undefined, undefined, "darwin")).toThrow(
+      "Gmail sync requires EIDO_DATA_DIR to configure its parser"
+    )
+  })
+})
+
 describe("runDataPlane", () => {
   it.each([200, 503])(
     "runs the optional file sync against the gate and handles status %i",
@@ -460,6 +479,7 @@ describe("runDataPlane", () => {
           args: { messageIds: ["gm-runtime"] },
         },
         origin: "reactive",
+        sensitivity: "sensitive",
       })
     } finally {
       await api.close()

@@ -100,8 +100,17 @@ export function beginRegistration(
   return { ok: true, challenge: issueChallenge(db, new Date()) }
 }
 
+/** An unused registration challenge older than this is dropped when a new one is issued. */
+export const REGISTRATION_CHALLENGE_RETENTION_MS = 60 * 60 * 1000
+
 function issueChallenge(db: DatabaseSync, at: Date): string {
   const challenge = newNonce()
+  // The phone enrol options route is public, so every call adds a row; drop the stale ones.
+  db.prepare(
+    "DELETE FROM registration_challenges WHERE used_at IS NOT NULL OR issued_at <= ?"
+  ).run(
+    new Date(at.getTime() - REGISTRATION_CHALLENGE_RETENTION_MS).toISOString()
+  )
   db.prepare(
     "INSERT INTO registration_challenges (challenge, issued_at, used_at) VALUES (?, ?, NULL)"
   ).run(challenge, at.toISOString())

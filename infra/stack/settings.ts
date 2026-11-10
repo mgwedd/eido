@@ -4,6 +4,7 @@
 // command loads it; a variable already set in the environment wins. Only allowlisted keys are
 // accepted, so a typo or a secret fails loudly. Secrets never go here: client secrets, the Bridge
 // password and tokens stay in the gate vault, and the Auth0 values stay in apps/web/.env.local.
+import { posix, win32 } from "node:path"
 import { parseEnv } from "node:util"
 
 import { OVERRIDES as LLAMA_OVERRIDES } from "../llama/config.ts"
@@ -49,6 +50,43 @@ const PORT_KEYS: ReadonlySet<string> = new Set([
   "EIDO_BRIDGE_SMTP_PORT",
 ])
 
+/** Loopback hosts each host key accepts: the gate takes Bridge on 127.0.0.1 or ::1 only; core's model client also takes localhost. */
+const HOST_KEYS: Readonly<Record<string, readonly string[]>> = {
+  EIDO_BRIDGE_HOST: ["127.0.0.1", "::1"],
+  EIDO_LLAMA_HOST: ["127.0.0.1", "::1", "localhost"],
+}
+
+/** Settings that name a file or directory; the value must be an absolute path. */
+const PATH_KEYS: ReadonlySet<string> = new Set([
+  "EIDO_STACK_LOG_DIR",
+  "EIDO_GATE_DATA_DIR",
+  "EIDO_DATA_DIR",
+  "EIDO_GATE_SOCKET",
+  "EIDO_GATE_CONTROL_SOCKET",
+  "EIDO_GATE_KEYCHAIN_PATH",
+  "EIDO_FILE_HELPER_PATH",
+  "EIDO_BRIDGE_CERT_PATH",
+  "EIDO_GATE_VAULT_FILE",
+])
+
+/** Settings that are a flag: `0` or `1`. */
+const FLAG_KEYS: ReadonlySet<string> = new Set([
+  "EIDO_DEV_VAULT",
+  "EIDO_BRIDGE_ALLOW_SELF_SIGNED",
+  "EIDO_FILES_SYNC",
+])
+
+/**
+ * Settings the supervisor's `POST /settings` refuses. They choose where the gate's secrets
+ * live or weaken its transport checks, so only the setup command (a local terminal) may write
+ * them. No web admin page sets them.
+ */
+export const API_REFUSED_KEYS: ReadonlySet<string> = new Set([
+  "EIDO_DEV_VAULT",
+  "EIDO_GATE_VAULT_FILE",
+  "EIDO_BRIDGE_ALLOW_SELF_SIGNED",
+])
+
 /** Why `value` is not a valid `key`, or undefined when it is. */
 export function settingProblem(key: string, value: string): string | undefined {
   if (key === STACK_DIR_VARIABLE)
@@ -70,7 +108,29 @@ export function settingProblem(key: string, value: string): string | undefined {
     !/^(mailto:\S+@\S+|https:\/\/\S+)$/.test(value)
   )
     return `${key} must be a mailto: address or an https: URL`
+  const hosts = HOST_KEYS[key]
+  if (hosts !== undefined && value !== "" && !hosts.includes(value))
+    return `${key} must be a loopback host: ${hosts.join(", ")}`
+  if (
+    PATH_KEYS.has(key) &&
+    value !== "" &&
+    !posix.isAbsolute(value) &&
+    !win32.isAbsolute(value)
+  )
+    return `${key} must be an absolute path`
+  if (FLAG_KEYS.has(key) && value !== "" && value !== "0" && value !== "1")
+    return `${key} must be 0 or 1`
   return undefined
+}
+
+/** Like `settingProblem`, plus the keys the supervisor's settings endpoint refuses outright. */
+export function apiSettingProblem(
+  key: string,
+  value: string
+): string | undefined {
+  if (API_REFUSED_KEYS.has(key))
+    return `${key} cannot be changed through the settings endpoint; run the setup command on this machine`
+  return settingProblem(key, value)
 }
 
 /** Checks every entry; throws an Error naming the first bad key. */

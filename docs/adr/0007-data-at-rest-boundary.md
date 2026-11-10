@@ -24,6 +24,14 @@ Every copy of user data persisted by Eido on disk:
 | **Backup drill restores**    | `~/eido-restore-scratch` (drill only)                   | Directory      | Ephemeral, manually verified and purged (`rm -rf`)           |
 | **Secrets & Credentials**    | macOS Keychain                                          | Keychain items | Protected by macOS Secure Enclave and FileVault              |
 
+## Gaps between this ADR and the code
+
+Checked against `packages/core/src` and `packages/gate/src` on 2026-11-09:
+
+- **WAL on the data database is not enabled.** Only the gate's `eido-control.db` runs `PRAGMA journal_mode = WAL` (`packages/gate/src/internal/control-db.ts`). `openIndex` in core sets `foreign_keys` and `busy_timeout` only, so the inventory's "`-wal`, `-shm`" files for `eido-data.db` do not appear unless something else switches the mode.
+- **The inventory omits stores that exist.** `conversation-index.db` (`EIDO_DATA_DIR`, next to `eido-data.db`; a rebuildable FTS5 search index of conversations, opened by `openConversationIndex`), and `data-plane.log` (`EIDO_DATA_DIR`, the data plane's JSON-lines log) are not listed.
+- **Parser scratch location.** The inventory gives `/private/tmp/eido-parsers-*`; core's parser scratch root is `parse-tmp` under `EIDO_DATA_DIR`, with per-parse `parse-*` work directories created by `mkdtempSync` (`parsers/parse-document.ts`, `parsers/private-scratch.ts`).
+
 ## Threat Model Comparison
 
 We evaluated FileVault-only versus application-level encryption (SQLCipher) across four primary threat vectors:

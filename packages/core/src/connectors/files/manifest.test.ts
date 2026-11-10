@@ -16,6 +16,7 @@ describe("local file write manifest", () => {
         perform: () => Promise.reject(new Error("not used")),
       },
       intents: { propose: () => Promise.reject(new Error("not used")) },
+      parser: { parseBytes: () => Promise.reject(new Error("not used")) },
     })
     expect(
       manifest.operations.map((operation) => operation.name).sort()

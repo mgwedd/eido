@@ -7,6 +7,7 @@ import type { GateIntentOrigin } from "@eido/schemas"
 import { createFilesWriteFacade } from "./facade"
 import { checkRelativeFilePath, FileError } from "./path"
 import { pdfText } from "./pdf"
+import type { Parser } from "../../parsers/index"
 import { ingestBatch } from "../../index/ingest"
 import type { IndexedDocument, DocumentHeadChange } from "../../index/ingest"
 import { search } from "../../index/search"
@@ -60,6 +61,11 @@ export type FilesDeps = {
   files: FileClient
   intents: Pick<IntentClient, "propose">
   db: DatabaseSync
+  /**
+   * The sandboxed parser PDFs are read through. Undefined only where the sandbox cannot run
+   * (Windows): PDFs are then parsed in this process.
+   */
+  parser: Pick<Parser, "parseBytes"> | undefined
   origin?: GateIntentOrigin
   entityId?: () => Promise<string | undefined>
 }
@@ -67,6 +73,7 @@ export function createFilesFacade({
   files,
   intents,
   db,
+  parser,
   origin,
   entityId,
 }: FilesDeps) {
@@ -186,7 +193,7 @@ export function createFilesFacade({
             const data = await bytes(root, path, Math.min(MAX_BYTES, budget))
             budget -= data.byteLength
             body = /\.pdf$/i.test(path)
-              ? normalizeTextBody(await pdfText(data))
+              ? normalizeTextBody(await pdfText(parser, data))
               : text(data)
           } catch {
             partial = true
@@ -294,7 +301,7 @@ export function createFilesFacade({
     async file_read_pdf_text(args: unknown) {
       const { root, path } = location(args)
       return {
-        text: await pdfText(await bytes(root, path)),
+        text: await pdfText(parser, await bytes(root, path)),
         untrusted: true as const,
       }
     },

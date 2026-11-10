@@ -25,6 +25,8 @@ export interface ModelServerConfig {
    * hybrid-thinking template (Qwen 3) with its reasoning turned off. Default: none sent.
    */
   chatTemplateKwargs?: Readonly<Record<string, unknown>>
+  /** A `complete` call is aborted (as an `aborted` InferenceError) after this long. Default 120000. */
+  requestTimeoutMs?: number
 }
 
 export interface ChatMessage {

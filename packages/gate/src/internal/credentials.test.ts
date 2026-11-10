@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { afterEach, describe, expect, it } from "vitest"
 import { verifyChain } from "./audit"
 import {
+  beginPhoneRegistration,
   beginRegistration,
   listPasskeys,
   registerCredential,
@@ -74,6 +75,36 @@ describe("beginRegistration", () => {
       .get()
     expect(count?.["n"]).toBe(0)
     expect(credentialActions(control)).toEqual(["credential.register_refused"])
+  })
+})
+
+describe("beginPhoneRegistration cleanup", () => {
+  it("deletes used and stale unused challenges when a new one is issued, and keeps recent ones", () => {
+    const control = db()
+    const t0 = new Date("2026-10-19T08:00:00.000Z")
+    const stale = beginPhoneRegistration(control, () => t0)
+    const used = beginPhoneRegistration(control, () => t0)
+    control
+      .prepare(
+        "UPDATE registration_challenges SET used_at = ? WHERE challenge = ?"
+      )
+      .run(t0.toISOString(), used)
+    const recent = beginPhoneRegistration(
+      control,
+      () => new Date(t0.getTime() + 45 * 60 * 1000)
+    )
+    const fresh = beginPhoneRegistration(
+      control,
+      () => new Date(t0.getTime() + 90 * 60 * 1000)
+    )
+    const kept = control
+      .prepare("SELECT challenge FROM registration_challenges")
+      .all()
+      .map((row) => row["challenge"])
+      .sort()
+    expect(kept).toEqual([recent, fresh].sort())
+    expect(kept).not.toContain(stale)
+    expect(kept).not.toContain(used)
   })
 })
 

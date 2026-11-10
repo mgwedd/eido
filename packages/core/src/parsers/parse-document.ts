@@ -1,9 +1,13 @@
-import { statSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { rmSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createLimiter } from "./limiter"
 import { runInChild } from "./sandbox"
-import { preparePrivateScratchRoot } from "./private-scratch"
+import {
+  createPrivateWorkDirectory,
+  preparePrivateScratchRoot,
+} from "./private-scratch"
 import { blobPath, isSha256, storeOriginal } from "./store"
 import { FAILURE_REASONS, resolveLimits } from "./types"
 import type { OffsetEntry, ParseLimits, ParseResult } from "./types"
@@ -32,6 +36,15 @@ export type Parser = {
     limits?: Partial<ParseLimits>
   ) => Promise<ParseResult>
   storeOriginal: (bytes: Uint8Array) => { sha256: string; blobPath: string }
+  /**
+   * Parses bytes that are not kept: they go to a private scratch file for the child and are
+   * removed afterwards. For local files, whose originals the data dir must not copy.
+   */
+  parseBytes: (
+    bytes: Uint8Array,
+    mime: string,
+    limits?: Partial<ParseLimits>
+  ) => Promise<ParseResult>
 }
 
 const isCount = (value: unknown): value is number =>
@@ -144,10 +157,19 @@ export function createParser(config: ParserConfig): Parser {
         detail: `${String(size)} bytes, more than ${String(limits.inputBytes)}`,
       }
     }
+    return runWorker(path, sha256, input.mime, limits)
+  }
+
+  async function runWorker(
+    path: string,
+    sha256: string,
+    mime: string,
+    limits: ParseLimits
+  ): Promise<ParseResult> {
     const payload: WorkerPayload = {
       blobPath: path,
       sha256,
-      mime: input.mime,
+      mime,
       limits,
       ocrBinary: config.ocrBinary ?? null,
     }
@@ -188,6 +210,36 @@ export function createParser(config: ParserConfig): Parser {
           reason: "crashed",
           detail: `the parse could not run (${name})`,
         }
+      }
+    },
+    parseBytes: async (bytes, mime, overrides = {}) => {
+      const limits = resolveLimits(overrides, base)
+      const sha256 = createHash("sha256").update(bytes).digest("hex")
+      if (bytes.byteLength > limits.inputBytes) {
+        return {
+          ok: false,
+          sha256,
+          reason: "oversize",
+          detail: `${String(bytes.byteLength)} bytes, more than ${String(limits.inputBytes)}`,
+        }
+      }
+      let workDir: string | undefined
+      try {
+        workDir = createPrivateWorkDirectory(tmpRoot)
+        const path = join(workDir, "original")
+        writeFileSync(path, bytes, { flag: "wx", mode: 0o600 })
+        return await runWorker(path, sha256, mime, limits)
+      } catch (error) {
+        const name = error instanceof Error ? error.name : "unknown"
+        return {
+          ok: false,
+          sha256,
+          reason: "crashed",
+          detail: `the parse could not run (${name})`,
+        }
+      } finally {
+        if (workDir !== undefined)
+          rmSync(workDir, { recursive: true, force: true })
       }
     },
     storeOriginal: (bytes) => storeOriginal(config.dataDir, bytes),

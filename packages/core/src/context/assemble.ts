@@ -109,7 +109,12 @@ const present = (values: (string | undefined)[]): string =>
     ...new Set(values.filter((v): v is string => v !== undefined)),
   ])
 
-/** Documents one header edge away from any frontier document, excluding those already visited. */
+/**
+ * Documents one edge away from any frontier document, excluding those already visited. A document
+ * found only by a Message-ID header (In-Reply-To or References, which anyone can write) must be in
+ * the same mailbox as the frontier document and share a participant address (from, to or cc) with
+ * it. The mailbox's own address does not count: every message in the mailbox has it.
+ */
 function neighbours(
   db: DatabaseSync,
   frontier: Doc[],
@@ -120,9 +125,23 @@ function neighbours(
   return db
     .prepare(
       `${SELECT_DOC} WHERE ${LIVE_DOCUMENT_PREDICATE} AND d.sha256 NOT IN ${list} AND (
-        t.message_id IN ${list}
-        OR t.in_reply_to IN ${list}
-        OR EXISTS (SELECT 1 FROM json_each(t.references_json) r WHERE r.value IN ${list})
+        (
+          (
+            t.message_id IN ${list}
+            OR t.in_reply_to IN ${list}
+            OR EXISTS (SELECT 1 FROM json_each(t.references_json) r WHERE r.value IN ${list})
+          )
+          AND EXISTS (
+            SELECT 1 FROM mail_message_mailboxes cm
+            JOIN mail_message_mailboxes fm ON fm.mailbox_id = cm.mailbox_id
+            JOIN mail_addresses fa ON fa.sha256 = fm.sha256
+            JOIN mail_addresses ca ON lower(ca.address) = lower(fa.address)
+            WHERE cm.sha256 = d.sha256 AND fm.sha256 IN ${list}
+              AND ca.sha256 = d.sha256
+              AND fa.role IN ('from', 'to', 'cc') AND ca.role IN ('from', 'to', 'cc')
+              AND lower(ca.address) <> cm.mailbox_id
+          )
+        )
         OR t.thread_id IN ${list}
         OR t.attachment_of IN ${list}
         OR d.source_ref IN ${list}
@@ -133,6 +152,7 @@ function neighbours(
       present(frontier.flatMap((d) => [d.inReplyTo, ...d.references])),
       msgIds,
       msgIds,
+      present(frontier.map((d) => d.sha256)),
       present(frontier.map((d) => d.threadId)),
       present(frontier.map((d) => d.sourceRef)),
       present(frontier.map((d) => d.attachmentOf))

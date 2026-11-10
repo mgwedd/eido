@@ -4,3 +4,13 @@
 /.dependency-cruiser.mts @mgwedd
 /packages/gate/         @mgwedd
 /scripts/               @mgwedd
+/infra/                 @mgwedd
+/.agents/               @mgwedd
+/turbo.json             @mgwedd
+/package.json           @mgwedd
+/.npmrc                 @mgwedd
+/pnpm-workspace.yaml    @mgwedd
+/pnpm-lock.yaml         @mgwedd
+/.mcp.json              @mgwedd
+/skills-lock.json       @mgwedd
+/packages/schemas/      @mgwedd

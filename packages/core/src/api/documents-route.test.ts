@@ -864,6 +864,8 @@ describe("GET /documents/:sha256/blob", () => {
       expect(res.status).toBe(200)
       expect(res.headers.get("content-type")).toBe("application/pdf")
       expect(await res.text()).toBe("PDF-DUMMY-CONTENT")
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff")
+      expect(res.headers.get("content-security-policy")).toBe("sandbox")
     } finally {
       try {
         unlinkSync(tmp)

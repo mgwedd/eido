@@ -8,7 +8,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   validateGateAuditChainStatus,
   validateGateAuditPage,
@@ -63,6 +63,7 @@ import {
 } from "./sessions"
 import { listReviewedManifests, readReviewedManifest } from "./repin"
 import { DATA_DIR_ENV, placeReviewedManifest } from "../reviewed-manifest"
+import { createExecutor } from "./executor"
 import type { ExecutionResult } from "./executor"
 import { preparePushRegistration } from "./push-subscriptions"
 import type { PhoneState } from "./phone-routes"
@@ -224,6 +225,32 @@ beforeEach(() => {
   at = START
   auth = testAuthenticator()
   shared = undefined
+})
+
+describe("phoneHandler: public route attempt limit", () => {
+  const options = () =>
+    call("POST", "/auth/login/options", { body: {} }).then((r) => r.status)
+
+  it("answers 429 busy after 30 attempts in a minute, and recovers in the next window", async () => {
+    for (let i = 0; i < 30; i++) expect(await options()).toBe(200)
+    const refused = await call("POST", "/auth/login/options", { body: {} })
+    expect([refused.status, code(refused)]).toEqual([429, "busy"])
+    at = new Date(at.getTime() + 60_000)
+    expect(await options()).toBe(200)
+  })
+
+  it("counts each public route on its own and leaves session routes alone", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    for (let i = 0; i < 31; i++) await options()
+    expect(
+      (await call("POST", "/passkey/enroll/options", { body: { code: "x" } }))
+        .status
+    ).not.toBe(429)
+    for (let i = 0; i < 31; i++) {
+      expect((await call("GET", "/approvals", { cookie })).status).toBe(200)
+    }
+  })
 })
 
 describe("phoneHandler: push subscriptions", () => {
@@ -1587,6 +1614,22 @@ describe("phoneHandler: approvals", () => {
       state: "approved",
       nudge: false,
     })
+    expect(intentState(id)).toBe("approved")
+  })
+
+  it("never lets a session-only confirm.field approval reach the executor's egress", async () => {
+    const id = pendingConfirmField()
+    await call("POST", `/approvals/${id}/decision`, {
+      cookie,
+      body: { intentId: id, decision: "approved" },
+    })
+    expect(intentState(id)).toBe("approved")
+    const transport = vi.fn(() =>
+      Promise.resolve({ upstreamRef: null, result: null })
+    )
+    const executed = await createExecutor(s.db, [], transport).execute(id)
+    expect(executed).toEqual({ ok: false, code: "missing_approval" })
+    expect(transport).not.toHaveBeenCalled()
     expect(intentState(id)).toBe("approved")
   })
 

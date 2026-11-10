@@ -33,6 +33,9 @@ import type {
   ModelServerConfig,
 } from "./types"
 
+/** A completion that takes longer than this is aborted. Overridable with `requestTimeoutMs`. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+
 export const DEFAULT_TRIPWIRE_RATIO = 0.6
 export const DEFAULT_TRIPWIRE_MIN_PROMPT_TOKENS = 500
 
@@ -90,10 +93,18 @@ function ratio(name: string, value: number): number {
 // through the error thrown next, so the rejection itself carries nothing new.
 function ignore(): void {}
 
-function abortedError(cause: unknown): InferenceError {
-  return new InferenceError("aborted", null, "inference request aborted", {
-    cause,
-  })
+function abortedError(
+  cause: unknown,
+  signal: AbortSignal | undefined
+): InferenceError {
+  const timedOut =
+    signal?.reason instanceof Error && signal.reason.name === "TimeoutError"
+  return new InferenceError(
+    "aborted",
+    null,
+    timedOut ? "inference request timed out" : "inference request aborted",
+    { cause }
+  )
 }
 
 async function post(
@@ -110,7 +121,7 @@ async function post(
       signal,
     })
   } catch (cause) {
-    if (signal?.aborted === true) throw abortedError(cause)
+    if (signal?.aborted === true) throw abortedError(cause, signal)
     throw new InferenceError("unreachable", null, "model server unreachable", {
       cause,
     })
@@ -145,7 +156,7 @@ async function readStream(
   } catch (cause) {
     await reader.cancel().catch(ignore)
     if (cause instanceof InferenceError) throw cause
-    if (signal?.aborted === true) throw abortedError(cause)
+    if (signal?.aborted === true) throw abortedError(cause, signal)
     throw new InferenceError("malformed", status, "could not read the stream", {
       cause,
     })
@@ -230,7 +241,7 @@ async function readCompletion(
   try {
     answer = await response.json()
   } catch (cause) {
-    if (signal?.aborted === true) throw abortedError(cause)
+    if (signal?.aborted === true) throw abortedError(cause, signal)
     throw new InferenceError(
       "malformed",
       response.status,
@@ -319,7 +330,7 @@ async function postJson(
   try {
     parsed = await response.json()
   } catch (cause) {
-    if (signal?.aborted === true) throw abortedError(cause)
+    if (signal?.aborted === true) throw abortedError(cause, signal)
     throw new InferenceError(
       "malformed",
       response.status,
@@ -603,6 +614,10 @@ export function createModelClient(
     config.tripwireMinPromptTokens ?? DEFAULT_TRIPWIRE_MIN_PROMPT_TOKENS
   const doFetch = deps.fetch ?? fetch
   const chatTemplateKwargs = config.chatTemplateKwargs
+  const requestTimeoutMs = positive(
+    "requestTimeoutMs",
+    config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+  )
 
   return {
     async complete(
@@ -618,6 +633,14 @@ export function createModelClient(
       )
       // Refuse, don't truncate: nothing is sent, and the input is never shortened to fit.
       assertFits(estimatedPromptTokens, maxTokens, contextTokens, marginRatio)
+
+      // One deadline for the whole completion (template, tokenize, generate and the stream),
+      // joined with the caller's own signal. A timeout surfaces as an `aborted` InferenceError.
+      const timeout = AbortSignal.timeout(requestTimeoutMs)
+      const signal =
+        opts.signal === undefined
+          ? timeout
+          : AbortSignal.any([opts.signal, timeout])
 
       const nonce = newBoundary()
       const spans: string[] = []
@@ -635,22 +658,16 @@ export function createModelClient(
         doFetch,
         baseUrl,
         templateBody,
-        opts.signal
+        signal
       )
       const pieces = splitRendered(rendered, nonce, spans.length)
-      const tokens = await promptTokens(
-        doFetch,
-        baseUrl,
-        pieces,
-        spans,
-        opts.signal
-      )
+      const tokens = await promptTokens(doFetch, baseUrl, pieces, spans, signal)
 
       const response = await post(
         doFetch,
         `${baseUrl}/completion`,
         buildCompletionBody(req, tokens, maxTokens),
-        opts.signal
+        signal
       )
       if (!response.ok) {
         await response.body?.cancel().catch(ignore)
@@ -660,7 +677,7 @@ export function createModelClient(
           `model server answered ${String(response.status)}`
         )
       }
-      const streamed = await readCompletion(response, opts.signal)
+      const streamed = await readCompletion(response, signal)
       return {
         text: streamed.text,
         ...(streamed.tokenProbabilities === undefined
@@ -748,7 +765,7 @@ export async function readContextTokens(
   try {
     response = await doFetch(url, { signal: deps.signal })
   } catch (cause) {
-    if (deps.signal?.aborted === true) throw abortedError(cause)
+    if (deps.signal?.aborted === true) throw abortedError(cause, deps.signal)
     throw new InferenceError("unreachable", null, "model server unreachable", {
       cause,
     })

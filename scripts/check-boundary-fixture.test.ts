@@ -10,6 +10,9 @@ const LINES = [
   "error gate-has-no-parsers: packages/gate/src/bad-parser-import.ts → node_modules/pdfjs-dist",
   "error web-test-fixtures-are-test-only: apps/web/app/bad-fixture-import.ts → apps/web/test/f.ts",
   "error web-test-fixtures-are-test-only: apps/web/app/bad-fixture-alias-import.ts → apps/web/test/f.ts",
+  "error core-imports-no-apps-or-ui: packages/core/src/bad-ui-import.ts → packages/ui/src/index.ts",
+  "error mail-and-keychain-libs-are-gate-only: packages/core/src/bad-mail-import.ts → node_modules/imapflow",
+  "error infra-uses-public-entry-points-only: infra/bad-core-internals.ts → packages/core/src/bad.ts",
 ]
 
 describe("judgeFixtureRun", () => {

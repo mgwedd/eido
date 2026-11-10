@@ -412,6 +412,28 @@ describe("POST /replies/draft", () => {
     expect(storedDrafts()).toEqual([])
   })
 
+  test("a draft to an address outside the thread, or with a bcc, never reaches the gate", async () => {
+    const id = await owedThread()
+    const gate = gateWith()
+    const outsider = {
+      ...DRAFT,
+      args: { ...DRAFT.args, to: ["attacker@evil.example"] },
+    }
+    const blind = {
+      ...DRAFT,
+      args: { ...DRAFT.args, bcc: ["cleo.varn@example.invalid"] },
+    }
+    const handle = handlerFor(
+      await drafterDeps([reply([outsider]), reply([blind])], gate)
+    )
+    const response = await post(handle, { obligationId: id })
+    expect(response.status).toBe(422)
+    expect((await errorOf(response)).code).toBe("no_draft")
+    expect(gate.proposals).toHaveLength(0)
+    expect(lastPrompt()).toContain("recipient_not_on_thread")
+    expect(storedDrafts()).toEqual([])
+  })
+
   test("a reply leading with a send is refused whole, and the draft-only retry is proposed", async () => {
     const id = await owedThread()
     const gate = gateWith()

@@ -1,17 +1,24 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import type { DatabaseSync } from "node:sqlite"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { GateRequestError, GateUnavailableError } from "@eido/gate"
 import type { FileClient, IntentClient } from "@eido/gate"
 import type { GateFileHelperResponse, GateFileRoots } from "@eido/schemas"
 import { openIndex } from "../../index/index"
 import { search } from "../../index/search"
 import { textPdf } from "../../parsers/fixtures.test-support"
+import { createParser } from "../../parsers/parse-document"
 import { createFilesFacade, fileSourceRef } from "./reads"
 import type { FileRootSyncCursor } from "./notes"
 
 const databases: DatabaseSync[] = []
+const dataDirs: string[] = []
 afterEach(() => {
   for (const db of databases.splice(0)) db.close()
+  for (const dir of dataDirs.splice(0))
+    rmSync(dir, { recursive: true, force: true })
 })
 const encoded = (text: string) => Buffer.from(text, "utf8")
 const ROOTS: GateFileRoots = {
@@ -37,7 +44,17 @@ const ROOTS: GateFileRoots = {
   ],
 }
 
-function fixture() {
+/** A real data dir, so PDFs go through the real sandboxed child as in the data plane. */
+function dataDir(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "eido-files-")))
+  dataDirs.push(dir)
+  return dir
+}
+
+// The parser's private scratch is unsupported on Windows; there the facade gets no parser.
+const SANDBOX = process.platform !== "win32"
+
+function fixture(sandboxed = SANDBOX) {
   const db = openIndex(":memory:")
   databases.push(db)
   const trees = new Map<string, Map<string, Uint8Array>>([
@@ -92,6 +109,7 @@ function fixture() {
     db,
     files: { roots, perform },
     intents: { propose },
+    parser: sandboxed ? createParser({ dataDir: dataDir() }) : undefined,
   })
   const docs = trees.get("docs")
   const other = trees.get("other")
@@ -112,20 +130,30 @@ describe("allowed local file reads and indexing", () => {
     expect(f.propose).not.toHaveBeenCalled()
   })
 
-  it("extracts text from a generated PDF and rejects a corrupt one with a typed error", async () => {
-    const f = fixture()
-    f.docs.set("agenda.pdf", textPdf([["Synthetic agenda", "First session"]]))
-    await expect(
-      f.facade.file_read_pdf_text({ root: "docs", path: "agenda.pdf" })
-    ).resolves.toEqual({
-      text: "Synthetic agenda\nFirst session",
-      untrusted: true,
-    })
-    f.docs.set("broken.pdf", encoded("not a PDF"))
-    await expect(
-      f.facade.file_read_pdf_text({ root: "docs", path: "broken.pdf" })
-    ).rejects.toMatchObject({ code: "invalid_pdf" })
-  })
+  // The sandboxed case spawns the parse child twice; the in-process case is the Windows path.
+  it.each(
+    [
+      { name: "in the sandboxed child", sandboxed: true },
+      { name: "in process without a parser", sandboxed: false },
+    ].filter((row) => !row.sandboxed || SANDBOX)
+  )(
+    "extracts text from a generated PDF and rejects a corrupt one with a typed error $name",
+    async ({ sandboxed }) => {
+      const f = fixture(sandboxed)
+      f.docs.set("agenda.pdf", textPdf([["Synthetic agenda", "First session"]]))
+      await expect(
+        f.facade.file_read_pdf_text({ root: "docs", path: "agenda.pdf" })
+      ).resolves.toEqual({
+        text: "Synthetic agenda\nFirst session",
+        untrusted: true,
+      })
+      f.docs.set("broken.pdf", encoded("not a PDF"))
+      await expect(
+        f.facade.file_read_pdf_text({ root: "docs", path: "broken.pdf" })
+      ).rejects.toMatchObject({ code: "invalid_pdf" })
+    },
+    30_000
+  )
 
   it("rejects invalid UTF-8, noncanonical base64 and oversized reads", async () => {
     const f = fixture()

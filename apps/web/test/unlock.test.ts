@@ -64,7 +64,18 @@ describe("safeNext", () => {
     ["/unlock", "/"],
     ["/unlock?next=/queue", "/"],
     ["/unlocked-things", "/unlocked-things"],
-  ])("%s -> %s", (input, expected) => {
+    ["/\t/evil.example.invalid", "/"],
+    ["/\n/evil.example.invalid", "/"],
+    ["/\r/evil.example.invalid", "/"],
+    ["/\\\t/evil.example.invalid", "/"],
+    ["/\\/evil.example.invalid", "/"],
+    ["//\tevil.example.invalid", "/"],
+    ["\t//evil.example.invalid", "/"],
+    ["javascript:alert(1)", "/"],
+    ["/a/../../unlock", "/"],
+    ["/queue?filter=email#top", "/queue?filter=email#top"],
+    ["/a/./b?x=1", "/a/b?x=1"],
+  ])("%j -> %s", (input, expected) => {
     expect(safeNext(input)).toBe(expected)
   })
 })

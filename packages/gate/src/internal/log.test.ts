@@ -1,4 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, it } from "vitest"
@@ -18,6 +25,20 @@ it("appends one JSON line per event to a file only its owner can read", () => {
     if (process.platform !== "win32") {
       expect(statSync(path).mode & 0o777).toBe(0o600)
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+it("tightens an existing log file left world-readable to 0600 when the logger opens it", () => {
+  if (process.platform === "win32") return
+  const dir = mkdtempSync(join(tmpdir(), "eido-log-"))
+  try {
+    const path = join(dir, "gate.log")
+    writeFileSync(path, "old\n")
+    chmodSync(path, 0o644)
+    fileLog(path)("started")
+    expect(statSync(path).mode & 0o777).toBe(0o600)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

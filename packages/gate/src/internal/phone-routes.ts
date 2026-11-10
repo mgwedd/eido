@@ -67,6 +67,8 @@ import {
   issueSignedEnrolmentCode,
   prepareEnrolmentCodeIssue,
 } from "./enrolment"
+import { allowAttempt } from "./rate-limit"
+import type { RateState } from "./rate-limit"
 import {
   prepareBridgeSecret,
   prepareBridgePin,
@@ -1518,7 +1520,18 @@ export function tierRefusal(
 }
 
 /** The phone listener's handler. */
+/** The public routes that insert a row or take a credential per call, and so get an attempt limit. */
+const RATE_LIMITED_PUBLIC: ReadonlySet<RoutePath> = new Set<RoutePath>([
+  "/auth/login/options",
+  "/auth/login",
+  "/passkey/enroll/options",
+  "/passkey/enroll",
+])
+export const PUBLIC_ATTEMPT_LIMIT = 30
+export const PUBLIC_ATTEMPT_WINDOW_MS = 60_000
+
 export function phoneHandler(options: PhoneOptions): Handler {
+  const attempts: RateState = new Map()
   // In memory only, so a gate restart ends every step-up.
   const elevations: Elevations = new Map()
   const allowedHosts = new Set(options.allowedHosts.map((h) => h.toLowerCase()))
@@ -1540,6 +1553,19 @@ export function phoneHandler(options: PhoneOptions): Handler {
         "unsupported_media_type",
         "content-type must be application/json"
       )
+    }
+    if (
+      matched.route.tier === "public" &&
+      RATE_LIMITED_PUBLIC.has(matched.route.path) &&
+      !allowAttempt(
+        attempts,
+        matched.route.path,
+        options.now().getTime(),
+        PUBLIC_ATTEMPT_LIMIT,
+        PUBLIC_ATTEMPT_WINDOW_MS
+      )
+    ) {
+      return apiError(429, "busy", "too many attempts; try again shortly")
     }
     const state = options.gate()
     const refusal = tierRefusal(
