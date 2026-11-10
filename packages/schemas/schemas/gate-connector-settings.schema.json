@@ -50,6 +50,7 @@
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
           },
+          "clientIdConfigured": { "type": "boolean" },
           "drift": {
             "type": "object",
             "properties": {
@@ -107,6 +108,41 @@
       "format": "date-time",
       "minLength": 20,
       "maxLength": 40
+    },
+    "googleRedirectUri": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "googleTargets": {
+      "type": "object",
+      "properties": {
+        "gmail": {
+          "type": "object",
+          "properties": {
+            "clientIdConfigured": { "type": "boolean" }
+          },
+          "required": ["clientIdConfigured"],
+          "additionalProperties": false
+        },
+        "gmail-read": {
+          "type": "object",
+          "properties": {
+            "clientIdConfigured": { "type": "boolean" }
+          },
+          "required": ["clientIdConfigured"],
+          "additionalProperties": false
+        },
+        "drive": {
+          "type": "object",
+          "properties": {
+            "clientIdConfigured": { "type": "boolean" }
+          },
+          "required": ["clientIdConfigured"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "required": ["connectors"],

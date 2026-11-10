@@ -781,6 +781,53 @@ describe("gateConfig with Google sign-in (#662)", () => {
     })
   })
 
+  it("configures all Google targets and egress from EIDO_GOOGLE_CLIENT_ID when overrides are unset", () => {
+    const config = gateConfig({
+      ...BASE,
+      EIDO_GOOGLE_REDIRECT_URI: CALLBACK,
+      EIDO_GOOGLE_CLIENT_ID: "shared-google-id",
+      EIDO_GATE_EGRESS_PORT: "8711",
+    })
+    expect(config.google).toEqual({
+      redirectUri: CALLBACK,
+      clientIds: {
+        gmail: "shared-google-id",
+        "gmail-read": "shared-google-id",
+        drive: "shared-google-id",
+      },
+    })
+    expect(config.gmail?.clientId).toBe("shared-google-id")
+    expect(config.egress?.clientIds).toEqual({
+      gmail: "shared-google-id",
+      drive: "shared-google-id",
+    })
+  })
+
+  it("lets per-target overrides take precedence over EIDO_GOOGLE_CLIENT_ID", () => {
+    const config = gateConfig({
+      ...BASE,
+      EIDO_GOOGLE_REDIRECT_URI: CALLBACK,
+      EIDO_GOOGLE_CLIENT_ID: "shared-google-id",
+      EIDO_GMAIL_CLIENT_ID: "specific-write-id",
+      EIDO_GMAIL_READ_CLIENT_ID: "specific-read-id",
+      EIDO_DRIVE_CLIENT_ID: "specific-drive-id",
+      EIDO_GATE_EGRESS_PORT: "8711",
+    })
+    expect(config.google).toEqual({
+      redirectUri: CALLBACK,
+      clientIds: {
+        gmail: "specific-write-id",
+        "gmail-read": "specific-read-id",
+        drive: "specific-drive-id",
+      },
+    })
+    expect(config.gmail?.clientId).toBe("specific-write-id")
+    expect(config.egress?.clientIds).toEqual({
+      gmail: "specific-read-id",
+      drive: "specific-drive-id",
+    })
+  })
+
   it("needs a vault", () => {
     const noVault: Record<string, string> = { ...BASE }
     delete noVault["EIDO_GATE_VAULT_FILE"]

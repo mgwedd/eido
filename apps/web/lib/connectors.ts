@@ -100,6 +100,8 @@ export type ConnectorsLoad =
       connectors: Connector[]
       unpinned: Unpinned[]
       asOf?: string
+      googleRedirectUri?: string
+      googleTargets?: GateConnectorSettings["googleTargets"]
     }
   | { status: "offline" }
   | { status: "unauthenticated" }
@@ -125,6 +127,12 @@ export async function loadConnectors(
       connectors: parsed.value.connectors,
       unpinned: parsed.value.unpinned ?? [],
       ...(parsed.value.asOf === undefined ? {} : { asOf: parsed.value.asOf }),
+      ...(parsed.value.googleRedirectUri === undefined
+        ? {}
+        : { googleRedirectUri: parsed.value.googleRedirectUri }),
+      ...(parsed.value.googleTargets === undefined
+        ? {}
+        : { googleTargets: parsed.value.googleTargets }),
     }
   } catch (error) {
     // An aborted read is ignored by the caller; a TypeError is fetch's network failure.
