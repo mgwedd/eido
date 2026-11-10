@@ -51,7 +51,10 @@ function dataDir(): string {
   return dir
 }
 
-function fixture() {
+// The parser's private scratch is unsupported on Windows; there the facade gets no parser.
+const SANDBOX = process.platform !== "win32"
+
+function fixture(sandboxed = SANDBOX) {
   const db = openIndex(":memory:")
   databases.push(db)
   const trees = new Map<string, Map<string, Uint8Array>>([
@@ -106,7 +109,7 @@ function fixture() {
     db,
     files: { roots, perform },
     intents: { propose },
-    parser: createParser({ dataDir: dataDir() }),
+    parser: sandboxed ? createParser({ dataDir: dataDir() }) : undefined,
   })
   const docs = trees.get("docs")
   const other = trees.get("other")
@@ -127,20 +130,30 @@ describe("allowed local file reads and indexing", () => {
     expect(f.propose).not.toHaveBeenCalled()
   })
 
-  it("extracts text from a generated PDF and rejects a corrupt one with a typed error", async () => {
-    const f = fixture()
-    f.docs.set("agenda.pdf", textPdf([["Synthetic agenda", "First session"]]))
-    await expect(
-      f.facade.file_read_pdf_text({ root: "docs", path: "agenda.pdf" })
-    ).resolves.toEqual({
-      text: "Synthetic agenda\nFirst session",
-      untrusted: true,
-    })
-    f.docs.set("broken.pdf", encoded("not a PDF"))
-    await expect(
-      f.facade.file_read_pdf_text({ root: "docs", path: "broken.pdf" })
-    ).rejects.toMatchObject({ code: "invalid_pdf" })
-  })
+  // The sandboxed case spawns the parse child twice; the in-process case is the Windows path.
+  it.each(
+    [
+      { name: "in the sandboxed child", sandboxed: true },
+      { name: "in process without a parser", sandboxed: false },
+    ].filter((row) => !row.sandboxed || SANDBOX)
+  )(
+    "extracts text from a generated PDF and rejects a corrupt one with a typed error $name",
+    async ({ sandboxed }) => {
+      const f = fixture(sandboxed)
+      f.docs.set("agenda.pdf", textPdf([["Synthetic agenda", "First session"]]))
+      await expect(
+        f.facade.file_read_pdf_text({ root: "docs", path: "agenda.pdf" })
+      ).resolves.toEqual({
+        text: "Synthetic agenda\nFirst session",
+        untrusted: true,
+      })
+      f.docs.set("broken.pdf", encoded("not a PDF"))
+      await expect(
+        f.facade.file_read_pdf_text({ root: "docs", path: "broken.pdf" })
+      ).rejects.toMatchObject({ code: "invalid_pdf" })
+    },
+    30_000
+  )
 
   it("rejects invalid UTF-8, noncanonical base64 and oversized reads", async () => {
     const f = fixture()

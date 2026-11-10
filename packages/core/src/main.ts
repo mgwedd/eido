@@ -597,6 +597,17 @@ function gmailParser(dataDir: string | undefined): Parser {
   return createParser({ dataDir })
 }
 
+/** The plane's parser: none only on Windows without Gmail, where the sandbox cannot run. */
+export function dataPlaneParser(
+  dataDir: string | undefined,
+  gmailProxyUrl: string | undefined,
+  platform: NodeJS.Platform = process.platform
+): Parser | undefined {
+  return gmailProxyUrl === undefined && platform === "win32"
+    ? undefined
+    : gmailParser(dataDir)
+}
+
 function createModelQueueProvider(
   modelBaseUrl: string | undefined,
   chatTemplateKwargs?: Readonly<Record<string, unknown>>
@@ -685,8 +696,10 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     config.api.modelBaseUrl,
     config.api.chatTemplateKwargs
   )
-  // The files connector reads PDFs through the same sandboxed child, so a parser always exists.
-  const parser = gmailParser(config.dataDir)
+  // The files connector reads PDFs through the same sandboxed child. The sandbox's private scratch
+  // is unsupported on Windows, so without Gmail there the plane starts with no parser and the
+  // files connector parses PDFs in process.
+  const parser = dataPlaneParser(config.dataDir, config.api.gmailProxyUrl)
   secureDataDir(config.dataDir)
   const conversationIndexPath = join(
     dirname(config.dbPath),

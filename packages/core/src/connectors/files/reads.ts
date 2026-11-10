@@ -61,8 +61,11 @@ export type FilesDeps = {
   files: FileClient
   intents: Pick<IntentClient, "propose">
   db: DatabaseSync
-  /** The sandboxed parser PDFs are read through; PDF bytes are never parsed in this process. */
-  parser: Pick<Parser, "parseBytes">
+  /**
+   * The sandboxed parser PDFs are read through. Undefined only where the sandbox cannot run
+   * (Windows): PDFs are then parsed in this process.
+   */
+  parser: Pick<Parser, "parseBytes"> | undefined
   origin?: GateIntentOrigin
   entityId?: () => Promise<string | undefined>
 }

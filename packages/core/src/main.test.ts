@@ -46,6 +46,7 @@ import {
   createProtonSyncRuntime,
   dataPlaneConfig,
   dataPlaneEnv,
+  dataPlaneParser,
   forwardTo,
   holdUntilStopped,
   launchPlan,
@@ -355,6 +356,24 @@ describe("coreApiConfig", () => {
   test("refuses a malformed base path", () => {
     expect(() => coreApiConfig({ EIDO_CORE_BASE_PATH: "api/core/" })).toThrow(
       "the base path must look like /api/core"
+    )
+  })
+})
+
+describe("dataPlaneParser", () => {
+  it("is absent on Windows without Gmail, so the plane starts without the sandbox", () => {
+    expect(dataPlaneParser(undefined, undefined, "win32")).toBeUndefined()
+  })
+
+  it("is still required on Windows once Gmail is configured", () => {
+    expect(() =>
+      dataPlaneParser(undefined, "http://127.0.0.1:1", "win32")
+    ).toThrow("Gmail sync requires EIDO_DATA_DIR to configure its parser")
+  })
+
+  it("is required elsewhere even without Gmail", () => {
+    expect(() => dataPlaneParser(undefined, undefined, "darwin")).toThrow(
+      "Gmail sync requires EIDO_DATA_DIR to configure its parser"
     )
   })
 })
