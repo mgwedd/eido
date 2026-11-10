@@ -8,9 +8,14 @@ import { Badge } from "@eido/ui/components/badge"
 import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
+import {
+  DoneAutomaticallyCard,
+  type DoneAutomaticallyState,
+} from "@/components/done-automatically-card"
 import { DueSoonCard } from "@/components/due-soon-card"
 import { MorningBriefCard } from "@/components/morning-brief-card"
 import { PhoneMoreLinks } from "@/components/phone-more-links"
+import { loadAudit } from "@/lib/activity"
 import { expiredUnlockUrl } from "@/lib/auth/unlock"
 import { formatWaiting } from "@/lib/relative-time"
 import {
@@ -118,6 +123,52 @@ function useMorningBrief(): {
   }, [])
 
   return { state, retry }
+}
+
+function signedOut() {
+  window.location.replace(
+    expiredUnlockUrl(window.location.pathname + window.location.search)
+  )
+}
+
+function useDoneAutomatically(): {
+  state: DoneAutomaticallyState
+  retry: () => void
+  refresh: () => void
+} {
+  const [state, setState] = React.useState<DoneAutomaticallyState>({
+    status: "loading",
+  })
+  const [attempt, setAttempt] = React.useState(0)
+
+  React.useEffect(() => {
+    const controller = new AbortController()
+    void loadAudit(controller.signal).then((result) => {
+      if (controller.signal.aborted) return
+      if (result.status === "unauthenticated") return signedOut()
+      setState(
+        result.status === "ready"
+          ? { status: "ready", entries: result.entries }
+          : { status: "error" }
+      )
+    })
+    return () => controller.abort()
+  }, [attempt])
+
+  const retry = React.useCallback(() => {
+    setState({ status: "loading" })
+    setAttempt((n) => n + 1)
+  }, [])
+
+  /** Re-reads after an undo answer; a failed read keeps the rows on screen. */
+  const refresh = React.useCallback(() => {
+    void loadAudit(new AbortController().signal).then((result) => {
+      if (result.status === "unauthenticated") return signedOut()
+      if (result.status === "ready")
+        setState({ status: "ready", entries: result.entries })
+    })
+  }, [])
+  return { state, retry, refresh }
 }
 
 function useDueSoon(): {
@@ -324,6 +375,11 @@ function TodayView() {
   const { state: needsState, loadedAt, retry: retryNeeds } = useNeedsYou()
   const { state: briefState, retry: retryBrief } = useMorningBrief()
   const { state: dueSoonState, retry: retryDueSoon } = useDueSoon()
+  const {
+    state: doneState,
+    retry: retryDone,
+    refresh: refreshDone,
+  } = useDoneAutomatically()
   const { activeEntity, setEntity } = useEntityFilter()
 
   const today = React.useSyncExternalStore(
@@ -367,6 +423,12 @@ function TodayView() {
             activeEntity={activeEntity}
             onSelectEntity={setEntity}
             onRetry={retryDueSoon}
+          />
+          <DoneAutomaticallyCard
+            state={doneState}
+            onRetry={retryDone}
+            onUndoSettled={refreshDone}
+            onSignedOut={signedOut}
           />
         </div>
         <div className="order-1 flex flex-col gap-6 lg:order-2 lg:col-span-1">
