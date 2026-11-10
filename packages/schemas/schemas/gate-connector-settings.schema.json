@@ -50,6 +50,13 @@
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
           },
+          "bridgePasswordStored": { "type": "boolean" },
+          "accountEmail": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 254,
+            "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$"
+          },
           "clientIdConfigured": { "type": "boolean" },
           "drift": {
             "type": "object",

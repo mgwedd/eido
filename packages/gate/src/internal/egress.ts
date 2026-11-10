@@ -18,6 +18,7 @@ import type { Vault } from "./vault/vault"
 import { takeDailyRequest } from "./connector-quota"
 import {
   beginConnectorRead,
+  recordConnectorAccountEmail,
   recordConnectorReadFailure,
   recordConnectorReadSuccess,
   releaseConnectorProbe,
@@ -414,6 +415,34 @@ function refusalFor(error: unknown): unknown {
   return error
 }
 
+const GMAIL_PROFILE_HOST = "gmail.googleapis.com"
+const GMAIL_PROFILE_PATH = "/gmail/v1/users/me/profile"
+
+function recordProfileEmail(
+  db: DatabaseSync,
+  connector: string,
+  route: Route,
+  text: string
+): void {
+  if (
+    route.host !== GMAIL_PROFILE_HOST ||
+    route.pathPattern !== GMAIL_PROFILE_PATH
+  )
+    return
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "emailAddress" in parsed &&
+      typeof parsed.emailAddress === "string"
+    )
+      recordConnectorAccountEmail(db, connector, parsed.emailAddress)
+  } catch {
+    // An unreadable body is not a profile; leave the stored email unchanged.
+  }
+}
+
 /**
  * A read connector's health probe for `POST /connectors/{name}/connected` (#98): one pinned read
  * through the same route checks and credential path as the proxy, refreshing the access token
@@ -430,10 +459,11 @@ export function egressProbe(
       const target = targetURL(probeUrl)
       const check = () =>
         selectedRoute(options.db, connector, target, "GET", true)
+      const route = check()
       const { upstream } = await readFor(options, connector)(
         options,
         connector,
-        upstreamURL(check(), target),
+        upstreamURL(route, target),
         {
           method: "GET",
           headers: new Headers(),
@@ -441,7 +471,18 @@ export function egressProbe(
           beforeCall: () => void check(),
         }
       )
-      void upstream.body?.cancel().catch(() => undefined)
+      if (
+        upstream.ok &&
+        route.host === GMAIL_PROFILE_HOST &&
+        route.pathPattern === GMAIL_PROFILE_PATH
+      )
+        recordProfileEmail(
+          options.db,
+          connector,
+          route,
+          await upstream.text().catch(() => "")
+        )
+      else void upstream.body?.cancel().catch(() => undefined)
       return upstream.ok ? "ok" : "unavailable"
     } catch (error) {
       if (
@@ -605,6 +646,13 @@ export async function startEgressProxy(
           )
           probeOutcomeRecorded = true
         } else {
+          if (upstream.status >= 200 && upstream.status < 300)
+            recordProfileEmail(
+              db,
+              connector,
+              route,
+              responseBody.toString("utf8")
+            )
           recordConnectorReadSuccess(db, connector, attempt)
           probeOutcomeRecorded = true
         }

@@ -247,6 +247,8 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
      public_key_jwk TEXT NOT NULL,
      created_at TEXT NOT NULL
    ) STRICT;`,
+  // The connected Google account's email address for the Admin Connectors page (#672).
+  `ALTER TABLE connectors ADD COLUMN account_email TEXT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

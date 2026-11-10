@@ -31,7 +31,7 @@ describe("openControlDb", () => {
     { timeout: DISK_TIMEOUT_MS },
     () => {
       const db = openControlDb(tempPath())
-      expect(version(db)).toBe(18)
+      expect(version(db)).toBe(19)
       const connectorColumns = db
         .prepare("PRAGMA table_info(connectors)")
         .all()
@@ -46,6 +46,7 @@ describe("openControlDb", () => {
           "probe_lease_id",
           "health_generation",
           "last_success_at",
+          "account_email",
         ])
       )
       expect(db.prepare("PRAGMA foreign_keys").get()?.["foreign_keys"]).toBe(1)
@@ -71,7 +72,7 @@ describe("openControlDb", () => {
       )
       first.close()
       const second = openControlDb(path) // re-running migration 1 would throw "table already exists"
-      expect(version(second)).toBe(18)
+      expect(version(second)).toBe(19)
       expect(
         second.prepare("SELECT COUNT(*) AS n FROM audit_log").get()?.["n"]
       ).toBe(1)
@@ -81,7 +82,7 @@ describe("openControlDb", () => {
 
   it("works with :memory:", () => {
     const db = openControlDb(":memory:")
-    expect(version(db)).toBe(18)
+    expect(version(db)).toBe(19)
     db.close()
   })
 
@@ -121,7 +122,7 @@ describe("openControlDb", () => {
       legacy.close()
 
       const upgraded = openControlDb(path)
-      expect(version(upgraded)).toBe(18)
+      expect(version(upgraded)).toBe(19)
       expect(
         upgraded
           .prepare(
@@ -131,9 +132,11 @@ describe("openControlDb", () => {
       ).toMatchObject({ enabled: 0, pin_approval_ref_hash: null })
       expect(
         upgraded
-          .prepare("SELECT last_success_at FROM connectors WHERE name = ?")
+          .prepare(
+            "SELECT last_success_at, account_email FROM connectors WHERE name = ?"
+          )
           .get(mail.name)
-      ).toEqual({ last_success_at: null })
+      ).toEqual({ last_success_at: null, account_email: null })
       expect(auditRows(upgraded)).toEqual([
         expect.objectContaining({
           actor: "system",

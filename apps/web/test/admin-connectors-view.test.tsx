@@ -14,9 +14,11 @@ import {
   drive,
   fakeGate,
   gmail,
+  gmailWithAccount,
   googlePrepared,
   json,
   protonMail,
+  protonWithPassword,
   sealedHealth,
   type Call,
 } from "./fixtures/admin-connectors"
@@ -188,6 +190,15 @@ describe("reading", () => {
     expect(card("Local folders").querySelector("a")?.getAttribute("href")).toBe(
       "/settings/folders/edit"
     )
+    expect(card("Gmail").textContent).not.toContain("owner@example.invalid")
+    expect(card("Proton (Bridge)").textContent).not.toContain("Password stored")
+  })
+
+  it("shows Bridge Password stored and Gmail account email when reported (#672)", async () => {
+    stubGate([gmailWithAccount, protonWithPassword])
+    await render()
+    expect(card("Gmail").textContent).toContain("owner@example.invalid")
+    expect(card("Proton (Bridge)").textContent).toContain("Password stored")
   })
 
   it("leaves the folder count out when it cannot be read", async () => {

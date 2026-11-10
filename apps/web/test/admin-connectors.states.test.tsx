@@ -8,7 +8,9 @@ import {
   driveDisabled,
   gmail,
   gmailDegraded,
+  gmailWithAccount,
   protonMail,
+  protonWithPassword,
 } from "./fixtures/admin-connectors"
 import { describeStates } from "./render-states"
 
@@ -73,6 +75,13 @@ describeStates("Admin connectors", [
   {
     state: "populated",
     render: body(ready([gmail, protonMail])),
+    role: "status",
+    selector: NOTICE,
+    message: "",
+  },
+  {
+    state: "Bridge with password stored and Gmail with account email",
+    render: body(ready([gmailWithAccount, protonWithPassword])),
     role: "status",
     selector: NOTICE,
     message: "",

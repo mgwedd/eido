@@ -37,6 +37,7 @@ import type { Body, GateRequest, Handler, Reply } from "./http"
 import { append } from "./audit"
 import {
   beginConnectorRead,
+  recordConnectorAccountEmail,
   recordConnectorReadFailure,
   recordConnectorReadSuccess,
 } from "./connector-health"
@@ -394,6 +395,44 @@ describe("phoneHandler: connector settings detail", () => {
     expect(files?.drift?.added).toEqual(["files.unpinned_tool"])
     expect(files?.drift?.removed.length).toBeGreaterThan(0)
     expect(files?.manifestHash).toBe(manifestHash(manifest("files", FILE_OPS)))
+    expect(JSON.stringify(reply.body)).not.toMatch(/token|secret/i)
+  })
+
+  it("serves bridgePasswordStored on Proton connectors and accountEmail on Google connectors without leaking secrets (#672)", async () => {
+    signedPin(s.db, manifest("proton-mail", MAIL_OPS))
+    signedPin(s.db, manifest("gmail", MAIL_OPS))
+    enrol(auth)
+    const cookie = await signIn()
+
+    let reply = await call("GET", "/connector-settings", { cookie })
+    let checked = validateGateConnectorSettings(reply.body)
+    expect(checked.ok).toBe(true)
+    if (!checked.ok) throw new Error("connector settings invalid")
+    let proton = checked.value.connectors.find((c) => c.name === "proton-mail")
+    let gmailConn = checked.value.connectors.find((c) => c.name === "gmail")
+    expect(proton?.bridgePasswordStored).toBe(false)
+    expect(gmailConn?.accountEmail).toBeUndefined()
+
+    s.db
+      .prepare(
+        "INSERT INTO bridge_password_pin (singleton, certificate_sha256) VALUES (1, ?)"
+      )
+      .run("a".repeat(64))
+    recordConnectorAccountEmail(s.db, "gmail", "owner@example.invalid")
+
+    reply = await call("GET", "/connector-settings", { cookie })
+    checked = validateGateConnectorSettings(reply.body)
+    expect(checked.ok).toBe(true)
+    if (!checked.ok) throw new Error("connector settings invalid")
+
+    proton = checked.value.connectors.find((c) => c.name === "proton-mail")
+    gmailConn = checked.value.connectors.find((c) => c.name === "gmail")
+    const mailConn = checked.value.connectors.find((c) => c.name === "mail")
+
+    expect(proton?.bridgePasswordStored).toBe(true)
+    expect(gmailConn?.accountEmail).toBe("owner@example.invalid")
+    expect(mailConn?.bridgePasswordStored).toBeUndefined()
+
     expect(JSON.stringify(reply.body)).not.toMatch(/token|secret/i)
   })
 })

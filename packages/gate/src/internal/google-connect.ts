@@ -20,7 +20,10 @@ import {
 } from "./connect/oauth"
 import { checkConnector } from "./connector-connect"
 import type { ConnectorProbes } from "./connector-connect"
-import { getConnectorHealth } from "./connector-health"
+import {
+  getConnectorHealth,
+  recordConnectorAccountEmail,
+} from "./connector-health"
 import {
   controlApprovalChallenge,
   prepareControlApproval,
@@ -447,6 +450,7 @@ export async function googleCallback(
     secret: pending.clientSecret === undefined ? "kept" : "sealed",
   })
   const connector = GOOGLE_TARGETS[pending.target].connector
+  recordConnectorAccountEmail(google.db, connector, null)
   const pinned = getConnectorHealth(google.db).some(
     ({ name }) => name === connector
   )
