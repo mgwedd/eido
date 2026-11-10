@@ -125,6 +125,12 @@ export async function runSetup(
   } else ensureDevVault(deps, settings)
   for (const key of PROMPTED) {
     if (set(deps.env, key) !== undefined) continue
+    if (
+      (key === "EIDO_GMAIL_CLIENT_ID" || key === "EIDO_GMAIL_READ_CLIENT_ID") &&
+      (set(deps.env, "EIDO_GOOGLE_CLIENT_ID") !== undefined ||
+        set(settings, "EIDO_GOOGLE_CLIENT_ID") !== undefined)
+    )
+      continue
     const fallback = await defaultFor(deps, key)
     const answer =
       (

@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import * as React from "react"
-import { Lock, PenLine } from "lucide-react"
+import { Copy, ExternalLink, Lock, PenLine } from "lucide-react"
 
 import { Badge } from "@eido/ui/components/badge"
 import { Button, buttonVariants } from "@eido/ui/components/button"
@@ -61,6 +61,7 @@ import {
   loadConnectors,
   type Connector,
 } from "@/lib/connectors"
+import type { GateConnectorSettings } from "@eido/schemas"
 import { loadFileRoots } from "@/lib/settings"
 
 export type AdminConnectorsState =
@@ -72,6 +73,8 @@ export type AdminConnectorsState =
       connectors: readonly Connector[]
       /** The allowed-folder count, or null when it could not be read. */
       folders: number | null
+      googleRedirectUri?: string
+      googleTargets?: GateConnectorSettings["googleTargets"]
     }
 
 /** A line the page announces after an action or a return from Google. */
@@ -254,41 +257,178 @@ function GoogleAction({
   )
 }
 
+function CopyUriButton({ uri }: { uri: string }) {
+  const [copied, setCopied] = React.useState(false)
+
+  const onCopy = async () => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(uri)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      }
+    } catch {
+      // ignore clipboard error
+    }
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="ml-auto h-7 min-h-7 gap-1 px-2 text-xs"
+      onClick={() => void onCopy()}
+    >
+      <Copy aria-hidden className="size-3" />
+      {copied ? "Copied" : "Copy"}
+    </Button>
+  )
+}
+
+function GoogleChecklist({
+  target,
+  redirectUri,
+}: {
+  target: GoogleTarget
+  redirectUri: string
+}) {
+  const apiLibraryUrl =
+    target === "gmail"
+      ? "https://console.cloud.google.com/apis/library/gmail.googleapis.com"
+      : "https://console.cloud.google.com/apis/library/drive.googleapis.com"
+  const apiName = target === "gmail" ? "Gmail API" : "Google Drive API"
+
+  return (
+    <div
+      data-region={`google-checklist-${target}`}
+      className="flex flex-col gap-3 text-sm text-muted-foreground"
+    >
+      <p className="font-medium text-foreground">
+        Set up Google Cloud credentials to connect:
+      </p>
+      <ol className="flex list-decimal flex-col gap-2 pl-5">
+        <li>
+          <a
+            href={apiLibraryUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-medium text-primary underline underline-offset-4 hover:text-primary/80"
+          >
+            Enable {apiName}
+            <ExternalLink aria-hidden className="size-3.5" />
+          </a>
+        </li>
+        <li>
+          <a
+            href="https://console.cloud.google.com/apis/credentials/consent"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-medium text-primary underline underline-offset-4 hover:text-primary/80"
+          >
+            Configure OAuth consent screen
+            <ExternalLink aria-hidden className="size-3.5" />
+          </a>
+        </li>
+        <li className="flex flex-col items-start gap-1.5">
+          <a
+            href="https://console.cloud.google.com/apis/credentials"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-medium text-primary underline underline-offset-4 hover:text-primary/80"
+          >
+            Create OAuth client ID (Web application)
+            <ExternalLink aria-hidden className="size-3.5" />
+          </a>
+          <div className="mt-1 flex w-full flex-wrap items-center gap-2 rounded-md border border-border bg-muted/50 p-2 text-xs">
+            <span className="font-medium text-muted-foreground">
+              Authorized redirect URI:
+            </span>
+            <span
+              role="status"
+              data-region={`google-checklist-uri-${target}`}
+              className="font-mono break-all text-foreground select-all"
+            >
+              {redirectUri}
+            </span>
+            <CopyUriButton uri={redirectUri} />
+          </div>
+        </li>
+        <li>
+          <span>
+            Set{" "}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
+              EIDO_GOOGLE_CLIENT_ID
+            </code>{" "}
+            in{" "}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
+              stack.env
+            </code>{" "}
+            and restart the stack.
+          </span>
+        </li>
+      </ol>
+    </div>
+  )
+}
+
 function GoogleCard({
   target,
   id,
   connector,
   actions,
   onRemove,
+  redirectUri,
+  clientIdConfigured = true,
 }: {
   target: GoogleTarget
   id: string
   connector: Connector | undefined
   actions: ConnectorActions
   onRemove: (id: string) => void
+  redirectUri?: string
+  clientIdConfigured?: boolean
 }) {
   const scopes = connector?.scopes.map(scopeName).join(", ")
+  const isConfigured = clientIdConfigured !== false
+  const effectiveUri =
+    redirectUri ?? "https://<host>.ts.net:8443/api/gate/connect/google/callback"
+
   return (
     <ConnectorCard
       title={displayName(id)}
       description={scopes === "" ? undefined : scopes}
-      badges={<StatusBadge connector={connector} />}
+      badges={
+        <Badge
+          variant={
+            !isConfigured || connector === undefined ? "outline" : "secondary"
+          }
+        >
+          {!isConfigured ? "Not configured" : statusLabel(connector)}
+        </Badge>
+      }
     >
       {connector?.accountEmail !== undefined ? (
         <p className="font-mono text-sm break-all text-muted-foreground">
           {connector.accountEmail}
         </p>
       ) : null}
-      <div className="flex flex-wrap gap-2">
-        <GoogleAction
-          target={target}
-          label={connector === undefined ? "Connect with Google" : "Reconnect"}
-          actions={actions}
-        />
-        {connector === undefined ? null : (
-          <RemoveButton id={id} onRemove={onRemove} />
-        )}
-      </div>
+      {isConfigured ? (
+        <div className="flex flex-wrap gap-2">
+          <GoogleAction
+            target={target}
+            label={
+              connector === undefined ? "Connect with Google" : "Reconnect"
+            }
+            actions={actions}
+          />
+          {connector === undefined ? null : (
+            <RemoveButton id={id} onRemove={onRemove} />
+          )}
+        </div>
+      ) : (
+        <GoogleChecklist target={target} redirectUri={effectiveUri} />
+      )}
     </ConnectorCard>
   )
 }
@@ -511,6 +651,11 @@ export function AdminConnectorsBody({
         connector={find("gmail")}
         actions={actions}
         onRemove={setRemoving}
+        redirectUri={state.googleRedirectUri}
+        clientIdConfigured={
+          state.googleTargets?.["gmail"]?.clientIdConfigured ??
+          find("gmail")?.clientIdConfigured
+        }
       />
       <GoogleCard
         target="drive"
@@ -518,6 +663,11 @@ export function AdminConnectorsBody({
         connector={find("drive")}
         actions={actions}
         onRemove={setRemoving}
+        redirectUri={state.googleRedirectUri}
+        clientIdConfigured={
+          state.googleTargets?.["drive"]?.clientIdConfigured ??
+          find("drive")?.clientIdConfigured
+        }
       />
       <BridgeCard
         connector={find(PROTON)}
@@ -590,6 +740,12 @@ export function AdminConnectorsView({
           status: "ready",
           connectors: connectors.connectors,
           folders: roots.status === "ready" ? roots.value.roots.length : null,
+          ...(connectors.googleRedirectUri === undefined
+            ? {}
+            : { googleRedirectUri: connectors.googleRedirectUri }),
+          ...(connectors.googleTargets === undefined
+            ? {}
+            : { googleTargets: connectors.googleTargets }),
         })
     })
     return () => controller.abort()

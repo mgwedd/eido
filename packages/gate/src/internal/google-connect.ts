@@ -223,11 +223,37 @@ function audit(
   }).seq
 }
 
+export const SHARED_GOOGLE_SECRET_KEY: VaultKey = {
+  connector: "google",
+  kind: "api_key",
+  client: "none",
+}
+
+export async function getClientSecret(
+  google: GoogleConnect,
+  target: GoogleTarget
+): Promise<string | undefined> {
+  const specific = await google.vault.get(vaultKey(target, "api_key"))
+  if (specific !== undefined) return specific
+  const targetClientId = google.clientIds[target]
+  if (targetClientId === undefined) return undefined
+  for (const other of Object.keys(GOOGLE_TARGETS) as GoogleTarget[]) {
+    if (other === target) continue
+    if (google.clientIds[other] === targetClientId) {
+      const secret = await google.vault.get(vaultKey(other, "api_key"))
+      if (secret !== undefined) return secret
+    }
+  }
+  const shared = await google.vault.get(SHARED_GOOGLE_SECRET_KEY)
+  if (shared !== undefined) return shared
+  return undefined
+}
+
 async function secretStored(
   google: GoogleConnect,
   target: GoogleTarget
 ): Promise<boolean> {
-  return (await google.vault.get(vaultKey(target, "api_key"))) !== undefined
+  return (await getClientSecret(google, target)) !== undefined
 }
 
 /** POST /admin/connectors/google/prepare: the ceremony to sign, and whether a secret is needed. */
@@ -265,7 +291,9 @@ async function begin(
   const clientId = google.clientIds[target]
   if (clientId === undefined) return NO_CLIENT()
   // A stored secret wins: the request's copy is used only when the vault has none.
-  const stored = await secretStored(google, target)
+  const targetStored =
+    (await google.vault.get(vaultKey(target, "api_key"))) !== undefined
+  const stored = targetStored || (await secretStored(google, target))
   if (!stored && clientSecret === undefined) return SECRET_REQUIRED()
   try {
     authorize(clientId)
@@ -278,7 +306,7 @@ async function begin(
   }
   const started = google.flows.begin(
     target,
-    stored ? undefined : clientSecret,
+    targetStored ? undefined : clientSecret,
     now
   )
   const body: GateGoogleConnectStarted = {
@@ -388,8 +416,7 @@ export async function googleCallback(
     return failed(google, pending, "invalid_callback", now())
   const clientId = google.clientIds[pending.target]
   const secret =
-    pending.clientSecret ??
-    (await google.vault.get(vaultKey(pending.target, "api_key")))
+    pending.clientSecret ?? (await getClientSecret(google, pending.target))
   if (clientId === undefined || secret === undefined)
     return failed(google, pending, "token_endpoint_refused", now())
   const exchanged = await exchangeCode({
@@ -406,11 +433,17 @@ export async function googleCallback(
     vaultKey(pending.target, "refresh_token"),
     exchanged.refreshToken
   )
-  if (pending.clientSecret !== undefined)
+  if (pending.clientSecret !== undefined) {
     await google.vault.set(
       vaultKey(pending.target, "api_key"),
       pending.clientSecret
     )
+    await google.vault.set(SHARED_GOOGLE_SECRET_KEY, pending.clientSecret)
+  } else if (
+    (await google.vault.get(vaultKey(pending.target, "api_key"))) === undefined
+  ) {
+    await google.vault.set(vaultKey(pending.target, "api_key"), secret)
+  }
   // A cached access token belongs to the old grant; the next call refreshes from the new one.
   await google.vault.delete(vaultKey(pending.target, "access_token"))
   audit(google.db, "connector.oauth.connected", pending.target, {

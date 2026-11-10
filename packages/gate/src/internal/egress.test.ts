@@ -683,6 +683,20 @@ describe("read-client token refresh", () => {
     ).toEqual({ enabled: 1, health: "healthy" })
   })
 
+  test("refreshes from shared Google client secret when specific key is not set", async () => {
+    const fake = fakeGoogle(FRESH)
+    const context = await refreshable(fake)
+    await context.vault.delete({ ...READ, kind: "api_key" })
+    await context.vault.delete({ ...READ, kind: "access_token" })
+    await context.vault.set(
+      { connector: "google", kind: "api_key", client: "none" },
+      CLIENT_SECRET
+    )
+    const response = await context.request()
+    expect(response.status).toBe(200)
+    expect(tokenCalls(fake).length).toBe(1)
+  })
+
   test("a missing access token is fetched from the refresh token before the read", async () => {
     const fake = fakeGoogle(FRESH)
     const { request, vault } = await refreshable(fake)

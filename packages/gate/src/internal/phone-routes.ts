@@ -688,6 +688,15 @@ function connectorSettings(state: PhoneState, now: Clock): Reply {
         row["account_email"].length > 0
           ? { accountEmail: row["account_email"] }
           : {}),
+        ...(name === "gmail"
+          ? {
+              clientIdConfigured: state.google?.clientIds.gmail !== undefined,
+            }
+          : name === "drive"
+            ? {
+                clientIdConfigured: state.google?.clientIds.drive !== undefined,
+              }
+            : {}),
         ...(stored.drift === null || stored.enabled
           ? {}
           : {
@@ -701,10 +710,28 @@ function connectorSettings(state: PhoneState, now: Clock): Reply {
   const unpinned = unpinnedReviewed(state.db, placedManifests(state), (name) =>
     reviewedManifest(state, name)
   ).slice(0, 50)
+  const googleRedirectUri = state.google?.redirectUri
+  const googleTargets: GateConnectorSettings["googleTargets"] =
+    state.google === undefined
+      ? undefined
+      : {
+          gmail: {
+            clientIdConfigured: state.google.clientIds.gmail !== undefined,
+          },
+          "gmail-read": {
+            clientIdConfigured:
+              state.google.clientIds["gmail-read"] !== undefined,
+          },
+          drive: {
+            clientIdConfigured: state.google.clientIds.drive !== undefined,
+          },
+        }
   const body: GateConnectorSettings = {
     connectors,
     ...(unpinned.length === 0 ? {} : { unpinned }),
     asOf: now().toISOString(),
+    ...(googleRedirectUri === undefined ? {} : { googleRedirectUri }),
+    ...(googleTargets === undefined ? {} : { googleTargets }),
   }
   return { status: 200, body }
 }

@@ -424,11 +424,19 @@ function checkPush(deps: DoctorDeps): Check {
 }
 
 function checkGmail(deps: DoctorDeps): Check {
+  const google = set(deps.env, "EIDO_GOOGLE_CLIENT_ID")
   const missing = ["EIDO_GMAIL_CLIENT_ID", "EIDO_GMAIL_READ_CLIENT_ID"].filter(
-    (key) => set(deps.env, key) === undefined
+    (key) => set(deps.env, key) === undefined && google === undefined
   )
   return missing.length === 0
-    ? ok("gmail", "both Gmail client ids are set")
+    ? ok(
+        "gmail",
+        google !== undefined &&
+          set(deps.env, "EIDO_GMAIL_CLIENT_ID") === undefined &&
+          set(deps.env, "EIDO_GMAIL_READ_CLIENT_ID") === undefined
+          ? "Google OAuth client id is set"
+          : "both Gmail client ids are set"
+      )
     : warn(
         "gmail",
         `${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} not set, so Gmail cannot connect`,
