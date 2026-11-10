@@ -460,6 +460,7 @@ describe("runDataPlane", () => {
           args: { messageIds: ["gm-runtime"] },
         },
         origin: "reactive",
+        sensitivity: "sensitive",
       })
     } finally {
       await api.close()

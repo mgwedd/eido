@@ -1046,6 +1046,34 @@ describe("errors", () => {
     expect(server.completions()).toHaveLength(1)
   })
 
+  test("a stalled stream is aborted after requestTimeoutMs and reported as a timeout", async () => {
+    const server = await start({
+      replies: [{ deltas: ["partial"], hang: true }],
+    })
+    const error = await rejection(
+      createModelClient(config(server, { requestTimeoutMs: 200 })).complete({
+        system: "",
+        messages: [userOf(1)],
+      })
+    )
+    expect(error).toBeInstanceOf(InferenceError)
+    expect(error).toMatchObject({
+      kind: "aborted",
+      message: "inference request timed out",
+    })
+  })
+
+  test("a non-positive requestTimeoutMs is refused", () => {
+    expect(() =>
+      createModelClient({
+        baseUrl: "http://127.0.0.1:1",
+        contextTokens: 4096,
+        maxReplyTokens: 100,
+        requestTimeoutMs: 0,
+      })
+    ).toThrow(/requestTimeoutMs/)
+  })
+
   test("an already-aborted signal rejects as aborted", async () => {
     const server = await start({ replies: [{ deltas: ["ok"] }] })
     const error = await rejection(

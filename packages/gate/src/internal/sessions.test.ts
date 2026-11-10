@@ -66,6 +66,22 @@ describe("beginLogin", () => {
   })
 })
 
+describe("beginLogin cleanup", () => {
+  it("deletes expired login challenges when a new one is issued, and keeps live ones", () => {
+    const old = beginLogin(db, now)
+    at = new Date(START.getTime() + 4 * MINUTE)
+    const live = beginLogin(db, now)
+    at = new Date(START.getTime() + 6 * MINUTE)
+    const fresh = beginLogin(db, now)
+    const kept = db
+      .prepare("SELECT challenge FROM login_challenges ORDER BY issued_at")
+      .all()
+      .map((row) => row["challenge"])
+    expect(kept).toEqual([live.challenge, fresh.challenge])
+    expect(kept).not.toContain(old.challenge)
+  })
+})
+
 describe("login", () => {
   it("creates a session that lasts until 12 hours after login and stores only the token's hash", () => {
     const auth = testAuthenticator()

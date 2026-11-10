@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { request } from "node:http"
+import { DatabaseSync } from "node:sqlite"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -31,6 +32,8 @@ import {
 } from "./internal/bridge/config"
 import { createMemoryCalendarTracker } from "./internal/bridge/calendar"
 import { OWNER_CONFIG_FILE } from "./internal/policy"
+import { append } from "./internal/audit"
+import { openControlDb } from "./internal/control-db"
 import { rawMessage, startFakeBridge } from "./internal/bridge/fake-bridge"
 import { createTestCertificate } from "./internal/bridge/test-certificate"
 import type { FakeBridge } from "./internal/bridge/fake-bridge"
@@ -442,6 +445,37 @@ describe("Web Push configuration", () => {
 })
 
 describe("runGate", () => {
+  it("logs one audit_chain_broken line at startup for a tampered chain and still starts", async () => {
+    const c = config()
+    mkdirSync(c.dataDir, { recursive: true, mode: 0o700 })
+    const path = join(c.dataDir, CONTROL_DB_FILE)
+    const seeded = openControlDb(path)
+    for (const target of ["a", "b", "c"]) {
+      append(seeded, {
+        actor: "system",
+        action: "test.event",
+        target,
+        detailHash: "0".repeat(64),
+      })
+    }
+    seeded.close()
+    const raw = new DatabaseSync(path)
+    raw.exec(
+      "DROP TRIGGER audit_log_no_update; UPDATE audit_log SET target = 'evil' WHERE seq = 2"
+    )
+    raw.close()
+    const gate = await runGate(c)
+    await gate.close()
+    const logged = readFileSync(join(c.dataDir, GATE_LOG_FILE), "utf8")
+    const broken = logged
+      .trim()
+      .split("\n")
+      .filter((line) => line.includes("audit_chain_broken"))
+    expect(broken).toHaveLength(1)
+    expect(broken[0]).toContain('"brokenAtSeq":3')
+    expect(logged).not.toContain("evil")
+  })
+
   it("opens the control DB, serves both sockets, logs to its own file and stops cleanly", async () => {
     const c = config()
     const gate = await runGate(c)

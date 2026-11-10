@@ -1,6 +1,6 @@
 # 0008: Stored material integrity: HMAC-SHA256 ingest tagging and pre-fencing verification
 
-Status: accepted
+Status: Accepted, not yet implemented. No `integrity_tag` column, ingest HMAC or `fence()` verification exists in `packages/core` yet; the decision below describes the target.
 Decided: 2026-11-03
 Issue: #283
 Related: #281, #284, #59, #325

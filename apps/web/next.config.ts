@@ -1,6 +1,10 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import type { NextConfig } from "next"
+import { securityHeaders } from "./lib/security-headers"
+
+// Local-first: no Next.js telemetry. Set here (not in package.json scripts) so it works on every shell.
+process.env["NEXT_TELEMETRY_DISABLED"] = "1"
 
 // `next dev` serves HMR and dev assets only to localhost and the host it binds (127.0.0.1) unless
 // the origin is listed. The stack (`pnpm stack:dev`, #374) sets EIDO_TAILNET_HOST so the app also
@@ -36,6 +40,7 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: tailnetHost ? [tailnetHost] : [],
   headers() {
     return Promise.resolve([
+      { source: "/:path*", headers: securityHeaders() },
       {
         source: "/:file(sw\\.js|sw-routing\\.js)",
         headers: [

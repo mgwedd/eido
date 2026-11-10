@@ -6,10 +6,9 @@ import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 
 const PATTERNS: [name: string, pattern: RegExp][] = [
-  [
-    "private key",
-    /-----BEGIN (RSA |EC |OPENSSH |DSA |PGP |ENCRYPTED )?PRIVATE KEY-----/,
-  ],
+  ["private key", /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?-----/],
+  ["Google OAuth client secret", /\bGOCSPX-[A-Za-z0-9_-]{20,}/],
+  ["Tailscale key", /\btskey-[A-Za-z0-9-]{16,}/],
   ["AWS access key", /\b(AKIA|ASIA)[0-9A-Z]{16}\b/],
   ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{36,}\b/],
   ["GitHub fine-grained token", /\bgithub_pat_[A-Za-z0-9_]{22,}\b/],

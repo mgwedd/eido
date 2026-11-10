@@ -7,6 +7,7 @@ import {
   readSection,
   writeSection,
   writeDigest,
+  pruneSections,
 } from "./cache"
 import type { StoredDigest } from "./cache"
 import {
@@ -22,6 +23,9 @@ import type {
   DigestMissing,
   DigestSubject,
 } from "./types"
+
+/** Partial-section work older than this is dropped after a build; a build resumes within minutes. */
+export const SECTION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 
 export interface DigestServiceOptions {
   db: DatabaseSync
@@ -159,6 +163,10 @@ export function createDigestService(
       createdAt: now().toISOString(),
     }
     await writeDigest(db, row)
+    await pruneSections(
+      db,
+      new Date(now().getTime() - SECTION_RETENTION_MS).toISOString()
+    )
   }
 
   function getDigest(subject: DigestSubject): Digest | DigestMissing {

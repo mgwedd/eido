@@ -12,6 +12,10 @@ Per [ADR 0007](../docs/adr/0007-data-at-rest-boundary.md), Eido's data-at-rest b
 
 There is no application-level database encryption (SQLCipher) on the live SQLite stores. While the Mac is booted and logged in, protection against unauthorized local access relies on host user account isolation and the gate process boundary, not on-disk cryptographic locks. Restore scratch directories (`~/eido-restore-scratch`) hold unencrypted copies of the data while present and must be removed after verification.
 
+## Restic passphrase
+
+The restic passphrase (Keychain service `eido-backup`, account `restic`) lives only in the login Keychain of the host. A restore after losing the host, or after a Keychain reset, needs it, so the operator must also keep a copy of it off the host. This is a required setup step: record the passphrase somewhere that survives the loss of this Mac before relying on the backups. Without that copy the repository cannot be decrypted. Do not store it in the repository, the backup drive's plain files or any file under this checkout.
+
 ## Steps
 
 All commands from the repo root. `EIDO_BACKUP_REPO` must be set to the repository path, and the backup drive plugged in.

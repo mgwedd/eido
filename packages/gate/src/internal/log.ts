@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs"
+import { appendFileSync, chmodSync, existsSync } from "node:fs"
 import type { Log } from "./http"
 
 /**
@@ -6,6 +6,8 @@ import type { Log } from "./http"
  * counts only: never token values or payload bodies.
  */
 export function fileLog(path: string, now: () => Date = () => new Date()): Log {
+  // `mode` applies only when the file is created; tighten a file left by an older run.
+  if (existsSync(path)) chmodSync(path, 0o600)
   return (event, fields = {}) => {
     appendFileSync(
       path,

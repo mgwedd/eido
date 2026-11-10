@@ -1,20 +1,15 @@
-import { parsePdf } from "../../parsers/pdf"
-import { DEFAULT_LIMITS } from "../../parsers/types"
+import type { Parser } from "../../parsers/index"
 import { FileError } from "./path"
 
-/** Text-layer extraction only. Scans needing OCR produce a typed failure. */
-export async function pdfText(bytes: Uint8Array): Promise<string> {
-  try {
-    if (bytes.byteLength > DEFAULT_LIMITS.inputBytes)
-      throw new FileError("invalid_pdf")
-    const result = await parsePdf(Uint8Array.from(bytes), DEFAULT_LIMITS, {
-      binary: null,
-      workDir: "",
-      deadline: Date.now() + DEFAULT_LIMITS.timeoutMs,
-      maxOutputBytes: DEFAULT_LIMITS.outputChars,
-    })
-    return result.sections.flatMap((section) => section.lines).join("\n")
-  } catch {
-    throw new FileError("invalid_pdf")
-  }
+/**
+ * Text-layer extraction only, in the sandboxed parse child (the bytes are hostile and a PDF
+ * library bug must not reach the data-plane process). Scans needing OCR produce a typed failure.
+ */
+export async function pdfText(
+  parser: Pick<Parser, "parseBytes">,
+  bytes: Uint8Array
+): Promise<string> {
+  const result = await parser.parseBytes(bytes, "application/pdf")
+  if (!result.ok) throw new FileError("invalid_pdf")
+  return result.text
 }

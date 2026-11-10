@@ -231,6 +231,7 @@ ALTER TABLE accounts ADD COLUMN backfill_pending INTEGER NOT NULL DEFAULT 0
 export function openIndex(path: string = DEFAULT_DB_PATH): DatabaseSync {
   const db = new DatabaseSync(path)
   db.exec("PRAGMA foreign_keys = ON")
+  db.exec("PRAGMA busy_timeout = 5000")
   const row = db.prepare("PRAGMA user_version").get()
   const version = Number(row?.["user_version"] ?? 0)
   if (version > SCHEMA_VERSION) {

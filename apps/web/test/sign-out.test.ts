@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { performSignOut } from "@/lib/auth/sign-out"
+import { TRANSACTIONS_CACHE_KEY } from "@/lib/transactions"
 
 describe("performSignOut", () => {
   const originalLocation = window.location
@@ -61,5 +62,14 @@ describe("performSignOut", () => {
     await performSignOut()
 
     expect(window.location.href).toBe("/auth/logout")
+  })
+
+  it("clears the cached transactions even when the gate logout fails", async () => {
+    window.localStorage.setItem(TRANSACTIONS_CACHE_KEY, "{}")
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")))
+
+    await performSignOut()
+
+    expect(window.localStorage.getItem(TRANSACTIONS_CACHE_KEY)).toBeNull()
   })
 })

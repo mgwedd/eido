@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { UnlockView } from "@/components/unlock-view"
+import { TRANSACTIONS_CACHE_KEY } from "@/lib/transactions"
 import { IPHONE_UA, MAC_UA } from "./platform"
 
 ;(
@@ -256,5 +257,26 @@ describe("UnlockView", () => {
     setup({})
     await press()
     expect(button()?.textContent).toContain("Unlock with passkey")
+  })
+
+  it("clears cached user data when the gate reports no live session", async () => {
+    window.localStorage.setItem(TRANSACTIONS_CACHE_KEY, "{}")
+    setup({})
+    await render()
+    expect(window.localStorage.getItem(TRANSACTIONS_CACHE_KEY)).toBeNull()
+  })
+
+  it("keeps cached user data while the session is live and the user is sent on", async () => {
+    window.localStorage.setItem(TRANSACTIONS_CACHE_KEY, "{}")
+    setup({
+      status: {
+        enrolled: true,
+        revoked: false,
+        sessionExpiresAt: "2026-10-27T22:00:00Z",
+      },
+    })
+    await render()
+    expect(replace).toHaveBeenCalledWith("/queue")
+    expect(window.localStorage.getItem(TRANSACTIONS_CACHE_KEY)).toBe("{}")
   })
 })

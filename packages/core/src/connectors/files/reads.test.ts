@@ -1,17 +1,24 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import type { DatabaseSync } from "node:sqlite"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { GateRequestError, GateUnavailableError } from "@eido/gate"
 import type { FileClient, IntentClient } from "@eido/gate"
 import type { GateFileHelperResponse, GateFileRoots } from "@eido/schemas"
 import { openIndex } from "../../index/index"
 import { search } from "../../index/search"
 import { textPdf } from "../../parsers/fixtures.test-support"
+import { createParser } from "../../parsers/parse-document"
 import { createFilesFacade, fileSourceRef } from "./reads"
 import type { FileRootSyncCursor } from "./notes"
 
 const databases: DatabaseSync[] = []
+const dataDirs: string[] = []
 afterEach(() => {
   for (const db of databases.splice(0)) db.close()
+  for (const dir of dataDirs.splice(0))
+    rmSync(dir, { recursive: true, force: true })
 })
 const encoded = (text: string) => Buffer.from(text, "utf8")
 const ROOTS: GateFileRoots = {
@@ -35,6 +42,13 @@ const ROOTS: GateFileRoots = {
       },
     },
   ],
+}
+
+/** A real data dir, so PDFs go through the real sandboxed child as in the data plane. */
+function dataDir(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "eido-files-")))
+  dataDirs.push(dir)
+  return dir
 }
 
 function fixture() {
@@ -92,6 +106,7 @@ function fixture() {
     db,
     files: { roots, perform },
     intents: { propose },
+    parser: createParser({ dataDir: dataDir() }),
   })
   const docs = trees.get("docs")
   const other = trees.get("other")

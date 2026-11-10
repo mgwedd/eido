@@ -1,6 +1,7 @@
 import {
   chmodSync,
   closeSync,
+  existsSync,
   ftruncateSync,
   mkdirSync,
   mkdtempSync,
@@ -69,6 +70,36 @@ function failure(result: ParseResult): { reason: string } {
 }
 
 const GOOD_PDF = textPdf([["Lorem ipsum"]])
+
+describe("parser.parseBytes", { timeout: CHILD_TIMEOUT }, () => {
+  it("parses a PDF without storing it, leaving nothing in blobs or scratch", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "eido-bytes-")))
+    try {
+      const fresh = createParser({ dataDir: dir })
+      const result = await fresh.parseBytes(GOOD_PDF, "application/pdf")
+      expect(result.ok && result.text).toContain("Lorem ipsum")
+      expect(existsSync(join(dir, "blobs"))).toBe(false)
+      expect(readdirSync(join(dir, "parse-tmp"))).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("refuses bytes over the input limit before any child runs", async () => {
+    const result = await parser.parseBytes(GOOD_PDF, "application/pdf", {
+      inputBytes: 10,
+    })
+    expect(failure(result).reason).toBe("oversize")
+  })
+
+  it("reports a corrupt PDF as a failure", async () => {
+    const result = await parser.parseBytes(
+      Buffer.from("not a pdf"),
+      "application/pdf"
+    )
+    expect(result.ok).toBe(false)
+  })
+})
 
 describe("bad files", { timeout: CHILD_TIMEOUT }, () => {
   it("a truncated PDF is malformed, and the next parse succeeds", async () => {

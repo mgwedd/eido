@@ -46,6 +46,21 @@ export const CASES: FixtureCase[] = [
     pattern:
       /error\s+web-test-fixtures-are-test-only:\s+\S*apps\/web\/app\/bad-fixture-alias-import\.ts\b/,
   },
+  {
+    label: "core importing the UI package (bad-ui-import.ts)",
+    pattern:
+      /error\s+core-imports-no-apps-or-ui:\s+\S*packages\/core\/src\/bad-ui-import\.ts\b/,
+  },
+  {
+    label: "core importing a mail library (bad-mail-import.ts)",
+    pattern:
+      /error\s+mail-and-keychain-libs-are-gate-only:\s+\S*packages\/core\/src\/bad-mail-import\.ts\b/,
+  },
+  {
+    label: "infra importing a core internal (bad-core-internals.ts)",
+    pattern:
+      /error\s+infra-uses-public-entry-points-only:\s+\S*infra\/bad-core-internals\.ts\b/,
+  },
 ]
 
 export interface FixtureVerdict {

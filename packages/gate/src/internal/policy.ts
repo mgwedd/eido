@@ -136,7 +136,8 @@ export function createStoredAttendeesReader(
           ),
         }
       }
-      return { ok: true, attendees: [] }
+      // A found record with no attendee field: unknown, not "no guests".
+      return { ok: false }
     } catch {
       return { ok: false }
     }
@@ -397,6 +398,14 @@ export function escalateProactive(
   return origin === "proactive" && decision.tier === "auto"
     ? { tier: "approval" }
     : decision
+}
+
+/** An intent proposed from injection-flagged material is raised from auto to approval; a tier is never lowered. */
+export function escalateInjected(
+  decision: TierDecision,
+  injected: boolean
+): TierDecision {
+  return injected && decision.tier === "auto" ? { tier: "approval" } : decision
 }
 
 type TableResult =

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { describe, expect, it } from "vitest"
 import { estimateTokens } from "../inference/index"
-import { pruneSections, readDigest } from "./cache"
+import { pruneSections, readDigest, readSection, writeSection } from "./cache"
 import { SECTION_SYSTEM } from "./build"
 import {
   digestKey,
@@ -144,6 +144,28 @@ describe("cache", () => {
     expect(await pruneSections(dbHarness.db, "9999-01-01T00:00:00.000Z")).toBe(
       0
     )
+  })
+
+  it("drops partial sections older than a week when a build finishes, and keeps recent ones", async () => {
+    const { db, service } = harness(fakeModel(), {
+      now: () => new Date("2030-02-01T00:00:00.000Z"),
+    })
+    const section = (key: string, createdAt: string) => ({
+      key,
+      sourceFingerprint: "f",
+      sectionIdentity: "s",
+      promptVersion: "p",
+      modelId: "m",
+      lines: [{ text: "t", refs: ["r"] }],
+      dropped: 0,
+      createdAt,
+    })
+    await writeSection(db, section("old", "2030-01-10T00:00:00.000Z"))
+    await writeSection(db, section("recent", "2030-01-30T00:00:00.000Z"))
+    service.scheduleDigest(syntheticThread(2))
+    await service.whenIdle()
+    expect(readSection(db, "old")).toBeUndefined()
+    expect(readSection(db, "recent")).toBeDefined()
   })
 
   it("a second build for the same content makes zero model calls", async () => {

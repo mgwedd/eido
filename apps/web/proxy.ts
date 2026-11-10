@@ -111,6 +111,6 @@ export const config = {
   // Static assets, the PWA manifest and icons, the service worker and the stack's health
   // probe stay public; everything else, including /auth/*, runs through the proxy.
   matcher: [
-    "/((?!_next/static|_next/image|favicon\\.ico|manifest\\.webmanifest|icon/|apple-icon|sw\\.js|sw-routing\\.js|healthz).*)",
+    "/((?!_next/static(?:/|$)|_next/image(?:/|$)|favicon\\.ico$|manifest\\.webmanifest$|icon/|apple-icon(?:/|$)|sw\\.js$|sw-routing\\.js$|healthz(?:/|$)).*)",
   ],
 }

@@ -166,6 +166,7 @@ async function draft(
       seed: obligation.seed,
       kinds: ["email.draft"],
       connector,
+      replyDraft: true,
     },
     {
       db: deps.db,

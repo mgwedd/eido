@@ -10,6 +10,7 @@ import { INJECTION_REASONS } from "../inference/fence"
 import type { InferenceQueue } from "../inference/queue"
 import type { ToolDef } from "../inference/types"
 import { checkReply } from "./check"
+import { draftBounds } from "./draft-recipients"
 import { recordProposalFailure } from "./failure-log"
 import type { ProposalLimiter } from "./limiter"
 import {
@@ -37,6 +38,12 @@ export interface ProposalRequest {
   kinds?: readonly Intent["kind"][]
   /** The connector pinned on every proposed intent, overriding any the model named. */
   connector?: string
+  /**
+   * A reply draft: each `email.draft` must go only to the seed's sender or a participant of the
+   * seed's thread, carry no bcc, and reply only to the seed. A draft that breaks this fails the
+   * check like any other bad reply.
+   */
+  replyDraft?: boolean
 }
 
 /** From configuration. */
@@ -165,7 +172,17 @@ export async function proposeIntents(
   const pack = assembled
   const referable = referableMessages(deps.db, pack)
   const input = { request: request.text, pack, referable, kinds }
-  const context = { kinds: new Set(kinds), referable }
+  const draft = request.replyDraft
+    ? draftBounds(deps.db, referable, request.seed)
+    : undefined
+  // A reply draft whose seed is not a referable message has no thread to hold it to: refuse it.
+  if (request.replyDraft && draft === undefined)
+    return { ...base, status: "refused", reason: "no_reply_seed" }
+  const context = {
+    kinds: new Set(kinds),
+    referable,
+    ...(draft === undefined ? {} : { draft }),
+  }
   const injection = injectionFlag(pack)
   const sources = {
     contextPackId: pack.id,

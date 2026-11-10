@@ -71,7 +71,7 @@ function filesFromGit(): string[] {
     .filter(Boolean)
 }
 
-/** Scans manifests, the lockfile and app source; `read` returns a file's text. */
+/** Scans manifests, the lockfile and source under apps/, packages/ and infra/; `read` returns a file's text. */
 export function scan(
   files: string[],
   read: (file: string) => string = (file) => readFileSync(file, "utf8")
@@ -80,7 +80,8 @@ export function scan(
   for (const file of files) {
     const isManifest = /(^|\/)package\.json$/.test(file)
     const isLockfile = /(^|\/)pnpm-lock\.yaml$/.test(file)
-    const isAppSource = /^apps\/.+\.(?:[cm]?[jt]sx?|swift)$/.test(file)
+    const isAppSource =
+      /^(?:apps|packages|infra)\/.+\.(?:[cm]?[jt]sx?|swift)$/.test(file)
     if (!isManifest && !isLockfile && !isAppSource) continue
 
     let content: string

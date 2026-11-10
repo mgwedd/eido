@@ -9,6 +9,7 @@ import { fromBase64url } from "@/lib/approval/challenge"
 import { toAssertion } from "@/lib/approval/sign"
 
 const GATE_URL = "/api/gate"
+const SAFE_NEXT_ORIGIN = "http://eido.invalid"
 
 /** Where this browser stands before any request: passkeys need the tailnet host and WebAuthn. */
 export type Environment = "ok" | "wrong-origin" | "unsupported"
@@ -27,10 +28,19 @@ export function checkEnvironment(
  * else (another host, a protocol-relative URL, the unlock page itself) falls back to Today.
  */
 export function safeNext(next: string | undefined): string {
-  if (next === undefined) return "/"
-  if (!/^\/(?![/\\])/.test(next)) return "/"
-  if (/^\/unlock(?:[/?#]|$)/.test(next)) return "/"
-  return next
+  if (next === undefined || !next.startsWith("/")) return "/"
+  // The URL parser strips tabs and newlines and treats `\` as `/`, so `/\t/host` and `/\host`
+  // resolve off-origin. Resolve against a fixed origin and accept only a path that stays on it.
+  let url: URL
+  try {
+    url = new URL(next, SAFE_NEXT_ORIGIN)
+  } catch {
+    return "/"
+  }
+  if (url.origin !== SAFE_NEXT_ORIGIN) return "/"
+  if (/^\/unlock(?:[/?#]|$)/.test(url.pathname + url.search + url.hash))
+    return "/"
+  return url.pathname + url.search + url.hash
 }
 
 /** The unlock page for a session that ended on `from` (a path and query on this origin). */

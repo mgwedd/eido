@@ -9,6 +9,10 @@ const fake = {
   google: "AI" + "za" + "A".repeat(35),
   slack: "xo" + "xb-" + "1234567890-abcdef",
   jwt: "ey" + "J" + "a".repeat(12) + ".ey" + "J" + "b".repeat(12),
+  googleSecret: "GOC" + "SPX-" + "a1B2c3D4e5".repeat(3),
+  tailscale: "ts" + "key-auth-" + "k1B2c3D4e5F6g7H8",
+  pgpKey: "-----BEGIN " + "PGP PRIVATE KEY BLOCK-----",
+  openssh: "-----BEGIN " + "OPENSSH PRIVATE KEY-----",
   privateKey: "-----BEGIN " + "RSA PRIVATE KEY-----",
 }
 
@@ -21,6 +25,10 @@ describe("findSecrets", () => {
     ["Slack token", fake.slack],
     ["JWT", fake.jwt],
     ["private key", fake.privateKey],
+    ["private key", fake.pgpKey],
+    ["private key", fake.openssh],
+    ["Google OAuth client secret", fake.googleSecret],
+    ["Tailscale key", fake.tailscale],
   ])("flags a planted %s", (name, secret) => {
     expect(findSecrets(`const key = "${secret}"`)).toEqual([name])
   })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  apiSettingProblem,
   applyStackSettings,
   formatStackSettings,
   getStackSetting,
@@ -93,6 +94,69 @@ describe("settingProblem", () => {
     expect(settingProblem("EIDO_BRIDGE_USERNAME", `a'b"c`)).toBe(
       "EIDO_BRIDGE_USERNAME cannot hold both quote characters"
     )
+  })
+
+  it.each([
+    ["EIDO_BRIDGE_HOST", "bridge.example.invalid"],
+    ["EIDO_BRIDGE_HOST", "localhost"],
+    ["EIDO_BRIDGE_HOST", "0.0.0.0"],
+    ["EIDO_LLAMA_HOST", "192.168.1.5"],
+  ])("refuses the non-loopback host %s=%s", (key, value) => {
+    expect(settingProblem(key, value)).toMatch(/must be a loopback host/)
+  })
+
+  it.each([
+    ["EIDO_BRIDGE_HOST", "127.0.0.1"],
+    ["EIDO_BRIDGE_HOST", "::1"],
+    ["EIDO_LLAMA_HOST", "localhost"],
+    ["EIDO_LLAMA_HOST", ""],
+  ])("accepts the loopback host %s=%s", (key, value) => {
+    expect(settingProblem(key, value)).toBeUndefined()
+  })
+
+  it.each([
+    ["EIDO_GATE_VAULT_FILE", "vault.json"],
+    ["EIDO_BRIDGE_CERT_PATH", "../cert.pem"],
+    ["EIDO_GATE_SOCKET", "gate.sock"],
+  ])("refuses the relative path %s=%s", (key, value) => {
+    expect(settingProblem(key, value)).toBe(`${key} must be an absolute path`)
+  })
+
+  it.each([
+    ["EIDO_GATE_VAULT_FILE", "/home/u/vault.json"],
+    ["EIDO_GATE_VAULT_FILE", "C:\\Users\\u\\vault.json"],
+  ])("accepts the absolute path %s=%s", (key, value) => {
+    expect(settingProblem(key, value)).toBeUndefined()
+  })
+
+  it.each([
+    ["EIDO_DEV_VAULT", "true"],
+    ["EIDO_BRIDGE_ALLOW_SELF_SIGNED", "yes"],
+    ["EIDO_FILES_SYNC", "2"],
+  ])("refuses the non-flag %s=%s", (key, value) => {
+    expect(settingProblem(key, value)).toBe(`${key} must be 0 or 1`)
+  })
+
+  it("accepts a flag set to 0 or 1", () => {
+    expect(settingProblem("EIDO_DEV_VAULT", "1")).toBeUndefined()
+    expect(settingProblem("EIDO_FILES_SYNC", "0")).toBeUndefined()
+  })
+
+  it.each([
+    "EIDO_DEV_VAULT",
+    "EIDO_GATE_VAULT_FILE",
+    "EIDO_BRIDGE_ALLOW_SELF_SIGNED",
+  ])(
+    "refuses %s through the settings endpoint but not in the setup writer",
+    (key) => {
+      const value = key === "EIDO_GATE_VAULT_FILE" ? "/home/u/vault.json" : "1"
+      expect(apiSettingProblem(key, value)).toMatch(/cannot be changed through/)
+      expect(settingProblem(key, value)).toBeUndefined()
+    }
+  )
+
+  it("lets the settings endpoint write an ordinary key", () => {
+    expect(apiSettingProblem("EIDO_WEB_PORT", "3001")).toBeUndefined()
   })
 
   it("accepts the llama model key written by llama use", () => {

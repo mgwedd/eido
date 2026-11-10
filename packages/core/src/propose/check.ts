@@ -1,5 +1,7 @@
 import { validateIntentResult } from "@eido/schemas"
 import type { Intent } from "@eido/schemas"
+import { parseAddress } from "./draft-recipients"
+import type { DraftBounds } from "./draft-recipients"
 import type { ProposalFailure, ReferableMessage } from "./prompt"
 
 export type CheckedReply =
@@ -10,6 +12,11 @@ export interface CheckContext {
   /** The intent kinds offered for the request. */
   kinds: ReadonlySet<string>
   referable: readonly ReferableMessage[]
+  /**
+   * Set for a reply draft: every `email.draft` must go only to people on the seed's thread, with
+   * no bcc, and reply only to the seed message.
+   */
+  draft?: DraftBounds
 }
 
 /** Args that name a message by its connector id. */
@@ -50,6 +57,38 @@ function referenceFailures(
   return failures
 }
 
+function draftFailures(
+  intent: Intent,
+  at: string,
+  bounds: DraftBounds
+): ProposalFailure[] {
+  if (intent.kind !== "email.draft") return []
+  const args: Record<string, unknown> = { ...intent.args }
+  const failures: ProposalFailure[] = []
+  for (const field of ["to", "cc"] as const) {
+    const list = args[field]
+    if (!Array.isArray(list)) continue
+    list.forEach((value, i) => {
+      const address = typeof value === "string" ? parseAddress(value) : null
+      if (address === null || !bounds.allowed.has(address))
+        failures.push({
+          code: "recipient_not_on_thread",
+          path: `${at}.args.${field}[${String(i)}]`,
+        })
+    })
+  }
+  const bcc = args["bcc"]
+  if (Array.isArray(bcc) && bcc.length > 0)
+    failures.push({ code: "bcc_not_allowed", path: `${at}.args.bcc` })
+  const replyTo = args["inReplyToMessageId"]
+  if (replyTo !== undefined && replyTo !== bounds.seedMessageId)
+    failures.push({
+      code: "reply_target_not_seed",
+      path: `${at}.args.inReplyToMessageId`,
+    })
+  return failures
+}
+
 /**
  * Parse and check one model reply: the whole reply against the intent-result schema, then, for the
  * first `maxIntents` intents (the caller drops the rest), that each kind was offered and that every
@@ -83,7 +122,12 @@ export function checkReply(
     const at = `$.intents[${String(i)}]`
     if (!context.kinds.has(intent.kind))
       return [{ code: "kind_not_offered", path: `${at}.kind` }]
-    return referenceFailures(intent, at, context)
+    return [
+      ...referenceFailures(intent, at, context),
+      ...(context.draft === undefined
+        ? []
+        : draftFailures(intent, at, context.draft)),
+    ]
   })
   return failures.length === 0 ? { ok: true, intents } : { ok: false, failures }
 }

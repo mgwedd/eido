@@ -58,7 +58,46 @@ describe("POST /intents", () => {
     const response = await call(PROPOSAL)
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual(RESULT)
-    expect(propose).toHaveBeenCalledWith(PROPOSAL)
+    expect(propose).toHaveBeenCalledWith({
+      ...PROPOSAL,
+      sensitivity: "sensitive",
+    })
+  })
+
+  test("always forwards sensitivity sensitive, so nothing over HTTP runs on the auto tier", async () => {
+    const response = await call({ ...PROPOSAL, extra: undefined })
+    expect(response.status).toBe(200)
+    expect(propose.mock.calls[0]?.[0].sensitivity).toBe("sensitive")
+  })
+
+  test("refuses a cross-site browser request before calling the gate", async () => {
+    const response = await handle(
+      new Request("http://core.test/intents", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "sec-fetch-site": "cross-site",
+        },
+        body: JSON.stringify(PROPOSAL),
+      })
+    )
+    expect(response.status).toBe(403)
+    expect(propose).not.toHaveBeenCalled()
+  })
+
+  test("refuses a request whose Origin host is not served", async () => {
+    const response = await handle(
+      new Request("http://core.test/intents", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://evil.example",
+        },
+        body: JSON.stringify(PROPOSAL),
+      })
+    )
+    expect(response.status).toBe(403)
+    expect(propose).not.toHaveBeenCalled()
   })
 
   test.each([

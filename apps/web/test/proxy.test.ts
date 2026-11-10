@@ -282,4 +282,18 @@ describe("proxy matcher", () => {
   ])("leaves %s public", (url) => {
     expect(matches(url)).toBe(false)
   })
+
+  it.each([
+    "/healthzxyz",
+    "/healthz-admin",
+    "/sw.js.map",
+    "/sw-routing.json",
+    "/favicon.icon",
+    "/manifest.webmanifest.bak",
+    "/apple-iconx",
+    "/_next/staticx/a",
+    "/_next/imagex",
+  ])("does not leave the lookalike %s public", (url) => {
+    expect(matches(url)).toBe(true)
+  })
 })

@@ -19,6 +19,15 @@ export const auth0: Auth0Client | null = isAuth0Enabled()
       // The browser never needs an Auth0 access token; nothing here calls an Auth0-protected API.
       enableAccessTokenEndpoint: false,
       signInReturnToPath: "/",
+      session: {
+        // Explicit rather than SDK defaults: the cookie is not sent cross-site on POST, and the
+        // session lives at most 3 days, ending after 1 day without use. `secure` is left to the
+        // SDK, which sets it per origin: APP_BASE_URL also lists http://localhost on the Mac.
+        cookie: { sameSite: "lax" },
+        rolling: true,
+        absoluteDuration: 60 * 60 * 24 * 3,
+        inactivityDuration: 60 * 60 * 24,
+      },
       authorizationParameters: { scope: "openid profile email" },
     })
   : null

@@ -27,6 +27,8 @@ export interface MailSpec {
   references?: string[]
   threadId?: string
   signals?: MailSignal[]
+  /** The account the message was synced from. Default: one shared account. */
+  mailboxId?: string
 }
 
 export function mail(spec: MailSpec): IndexedDocument {
@@ -50,6 +52,7 @@ export function mail(spec: MailSpec): IndexedDocument {
       { role: "from", address: address(from) },
       ...to.map((n) => ({ role: "to" as const, address: address(n) })),
     ],
+    mailboxId: spec.mailboxId ?? "owner@example.invalid",
     ...(spec.signals === undefined ? {} : { mailSignals: spec.signals }),
   }
 }

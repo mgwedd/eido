@@ -1,6 +1,9 @@
 /** Eido boundary rules. Run from the repo root; fixtures mirror the real paths. */
 import type { IConfiguration } from "dependency-cruiser"
 
+const CORE_INTERNALS = "(^|/)packages/core/src/(?!index\\.ts$)"
+const MAIL_AND_KEYCHAIN_LIBS =
+  "imapflow|nodemailer|keytar|node-keytar|@napi-rs/keyring|keychain"
 const GATE_INTERNALS = "(^|/)packages/gate/src/(?!index\\.ts$)"
 
 const config: IConfiguration = {
@@ -37,6 +40,36 @@ const config: IConfiguration = {
           "(^|/)node_modules/\\.pnpm/(pdfjs-dist|postal-mime|html-to-text|htmlparser2|dom-serializer|domhandler|domutils)@",
         ],
       },
+    },
+    {
+      name: "core-imports-no-apps-or-ui",
+      comment:
+        "packages/core is the data plane: it imports no app and not @eido/ui (the presentational component package).",
+      severity: "error",
+      from: { path: "(^|/)packages/core/" },
+      to: { path: ["(^|/)apps/", "(^|/)packages/ui/", "^@eido/ui(/|$)"] },
+    },
+    {
+      name: "mail-and-keychain-libs-are-gate-only",
+      comment:
+        "imapflow, nodemailer and keychain libraries carry credentials and external writes (ADR 0001): only packages/gate imports them, by package name or through node_modules.",
+      severity: "error",
+      from: { pathNot: "(^|/)packages/gate/" },
+      to: {
+        path: [
+          `^(${MAIL_AND_KEYCHAIN_LIBS})(/|$)`,
+          `(^|/)node_modules/(${MAIL_AND_KEYCHAIN_LIBS})/`,
+          `(^|/)node_modules/\\.pnpm/(${MAIL_AND_KEYCHAIN_LIBS.replaceAll("/", "\\+")})@`,
+        ],
+      },
+    },
+    {
+      name: "infra-uses-public-entry-points-only",
+      comment:
+        "infra imports packages/core and packages/gate only through their public entry point, src/index.ts, never their internals.",
+      severity: "error",
+      from: { path: "(^|/)infra/" },
+      to: { path: [CORE_INTERNALS, GATE_INTERNALS] },
     },
     {
       name: "web-imports-schemas-and-ui-only",

@@ -11,7 +11,7 @@ import type {
 import { append } from "./audit"
 import { canonicalize, hashCanonicalString, payloadHash } from "./canonical"
 import { issueCurrentNonce } from "./nonces"
-import { escalateProactive, intentTier } from "./policy"
+import { escalateInjected, escalateProactive, intentTier } from "./policy"
 import { intentBindings } from "./connectors"
 import type { Policy, Tier, TierDecision } from "./policy"
 import { atomically } from "./transaction"
@@ -450,7 +450,10 @@ export function propose(
   }
   const { id, decision } = atomically(db, () => {
     const base = intentTier(db, policy, checked.intent)
-    const decision = escalateProactive(base, input.origin)
+    const decision = escalateInjected(
+      escalateProactive(base, input.origin),
+      input.injection !== undefined
+    )
     const id = insert(db, {
       checked,
       tier: decision.tier,
@@ -561,9 +564,9 @@ export function editIntent(
   if (original.state !== "pending") return refuse("not_pending")
   if (!checked.ok) return refuse("invalid_payload", checked.errors)
   if (checked.intent.kind !== original.kind) return refuse("kind_changed")
-  const decision = escalateProactive(
-    intentTier(db, policy, checked.intent),
-    original.origin
+  const decision = escalateInjected(
+    escalateProactive(intentTier(db, policy, checked.intent), original.origin),
+    original.injectionJson !== null
   )
   if (decision.tier === "forbidden") {
     return refuse("forbidden", [decision.reason])
