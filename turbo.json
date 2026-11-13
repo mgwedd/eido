@@ -29,6 +29,17 @@
     },
     "test": {
       "dependsOn": ["^build", "^codegen", "codegen"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/fixtures/**",
+        "$TURBO_ROOT$/packages/gate/config/**",
+        "$TURBO_ROOT$/packages/schemas/vectors/**",
+        "$TURBO_ROOT$/packages/core/src/api/caller-role.ts",
+        "$TURBO_ROOT$/packages/ui/src/**",
+        "$TURBO_ROOT$/apps/web/app/**",
+        "$TURBO_ROOT$/apps/web/components/**",
+        "$TURBO_ROOT$/apps/web/lib/**"
+      ],
       "env": ["EIDO_FILE_HELPER"],
       "outputs": ["coverage/**"]
     },
