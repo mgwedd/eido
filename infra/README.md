@@ -10,9 +10,10 @@ Connecting and reconnecting Gmail and the Proton connectors on the Mac: `infra/c
 
 ### First run: one command (#648)
 
-On a fresh clone with Node and pnpm installed, run one command on the Mac, as the owner:
+On a fresh clone, run these two commands on the Mac, as the owner. The first needs only Node 24 or newer (the check names the version to install when it is older; it cannot install Node itself). It makes `pnpm` runnable by enabling corepack when pnpm is missing, and when that fails it prints the one command to run (`npm install --global pnpm@<pinned version>`):
 
 ```bash
+node infra/prereq/bin.ts
 pnpm stack:bootstrap
 ```
 
