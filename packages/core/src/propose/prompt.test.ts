@@ -33,6 +33,15 @@ const pack: ContextPack = {
 }
 
 describe("buildProposalRequest", () => {
+  test("tells the model what 'this message' means and when to return none", () => {
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      "mean the message listed under Messages you may refer to"
+    )
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      'Return {"result":"none"} only when the request asks for nothing the offered kinds can do.'
+    )
+  })
+
   test("keeps request text and pack out of the stable prefix", () => {
     const request = buildProposalRequest({
       request: "Dolor sit",
