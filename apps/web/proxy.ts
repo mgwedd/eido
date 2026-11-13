@@ -1,7 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server"
 
 import { FORBIDDEN_PATH, guard } from "@/lib/auth/access"
-import { AllowListError, roleFor } from "@/lib/auth/roles"
+import {
+  clearedCoreRoleCookie,
+  coreRoleCookie,
+  coreRoleKeyFromEnv,
+  CORE_ROLE_REFRESH_PATH,
+  issueCoreRole,
+} from "@/lib/auth/core-role"
+import { AllowListError, roleFor, type Role } from "@/lib/auth/roles"
 import { auth0, isAuth0Enabled } from "@/lib/auth0"
 import {
   loadWebSessionPublicKey,
@@ -14,6 +21,30 @@ function withCookies(to: NextResponse, from: NextResponse): NextResponse {
   for (const cookie of from.headers.getSetCookie())
     to.headers.append("set-cookie", cookie)
   return to
+}
+
+/**
+ * The role assertion core checks (ADR 0010, #720) on `response`: a fresh one for a signed-in
+ * user with a role, a clearing one otherwise (signed out, no role). Does nothing when
+ * EIDO_WEB_ROLE_PRIVATE_KEY is unset, as core then does not enforce roles either. The cookie
+ * is scoped to /api/core, so the browser never sends it back to this proxy: it is reissued on
+ * each page request and on POST /auth/core-role, and lasts minutes.
+ */
+function withCoreRole<T extends NextResponse>(
+  response: T,
+  user: { sub?: unknown } | null,
+  role: Role | null
+): T {
+  const key = coreRoleKeyFromEnv()
+  if (!key) return response
+  const sub = typeof user?.sub === "string" ? user.sub : null
+  response.headers.append(
+    "set-cookie",
+    role && sub
+      ? coreRoleCookie(issueCoreRole({ sub, role }, key))
+      : clearedCoreRoleCookie()
+  )
+  return response
 }
 
 /**
@@ -79,10 +110,16 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   if (!client) return NextResponse.next()
 
   const authResponse = await client.middleware(request)
-  if (pathname === "/auth" || pathname.startsWith("/auth/")) return authResponse
+  const isAuthPath = pathname === "/auth" || pathname.startsWith("/auth/")
+  if (isAuthPath && pathname !== CORE_ROLE_REFRESH_PATH) {
+    // Sign-out ends the role assertion with the session.
+    return pathname === "/auth/logout"
+      ? withCoreRole(authResponse, null, null)
+      : authResponse
+  }
 
   const session = await client.getSession(request)
-  let role
+  let role: Role | null
   try {
     role = session ? roleFor(session.user) : null
   } catch (error) {
@@ -94,17 +131,50 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     })
   }
 
+  if (pathname === CORE_ROLE_REFRESH_PATH) {
+    // The client's answer to a core 401 `unauthenticated`: a fresh assertion, or nothing.
+    if (request.method !== "POST" || role === null || !coreRoleKeyFromEnv()) {
+      return withCookies(
+        new NextResponse(null, {
+          status: request.method === "POST" ? 401 : 405,
+          headers: { "Cache-Control": "no-store" },
+        }),
+        authResponse
+      )
+    }
+    return withCookies(
+      withCoreRole(
+        new NextResponse(null, {
+          status: 204,
+          headers: { "Cache-Control": "no-store" },
+        }),
+        session?.user ?? null,
+        role
+      ),
+      authResponse
+    )
+  }
+
   const decision = guard({ signedIn: session !== null, role, pathname, search })
-  if (decision.kind === "allow") return authResponse
+  if (decision.kind === "allow")
+    return withCoreRole(authResponse, session?.user ?? null, role)
   if (decision.kind === "login") {
     const login = new URL("/auth/login", request.url)
     login.searchParams.set("returnTo", decision.returnTo)
-    return withCookies(NextResponse.redirect(login), authResponse)
+    return withCoreRole(
+      withCookies(NextResponse.redirect(login), authResponse),
+      null,
+      null
+    )
   }
   // The /forbidden page answers 403 itself (forbidden()); a rewrite's own status is dropped.
-  return withCookies(
-    NextResponse.rewrite(new URL(FORBIDDEN_PATH, request.url)),
-    authResponse
+  return withCoreRole(
+    withCookies(
+      NextResponse.rewrite(new URL(FORBIDDEN_PATH, request.url)),
+      authResponse
+    ),
+    null,
+    null
   )
 }
 

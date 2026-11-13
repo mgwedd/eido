@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
-import { assertAuth0BuildMatchesRuntime } from "@/instrumentation"
+import { assertAuth0BuildMatchesRuntime, register } from "@/instrumentation"
 
 describe("assertAuth0BuildMatchesRuntime", () => {
   it.each([
@@ -22,5 +22,13 @@ describe("assertAuth0BuildMatchesRuntime", () => {
     expect(() => assertAuth0BuildMatchesRuntime("true", undefined)).toThrow(
       /enabled in this build but AUTH0_DOMAIN is unset/
     )
+  })
+})
+
+describe("register", () => {
+  it("refuses to start with an unusable role-signing key", () => {
+    vi.stubEnv("EIDO_WEB_ROLE_PRIVATE_KEY", "nonsense")
+    expect(() => register()).toThrow(/EIDO_WEB_ROLE_PRIVATE_KEY/)
+    vi.unstubAllEnvs()
   })
 })

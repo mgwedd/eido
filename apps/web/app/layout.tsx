@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next"
 import { Geist, Geist_Mono } from "next/font/google"
 
 import "@eido/ui/globals.css"
+import { CoreRoleRefresh } from "@/components/core-role-refresh"
 import { ServiceWorkerRegister } from "@/components/service-worker-register"
 import { ReachabilityProvider } from "@/components/reachability"
 import { ThemeProvider } from "@/components/theme-provider"
@@ -42,6 +43,7 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`}
     >
       <body>
+        <CoreRoleRefresh />
         <ThemeProvider>
           <ReachabilityProvider>{children}</ReachabilityProvider>
         </ThemeProvider>

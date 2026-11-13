@@ -241,7 +241,7 @@ With sign-ups off on every enabled connection, Universal Login shows no sign-up 
 
 ## 7. Web app environment
 
-Seven variables, in `apps/web/.env.local` (gitignored; keep it mode 600). `apps/web/.env.example` lists them.
+Seven variables (plus the optional role-signing key below), in `apps/web/.env.local` (gitignored; keep it mode 600). `apps/web/.env.example` lists them.
 
 | Variable                | Value                                                                           |
 | ----------------------- | ------------------------------------------------------------------------------- |
@@ -267,7 +267,34 @@ The app refuses to start (`instrumentation.ts`) if `EIDO_OWNER_EMAIL` is missing
 
 `apps/web/proxy.ts` enforces this on every request except `/healthz`, `/auth/*`, `/_next/static`, `/_next/image`, the favicon, the PWA manifest and icons, and the service worker files.
 
-What sign-in does not cover: on the tailnet origin, `tailscale serve` sends `/api/gate/*` and `/api/core/*` straight to the gate and core, not through Next, so the proxy never sees those requests. The gate's own checks guard `/api/gate/*` there; core checks the role itself on every state-changing request, from a role assertion the web app signs (ADR 0010, `EIDO_CORE_ROLE_PUBLIC_KEY`). Until the web app issues it (#720) and the key is set, core does not enforce roles, so the roles below do not yet limit what a client on the tailnet can change on core. Every approval route needs the gate's passkey session cookie (`eido_gate_session`, from Unlock), and every decision needs the owner's passkey signature. The Auth0 cookie means nothing to the gate (see the gate test "401s … with only the web app's sign-in cookie").
+What sign-in does not cover: on the tailnet origin, `tailscale serve` sends `/api/gate/*` and `/api/core/*` straight to the gate and core, not through Next, so the proxy never sees those requests. The gate's own checks guard `/api/gate/*` there. Core checks the role itself on every state-changing request, from a role assertion the web app signs (ADR 0010); see "Role assertion for core" below. Until that key pair is set, core does not enforce roles, so the roles below do not limit what a client on the tailnet can change on core. Every approval route needs the gate's passkey session cookie (`eido_gate_session`, from Unlock), and every decision needs the owner's passkey signature. The Auth0 cookie means nothing to the gate (see the gate test "401s ... with only the web app's sign-in cookie").
+
+### Role assertion for core
+
+The two halves are one setting and must be changed together:
+
+| Where                                | Variable                    | Value                                          |
+| ------------------------------------ | --------------------------- | ---------------------------------------------- |
+| `apps/web/.env.local` (web only)     | `EIDO_WEB_ROLE_PRIVATE_KEY` | base64 of an Ed25519 PKCS#8 private key        |
+| core's environment (data plane only) | `EIDO_CORE_ROLE_PUBLIC_KEY` | base64 of the matching Ed25519 SPKI public key |
+
+Generate the pair once, with Node, and put each line in its own place (`apps/web/.env.example` has the same command):
+
+```bash
+node -e 'const c=require("node:crypto");const k=c.generateKeyPairSync("ed25519");console.log("EIDO_WEB_ROLE_PRIVATE_KEY="+k.privateKey.export({format:"der",type:"pkcs8"}).toString("base64"));console.log("EIDO_CORE_ROLE_PUBLIC_KEY="+k.publicKey.export({format:"der",type:"spki"}).toString("base64"))'
+```
+
+The private key stays in the web app. Core holds only the public key, so it can check an assertion and never make one. Set both and restart both. Set only the public key and every state-changing request to core answers `401` (the owner's too); set only the private key and core ignores the assertion. The web app refuses to start if the private key is set but is not a valid Ed25519 PKCS#8 key. Use this with Auth0 on: with `AUTH0_DOMAIN` unset there is no role to assert, so leave both unset.
+
+What the web app does with the key (`apps/web/lib/auth/core-role.ts`, `apps/web/proxy.ts`):
+
+- For a signed-in user with a role, each page request sets the cookie `eido_core_role` (`Path=/api/core; HttpOnly; Secure; SameSite=Strict; Max-Age=600`). It holds `base64url(payload).base64url(signature)`: payload `{ sub, role, permissions, exp }` (the Auth0 user id, the role, `ROLE_PERMISSIONS[role]`, and `exp` ten minutes out in epoch seconds), signed with Ed25519 over the payload text. This is the format core's verifier (`packages/core/src/api/caller-role.ts`) checks; `apps/web/test/core-role.test.ts` verifies an issued assertion with that real verifier.
+- The cookie is scoped to `/api/core`, so the browser never sends it back to the proxy. It is renewed by reissuing: on every page request, and on `POST /auth/core-role`, which answers `204` with a fresh cookie while the Auth0 session lives and `401` otherwise.
+- The browser wraps `fetch` once (`components/core-role-refresh.tsx`). When core answers a call to `/api/core/*` with `401` and error code `unauthenticated`, it posts to `/auth/core-role` and repeats the call once.
+- Sign-out (`/auth/logout`), a visit with no session, and a user without a role all clear the cookie.
+- An assertion is bearer for its ten minutes: an assistant removed from `EIDO_ASSISTANT_EMAILS` keeps core access until it lapses.
+
+To rotate the key, generate a new pair and restart the web app and core together; open sessions pick up a fresh assertion on the next call.
 
 ### Actions
 
@@ -302,4 +329,5 @@ A permission never replaces the owner's passkey signature: every gate write stil
 3. Unlock with the passkey, then approve an item. Without Unlock, the gate answers `401`.
 4. Sign in as an assistant. Every page answers `403` with a sign-out button, and the server log shows no email address.
 5. Sign in with an address that isn't invited. Universal Login refuses it and offers no sign-up, because the connection has sign-ups off. To check the second line on its own, open Actions → `invite-only-signup` → Test in the dashboard and run it with an event whose `user.app_metadata` is empty: it returns a deny. Run step 4's binding check too.
-6. Sign out from the sidebar or the 403 page. You return to Universal Login, and the next page load asks you to sign in again.
+6. With the key pair set, sign in as the owner and look in the browser's storage for the `eido_core_role` cookie on `/api/core`; ask Eido a question and it works. Delete the cookie and ask again: the call still works, because the web app fetches a new one and retries. Sign out and the cookie is gone. (Core's refusal of a call with no assertion, and of an assistant's call without the permission, is covered by `packages/core/src/api/caller-role.test.ts`.)
+7. Sign out from the sidebar or the 403 page. You return to Universal Login, and the next page load asks you to sign in again.

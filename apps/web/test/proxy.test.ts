@@ -1,4 +1,10 @@
-import { generateKeyPairSync, sign, type KeyObject } from "node:crypto"
+import {
+  createPublicKey,
+  generateKeyPairSync,
+  sign,
+  verify,
+  type KeyObject,
+} from "node:crypto"
 import {
   getRedirectUrl,
   getRewrittenUrl,
@@ -8,6 +14,7 @@ import {
 import { NextRequest, NextResponse } from "next/server"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { PERMISSIONS } from "@/lib/auth/permissions"
 import {
   resetWebSessionPublicKey,
   setWebSessionPublicKey,
@@ -253,6 +260,139 @@ describe("proxy with Auth0 (AUTH0_DOMAIN set)", () => {
   })
 })
 
+describe("proxy role assertion for core (#720)", () => {
+  const { privateKey } = generateKeyPairSync("ed25519")
+  const pkcs8 = privateKey
+    .export({ format: "der", type: "pkcs8" })
+    .toString("base64")
+  const roleCookies = (response: NextResponse) =>
+    response.headers
+      .getSetCookie()
+      .filter((c) => c.startsWith("eido_core_role="))
+  const withSub = (user: Record<string, unknown>) => ({
+    user: { ...user, sub: "auth0|abc" },
+  })
+
+  beforeEach(() => {
+    vi.stubEnv("AUTH0_DOMAIN", "tenant.example.test")
+    vi.stubEnv("EIDO_OWNER_EMAIL", "owner@example.test")
+    vi.stubEnv("EIDO_ASSISTANT_EMAILS", "assistant@example.test")
+    vi.stubEnv("EIDO_WEB_ROLE_PRIVATE_KEY", pkcs8)
+    sdk.session = null
+    sdk.middleware.mockImplementation(() =>
+      Promise.resolve(NextResponse.next())
+    )
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  const claimsOf = (cookie: string) => {
+    const token = cookie.split(";")[0]!.split("=")[1]!
+    const [payload, signature] = token.split(".") as [string, string]
+    expect(
+      verify(
+        null,
+        Buffer.from(payload),
+        createPublicKey(privateKey),
+        Buffer.from(signature, "base64url")
+      )
+    ).toBe(true)
+    return JSON.parse(Buffer.from(payload, "base64url").toString()) as {
+      role: string
+      permissions: string[]
+    }
+  }
+
+  it("sets the owner's cookie on a page request", async () => {
+    sdk.session = withSub(owner)
+    const [cookie, ...rest] = roleCookies(await proxy(request("/queue")))
+    expect(rest).toEqual([])
+    expect(cookie).toContain(
+      "Path=/api/core; HttpOnly; Secure; SameSite=Strict"
+    )
+    expect(claimsOf(cookie!)).toMatchObject({
+      sub: "auth0|abc",
+      role: "owner",
+      permissions: [...PERMISSIONS],
+    })
+  })
+
+  it("sets no cookie when the key is unset", async () => {
+    vi.stubEnv("EIDO_WEB_ROLE_PRIVATE_KEY", "")
+    sdk.session = withSub(owner)
+    expect(roleCookies(await proxy(request("/queue")))).toEqual([])
+  })
+
+  it("gives an assistant a cookie with no permissions on the page they may open", async () => {
+    sdk.session = withSub(assistant)
+    const cookies = roleCookies(await proxy(request("/forbidden")))
+    expect(claimsOf(cookies[0]!)).toMatchObject({
+      role: "assistant",
+      permissions: [],
+    })
+  })
+
+  it("clears the cookie for a signed-in user without access and for a signed-out visit", async () => {
+    sdk.session = withSub({ ...owner, email: "x@example.test" })
+    expect(roleCookies(await proxy(request("/")))[0]).toContain("Max-Age=0")
+    sdk.session = null
+    expect(roleCookies(await proxy(request("/queue")))[0]).toContain(
+      "Max-Age=0"
+    )
+  })
+
+  it("clears the cookie on sign-out", async () => {
+    sdk.middleware.mockResolvedValueOnce(
+      new NextResponse(null, { status: 302 })
+    )
+    const response = await proxy(request("/auth/logout"))
+    expect(roleCookies(response)).toEqual([
+      "eido_core_role=; Path=/api/core; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
+    ])
+  })
+
+  it("leaves other /auth/* responses alone", async () => {
+    const handled = new NextResponse(null, { status: 302 })
+    sdk.middleware.mockResolvedValueOnce(handled)
+    expect(await proxy(request("/auth/login"))).toBe(handled)
+    expect(roleCookies(handled)).toEqual([])
+  })
+
+  describe("POST /auth/core-role", () => {
+    const post = () =>
+      new NextRequest(new URL("/auth/core-role", ORIGIN), { method: "POST" })
+
+    it("answers 204 with a fresh cookie for a signed-in owner", async () => {
+      sdk.session = withSub(owner)
+      const response = await proxy(post())
+      expect(response.status).toBe(204)
+      expect(claimsOf(roleCookies(response)[0]!).role).toBe("owner")
+    })
+
+    it("answers 401 without a session or role, and sets no cookie", async () => {
+      sdk.session = null
+      const signedOut = await proxy(post())
+      expect(signedOut.status).toBe(401)
+      expect(roleCookies(signedOut)).toEqual([])
+      sdk.session = withSub({ ...owner, email: "x@example.test" })
+      expect((await proxy(post())).status).toBe(401)
+    })
+
+    it("answers 401 when no key is configured", async () => {
+      vi.stubEnv("EIDO_WEB_ROLE_PRIVATE_KEY", "")
+      sdk.session = withSub(owner)
+      expect((await proxy(post())).status).toBe(401)
+    })
+
+    it("answers 405 to a GET", async () => {
+      sdk.session = withSub(owner)
+      expect((await proxy(request("/auth/core-role"))).status).toBe(405)
+    })
+  })
+})
+
 describe("proxy matcher", () => {
   const matches = (url: string) => unstable_doesMiddlewareMatch({ config, url })
 
@@ -265,6 +405,7 @@ describe("proxy matcher", () => {
     "/auth/login",
     "/auth/callback",
     "/auth/logout",
+    "/auth/core-role",
   ])("runs on %s", (url) => {
     expect(matches(url)).toBe(true)
   })
