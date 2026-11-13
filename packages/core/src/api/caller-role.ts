@@ -173,10 +173,10 @@ function refusal(
   message: string
 ): Response {
   const body: CoreApiError = { error: { code, message } }
-  return Response.json(
-    body,
-    { status, headers: { "cache-control": "no-store" } }
-  )
+  return Response.json(body, {
+    status,
+    headers: { "cache-control": "no-store" },
+  })
 }
 
 export type RoleGuard = (request: Request, path: string) => Response | null

@@ -182,9 +182,13 @@ describe("createRoleGuard", () => {
   })
 
   it("builds both refusals as valid CoreApiError bodies", async () => {
-    const unauthenticated = await call("PATCH", "/profile")?.json()
+    const unauthenticated: unknown = await call("PATCH", "/profile")?.json()
     expect(validateCoreApiError(unauthenticated).ok).toBe(true)
-    const forbidden = await call("PATCH", "/profile", token({}))?.json()
+    const forbidden: unknown = await call(
+      "PATCH",
+      "/profile",
+      token({})
+    )?.json()
     expect(validateCoreApiError(forbidden).ok).toBe(true)
   })
 
