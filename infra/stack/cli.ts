@@ -16,6 +16,10 @@
 //              supervisor at login and keeps it running; the supervisor starts the prod stack
 //   uninstall  boots the agent out and removes its plist; the stack's processes keep running
 //   boot       what the agent runs first: `prod --background`, unless a stack process already runs
+// `pnpm stack:bootstrap` (#648): the whole first run as one command, safe to rerun. It installs the
+//   dependencies, installs the pinned llama-server build (no model: that is the Admin page's job),
+//   runs setup, starts the prod stack, registers the login agent (macOS) and ends by printing the
+//   first enrolment code with the first-run page's address. Once a passkey exists it issues no code.
 // Every command first loads stack.env (settings.ts); a variable set in the environment wins.
 // Start runs doctor's blocking checks before anything else and stops on a failure.
 import {
@@ -62,6 +66,7 @@ import {
   readStackSettings,
   stackSettingsPath,
   type FileStat,
+  type StackSettings,
 } from "./settings.ts"
 import { runSetup, type SetupDeps } from "./setup.ts"
 import {
@@ -129,7 +134,7 @@ export type Deps = {
 }
 
 const USAGE =
-  "usage: stack dev|prod|stop|status|doctor [--no-serve] [--background] | setup | install | uninstall | boot | gate connect|enrol-code|passkeys [args]"
+  "usage: stack dev|prod|stop|status|doctor [--no-serve] [--background] | setup | bootstrap | install | uninstall | boot | gate connect|enrol-code|passkeys [args]"
 
 export const GATE_SCRIPTS = ["connect", "enrol-code", "passkeys"] as const
 type GateScript = (typeof GATE_SCRIPTS)[number]
@@ -153,6 +158,7 @@ export type Parsed =
         | "status"
         | "doctor"
         | "setup"
+        | "bootstrap"
         | "install"
         | "uninstall"
         | "boot"
@@ -168,6 +174,7 @@ export function parseArgs(argv: readonly string[]): Parsed | undefined {
   }
   if (
     command === "setup" ||
+    command === "bootstrap" ||
     command === "install" ||
     command === "uninstall" ||
     command === "boot"
@@ -343,7 +350,11 @@ async function preflight(deps: Deps, flags: Flags): Promise<boolean> {
     serve: flags.serve,
     quick: true,
   })
-  const blocking = failed(checks).filter((check) => check.id !== "ports")
+  // The stack runs without inference: a missing model or a stopped llama-server is the Admin
+  // page's to fix (#628), so neither blocks a start. A model that fails its pin still does.
+  const blocking = failed(checks).filter(
+    (check) => check.id !== "ports" && check.startsWithoutIt !== true
+  )
   for (const check of blocking)
     for (const line of formatCheck(check)) deps.err(line)
   return blocking.length === 0
@@ -642,7 +653,7 @@ export function writeAgentPlist(deps: Deps): void {
   )
 }
 
-async function install(deps: Deps): Promise<number> {
+async function installAgent(deps: Deps): Promise<number> {
   const uid = agentUid(deps, "install")
   if (uid === undefined) return 1
   const paths = agentLayout(deps.home)
@@ -767,9 +778,94 @@ async function firstCode(deps: Deps, healthy: boolean): Promise<number> {
       )
     return 0
   }
+  if (await passkeyEnrolled(deps, config)) {
+    deps.out(
+      "A passkey is already enrolled, so no first-run code is issued. To add a phone or recover after a lost one: pnpm stack:gate enrol-code"
+    )
+    return 0
+  }
   const code = await gate(deps, "enrol-code", [])
   if (code === 0) deps.out(`Enter the code on your phone at ${enrol}`)
   return code
+}
+
+/** Whether the running gate reports a passkey (GET /passkey/status, `enrolled`); false when it cannot be read. */
+async function passkeyEnrolled(
+  deps: Deps,
+  config: StackConfig
+): Promise<boolean> {
+  const url = config.processes.find((spec) => spec.name === "gate")?.healthUrl
+  if (url === undefined) return false
+  try {
+    const body: unknown = JSON.parse(await (await deps.fetch(url)).text())
+    return (
+      typeof body === "object" &&
+      body !== null &&
+      Object.entries(body).some(
+        ([key, value]) => key === "enrolled" && value === true
+      )
+    )
+  } catch {
+    return false
+  }
+}
+
+/** `pnpm install` through the pnpm that ran this command when there is one, else `pnpm` on the path. */
+function pnpmCommand(
+  deps: Deps,
+  args: readonly string[]
+): { command: string; args: string[] } {
+  const script = deps.env["npm_execpath"]
+  return script !== undefined && /pnpm/.test(script)
+    ? { command: deps.nodePath, args: [script, ...args] }
+    : { command: "pnpm", args: [...args] }
+}
+
+/** The first run as one command (#648); see the header. */
+async function bootstrap(
+  deps: Deps,
+  settingsPath: string,
+  fileSettings: StackSettings
+): Promise<number> {
+  const run = async (what: string, command: string, args: string[]) => {
+    deps.out(`$ ${what}`)
+    const code = await deps.interactive(command, args, { cwd: deps.repoRoot })
+    if (code !== 0) deps.err(`FAIL: ${what} exited with code ${code}`)
+    return code
+  }
+  const install = pnpmCommand(deps, ["install", "--frozen-lockfile"])
+  let code = await run(
+    "pnpm install --frozen-lockfile",
+    install.command,
+    install.args
+  )
+  if (code !== 0) return code
+  code = await run("llama fetch --build-only", deps.nodePath, [
+    "--disable-warning=ExperimentalWarning",
+    pathsFor(deps.platform).join(deps.repoRoot, "infra", "llama", "bin.ts"),
+    "fetch",
+    "--build-only",
+  ])
+  if (code !== 0) return code
+  code = await runSetup(deps, settingsPath, fileSettings)
+  if (code !== 0) return code
+  const setUp: Deps = {
+    ...deps,
+    env: applyStackSettings(
+      deps.env,
+      readStackSettings(deps.files, settingsPath, deps.platform)
+    ),
+  }
+  code = await boot(setUp)
+  if (code !== 0) return code
+  if (deps.platform === "darwin") {
+    code = await installAgent(setUp)
+    if (code !== 0) return code
+  } else
+    deps.out(
+      "Start at login is macOS only so far (Task Scheduler on Windows is #455); after a restart run pnpm stack:prod --background."
+    )
+  return await firstCode(setUp, true)
 }
 
 export async function main(
@@ -818,8 +914,10 @@ export async function main(
         const issued = await firstCode(setUp, checked === 0)
         return issued === 0 ? checked : issued
       }
+      case "bootstrap":
+        return await bootstrap(deps, settingsPath, fileSettings)
       case "install":
-        return await install(withSettings)
+        return await installAgent(withSettings)
       case "uninstall":
         return await uninstall(withSettings)
       case "boot":

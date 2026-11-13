@@ -419,6 +419,7 @@ describe("runDoctor", () => {
     expect(check?.summary).toBe(
       `${MODEL}: size mismatch: expected ${MODEL_SIZE} bytes, actual 10`
     )
+    expect(check?.startsWithoutIt).toBeUndefined()
     expect(m.hashed()).toBe(0)
   })
 
@@ -435,6 +436,7 @@ describe("runDoctor", () => {
           action: "start-llama",
           text: "pnpm --filter @eido/infra llama install",
         },
+        startsWithoutIt: true,
       },
     ])
     m.deps.env = { ...m.deps.env, EIDO_LLAMA_PORT: "8090" }
@@ -452,6 +454,7 @@ describe("runDoctor", () => {
     expect((await only(m, "llama-pin"))[0]).toMatchObject({
       status: "fail",
       summary: `no model file at ${QWEN}`,
+      startsWithoutIt: true,
       fix: {
         action: "download-model",
         text: `curl -L --fail -o '${QWEN}' 'https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf'`,

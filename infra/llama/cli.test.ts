@@ -391,6 +391,14 @@ describe("llama fetch", () => {
     expect(h.downloaded).toEqual([])
   })
 
+  it("installs the build alone with --build-only, leaving the missing model to the Admin page", async () => {
+    const h = harness()
+    h.deps.probe.size = () => Promise.resolve(undefined)
+    expect(await main(["fetch", "--build-only"], h.deps)).toBe(0)
+    expect(h.downloaded).toEqual([])
+    expect(h.out.at(-1)).toBe("ok: b11149 is installed")
+  })
+
   it("stops when the build does not match", async () => {
     const h = harness({
       version: {
@@ -1145,7 +1153,7 @@ describe("usage", () => {
     const h = harness()
     expect(await main(["stop"], h.deps)).toBe(2)
     expect(h.err).toEqual([
-      "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|start|check-template [--model ID]|plan|install|uninstall|status",
+      "usage: llama verify|verify-archive PATH|fetch [--model ID] [--build-only]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|start|check-template [--model ID]|plan|install|uninstall|status",
     ])
   })
 })

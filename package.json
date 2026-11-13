@@ -29,6 +29,7 @@
     "stack:gate": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts gate",
     "stack:prod": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts prod",
     "stack:install": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts install",
+    "stack:bootstrap": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts bootstrap",
     "stack:setup": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts setup",
     "stack:uninstall": "node --disable-warning=ExperimentalWarning infra/stack/bin.ts uninstall",
     "stack:supervisor": "pnpm --filter @eido/infra supervisor",
