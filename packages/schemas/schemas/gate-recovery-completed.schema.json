@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateRecoveryCompleted",
+  "description": "Response of POST /passkey/recover/complete: the session the new passkey started (the cookie is set on the same response) and the replacement recovery key, shown once. The key that was used is consumed.",
+  "type": "object",
+  "properties": {
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
+    },
+    "recoveryKey": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){7}$"
+    }
+  },
+  "required": ["expiresAt", "recoveryKey"],
+  "additionalProperties": false
+}

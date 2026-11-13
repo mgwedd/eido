@@ -17,6 +17,11 @@ import {
   validateGateCredentialStatus,
   validateGateDecisionResult,
   validateGateEnrolOptions,
+  validateGateEnrolled,
+  validateGateRecoveryCancelPrepared,
+  validateGateRecoveryCompleted,
+  validateGateRecoveryKey,
+  validateGateRecoveryWindow,
   validateGateEnrolmentCode,
   validateGateEnrolmentCodePrepared,
   validateGateGoogleConnectPrepared,
@@ -272,6 +277,7 @@ describe("phoneHandler: push subscriptions", () => {
     state.push = {
       publicKey: () => Promise.resolve("synthetic-public-key"),
       notifyPending: () => undefined,
+      notifyRecovery: () => Promise.resolve(),
     }
     const receiver = createECDH("prime256v1")
     receiver.generateKeys()
@@ -306,6 +312,7 @@ describe("phoneHandler: push subscriptions", () => {
     state.push = {
       publicKey: () => Promise.resolve("synthetic-public-key"),
       notifyPending: () => undefined,
+      notifyRecovery: () => Promise.resolve(),
     }
     const receiver = createECDH("prime256v1")
     receiver.generateKeys()
@@ -1936,7 +1943,12 @@ describe("phoneHandler: passkey enrolment with a code (#202)", () => {
       },
     })
     expect(reply.status).toBe(200)
-    expect(reply.body).toEqual({ expiresAt: "2026-10-19T20:00:00.000Z" })
+    const firstEnrolled = validateGateEnrolled(reply.body)
+    if (!firstEnrolled.ok) throw new Error("the reply is not an enrolment")
+    expect(firstEnrolled.value.expiresAt).toBe("2026-10-19T20:00:00.000Z")
+    expect(firstEnrolled.value.recoveryKey).toMatch(
+      /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){7}$/
+    )
     expect(credentialIds()).toEqual([auth.credentialId])
     expect(codeUsed(enrolmentCode)).toBe(true)
     const rawCookies = reply.headers?.["set-cookie"]
@@ -3522,5 +3534,354 @@ describe("phoneHandler: Google sign-in (#662)", () => {
     expect(reply.body).toEqual({
       publicKey: getWebSessionPublicKey(s.db),
     })
+  })
+})
+
+describe("phoneHandler: passkey recovery key (issue 682)", () => {
+  const KEY_SHAPE = /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){7}$/
+  const DAY = 24 * HOUR
+  const notifyRecovery = vi.fn(() => Promise.resolve())
+
+  beforeEach(() => {
+    notifyRecovery.mockClear()
+    state.push = {
+      publicKey: () => Promise.resolve("synthetic-public-key"),
+      notifyPending: () => undefined,
+      notifyRecovery,
+    }
+  })
+
+  function cookiesOf(reply: Reply): string[] {
+    const raw = reply.headers?.["set-cookie"]
+    return typeof raw === "string" ? [raw] : [...(raw ?? [])]
+  }
+
+  async function enrolOnPhone(who: TestAuthenticator): Promise<Reply> {
+    const issued = issueEnrolmentCode(s.db, "admin", () => at)
+    if (!issued.ok) throw new Error("the code was not issued")
+    const options = await call("POST", "/passkey/enroll/options", {
+      body: { code: issued.code },
+    })
+    const parsed = validateGateEnrolOptions(options.body)
+    if (!parsed.ok) throw new Error("no enrolment options")
+    return call("POST", "/passkey/enroll", {
+      body: {
+        code: issued.code,
+        registration: registration(who, parsed.value.challenge),
+      },
+    })
+  }
+
+  /** The first passkey, with the recovery key the first enrolment returned. */
+  async function firstEnrolment() {
+    const reply = await enrolOnPhone(auth)
+    const parsed = validateGateEnrolled(reply.body)
+    if (!parsed.ok || parsed.value.recoveryKey === undefined)
+      throw new Error("the first enrolment returned no recovery key")
+    const cookie = cookiesOf(reply)[0]?.split(";")[0] ?? ""
+    return { reply, recoveryKey: parsed.value.recoveryKey, cookie }
+  }
+
+  const start = (recoveryKey: string) =>
+    call("POST", "/passkey/recover/start", { body: { recoveryKey } })
+
+  async function completeWith(recoveryKey: string, who: TestAuthenticator) {
+    const options = await call("POST", "/passkey/recover/options", {
+      body: { recoveryKey },
+    })
+    if (options.status !== 200) return options
+    const parsed = validateGateEnrolOptions(options.body)
+    if (!parsed.ok) throw new Error("no recovery options")
+    return call("POST", "/passkey/recover/complete", {
+      body: {
+        recoveryKey,
+        registration: registration(who, parsed.value.challenge),
+      },
+    })
+  }
+
+  function credentialCount(): number {
+    return Number(
+      s.db.prepare("SELECT count(*) AS n FROM credentials").get()?.["n"]
+    )
+  }
+
+  function actions(): string[] {
+    return auditRows(s.db).map((row) => row.action)
+  }
+
+  it("returns the key once on the first enrolment, uncacheable, and stores only a salted digest", async () => {
+    const { reply, recoveryKey } = await firstEnrolment()
+    expect(reply.headers?.["cache-control"]).toBe("no-store")
+    expect(recoveryKey).toMatch(KEY_SHAPE)
+    const rows = s.db.prepare("SELECT * FROM recovery_keys").all()
+    expect(rows).toHaveLength(1)
+    expect(Object.keys(rows[0] ?? {}).sort()).toEqual([
+      "consumed_at",
+      "digest",
+      "issued_at",
+      "key_id",
+      "salt",
+      "superseded_at",
+    ])
+    expect(JSON.stringify(rows)).not.toContain(recoveryKey.replaceAll("-", ""))
+    expect(loggedText(s.db)).not.toContain(recoveryKey.replaceAll("-", ""))
+    expect(actions()).toContain("recovery_key.issued")
+  })
+
+  it("issues no key on a later enrolment", async () => {
+    await firstEnrolment()
+    const later = await enrolOnPhone(testAuthenticator())
+    const parsed = validateGateEnrolled(later.body)
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.value.recoveryKey).toBeUndefined()
+    expect(
+      s.db.prepare("SELECT count(*) AS n FROM recovery_keys").get()?.["n"]
+    ).toBe(1)
+  })
+
+  it("starts the delay, shows the window on status and schedules the alert", async () => {
+    const { recoveryKey } = await firstEnrolment()
+    at = new Date(START.getTime() + HOUR)
+    const started = await start(recoveryKey)
+    expect(started.status).toBe(200)
+    const window = validateGateRecoveryWindow(started.body)
+    if (!window.ok) throw new Error("the window does not match the schema")
+    expect(window.value).toEqual({
+      startedAt: "2026-10-19T09:00:00.000Z",
+      maturesAt: "2026-10-20T09:00:00.000Z",
+      expiresAt: "2026-10-21T09:00:00.000Z",
+    })
+    expect(notifyRecovery).toHaveBeenCalledTimes(1)
+    const status = await call("GET", "/passkey/status")
+    expect(status.body).toMatchObject({
+      enrolled: true,
+      recovery: window.value,
+    })
+    expect(actions()).toContain("recovery.started")
+    at = new Date(START.getTime() + HOUR + 2 * DAY)
+    expect((await call("GET", "/passkey/status")).body).not.toHaveProperty(
+      "recovery"
+    )
+  })
+
+  it("refuses a wrong, malformed or already-pending start with one generic reply and no alert", async () => {
+    const { recoveryKey } = await firstEnrolment()
+    const wrong = "7777-7777-7777-7777-7777-7777-7777-7777"
+    for (const guess of [wrong, "short"]) {
+      const reply = await start(guess)
+      expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    }
+    expect(notifyRecovery).not.toHaveBeenCalled()
+    expect((await start(recoveryKey)).status).toBe(200)
+    const again = await start(recoveryKey)
+    expect([again.status, code(again)]).toEqual([403, "verification_failed"])
+    expect(notifyRecovery).toHaveBeenCalledTimes(1)
+    expect(
+      s.db.prepare("SELECT count(*) AS n FROM recoveries").get()?.["n"]
+    ).toBe(1)
+    expect(
+      actions().filter((a) => a === "recovery.start_refused")
+    ).toHaveLength(3)
+    const text = loggedText(s.db)
+    for (const form of [wrong, wrong.replaceAll("-", "")]) {
+      expect(text).not.toContain(form)
+      expect(text).not.toContain(
+        createHash("sha256").update(form).digest("hex")
+      )
+    }
+  })
+
+  it("does not wait on the alert, and a failing alert does not fail the start", async () => {
+    const { recoveryKey } = await firstEnrolment()
+    notifyRecovery.mockRejectedValueOnce(new Error("push service down"))
+    expect((await start(recoveryKey)).status).toBe(200)
+  })
+
+  it("refuses to complete before maturity and after the window, enrolling nothing", async () => {
+    const { recoveryKey } = await firstEnrolment()
+    await start(recoveryKey)
+    at = new Date(START.getTime() + DAY - 1000)
+    const early = await completeWith(recoveryKey, testAuthenticator())
+    expect([early.status, code(early)]).toEqual([403, "verification_failed"])
+    at = new Date(START.getTime() + 2 * DAY)
+    const late = await completeWith(recoveryKey, testAuthenticator())
+    expect([late.status, code(late)]).toEqual([403, "verification_failed"])
+    expect(credentialCount()).toBe(1)
+    expect(
+      auditRows(s.db)
+        .filter((row) => row.action === "recovery.complete_refused")
+        .map((row) => row.detail_hash)
+    ).toEqual([
+      payloadHash({ outcome: "not_matured" }),
+      payloadHash({ outcome: "expired" }),
+    ])
+  })
+
+  it("refuses to complete a recovery that was never started", async () => {
+    const { recoveryKey } = await firstEnrolment()
+    at = new Date(START.getTime() + 3 * DAY)
+    const reply = await completeWith(recoveryKey, testAuthenticator())
+    expect(reply.status).toBe(403)
+    expect(credentialCount()).toBe(1)
+  })
+
+  it("lets any unrevoked passkey cancel with a signed assertion, replacing the key", async () => {
+    const { recoveryKey, cookie } = await firstEnrolment()
+    await start(recoveryKey)
+    const prepared = await call("POST", "/passkey/recover/cancel/prepare", {
+      cookie,
+    })
+    const ceremony = validateGateRecoveryCancelPrepared(prepared.body)
+    if (!ceremony.ok) throw new Error("the ceremony does not match the schema")
+    const authorization = controlAuthorization(s.db, ceremony.value)
+    const cancelled = await call("POST", "/passkey/recover/cancel", {
+      cookie,
+      body: { approval: authorization.request },
+    })
+    expect(cancelled.status).toBe(200)
+    expect(cancelled.headers?.["cache-control"]).toBe("no-store")
+    const replacement = validateGateRecoveryKey(cancelled.body)
+    if (!replacement.ok) throw new Error("no replacement key")
+    expect(replacement.value.recoveryKey).not.toBe(recoveryKey)
+    expect((await call("GET", "/passkey/status")).body).not.toHaveProperty(
+      "recovery"
+    )
+    at = new Date(START.getTime() + DAY + HOUR)
+    const afterwards = await completeWith(recoveryKey, testAuthenticator())
+    expect(afterwards.status).toBe(403)
+    expect(credentialCount()).toBe(2)
+    expect(actions()).toContain("recovery.cancelled")
+    expect(loggedText(s.db)).not.toContain(
+      replacement.value.recoveryKey.replaceAll("-", "")
+    )
+  })
+
+  it("lets the replacement key start a fresh recovery after a cancel", async () => {
+    const { recoveryKey, cookie } = await firstEnrolment()
+    await start(recoveryKey)
+    const ceremony = validateGateRecoveryCancelPrepared(
+      (await call("POST", "/passkey/recover/cancel/prepare", { cookie })).body
+    )
+    if (!ceremony.ok) throw new Error("no ceremony")
+    const cancelled = await call("POST", "/passkey/recover/cancel", {
+      cookie,
+      body: { approval: controlAuthorization(s.db, ceremony.value).request },
+    })
+    const replacement = validateGateRecoveryKey(cancelled.body)
+    if (!replacement.ok) throw new Error("no replacement key")
+    expect((await start(replacement.value.recoveryKey)).status).toBe(200)
+  })
+
+  it("needs a session to prepare or cancel, and a pending recovery to prepare", async () => {
+    const { cookie } = await firstEnrolment()
+    for (const path of [
+      "/passkey/recover/cancel/prepare",
+      "/passkey/recover/cancel",
+    ]) {
+      const reply = await call("POST", path, { body: {} })
+      expect([reply.status, code(reply)]).toEqual([401, "unauthenticated"])
+    }
+    const none = await call("POST", "/passkey/recover/cancel/prepare", {
+      cookie,
+    })
+    expect([none.status, code(none)]).toEqual([404, "not_found"])
+  })
+
+  it("cancels nothing without a valid assertion or when no recovery is pending", async () => {
+    const { recoveryKey, cookie } = await firstEnrolment()
+    await start(recoveryKey)
+    const ceremony = validateGateRecoveryCancelPrepared(
+      (await call("POST", "/passkey/recover/cancel/prepare", { cookie })).body
+    )
+    if (!ceremony.ok) throw new Error("no ceremony")
+    const request = controlAuthorization(s.db, ceremony.value).request
+    if (typeof request !== "object" || request === null)
+      throw new Error("no approval")
+    const forged = await call("POST", "/passkey/recover/cancel", {
+      cookie,
+      body: { approval: { ...request, nonce: "A".repeat(43) } },
+    })
+    expect([forged.status, code(forged)]).toEqual([403, "verification_failed"])
+    expect(
+      (await call("POST", "/passkey/recover/cancel", { cookie, body: {} }))
+        .status
+    ).toBe(400)
+    expect(
+      s.db
+        .prepare(
+          "SELECT count(*) AS n FROM recoveries WHERE cancelled_at IS NOT NULL"
+        )
+        .get()?.["n"]
+    ).toBe(0)
+  })
+
+  it("completes after 24 hours: one new passkey, a session, a replacement key, nothing else touched", async () => {
+    const { recoveryKey } = await firstEnrolment()
+    const before = {
+      connectors: s.db.prepare("SELECT * FROM connectors ORDER BY name").all(),
+      original: s.db
+        .prepare("SELECT * FROM credentials WHERE credential_id = ?")
+        .get(auth.credentialId),
+    }
+    await start(recoveryKey)
+    at = new Date(START.getTime() + DAY)
+    const recovered = testAuthenticator()
+    const reply = await completeWith(recoveryKey, recovered)
+    expect(reply.status).toBe(200)
+    expect(reply.headers?.["cache-control"]).toBe("no-store")
+    const completed = validateGateRecoveryCompleted(reply.body)
+    if (!completed.ok) throw new Error("the reply does not match the schema")
+    expect(completed.value.recoveryKey).toMatch(KEY_SHAPE)
+    expect(completed.value.recoveryKey).not.toBe(recoveryKey)
+    expect(completed.value.expiresAt).toBe("2026-10-20T20:00:00.000Z")
+    const cookies = cookiesOf(reply)
+    expect(cookies).toHaveLength(2)
+    expect(cookies[0]).toMatch(/^eido_gate_session=/)
+    expect(cookies[1]).toMatch(/^eido_web_session=/)
+    const session = cookies[0]?.split(";")[0] ?? ""
+    expect((await call("GET", "/approvals", { cookie: session })).status).toBe(
+      200
+    )
+    expect(credentialCount()).toBe(2)
+    expect(
+      s.db
+        .prepare(
+          "SELECT credential_id FROM credentials WHERE credential_id = ?"
+        )
+        .get(recovered.credentialId)
+    ).toBeDefined()
+    expect(
+      s.db.prepare("SELECT * FROM connectors ORDER BY name").all()
+    ).toEqual(before.connectors)
+    expect(
+      s.db
+        .prepare("SELECT * FROM credentials WHERE credential_id = ?")
+        .get(auth.credentialId)
+    ).toEqual(before.original)
+    // The used key is spent and the replacement is the one active key.
+    expect((await start(recoveryKey)).status).toBe(403)
+    expect((await start(completed.value.recoveryKey)).status).toBe(200)
+    expect(actions()).toContain("recovery.completed")
+    const text = loggedText(s.db)
+    expect(text).not.toContain(recoveryKey.replaceAll("-", ""))
+    expect(text).not.toContain(completed.value.recoveryKey.replaceAll("-", ""))
+  })
+
+  it("answers 429 busy to repeated recovery attempts in a minute", async () => {
+    for (let i = 0; i < 30; i++) expect((await start("short")).status).toBe(403)
+    const refused = await start("short")
+    expect([refused.status, code(refused)]).toEqual([429, "busy"])
+  })
+
+  it("rejects a malformed body on each public recovery route", async () => {
+    for (const path of [
+      "/passkey/recover/start",
+      "/passkey/recover/options",
+      "/passkey/recover/complete",
+    ]) {
+      const reply = await call("POST", path, { body: { recoveryKey: 1 } })
+      expect([reply.status, code(reply)]).toEqual([400, "invalid_request"])
+    }
   })
 })

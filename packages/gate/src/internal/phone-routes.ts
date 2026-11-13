@@ -7,6 +7,9 @@ import {
   validateGateEditRequest,
   validateGateEnrolOptionsRequest,
   validateGateEnrolRequest,
+  validateGateRecoveryCancelRequest,
+  validateGateRecoveryCompleteRequest,
+  validateGateRecoveryKeyRequest,
   validateGateLoginRequest,
   validateGatePushRegistration,
   validateGateEnrolmentCodeRequest,
@@ -27,6 +30,11 @@ import type {
   GateFileRoots,
   GateDecisionResult,
   GateEnrolOptions,
+  GateEnrolled,
+  GateRecoveryCancelPrepared,
+  GateRecoveryKey,
+  GateRecoveryCompleted,
+  GateRecoveryWindow,
   GateIntentHistory,
   GateLoginOptions,
   GatePendingIntentList,
@@ -60,7 +68,15 @@ import {
   beginPhoneRegistration,
   enrolWithCode,
   listPasskeys,
+  recoverWithKey,
 } from "./credentials"
+import {
+  cancelRecovery,
+  checkRecoveryReady,
+  pendingRecoveryWindow,
+  prepareRecoveryCancel,
+  startRecovery,
+} from "./recovery"
 import { readBackupStatus } from "./backup-status"
 import {
   checkEnrolmentCode,
@@ -153,7 +169,12 @@ export type PhoneState = {
   webAuthn: WebAuthnConfig
   webSessionKeyPair?: WebSessionKeyPair
   nudge?: { threshold: number; windowMs: number }
-  push?: { publicKey: () => Promise<string>; notifyPending: () => void }
+  push?: {
+    publicKey: () => Promise<string>
+    notifyPending: () => void
+    /** Alerts every verified subscription that a passkey recovery started (issue 682). */
+    notifyRecovery: () => Promise<void>
+  }
   backupStampPath?: string
   /** The owner's re-reviewed manifest for a drifted connector (#97); undefined when none is placed. */
   reviewedManifest?: (connector: string) => unknown
@@ -202,6 +223,11 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/auth/step-up", tier: "session" },
   { method: "POST", path: "/passkey/enroll/options", tier: "public" },
   { method: "POST", path: "/passkey/enroll", tier: "public" },
+  { method: "POST", path: "/passkey/recover/start", tier: "public" },
+  { method: "POST", path: "/passkey/recover/options", tier: "public" },
+  { method: "POST", path: "/passkey/recover/complete", tier: "public" },
+  { method: "POST", path: "/passkey/recover/cancel/prepare", tier: "session" },
+  { method: "POST", path: "/passkey/recover/cancel", tier: "signed" },
   { method: "GET", path: "/approvals", tier: "session" },
   { method: "GET", path: "/audit", tier: "session" },
   { method: "GET", path: "/audit/chain", tier: "session" },
@@ -342,10 +368,15 @@ function credentialStatus(
     sessionToken(request.headers.cookie),
     now
   )
+  const recovery: GateRecoveryWindow | undefined = pendingRecoveryWindow(
+    state.db,
+    now
+  )
   const status: GateCredentialStatus = {
     enrolled: hasCredential(state.db),
     revoked: onlyRevokedCredentials(state.db),
     sessionExpiresAt: expiry === undefined ? null : expiry.toISOString(),
+    ...(recovery === undefined ? {} : { recovery }),
   }
   return { status: 200, body: status }
 }
@@ -497,16 +528,136 @@ async function enrolRoute(
     keys
   )
   if (!result.ok) return apiError(403, "verification_failed", ENROL_REFUSED)
-  const session: GateSession = { expiresAt: result.expiresAt.toISOString() }
+  const enrolled: GateEnrolled = {
+    expiresAt: result.expiresAt.toISOString(),
+    ...(result.recoveryKey === undefined
+      ? {}
+      : { recoveryKey: result.recoveryKey }),
+  }
   return {
     status: 200,
-    body: session,
+    body: enrolled,
     headers: {
       "set-cookie": [
         sessionCookie(result.token),
         webSessionCookie(result.webSessionToken),
       ],
     },
+  }
+}
+
+const RECOVERY_REFUSED = "the recovery was refused"
+
+// Passkey recovery with the owner's recovery key (issue 682). A refusal is one generic 403 so the
+// reply never says whether the key was wrong, consumed, superseded, early or late; the audit log
+// holds the outcome.
+async function recoverStartRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateRecoveryKeyRequest(body.value)
+  if (!checked.ok) return invalid("a recovery start request", checked.errors)
+  const started = startRecovery(state.db, checked.value.recoveryKey, now)
+  if (!started.ok) return apiError(403, "verification_failed", RECOVERY_REFUSED)
+  // Fire and forget: the alert must not hold up, or fail, the reply.
+  void state.push?.notifyRecovery().catch(() => undefined)
+  return { status: 200, body: started.window }
+}
+
+async function recoverOptionsRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateRecoveryKeyRequest(body.value)
+  if (!checked.ok) return invalid("a recovery options request", checked.errors)
+  const ready = checkRecoveryReady(state.db, checked.value.recoveryKey, now)
+  if (!ready.ok) return apiError(403, "verification_failed", RECOVERY_REFUSED)
+  const options: GateEnrolOptions = {
+    challenge: beginPhoneRegistration(state.db, now),
+    rpId: state.webAuthn.rpId,
+    expiresAt: ready.expiresAt.toISOString(),
+  }
+  return { status: 200, body: options }
+}
+
+async function recoverCompleteRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateRecoveryCompleteRequest(body.value)
+  if (!checked.ok) return invalid("a recovery request", checked.errors)
+  const keys = state.webSessionKeyPair ?? getOrCreateWebSessionKeys(state.db)
+  const result = recoverWithKey(
+    state.db,
+    state.webAuthn,
+    checked.value.recoveryKey,
+    checked.value.registration,
+    now,
+    keys
+  )
+  if (!result.ok) return apiError(403, "verification_failed", RECOVERY_REFUSED)
+  const completed: GateRecoveryCompleted = {
+    expiresAt: result.expiresAt.toISOString(),
+    recoveryKey: result.recoveryKey,
+  }
+  return {
+    status: 200,
+    body: completed,
+    headers: {
+      "set-cookie": [
+        sessionCookie(result.token),
+        webSessionCookie(result.webSessionToken),
+      ],
+    },
+  }
+}
+
+function recoverCancelPrepareRoute(state: PhoneState, now: Clock): Reply {
+  const prepared = prepareRecoveryCancel(state.db, now)
+  if (prepared === undefined)
+    return apiError(404, "not_found", "no recovery is pending")
+  const body: GateRecoveryCancelPrepared = {
+    id: prepared.id,
+    purpose: "policy.set",
+    target: "recovery_key",
+    payload: prepared.payload,
+    payloadHash: prepared.payloadHash,
+    nonce: prepared.nonce,
+    challenge: prepared.challenge,
+  }
+  return { status: 200, body }
+}
+
+// Any unrevoked passkey cancels with its own signed assertion over the prepared ceremony. The
+// replacement key is in this one response and nowhere else.
+async function recoverCancelRoute(
+  state: PhoneState,
+  request: GateRequest,
+  now: Clock
+): Promise<Reply> {
+  const body = await jsonBody(request)
+  if (!body.ok) return body.reply
+  const checked = validateGateRecoveryCancelRequest(body.value)
+  if (!checked.ok) return invalid("a recovery cancel request", checked.errors)
+  try {
+    const recoveryKey = cancelRecovery(
+      state.db,
+      { config: state.webAuthn, request: checked.value.approval },
+      now
+    )
+    const reply: GateRecoveryKey = { recoveryKey }
+    return { status: 200, body: reply }
+  } catch {
+    return apiError(403, "verification_failed", "recovery cancel refused")
   }
 }
 
@@ -1377,6 +1528,16 @@ function route(
       return enrolOptions(state, request, now)
     case "/passkey/enroll":
       return enrolRoute(state, request, now)
+    case "/passkey/recover/start":
+      return recoverStartRoute(state, request, now)
+    case "/passkey/recover/options":
+      return recoverOptionsRoute(state, request, now)
+    case "/passkey/recover/complete":
+      return recoverCompleteRoute(state, request, now)
+    case "/passkey/recover/cancel/prepare":
+      return recoverCancelPrepareRoute(state, now)
+    case "/passkey/recover/cancel":
+      return recoverCancelRoute(state, request, now)
     case "/approvals": {
       const list: GatePendingIntentList = { intents: pendingIntents(state.db) }
       return { status: 200, body: list }
@@ -1526,6 +1687,9 @@ const RATE_LIMITED_PUBLIC: ReadonlySet<RoutePath> = new Set<RoutePath>([
   "/auth/login",
   "/passkey/enroll/options",
   "/passkey/enroll",
+  "/passkey/recover/start",
+  "/passkey/recover/options",
+  "/passkey/recover/complete",
 ])
 export const PUBLIC_ATTEMPT_LIMIT = 30
 export const PUBLIC_ATTEMPT_WINDOW_MS = 60_000

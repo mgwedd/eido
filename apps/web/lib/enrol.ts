@@ -2,7 +2,7 @@ import {
   validateGateApiError,
   validateGateEnrolOptions,
   validateGatePasskeyList,
-  validateGateSession,
+  validateGateEnrolled,
   type GateEnrolOptions,
   type GateWebAuthnRegistration,
 } from "@eido/schemas"
@@ -165,7 +165,7 @@ export async function enrol(code: string, rpId: string): Promise<EnrolResult> {
   if (response === null) return { ok: false, reason: "offline", message: "" }
   if (!response.ok) return refusal(response)
   try {
-    return validateGateSession(await response.json()).ok
+    return validateGateEnrolled(await response.json()).ok
       ? { ok: true }
       : rejected(UNREADABLE)
   } catch {

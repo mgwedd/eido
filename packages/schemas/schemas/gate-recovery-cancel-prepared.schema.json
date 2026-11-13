@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateRecoveryCancelPrepared",
+  "description": "Response of POST /passkey/recover/cancel/prepare on the phone listener: the signed control ceremony that cancels the pending recovery. The payload names the action and the pending recovery's id, so the device can show and check it before it signs.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "purpose": {
+      "const": "policy.set"
+    },
+    "target": {
+      "const": "recovery_key"
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 200
+    },
+    "payloadHash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "challenge": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    }
+  },
+  "required": [
+    "id",
+    "purpose",
+    "target",
+    "payload",
+    "payloadHash",
+    "nonce",
+    "challenge"
+  ],
+  "additionalProperties": false
+}

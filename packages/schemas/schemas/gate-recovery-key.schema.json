@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateRecoveryKey",
+  "description": "Response of the signed POST /passkey/recover/cancel on the phone listener: the replacement recovery key, shown once. 160 random bits as 32 Crockford base32 characters in eight groups of four. Only its salted slow hash is stored.",
+  "type": "object",
+  "properties": {
+    "recoveryKey": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){7}$"
+    }
+  },
+  "required": ["recoveryKey"],
+  "additionalProperties": false
+}

@@ -13,6 +13,10 @@ import {
   validateGateDecisionRequest,
   validateGateDecisionResult,
   validateGateEditRequest,
+  validateGateEnrolled,
+  validateGateRecoveryCompleted,
+  validateGateRecoveryKey,
+  validateGateRecoveryWindow,
   validateGateIntentHistory,
   validateGateIntentProposal,
   validateGateIntentStatus,
@@ -1000,6 +1004,60 @@ describe("phone sign-in", () => {
         validateGateCredentialStatus({ enrolled: true, sessionExpiresAt: null })
       )
     ).toEqual(["$.revoked: required"])
+  })
+})
+
+describe("passkey recovery", () => {
+  const KEY = "0123-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ"
+
+  test("a recovery key is eight groups of four Crockford characters", () => {
+    expect(validateGateRecoveryKey({ recoveryKey: KEY }).ok).toBe(true)
+    // Sixteen characters is an enrolment code, not a recovery key.
+    expect(
+      validateGateRecoveryKey({ recoveryKey: "0123-4567-89AB-CDEF" }).ok
+    ).toBe(false)
+    // I, L, O and U are not in the alphabet.
+    expect(
+      validateGateRecoveryKey({
+        recoveryKey: "OOOO-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ",
+      }).ok
+    ).toBe(false)
+  })
+
+  test("only a first enrolment carries a recovery key, and a recovery always does", () => {
+    expect(validateGateEnrolled({ expiresAt: AT }).ok).toBe(true)
+    expect(validateGateEnrolled({ expiresAt: AT, recoveryKey: KEY }).ok).toBe(
+      true
+    )
+    expect(
+      validateGateRecoveryCompleted({ expiresAt: AT, recoveryKey: KEY }).ok
+    ).toBe(true)
+    expect(errorsOf(validateGateRecoveryCompleted({ expiresAt: AT }))).toEqual([
+      "$.recoveryKey: required",
+    ])
+  })
+
+  test("credential status may carry the pending window and nothing more", () => {
+    const window = { startedAt: AT, maturesAt: AT, expiresAt: AT }
+    expect(validateGateRecoveryWindow(window).ok).toBe(true)
+    expect(
+      validateGateCredentialStatus({
+        enrolled: true,
+        revoked: false,
+        sessionExpiresAt: null,
+        recovery: window,
+      }).ok
+    ).toBe(true)
+    expect(
+      errorsOf(
+        validateGateCredentialStatus({
+          enrolled: true,
+          revoked: false,
+          sessionExpiresAt: null,
+          recovery: { ...window, recoveryKey: KEY },
+        })
+      )
+    ).toEqual(["$.recovery.recoveryKey: unknown key"])
   })
 })
 

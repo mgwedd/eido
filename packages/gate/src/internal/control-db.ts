@@ -249,6 +249,27 @@ const MIGRATIONS: readonly (string | ((db: DatabaseSync) => void))[] = [
    ) STRICT;`,
   // The connected Google account's email address for the Admin Connectors page (#672).
   `ALTER TABLE connectors ADD COLUMN account_email TEXT;`,
+  // Owner recovery keys and the 24-hour recoveries started with them (issue 682). Only the salted
+  // scrypt digest of a key is stored. One unused key is active at a time.
+  `CREATE TABLE recovery_keys (
+     key_id TEXT PRIMARY KEY,
+     salt TEXT NOT NULL,
+     digest TEXT NOT NULL,
+     issued_at TEXT NOT NULL,
+     consumed_at TEXT,
+     superseded_at TEXT
+   ) STRICT;
+   CREATE UNIQUE INDEX recovery_keys_one_active ON recovery_keys((1))
+     WHERE consumed_at IS NULL AND superseded_at IS NULL;
+   CREATE TABLE recoveries (
+     id TEXT PRIMARY KEY,
+     key_id TEXT NOT NULL REFERENCES recovery_keys(key_id),
+     started_at TEXT NOT NULL,
+     matures_at TEXT NOT NULL,
+     expires_at TEXT NOT NULL,
+     cancelled_at TEXT,
+     completed_at TEXT
+   ) STRICT;`,
 ]
 
 function userVersion(db: DatabaseSync): number {

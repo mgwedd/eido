@@ -26,6 +26,20 @@ export function pushPayload(pending: number): string {
   return JSON.stringify({ v: 1, pending })
 }
 
+/** The recovery alert's only wire payload: that a recovery started, and nothing about it. */
+export function recoveryPayload(): string {
+  return JSON.stringify({ v: 1, recovery: "started" })
+}
+
+function auditRecoveryPush(db: DatabaseSync, action: string, id: string): void {
+  append(db, {
+    actor: "system",
+    action: `push.recovery_${action}`,
+    target: id,
+    detailHash: payloadHash({ subscriptionId: id, recovery: "started" }),
+  })
+}
+
 function pendingCount(db: DatabaseSync): number {
   const row = db
     .prepare("SELECT count(*) AS count FROM intents WHERE state = 'pending'")
@@ -98,6 +112,72 @@ export function createPushNotifier(options: PushOptions) {
     schedule()
   }
 
+  async function deliver(
+    subscription: ReturnType<typeof pushSubscriptions>[number],
+    payload: string,
+    key: string | undefined,
+    current: number,
+    record: (action: string) => void
+  ): Promise<void> {
+    if (!pushEgressAllowed(options.db, subscription)) {
+      record("refused_egress")
+      return
+    }
+    if (key === undefined) {
+      record("unavailable")
+      return
+    }
+    try {
+      const wire = encryptPush(
+        Buffer.from(payload),
+        subscription.p256dh,
+        subscription.auth
+      )
+      const response = await options.fetch(subscription.endpoint, {
+        method: "POST",
+        redirect: "manual",
+        headers: {
+          authorization: vapidAuthorization(
+            subscription.endpoint,
+            key,
+            options.subject,
+            current
+          ),
+          "content-encoding": "aes128gcm",
+          "content-type": "application/octet-stream",
+          "content-length": String(wire.length),
+          ttl: "60",
+        },
+        body: new Uint8Array(wire),
+      })
+      if (response.status === 404 || response.status === 410) {
+        removePushSubscription(options.db, subscription.id, "system")
+        record("gone")
+      } else {
+        record(response.ok ? "sent" : "failed")
+      }
+    } catch {
+      record("failed")
+    }
+  }
+
+  /**
+   * Alerts every verified subscription at once that a passkey recovery started (issue 682). Not
+   * coalesced: the owner must see it inside the delay. The payload says only that, never why.
+   */
+  async function notifyRecovery(): Promise<void> {
+    if (closed) return
+    const subscriptions = pushSubscriptions(options.db)
+    if (subscriptions.length === 0) return
+    const key = await options.privateKey()
+    const current = now()
+    for (const subscription of subscriptions) {
+      await deliver(subscription, recoveryPayload(), key, current, (action) =>
+        auditRecoveryPush(options.db, action, subscription.id)
+      )
+    }
+  }
+
   async function flushDue(): Promise<boolean> {
     if (closed || sending) return false
     const current = now()
@@ -120,51 +200,13 @@ export function createPushNotifier(options: PushOptions) {
       if (subscriptions.length === 0) return true
       const key = await options.privateKey()
       for (const subscription of subscriptions) {
-        if (!pushEgressAllowed(options.db, subscription)) {
-          auditPush(options.db, "refused_egress", subscription.id, count)
-          continue
-        }
-        if (key === undefined) {
-          auditPush(options.db, "unavailable", subscription.id, count)
-          continue
-        }
-        try {
-          const wire = encryptPush(
-            Buffer.from(pushPayload(count)),
-            subscription.p256dh,
-            subscription.auth
-          )
-          const response = await options.fetch(subscription.endpoint, {
-            method: "POST",
-            redirect: "manual",
-            headers: {
-              authorization: vapidAuthorization(
-                subscription.endpoint,
-                key,
-                options.subject,
-                current
-              ),
-              "content-encoding": "aes128gcm",
-              "content-type": "application/octet-stream",
-              "content-length": String(wire.length),
-              ttl: "60",
-            },
-            body: new Uint8Array(wire),
-          })
-          if (response.status === 404 || response.status === 410) {
-            removePushSubscription(options.db, subscription.id, "system")
-            auditPush(options.db, "gone", subscription.id, count)
-          } else {
-            auditPush(
-              options.db,
-              response.ok ? "sent" : "failed",
-              subscription.id,
-              count
-            )
-          }
-        } catch {
-          auditPush(options.db, "failed", subscription.id, count)
-        }
+        await deliver(
+          subscription,
+          pushPayload(count),
+          key,
+          current,
+          (action) => auditPush(options.db, action, subscription.id, count)
+        )
       }
       return true
     } finally {
@@ -176,6 +218,7 @@ export function createPushNotifier(options: PushOptions) {
   schedule()
   return {
     notifyPending,
+    notifyRecovery,
     flushDue,
     close: () => {
       closed = true
