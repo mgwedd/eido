@@ -146,6 +146,8 @@ const STATUS: Record<ErrorCode, number> = {
   gate_unavailable: 503,
   connector_paused: 409,
   no_draft: 422,
+  unauthenticated: 401,
+  forbidden: 403,
   internal: 500,
 }
 
