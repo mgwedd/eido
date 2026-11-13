@@ -1,3 +1,4 @@
+import { coreRoleKeyFromEnv } from "@/lib/auth/core-role"
 import { allowListFromEnv } from "@/lib/auth/roles"
 
 /**
@@ -17,6 +18,8 @@ export function register(): void {
   if (requiresAllowList) {
     allowListFromEnv()
   }
+  // A set but unusable role-signing key (#720) would leave every core write refused: say so now.
+  coreRoleKeyFromEnv()
 }
 
 /**
