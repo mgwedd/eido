@@ -415,6 +415,130 @@ describe("Google sign-in", () => {
   })
 })
 
+describe("Gmail read-only client", () => {
+  const targets = (readConfigured: boolean) => ({
+    gmail: { clientIdConfigured: true },
+    "gmail-read": { clientIdConfigured: readConfigured },
+    drive: { clientIdConfigured: true },
+  })
+  const settings = (connectors: unknown[], readConfigured: boolean) => ({
+    "GET /connector-settings": () =>
+      json(200, { connectors, googleTargets: targets(readConfigured) }),
+  })
+  const readRoutes = (stored: boolean) => ({
+    "POST /admin/connectors/google/prepare": () =>
+      json(200, {
+        approval: googlePrepared("gmail-read", "gmail", "read"),
+        clientSecretStored: stored,
+      }),
+    "POST /admin/connectors/google/start": () =>
+      json(200, { authorizationUrl: GOOGLE_URL, flow: FLOW }),
+  })
+
+  it("offers Reconnect read-only client on a connected Gmail card, next to the compose Reconnect", async () => {
+    stubGate([gmail], settings([gmail], true))
+    await render()
+    expect(button(card("Gmail"), "Reconnect read-only client")).toBeTruthy()
+    expect(button(card("Gmail"), "Reconnect")).toBeTruthy()
+  })
+
+  it("offers Connect read-only client when Gmail is not connected", async () => {
+    stubGate([], settings([], true))
+    await render()
+    expect(button(card("Gmail"), "Connect read-only client")).toBeTruthy()
+  })
+
+  it("leaves the control out when the gate has no read client ID", async () => {
+    stubGate([gmail], settings([gmail], false))
+    await render()
+    expect(card("Gmail").textContent).not.toContain("read-only client")
+  })
+
+  it("prepares, signs and starts the gmail-read target, then sends the browser to Google", async () => {
+    const gate = stubGate([gmail], {
+      ...settings([gmail], true),
+      ...readRoutes(true),
+    })
+    await render()
+    await click(card("Gmail"), "Reconnect read-only client")
+    await sign()
+    const prepare = gate.calls.find(
+      (c) => c.path === "/admin/connectors/google/prepare"
+    )
+    expect(prepare?.body).toEqual({ target: "gmail-read" })
+    const start = gate.calls.find(
+      (c) => c.path === "/admin/connectors/google/start"
+    )
+    expect(start?.body).toEqual({
+      target: "gmail-read",
+      approval: {
+        id: "control-1",
+        nonce: "N".repeat(43),
+        assertion: FAKE_ASSERTION,
+      },
+    })
+    expect(navigate).toHaveBeenCalledWith(GOOGLE_URL)
+  })
+
+  it("asks for the read client's secret when the vault has none and clears it after", async () => {
+    const gate = stubGate([gmail], {
+      ...settings([gmail], true),
+      ...readRoutes(false),
+    })
+    await render()
+    await click(card("Gmail"), "Reconnect read-only client")
+    await waitFor(
+      () => card("Gmail").textContent?.includes("Google client secret") === true
+    )
+    const field = input(card("Gmail"), "Google client secret")
+    field.value = SECRET
+    await submit(card("Gmail"))
+    await sign()
+    const start = gate.calls.find(
+      (c) => c.path === "/admin/connectors/google/start"
+    )
+    expect(start?.body).toMatchObject({
+      target: "gmail-read",
+      clientSecret: SECRET,
+    })
+    expect(field.value).toBe("")
+    expect(navigate).toHaveBeenCalledWith(GOOGLE_URL)
+  })
+
+  it("does not navigate when the gate refuses the read client's signature", async () => {
+    stubGate([gmail], {
+      ...settings([gmail], true),
+      ...readRoutes(true),
+      "POST /admin/connectors/google/start": () =>
+        json(403, { code: "verification_failed", message: "x" }),
+    })
+    await render()
+    await click(card("Gmail"), "Reconnect read-only client")
+    await sign()
+    await waitFor(() => card("Gmail").querySelector('[role="alert"]') !== null)
+    expect(card("Gmail").querySelector('[role="alert"]')?.textContent).toBe(
+      "Could not connect Gmail (read only): the passkey signature was refused."
+    )
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it("does not start when the gate prepares a different client than asked", async () => {
+    const gate = stubGate([gmail], {
+      ...settings([gmail], true),
+      "POST /admin/connectors/google/prepare": () =>
+        json(200, {
+          approval: googlePrepared("gmail", "gmail", "write"),
+          clientSecretStored: true,
+        }),
+    })
+    await render()
+    await click(card("Gmail"), "Reconnect read-only client")
+    await waitFor(() => card("Gmail").querySelector('[role="alert"]') !== null)
+    expect(gate.calls.some((c) => c.path.endsWith("/start"))).toBe(false)
+    expect(navigate).not.toHaveBeenCalled()
+  })
+})
+
 describe("Proton Bridge", () => {
   const routes = {
     "POST /admin/secrets/bridge/prepare": () => json(200, bridgePrepared(PIN)),

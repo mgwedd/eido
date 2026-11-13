@@ -380,6 +380,7 @@ function GoogleCard({
   onRemove,
   redirectUri,
   clientIdConfigured = true,
+  readClientConfigured = false,
 }: {
   target: GoogleTarget
   id: string
@@ -388,6 +389,8 @@ function GoogleCard({
   onRemove: (id: string) => void
   redirectUri?: string
   clientIdConfigured?: boolean
+  /** Gmail only: the gate has the separate read-only client's ID, so it can be signed in. */
+  readClientConfigured?: boolean
 }) {
   const scopes = connector?.scopes.map(scopeName).join(", ")
   const isConfigured = clientIdConfigured !== false
@@ -429,6 +432,17 @@ function GoogleCard({
       ) : (
         <GoogleChecklist target={target} redirectUri={effectiveUri} />
       )}
+      {readClientConfigured ? (
+        <GoogleAction
+          target="gmail-read"
+          label={
+            connector === undefined
+              ? "Connect read-only client"
+              : "Reconnect read-only client"
+          }
+          actions={actions}
+        />
+      ) : null}
     </ConnectorCard>
   )
 }
@@ -655,6 +669,9 @@ export function AdminConnectorsBody({
         clientIdConfigured={
           state.googleTargets?.["gmail"]?.clientIdConfigured ??
           find("gmail")?.clientIdConfigured
+        }
+        readClientConfigured={
+          state.googleTargets?.["gmail-read"]?.clientIdConfigured === true
         }
       />
       <GoogleCard
