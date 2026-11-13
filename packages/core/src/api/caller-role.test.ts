@@ -1,5 +1,6 @@
 import { generateKeyPairSync, sign } from "node:crypto"
 import type { KeyObject } from "node:crypto"
+import { validateCoreApiError } from "@eido/schemas"
 import { afterEach, describe, expect, it } from "vitest"
 import { openIndex } from "../index/schema"
 import { createProfileStore } from "../profile/index"
@@ -178,6 +179,17 @@ describe("createRoleGuard", () => {
     expect(await response?.json()).toEqual({
       error: { code: "unauthenticated", message: "sign in again" },
     })
+  })
+
+  it("builds both refusals as valid CoreApiError bodies", async () => {
+    const unauthenticated: unknown = await call("PATCH", "/profile")?.json()
+    expect(validateCoreApiError(unauthenticated).ok).toBe(true)
+    const forbidden: unknown = await call(
+      "PATCH",
+      "/profile",
+      token({})
+    )?.json()
+    expect(validateCoreApiError(forbidden).ok).toBe(true)
   })
 
   it("answers 401 to a change whose assertion has lapsed", () => {

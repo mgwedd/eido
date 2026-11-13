@@ -137,7 +137,7 @@ export type DraftReplyOutcome =
   | { status: "saved"; activityHref: string; created: boolean }
   | {
       status: "failed"
-      reason: DraftReplyErrorCode | "unauthenticated" | "network" | "unreadable"
+      reason: DraftReplyErrorCode | "network" | "unreadable"
     }
 
 /** One row's draft state in the view. A row with no entry is idle. */
@@ -222,6 +222,8 @@ export function draftFailureMessage(reason: DraftReplyFailure): string {
       return "Cannot draft this reply: it may be gone, or no local model is set up."
     case "unauthenticated":
       return "Sign in again to draft a reply."
+    case "forbidden":
+      return "You do not have access to draft replies."
     case "network":
       return "Connection lost. Nothing was saved. Try again."
     default:
@@ -235,7 +237,7 @@ export function resolveObligationUrl(obligationId: number): string {
 }
 
 export type ResolveFailure =
-  CoreApiError["error"]["code"] | "unauthenticated" | "network" | "unreadable"
+  CoreApiError["error"]["code"] | "network" | "unreadable"
 
 /** What one resolve request came to. `resolved` only for a 200 that says this obligation is done. */
 export type ResolveOutcome =
@@ -299,6 +301,8 @@ export function resolveFailureMessage(reason: ResolveFailure): string {
       return "This thread is no longer open. Reload the page."
     case "unauthenticated":
       return "Sign in again to mark this resolved."
+    case "forbidden":
+      return "You do not have access to resolve threads."
     case "network":
       return "Connection lost. Nothing was changed. Try again."
     default:

@@ -1,5 +1,6 @@
 import { createPublicKey, verify } from "node:crypto"
 import type { KeyObject } from "node:crypto"
+import type { CoreApiError } from "@eido/schemas"
 
 // Core's API has no sign-in of its own, and the browser reaches it straight through `tailscale
 // serve`, past Next. So the web app (which holds the Auth0 session) signs a short-lived role
@@ -166,11 +167,16 @@ export function permissionsFor(
   return row?.anyOf ?? []
 }
 
-function refusal(status: 401 | 403, code: string, message: string): Response {
-  return Response.json(
-    { error: { code, message } },
-    { status, headers: { "cache-control": "no-store" } }
-  )
+function refusal(
+  status: 401 | 403,
+  code: "unauthenticated" | "forbidden",
+  message: string
+): Response {
+  const body: CoreApiError = { error: { code, message } }
+  return Response.json(body, {
+    status,
+    headers: { "cache-control": "no-store" },
+  })
 }
 
 export type RoleGuard = (request: Request, path: string) => Response | null

@@ -245,6 +245,7 @@ describe("lib/replies", () => {
       [422, "no_draft"],
       [503, "busy"],
       [503, "gate_unavailable"],
+      [403, "forbidden"],
     ] as const)(
       "%i %s is a failure carrying core's code",
       async (status, code) => {
@@ -453,7 +454,18 @@ describe("lib/replies", () => {
       })
     })
 
+    it("reports a 403 body as forbidden", async () => {
+      stubResolve(403, errorBody("forbidden"))
+      expect(await requestResolveObligation(7)).toEqual({
+        status: "failed",
+        reason: "forbidden",
+      })
+    })
+
     it("words each failure for the row", () => {
+      expect(resolveFailureMessage("forbidden")).toBe(
+        "You do not have access to resolve threads."
+      )
       expect(resolveFailureMessage("not_found")).toBe(
         "This thread is gone. Reload the page."
       )
