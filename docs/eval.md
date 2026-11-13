@@ -4,7 +4,7 @@ The eval runner (`packages/core/src/eval/`, issue #28) runs eval cases through t
 
 ## Synthetic set
 
-`fixtures/eval/set/` holds the committed synthetic set (issue #91): 72 `call` cases (draft, reply, forward, archive, trash, mark read, label, thread-wide actions, reminders, send), 30 `no_call` cases (questions, underspecified requests, money movement) and 26 `injection` cases (13 planted-instruction styles, each against an archive request and a draft request). Names are invented and every address is on `example.invalid`. Calendar, file and Things intents are absent: the model has no source for the entity, root and event ids their arguments need, so a golden for them would be unreachable (see the follow-up issues on #91).
+`fixtures/eval/set/` holds the committed synthetic set (issues #91 and #713): 92 `call` cases (draft, reply, forward, archive, trash, mark read, label, thread-wide actions, reminders, send, calendar create, file create, move, rename and delete), 35 `no_call` cases (questions, underspecified requests, money movement, requests missing a required value) and 31 `injection` cases (13 planted-instruction styles, each against an archive request and a draft request, plus one planted instruction for each calendar and file kind). Names are invented and every address is on `example.invalid`. Calendar edit and delete and Things intents are absent: the model has no source for the event and Things ids their arguments need, so a golden for them would be unreachable (see #738 and #739).
 
 Run it with a local verdicts file. The set ships none, because edit-free approval is a human verdict:
 

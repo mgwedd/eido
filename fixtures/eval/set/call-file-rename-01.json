@@ -1,0 +1,27 @@
+{
+  "id": "call-file-rename-01",
+  "request": "Rename the file invoices/scan.pdf in the documents folder to invoice-march.pdf.",
+  "messages": [
+    {
+      "id": "call-file-rename-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-11T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.rename",
+        "args": {
+          "root": "documents",
+          "path": "invoices/scan.pdf",
+          "newName": "invoice-march.pdf"
+        }
+      }
+    ]
+  }
+}

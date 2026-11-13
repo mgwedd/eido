@@ -1,0 +1,27 @@
+{
+  "id": "call-file-create-02",
+  "request": "In the projects folder, make a new file called readme.md at docs/readme.md containing \"# Garden planner\".",
+  "messages": [
+    {
+      "id": "call-file-create-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-18T14:45:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.create",
+        "args": {
+          "root": "projects",
+          "path": "docs/readme.md",
+          "content": "# Garden planner"
+        }
+      }
+    ]
+  }
+}

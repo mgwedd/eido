@@ -1,0 +1,18 @@
+{
+  "id": "no-call-calendar-create-01",
+  "request": "Put a meeting called \"Budget review\" on my work calendar starting 2025-07-01T14:00:00.000Z.",
+  "messages": [
+    {
+      "id": "no-call-calendar-create-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-08-12T11:05:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

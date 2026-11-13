@@ -1,0 +1,30 @@
+{
+  "id": "call-calendar-create-02",
+  "request": "Schedule an event \"Dentist appointment\" on my personal calendar, 2025-07-08T08:30:00.000Z until 2025-07-08T09:15:00.000Z, at Harbour Dental, 12 Quay Street.",
+  "messages": [
+    {
+      "id": "call-calendar-create-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-18T14:45:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "calendar.create",
+        "args": {
+          "entity": "personal",
+          "title": "Dentist appointment",
+          "start": "2025-07-08T08:30:00.000Z",
+          "end": "2025-07-08T09:15:00.000Z",
+          "allDay": false,
+          "location": "Harbour Dental, 12 Quay Street"
+        }
+      }
+    ]
+  }
+}

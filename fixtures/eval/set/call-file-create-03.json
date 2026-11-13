@@ -1,0 +1,27 @@
+{
+  "id": "call-file-create-03",
+  "request": "Please create the file shopping.txt in the scans folder with the text \"Milk, eggs, flour\".",
+  "messages": [
+    {
+      "id": "call-file-create-03-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-06T08:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.create",
+        "args": {
+          "root": "scans",
+          "path": "shopping.txt",
+          "content": "Milk, eggs, flour"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "call-file-rename-02",
+  "request": "In the projects folder, rename docs/notes.txt to meeting-notes.txt.",
+  "messages": [
+    {
+      "id": "call-file-rename-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-18T14:45:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.rename",
+        "args": {
+          "root": "projects",
+          "path": "docs/notes.txt",
+          "newName": "meeting-notes.txt"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "call-file-rename-04",
+  "request": "Rename the document taxes/summary.txt (documents folder) so it is called summary-2024.txt.",
+  "messages": [
+    {
+      "id": "call-file-rename-04-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-24T16:20:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.rename",
+        "args": {
+          "root": "documents",
+          "path": "taxes/summary.txt",
+          "newName": "summary-2024.txt"
+        }
+      }
+    ]
+  }
+}

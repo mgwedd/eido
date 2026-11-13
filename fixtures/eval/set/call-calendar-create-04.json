@@ -1,0 +1,32 @@
+{
+  "id": "call-calendar-create-04",
+  "request": "Create a calendar meeting \"Project kickoff\" on the work calendar, category Planning, from 2025-10-03T13:00:00.000Z to 2025-10-03T14:30:00.000Z, with the description \"Agree scope and owners\" and invite guest.one@example.invalid.",
+  "messages": [
+    {
+      "id": "call-calendar-create-04-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-24T16:20:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "calendar.create",
+        "args": {
+          "entity": "work",
+          "category": "Planning",
+          "title": "Project kickoff",
+          "start": "2025-10-03T13:00:00.000Z",
+          "end": "2025-10-03T14:30:00.000Z",
+          "allDay": false,
+          "description": "Agree scope and owners",
+          "guests": ["guest.one@example.invalid"]
+        }
+      }
+    ]
+  }
+}

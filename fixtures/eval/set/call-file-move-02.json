@@ -1,0 +1,27 @@
+{
+  "id": "call-file-move-02",
+  "request": "In the projects folder, move the file drafts/outline.md into final/outline.md.",
+  "messages": [
+    {
+      "id": "call-file-move-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-18T14:45:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.move",
+        "args": {
+          "root": "projects",
+          "path": "drafts/outline.md",
+          "toPath": "final/outline.md"
+        }
+      }
+    ]
+  }
+}
