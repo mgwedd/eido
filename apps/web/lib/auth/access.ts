@@ -29,6 +29,7 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   { path: "/admin", roles: ["owner"] },
   { path: "/unlock", roles: ["owner"] },
   { path: "/enroll", roles: ["owner"] },
+  { path: "/recover", roles: ["owner"] },
 ]
 
 /** Open to anyone signed in, with or without a role, so they can see why and sign out. */

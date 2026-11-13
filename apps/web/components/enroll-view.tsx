@@ -13,6 +13,7 @@ import { Label } from "@eido/ui/components/label"
 import { enrol, loadPasskeyCreatedAt } from "@/lib/enrol"
 import { authenticatorCopy, useAuthenticatorLabel } from "@/lib/authenticator"
 import { AuthenticatorIcon } from "@/components/authenticator-icon"
+import { RecoveryKeyCard } from "@/components/recovery-key-card"
 import { checkEnvironment, loadCredentialStatus } from "@/lib/auth/unlock"
 import type { Environment } from "@/lib/auth/unlock"
 
@@ -280,6 +281,8 @@ function EnrollView({ next }: { next: string }) {
   const [state, setState] = React.useState<EnrollState>({ status: "checking" })
   const [attempt, setAttempt] = React.useState(0)
   const [code, setCode] = React.useState("")
+  // The recovery key from the first enrolment lives here and nowhere else; Continue drops it.
+  const [recoveryKey, setRecoveryKey] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     if (environment !== "ok") return
@@ -318,13 +321,27 @@ function EnrollView({ next }: { next: string }) {
     const result = await enrol(code, window.location.hostname)
     if (result.ok) {
       setCode("")
-      router.replace(next)
+      if (result.recoveryKey === undefined) router.replace(next)
+      else setRecoveryKey(result.recoveryKey)
     } else if (result.reason === "rejected") {
       setState({ status: "rejected", message: result.message })
     } else {
       setState({ status: result.reason })
     }
   }, [code, next, router])
+
+  if (recoveryKey !== null) {
+    return (
+      <RecoveryKeyCard
+        recoveryKey={recoveryKey}
+        overline="Set up this device"
+        onContinue={() => {
+          setRecoveryKey(null)
+          router.replace(next)
+        }}
+      />
+    )
+  }
 
   const shown: EnrollState =
     environment === "wrong-origin" || environment === "unsupported"

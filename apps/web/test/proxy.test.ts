@@ -71,8 +71,8 @@ describe("proxy in passkey-only mode (AUTH0_DOMAIN unset)", () => {
     vi.unstubAllEnvs()
   })
 
-  it("leaves /unlock, /enroll, and /healthz open without redirect when signed out", async () => {
-    for (const path of ["/unlock", "/enroll", "/healthz"]) {
+  it("leaves /unlock, /enroll, /recover, and /healthz open without redirect when signed out", async () => {
+    for (const path of ["/unlock", "/enroll", "/recover", "/healthz"]) {
       const response = await proxy(request(path))
       expect(response.headers.get("x-middleware-next")).toBe("1")
     }

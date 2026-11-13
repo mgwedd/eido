@@ -157,6 +157,15 @@ function UnlockCard({
             </Link>
           ) : null}
 
+          {canUnlock ? (
+            <Link
+              href="/recover"
+              className={buttonVariants({ variant: "ghost", size: "lg" })}
+            >
+              Lost your passkey?
+            </Link>
+          ) : null}
+
           {canUnlock || waiting ? (
             <Button
               size="lg"

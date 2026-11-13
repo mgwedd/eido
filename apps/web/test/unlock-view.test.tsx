@@ -180,6 +180,15 @@ describe("UnlockView", () => {
     expect(button()).toBeNull()
   })
 
+  it("links an enrolled device to recovery for a lost passkey", async () => {
+    setup({})
+    await render("/queue")
+    const link = [...container.querySelectorAll("a")].find(
+      (a) => a.textContent === "Lost your passkey?"
+    )
+    expect(link?.getAttribute("href")).toBe("/recover")
+  })
+
   it("names the Mac for a revoked passkey, with no link and no unlock", async () => {
     setup({
       status: { enrolled: false, revoked: true, sessionExpiresAt: null },

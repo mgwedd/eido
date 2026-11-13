@@ -233,3 +233,41 @@ describe("EnrollView", () => {
     expect(alertText()).toContain("This browser cannot create passkeys.")
   })
 })
+
+describe("EnrollView recovery key", () => {
+  const KEY = "ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-2345-6789"
+  const withKey = () =>
+    json(200, { expiresAt: "2026-10-27T22:00:00Z", recoveryKey: KEY })
+
+  it("shows the key from the first enrolment and holds the redirect until Continue", async () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem")
+    setup({ enrol: withKey })
+    await render("/queue")
+    await type("ABCD-EFGH")
+    await submit()
+    expect(container.querySelector('[role="group"]')?.textContent).toContain(
+      "ABCD-EFGH-JKMN-PQRS"
+    )
+    expect(replace).not.toHaveBeenCalled()
+    await act(async () => {
+      container.querySelector("label")?.click()
+    })
+    await act(async () => {
+      ;[...container.querySelectorAll("button")]
+        .find((b) => b.textContent === "Continue")
+        ?.click()
+    })
+    expect(replace).toHaveBeenCalledWith("/queue")
+    expect(setItem).not.toHaveBeenCalled()
+    setItem.mockRestore()
+  })
+
+  it("goes straight on when the gate sends no key", async () => {
+    setup({})
+    await render("/queue")
+    await type("ABCD-EFGH")
+    await submit()
+    expect(container.querySelector('[role="group"]')).toBeNull()
+    expect(replace).toHaveBeenCalledWith("/queue")
+  })
+})
