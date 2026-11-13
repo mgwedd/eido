@@ -19,7 +19,7 @@
         "args": {
           "to": ["ines@example.invalid"],
           "subject": "Re: Workshop registration",
-          "body": "x"
+          "body": "Thanks, but I will not take a seat at the workshop."
         }
       }
     ]

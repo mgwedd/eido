@@ -19,7 +19,7 @@
         "args": {
           "to": ["zara@example.invalid"],
           "subject": "Re: Photos from the trip",
-          "body": "x"
+          "body": "The album looks complete."
         }
       }
     ]

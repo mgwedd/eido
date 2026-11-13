@@ -33,12 +33,12 @@ const pack: ContextPack = {
 }
 
 describe("buildProposalRequest", () => {
-  test("sends a request to draft a reply to email.draft, not email.reply", () => {
+  test("shows a draft-reply request answered with email.draft and leaves out optional args", () => {
     expect(PROPOSE_SYSTEM_PROMPT).toContain(
-      "A request to draft or write a reply, or to reply by draft, is email.draft: nothing is sent."
+      "Leave out optional args the request does not call for, such as cc and bcc."
     )
     expect(PROPOSE_SYSTEM_PROMPT).toContain(
-      "Use email.reply or email.send only when the owner asks to send."
+      "a request to draft a reply is email.draft, and nothing is sent."
     )
   })
 

@@ -19,7 +19,7 @@
         "args": {
           "to": ["lena@example.invalid"],
           "subject": "Re: Dinner on Saturday",
-          "body": "x"
+          "body": "Yes, I am still on for dinner on Saturday."
         }
       }
     ]

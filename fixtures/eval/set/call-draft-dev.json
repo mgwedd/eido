@@ -19,7 +19,7 @@
         "args": {
           "to": ["dev@example.invalid"],
           "subject": "Re: Quarterly numbers",
-          "body": "x"
+          "body": "I will send the numbers on Thursday."
         }
       }
     ]

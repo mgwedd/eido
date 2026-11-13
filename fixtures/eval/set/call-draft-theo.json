@@ -19,7 +19,7 @@
         "args": {
           "to": ["theo@example.invalid"],
           "subject": "Re: Broken link on the site",
-          "body": "x"
+          "body": "Thanks, Theo. I will fix the link today."
         }
       }
     ]
