@@ -515,6 +515,24 @@ describe("audit page", () => {
     expect(validateGateAuditPage({ entries: [] }).ok).toBe(true)
   })
 
+  test("accepts an optional description and rejects an empty or oversized one", () => {
+    expect(
+      validateGateAuditPage({
+        entries: [{ ...entry, description: "Marked 4 messages read in Gmail" }],
+      }).ok
+    ).toBe(true)
+    expect(
+      errorsOf(
+        validateGateAuditPage({ entries: [{ ...entry, description: "" }] })
+      )
+    ).toEqual(["$.entries[0].description: needs at least 1 characters"])
+    expect(
+      validateGateAuditPage({
+        entries: [{ ...entry, description: "x".repeat(201) }],
+      }).ok
+    ).toBe(false)
+  })
+
   test("rejects a row carrying a body field or prev_hash", () => {
     expect(
       errorsOf(validateGateAuditPage({ entries: [{ ...entry, detail: "x" }] }))

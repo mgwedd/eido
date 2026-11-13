@@ -102,6 +102,7 @@ import {
   startGoogleConnect,
 } from "./google-connect"
 import type { GoogleConnect } from "./google-connect"
+import { describeIntent } from "./audit-description"
 import { getConnectorHealth } from "./connector-health"
 import { getConnectorState } from "./connectors"
 import {
@@ -755,7 +756,8 @@ function auditPage(state: PhoneState, request: GateRequest): Reply {
         CASE WHEN u.intent_id IS NOT NULL THEN 'done'
              WHEN e.inverse_op IS NOT NULL AND (i.tier = 'auto' OR (i.kind = 'file.delete' AND i.tier = 'approval')) THEN 'available'
              ELSE 'none' END
-      ELSE 'none' END AS undo
+      ELSE 'none' END AS undo,
+      CASE WHEN e.audit_seq = a.seq AND i.tier = 'auto' THEN i.payload_json END AS intent_json
     FROM audit_log a
     LEFT JOIN executions e ON e.audit_seq = a.seq
     LEFT JOIN execution_undos u ON u.intent_id = e.intent_id
@@ -777,6 +779,9 @@ function auditPage(state: PhoneState, request: GateRequest): Reply {
     if (undo !== "available" && undo !== "done" && undo !== "none") {
       throw new Error("stored undo state is not recognized")
     }
+    const intentJson = row["intent_json"]
+    const description =
+      typeof intentJson === "string" ? describeIntent(intentJson) : undefined
     return {
       seq: Number(row["seq"]),
       ts: String(row["ts"]),
@@ -786,6 +791,7 @@ function auditPage(state: PhoneState, request: GateRequest): Reply {
       target: String(row["target"]),
       detailHash: String(row["detail_hash"]),
       undo,
+      ...(description === undefined ? {} : { description }),
     }
   })
   const lastEntry = entries.at(-1)

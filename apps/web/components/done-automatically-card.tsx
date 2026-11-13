@@ -78,7 +78,7 @@ export function DoneAutomaticallyCard({
               >
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <span className="text-sm font-medium break-all">
-                    {formatAction(entry.action)}
+                    {entry.description ?? formatAction(entry.action)}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     <time dateTime={entry.ts}>{formatTime(entry.ts)}</time>

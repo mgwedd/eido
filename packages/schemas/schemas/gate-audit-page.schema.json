@@ -51,6 +51,12 @@
             "maxLength": 64,
             "pattern": "^[0-9a-f]{64}$",
             "description": "Lowercase hex SHA-256 of the entry detail."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Short sentence for an automatic execution, such as Marked 4 messages read in Gmail. The gate writes it from the executed intent's kind, counts and connector, never from model text. Absent on every other row."
           }
         },
         "required": [

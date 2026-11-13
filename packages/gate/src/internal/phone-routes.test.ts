@@ -954,6 +954,46 @@ describe("phoneHandler: authenticated settings reads", () => {
     ).toMatchObject({ undo: "available" })
   })
 
+  it("describes an automatic execution and leaves every other row without a description", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    const automatic = propose(s.db, s.policy, {
+      intent: sample("email.archive", { messageIds: ["m1", "m2", "m3"] }),
+      origin: "reactive",
+    })
+    if (!automatic.ok) throw new Error("automatic intent was refused")
+    const executed = append(s.db, {
+      actor: "executor",
+      action: "execute",
+      target: automatic.intentId,
+      detailHash: payloadHash({ result: "synthetic" }),
+    })
+    s.db
+      .prepare(
+        "INSERT INTO executions (intent_id, upstream_ref, result, inverse_op, audit_seq) VALUES (?, ?, ?, ?, ?)"
+      )
+      .run(automatic.intentId, "synthetic-ref", "{}", "{}", executed.seq)
+    const undone = append(s.db, {
+      actor: "executor",
+      action: "undo",
+      target: automatic.intentId,
+      detailHash: payloadHash({ result: "restored" }),
+    })
+
+    const reply = await call("GET", "/audit", { cookie })
+    const parsed = validateGateAuditPage(reply.body)
+    if (!parsed.ok) throw new Error("audit page is invalid")
+    const bySeq = (seq: number) =>
+      parsed.value.entries.find((entry) => entry.seq === seq)
+    expect(bySeq(executed.seq)?.description).toMatch(/^Archived 3 messages/)
+    expect(bySeq(undone.seq)?.description).toBeUndefined()
+    expect(
+      parsed.value.entries.filter(
+        (entry) => entry.seq !== executed.seq && entry.description !== undefined
+      )
+    ).toEqual([])
+  })
+
   it("rejects malformed and unsupported audit page query parameters", async () => {
     enrol(auth)
     const cookie = await signIn()
