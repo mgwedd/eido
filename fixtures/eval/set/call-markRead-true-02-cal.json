@@ -1,0 +1,26 @@
+{
+  "id": "call-markRead-true-02-cal",
+  "request": "Mark this email read.",
+  "messages": [
+    {
+      "id": "call-markRead-true-02-cal-1@example.invalid",
+      "from": "cal@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-16T11:15:00.000Z",
+      "subject": "Calendar update",
+      "body": "Automated message about: calendar update."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.markRead",
+        "args": {
+          "messageIds": ["call-markRead-true-02-cal-1@example.invalid"],
+          "read": true
+        }
+      }
+    ]
+  }
+}

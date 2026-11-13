@@ -83,6 +83,11 @@ export type Check = {
   summary: string
   /** How to clear a warn or fail. A warn about work not built yet has none. */
   fix?: Fix
+  /**
+   * The check fails but the stack can still start: inference is added from the Admin page (#628),
+   * so a missing model or a stopped llama-server must not stop the first run (#648).
+   */
+  startsWithoutIt?: true
 }
 
 export type DoctorFiles = {
@@ -534,9 +539,10 @@ async function checkLlama(deps: DoctorDeps, quick: boolean): Promise<Check[]> {
       )
     )
   else if (modelStat === undefined || !modelStat.isFile)
-    checks.push(
-      fail("llama-pin", `no model file at ${paths.modelPath}`, download)
-    )
+    checks.push({
+      ...fail("llama-pin", `no model file at ${paths.modelPath}`, download),
+      startsWithoutIt: true,
+    })
   else {
     const model = quick
       ? modelStat.size === profile.size
@@ -574,11 +580,14 @@ async function checkLlama(deps: DoctorDeps, quick: boolean): Promise<Check[]> {
   checks.push(
     status === 200
       ? ok("llama-health", `${health} answers 200`)
-      : fail(
-          "llama-health",
-          `${health} ${status === undefined ? "does not answer" : `answers ${status}`}`,
-          fix("start-llama", start)
-        )
+      : {
+          ...fail(
+            "llama-health",
+            `${health} ${status === undefined ? "does not answer" : `answers ${status}`}`,
+            fix("start-llama", start)
+          ),
+          startsWithoutIt: true,
+        }
   )
   return checks
 }

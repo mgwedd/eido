@@ -1,0 +1,18 @@
+{
+  "id": "no-call-underspecified-01",
+  "request": "Forward this message.",
+  "messages": [
+    {
+      "id": "no-call-underspecified-01-1@example.invalid",
+      "from": "party1@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-21T14:15:00.000Z",
+      "subject": "Open item 1",
+      "body": "The agenda for next week is attached."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

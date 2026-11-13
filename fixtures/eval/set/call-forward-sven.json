@@ -1,0 +1,28 @@
+{
+  "id": "call-forward-sven",
+  "request": "Forward this email to travel-d@example.invalid.",
+  "messages": [
+    {
+      "id": "call-forward-sven-1@example.invalid",
+      "from": "sven@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-23T15:15:00.000Z",
+      "subject": "Flight confirmation",
+      "body": "Your flight is confirmed for the 9th."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.forward",
+        "args": {
+          "messageId": "call-forward-sven-1@example.invalid",
+          "messageSha256": "92890a088de6570b46c517a21c389d1b85618e8874a01f54d0d49e2571bde492",
+          "to": ["travel-d@example.invalid"]
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.note"]
+}

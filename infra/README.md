@@ -8,12 +8,30 @@ Connecting and reconnecting Gmail and the Proton connectors on the Mac: `infra/c
 
 ## Local stack (#374)
 
-First run, then every start after it:
+### First run: one command (#648)
+
+On a fresh clone with Node and pnpm installed, run one command on the Mac, as the owner:
 
 ```bash
-pnpm stack:setup               # creates the gate keychain, asks for unset settings, writes stack.env, runs doctor, and issues the first phone enrolment code when the gate is running
-pnpm stack:prod --background   # starts the stack and prints https://<host>.ts.net:8443/
+pnpm stack:bootstrap
 ```
+
+It sets nothing by hand: no environment variable is exported, and it can be run again at any step. In order it
+
+1. runs `pnpm install --frozen-lockfile`;
+2. installs the pinned llama-server build (`llama fetch --build-only`), with no model;
+3. runs `stack:setup`: creates the gate keychain (asks for its password in the terminal), asks for the unset settings and writes `stack.env`;
+4. starts the prod stack in the background (a build, then gate, core and web, with the serve routes);
+5. on macOS, registers the login agent `com.eido.stack` (`stack:install`), so the stack starts at every login;
+6. prints a single-use enrolment code and the first-run page, `https://<host>.ts.net:8443/enroll`.
+
+Open that page on your phone and enter the code to enrol the first passkey. The code works once and expires after ten minutes. Whoever runs the command has a shell on the Mac, which is the proof of presence (ADR 0009, Decision 4); the gate adds no listener for it. The code is printed in the terminal rather than served on a localhost page, because a localhost page brings back the loopback listener and its port-shared cookie that ADR 0009 removed.
+
+Once a passkey exists, `stack:bootstrap` issues no code. A new phone or a lost one is `pnpm stack:gate enrol-code` (recovery), or the Admin page.
+
+Everything after the first passkey is in the app, under Admin: the model download and switching, connectors, the Tailscale check, settings and the doctor checks. The stack starts without a model; inference is off until one is downloaded there. `stack:bootstrap` does not do any of that. On Windows and Linux there is no login agent yet (#455): after step 4, start the stack again with `pnpm stack:prod --background` after a restart.
+
+`pnpm stack:setup` alone (steps 3 and the code) and the commands below remain for later runs.
 
 One command starts the gate, core and web, with the serve routes, so `https://<host>.ts.net:8443/` works:
 

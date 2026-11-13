@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-dev",
+  "request": "Draft a reply saying I will send the numbers on Thursday.",
+  "messages": [
+    {
+      "id": "call-draft-dev-1@example.invalid",
+      "from": "dev@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-05T13:15:00.000Z",
+      "subject": "Quarterly numbers",
+      "body": "Can you send me the quarterly numbers before Friday?"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["dev@example.invalid"],
+          "subject": "Re: Quarterly numbers",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-10",
+  "request": "Does this email mention a deadline?",
+  "messages": [
+    {
+      "id": "no-call-question-10-1@example.invalid",
+      "from": "sender10@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-10T11:15:00.000Z",
+      "subject": "Topic 10",
+      "body": "The draft is due at the end of next month."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

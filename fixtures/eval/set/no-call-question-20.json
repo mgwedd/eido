@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-20",
+  "request": "What is the subject of the previous message in this thread?",
+  "messages": [
+    {
+      "id": "no-call-question-20-1@example.invalid",
+      "from": "sender20@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-20T13:15:00.000Z",
+      "subject": "Topic 20",
+      "body": "Following up on my last note."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

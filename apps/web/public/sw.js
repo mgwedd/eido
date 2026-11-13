@@ -1,4 +1,4 @@
-/* global APPROVAL_QUEUE_URL, classifyRequest, isCacheableResponse, notificationForPush */
+/* global APPROVAL_QUEUE_URL, SIGN_IN_URL, classifyRequest, isCacheableResponse, notificationForPush */
 /* Eido service worker. Routing and push rules live in sw-routing.js. */
 importScripts("/sw-routing.js")
 
@@ -91,13 +91,16 @@ self.addEventListener("push", function (event) {
   event.waitUntil(
     self.registration.showNotification(notification.title, {
       body: notification.body,
+      data: { url: notification.url },
     })
   )
 })
 
 self.addEventListener("notificationclick", function (event) {
   event.notification.close()
-  var target = new URL(APPROVAL_QUEUE_URL, self.location.origin).href
+  var data = event.notification.data
+  var path = data && data.url === SIGN_IN_URL ? SIGN_IN_URL : APPROVAL_QUEUE_URL
+  var target = new URL(path, self.location.origin).href
   event.waitUntil(
     self.clients
       .matchAll({ type: "window", includeUncontrolled: true })
@@ -105,10 +108,7 @@ self.addEventListener("notificationclick", function (event) {
         for (var i = 0; i < clients.length; i++) {
           var client = clients[i]
           var url = new URL(client.url)
-          if (
-            url.origin === self.location.origin &&
-            url.pathname === APPROVAL_QUEUE_URL
-          ) {
+          if (url.origin === self.location.origin && url.pathname === path) {
             return client.focus()
           }
         }

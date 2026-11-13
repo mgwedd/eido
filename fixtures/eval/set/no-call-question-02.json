@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-02",
+  "request": "Summarize this email in one sentence.",
+  "messages": [
+    {
+      "id": "no-call-question-02-1@example.invalid",
+      "from": "sender2@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-02T11:15:00.000Z",
+      "subject": "Topic 2",
+      "body": "Minutes of the quarterly review: revenue is up, hiring is paused, the office move is on track."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

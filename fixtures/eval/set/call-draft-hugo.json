@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-hugo",
+  "request": "Draft a reply asking Hugo to send a corrected invoice.",
+  "messages": [
+    {
+      "id": "call-draft-hugo-1@example.invalid",
+      "from": "hugo@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-11T11:15:00.000Z",
+      "subject": "Invoice question",
+      "body": "Invoice 2041 lists two licences but we only bought one. Could you check?"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["hugo@example.invalid"],
+          "subject": "Re: Invoice question",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

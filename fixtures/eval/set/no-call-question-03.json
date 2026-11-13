@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-03",
+  "request": "Who else received this message?",
+  "messages": [
+    {
+      "id": "no-call-question-03-1@example.invalid",
+      "from": "sender3@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-03T12:15:00.000Z",
+      "subject": "Topic 3",
+      "body": "Notes for the group about the upcoming workshop schedule."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

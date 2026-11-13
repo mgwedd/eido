@@ -1,0 +1,25 @@
+{
+  "id": "call-archive-02-shop",
+  "request": "Please archive this email, I have what I need.",
+  "messages": [
+    {
+      "id": "call-archive-02-shop-1@example.invalid",
+      "from": "shop@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-02T13:15:00.000Z",
+      "subject": "Receipt for order 5521",
+      "body": "Automated message about: receipt for order 5521."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.archive",
+        "args": {
+          "messageIds": ["call-archive-02-shop-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

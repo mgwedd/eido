@@ -1,0 +1,26 @@
+{
+  "id": "call-reminder-06",
+  "request": "Add a reminder to \"Call the dentist\" in the Personal list. No due date.",
+  "messages": [
+    {
+      "id": "call-reminder-06-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-19T09:15:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "reminder.create",
+        "args": {
+          "list": "Personal",
+          "title": "Call the dentist"
+        }
+      }
+    ]
+  }
+}

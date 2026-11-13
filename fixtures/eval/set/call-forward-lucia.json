@@ -1,0 +1,28 @@
+{
+  "id": "call-forward-lucia",
+  "request": "Forward this email to hr-e@example.invalid.",
+  "messages": [
+    {
+      "id": "call-forward-lucia-1@example.invalid",
+      "from": "lucia@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-24T16:15:00.000Z",
+      "subject": "Onboarding checklist",
+      "body": "The onboarding checklist for new hires."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.forward",
+        "args": {
+          "messageId": "call-forward-lucia-1@example.invalid",
+          "messageSha256": "79ca62662f4598a65eebbf14865b6e1d97498e15dcd031fdf07118d96ab64602",
+          "to": ["hr-e@example.invalid"]
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.note"]
+}

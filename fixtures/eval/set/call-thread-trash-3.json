@@ -1,0 +1,45 @@
+{
+  "id": "call-thread-trash-3",
+  "request": "Trash all the messages in this thread.",
+  "messages": [
+    {
+      "id": "call-thread-trash-3-1@example.invalid",
+      "from": "chain@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-08-08T14:15:00.000Z",
+      "subject": "Thread 3",
+      "body": "Message 1 of the chain about topic 3."
+    },
+    {
+      "id": "call-thread-trash-3-2@example.invalid",
+      "from": "chain@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-09-09T15:15:00.000Z",
+      "subject": "Thread 3",
+      "body": "Message 2 of the chain about topic 3."
+    },
+    {
+      "id": "call-thread-trash-3-3@example.invalid",
+      "from": "chain@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-10T16:15:00.000Z",
+      "subject": "Thread 3",
+      "body": "Message 3 of the chain about topic 3."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.trash",
+        "args": {
+          "messageIds": [
+            "call-thread-trash-3-1@example.invalid",
+            "call-thread-trash-3-2@example.invalid",
+            "call-thread-trash-3-3@example.invalid"
+          ]
+        }
+      }
+    ]
+  }
+}

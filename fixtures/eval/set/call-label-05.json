@@ -1,0 +1,26 @@
+{
+  "id": "call-label-05",
+  "request": "Remove the label Inbox-old from this message.",
+  "messages": [
+    {
+      "id": "call-label-05-1@example.invalid",
+      "from": "sorter@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-25T12:15:00.000Z",
+      "subject": "Item 5 to organise",
+      "body": "Please organise this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.label",
+        "args": {
+          "messageIds": ["call-label-05-1@example.invalid"],
+          "remove": ["Inbox-old"]
+        }
+      }
+    ]
+  }
+}

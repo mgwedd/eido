@@ -18,7 +18,7 @@ const source = readFileSync(
   "utf8"
 )
 const exported: unknown = runInNewContext(
-  `${source}\n({ classifyRequest, isCacheableResponse, notificationForPush, APPROVAL_QUEUE_URL })`,
+  `${source}\n({ classifyRequest, isCacheableResponse, notificationForPush, APPROVAL_QUEUE_URL, SIGN_IN_URL })`,
   { URL }
 )
 const {
@@ -26,13 +26,15 @@ const {
   isCacheableResponse,
   notificationForPush,
   APPROVAL_QUEUE_URL,
+  SIGN_IN_URL,
 } = exported as {
   classifyRequest: (request: Request) => Kind
   isCacheableResponse: (response: Response) => boolean
   notificationForPush: (
     payload: string
-  ) => { title: string; body: string } | null
+  ) => { title: string; body: string | undefined; url: string } | null
   APPROVAL_QUEUE_URL: string
+  SIGN_IN_URL: string
 }
 
 const ORIGIN = "https://eido.example.ts.net"
@@ -141,10 +143,12 @@ describe("push notification routing", () => {
     expect(notificationForPush('{"v":1,"pending":2}')).toEqual({
       title: "Eido approval queue",
       body: "2 approvals are waiting for your review.",
+      url: "/queue",
     })
     expect(notificationForPush('{"v":1,"pending":1}')).toEqual({
       title: "Eido approval queue",
       body: "1 approval is waiting for your review.",
+      url: "/queue",
     })
   })
 
@@ -157,8 +161,102 @@ describe("push notification routing", () => {
     expect(notificationForPush('{"v":1,"pending":-1}')).toBeNull()
   })
 
+  test("shows the recovery alert with a fixed title, no body and the sign-in page", () => {
+    expect(notificationForPush('{"v":1,"recovery":"started"}')).toEqual({
+      title: "Eido recovery started",
+      body: undefined,
+      url: "/unlock",
+    })
+  })
+
+  test("refuses recovery payloads that are not exactly the started shape", () => {
+    expect(notificationForPush('{"v":1,"recovery":"finished"}')).toBeNull()
+    expect(notificationForPush('{"v":1,"recovery":true}')).toBeNull()
+    expect(notificationForPush('{"v":2,"recovery":"started"}')).toBeNull()
+    expect(notificationForPush('{"recovery":"started"}')).toBeNull()
+    expect(
+      notificationForPush('{"v":1,"recovery":"started","id":"abc"}')
+    ).toBeNull()
+    expect(
+      notificationForPush('{"v":1,"recovery":"started","pending":1}')
+    ).toBeNull()
+    expect(notificationForPush('["recovery","started"]')).toBeNull()
+    expect(notificationForPush("null")).toBeNull()
+  })
+
   test("notification clicks target the approval queue", () => {
     expect(APPROVAL_QUEUE_URL).toBe("/queue")
+    expect(SIGN_IN_URL).toBe("/unlock")
+  })
+
+  test("clicking a recovery alert opens the sign-in page, not the queue", async () => {
+    const workerSource = readFileSync(
+      path.join(__dirname, "..", "public", "sw.js"),
+      "utf8"
+    )
+    const listeners = new Map<string, (event: unknown) => void>()
+    const opened: string[] = []
+    const shown: { title: string; options: unknown }[] = []
+    const worker = {
+      location: { origin: ORIGIN },
+      registration: {
+        showNotification: (title: string, options: unknown) => {
+          shown.push({ title, options })
+          return Promise.resolve()
+        },
+      },
+      clients: {
+        matchAll: () => Promise.resolve([]),
+        openWindow: (url: string) => {
+          opened.push(url)
+          return Promise.resolve()
+        },
+      },
+      addEventListener: (name: string, listener: (event: unknown) => void) => {
+        listeners.set(name, listener)
+      },
+    }
+    runInNewContext(`${source}\n${workerSource}`, {
+      self: worker,
+      URL,
+      importScripts: () => undefined,
+    })
+    const push = listeners.get("push")
+    const click = listeners.get("notificationclick")
+    if (push === undefined || click === undefined)
+      throw new Error("push or click listener is missing")
+
+    let pushed: Promise<unknown> | undefined
+    push({
+      data: { text: () => '{"v":1,"recovery":"started"}' },
+      waitUntil: (promise: Promise<unknown>) => {
+        pushed = promise
+      },
+    })
+    await pushed
+    expect(shown).toHaveLength(1)
+    expect(shown[0]?.title).toBe("Eido recovery started")
+    expect(shown[0]?.options).toEqual({
+      body: undefined,
+      data: { url: "/unlock" },
+    })
+
+    push({
+      data: { text: () => '{"v":1,"recovery":"other"}' },
+      waitUntil: () => {
+        throw new Error("an unknown shape must not show a notification")
+      },
+    })
+
+    let waited: Promise<unknown> | undefined
+    click({
+      notification: { close: () => undefined, data: { url: "/unlock" } },
+      waitUntil: (promise: Promise<unknown>) => {
+        waited = promise
+      },
+    })
+    await waited
+    expect(opened).toEqual([`${ORIGIN}/unlock`])
   })
 
   test("clicking focuses an open queue or opens that route when no queue is open", async () => {

@@ -1,0 +1,27 @@
+{
+  "id": "call-reminder-03",
+  "request": "Add a reminder in Home: \"Book boiler service\", due 2025-06-15T08:30:00.000Z.",
+  "messages": [
+    {
+      "id": "call-reminder-03-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-16T14:15:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "reminder.create",
+        "args": {
+          "list": "Home",
+          "title": "Book boiler service",
+          "due": "2025-06-15T08:30:00.000Z"
+        }
+      }
+    ]
+  }
+}

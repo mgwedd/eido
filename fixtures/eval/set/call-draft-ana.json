@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-ana",
+  "request": "Write a draft reply confirming the renewal.",
+  "messages": [
+    {
+      "id": "call-draft-ana-1@example.invalid",
+      "from": "ana@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-04-04T12:15:00.000Z",
+      "subject": "Parking permit renewal",
+      "body": "Your parking permit expires at the end of the month. Reply to confirm you want a renewal."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["ana@example.invalid"],
+          "subject": "Re: Parking permit renewal",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-ines",
+  "request": "Draft a reply declining the workshop seat.",
+  "messages": [
+    {
+      "id": "call-draft-ines-1@example.invalid",
+      "from": "ines@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-08-08T16:15:00.000Z",
+      "subject": "Workshop registration",
+      "body": "Registration for the workshop closes tomorrow. Do you want a seat?"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["ines@example.invalid"],
+          "subject": "Re: Workshop registration",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

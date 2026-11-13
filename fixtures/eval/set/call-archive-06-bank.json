@@ -1,0 +1,25 @@
+{
+  "id": "call-archive-06-bank",
+  "request": "Archive this message, I already downloaded it.",
+  "messages": [
+    {
+      "id": "call-archive-06-bank-1@example.invalid",
+      "from": "bank@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-06T09:15:00.000Z",
+      "subject": "Your statement is ready",
+      "body": "Automated message about: your statement is ready."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.archive",
+        "args": {
+          "messageIds": ["call-archive-06-bank-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

@@ -2,8 +2,10 @@
 //   verify                 check llama-server's build and the active profile's model size and
 //                          SHA-256 against infra/model.lock; exit 1 on any mismatch
 //   verify-archive PATH    check a downloaded llama.cpp release asset against the lock
-//   fetch [--model ID]     download the pinned build and a profile's model (default: the active
-//                          one) from the lock's URLs, verify them, and install them
+//   fetch [--model ID] [--build-only]
+//                          download the pinned build and a profile's model (default: the active
+//                          one) from the lock's URLs, verify them, and install them; with
+//                          --build-only, the build alone (the model comes from the Admin page)
 //   list                   each profile: on disk or not, verified or not, added, default, active
 //   add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]
 //                          add a Hugging Face GGUF as a profile in the user's own profiles file,
@@ -126,7 +128,7 @@ export type Deps = {
 export const READY_TIMEOUT_MS = 180_000
 
 const USAGE =
-  "usage: llama verify|verify-archive PATH|fetch [--model ID]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|start|check-template [--model ID]|plan|install|uninstall|status"
+  "usage: llama verify|verify-archive PATH|fetch [--model ID] [--build-only]|list|add REPO FILE [--revision SHA] [--id ID] [--marker TEXT] [--kwargs JSON]|use ID|launch|start|check-template [--model ID]|plan|install|uninstall|status"
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 
@@ -560,6 +562,12 @@ async function fetchCommand(
   base: Base,
   args: readonly string[]
 ): Promise<number> {
+  const buildOnly = args.length === 1 && args[0] === "--build-only"
+  if (buildOnly) {
+    if (!(await fetchBuild(deps, base.lock, base.config))) return 1
+    deps.out(`ok: ${base.lock.llamaCppBuild} is installed`)
+    return 0
+  }
   const model = option(args, "--model")
   if (!model.ok) {
     deps.err(USAGE)

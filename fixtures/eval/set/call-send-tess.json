@@ -1,0 +1,27 @@
+{
+  "id": "call-send-tess",
+  "request": "Send an email to friend-2@example.invalid with the subject \"Thank you\" and the body \"Thank you for your help today.\".",
+  "messages": [
+    {
+      "id": "call-send-tess-1@example.invalid",
+      "from": "inbox@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-25T15:15:00.000Z",
+      "subject": "Unrelated note",
+      "body": "Just a note."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.send",
+        "args": {
+          "to": ["friend-2@example.invalid"],
+          "subject": "Thank you",
+          "body": "Thank you for your help today."
+        }
+      }
+    ]
+  }
+}

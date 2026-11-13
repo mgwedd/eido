@@ -1,0 +1,45 @@
+{
+  "id": "call-thread-archive-1",
+  "request": "Archive all the messages in this thread.",
+  "messages": [
+    {
+      "id": "call-thread-archive-1-1@example.invalid",
+      "from": "chain@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-02T16:15:00.000Z",
+      "subject": "Thread 1",
+      "body": "Message 1 of the chain about topic 1."
+    },
+    {
+      "id": "call-thread-archive-1-2@example.invalid",
+      "from": "chain@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-03T09:15:00.000Z",
+      "subject": "Thread 1",
+      "body": "Message 2 of the chain about topic 1."
+    },
+    {
+      "id": "call-thread-archive-1-3@example.invalid",
+      "from": "chain@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-04-04T10:15:00.000Z",
+      "subject": "Thread 1",
+      "body": "Message 3 of the chain about topic 1."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.archive",
+        "args": {
+          "messageIds": [
+            "call-thread-archive-1-1@example.invalid",
+            "call-thread-archive-1-2@example.invalid",
+            "call-thread-archive-1-3@example.invalid"
+          ]
+        }
+      }
+    ]
+  }
+}

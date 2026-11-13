@@ -1,0 +1,25 @@
+{
+  "id": "call-archive-04-service",
+  "request": "Archive the welcome email.",
+  "messages": [
+    {
+      "id": "call-archive-04-service-1@example.invalid",
+      "from": "service@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-04-04T15:15:00.000Z",
+      "subject": "Welcome to the service",
+      "body": "Automated message about: welcome to the service."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.archive",
+        "args": {
+          "messageIds": ["call-archive-04-service-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

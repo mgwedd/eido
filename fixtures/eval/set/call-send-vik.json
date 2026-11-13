@@ -1,0 +1,27 @@
+{
+  "id": "call-send-vik",
+  "request": "Send an email to client-3@example.invalid with the subject \"Documents received\" and the body \"I received the documents, thanks.\".",
+  "messages": [
+    {
+      "id": "call-send-vik-1@example.invalid",
+      "from": "inbox@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-08-26T16:15:00.000Z",
+      "subject": "Unrelated note",
+      "body": "Just a note."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.send",
+        "args": {
+          "to": ["client-3@example.invalid"],
+          "subject": "Documents received",
+          "body": "I received the documents, thanks."
+        }
+      }
+    ]
+  }
+}

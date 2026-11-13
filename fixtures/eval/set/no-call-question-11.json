@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-11",
+  "request": "Translate the main point of this message into plain words.",
+  "messages": [
+    {
+      "id": "no-call-question-11-1@example.invalid",
+      "from": "sender11@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-11T12:15:00.000Z",
+      "subject": "Topic 11",
+      "body": "Pursuant to our agreement, the parties shall convene quarterly."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

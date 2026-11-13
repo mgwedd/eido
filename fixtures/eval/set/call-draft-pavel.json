@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-pavel",
+  "request": "Draft a reply agreeing to be a reference.",
+  "messages": [
+    {
+      "id": "call-draft-pavel-1@example.invalid",
+      "from": "pavel@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-04-13T13:15:00.000Z",
+      "subject": "Reference request",
+      "body": "Could you act as a reference for my application? It would mean a lot."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["pavel@example.invalid"],
+          "subject": "Re: Reference request",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

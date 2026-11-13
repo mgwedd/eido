@@ -84,7 +84,10 @@ The stack directory also holds `profiles.lock` (profiles you added with `llama a
 
 ### Install the build and a model
 
+`pnpm stack:bootstrap` already installs the build (`llama fetch --build-only`). The model is downloaded and switched from the Admin page. The commands below are the terminal route to the same thing.
+
 ```bash
+pnpm --filter @eido/infra llama fetch --build-only       # the build alone
 pnpm --filter @eido/infra llama fetch                    # the build and the active profile's model
 pnpm --filter @eido/infra llama fetch --model gpt-oss-20b
 ```

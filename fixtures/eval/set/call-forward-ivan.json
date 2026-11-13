@@ -1,0 +1,28 @@
+{
+  "id": "call-forward-ivan",
+  "request": "Forward this email to partner-b@example.invalid.",
+  "messages": [
+    {
+      "id": "call-forward-ivan-1@example.invalid",
+      "from": "ivan@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-21T13:15:00.000Z",
+      "subject": "Conference schedule",
+      "body": "The conference schedule is attached."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.forward",
+        "args": {
+          "messageId": "call-forward-ivan-1@example.invalid",
+          "messageSha256": "3b4641db3b2fc97ac9b747280737196e9874fe332791194170068e4778cba187",
+          "to": ["partner-b@example.invalid"]
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.note"]
+}

@@ -42,6 +42,8 @@ var SENSITIVE_SEGMENTS = [
 var NETWORK_ONLY_PATHS = ["/healthz", "/sw.js", "/sw-routing.js"]
 var APPROVAL_QUEUE_URL = "/queue"
 var PUSH_TITLE = "Eido approval queue"
+var SIGN_IN_URL = "/unlock"
+var RECOVERY_TITLE = "Eido recovery started"
 
 var STATIC_PATH =
   /^\/(_next\/static\/|manifest\.webmanifest$|favicon\.ico$|icon\/|apple-icon)/
@@ -74,7 +76,12 @@ function isCacheableResponse(response) {
   return !/no-store/i.test(response.cacheControl || "")
 }
 
-/** Return only generic notification content from the versioned count payload. */
+/**
+ * Return only generic notification content from a versioned push payload: the
+ * pending-count shape {v:1,pending} or the recovery alert {v:1,recovery:"started"}.
+ * Any other shape returns null. The recovery alert has a fixed title, no body, and
+ * opens the sign-in page.
+ */
 function notificationForPush(payload) {
   var message
   try {
@@ -87,11 +94,17 @@ function notificationForPush(payload) {
     return null
   }
   var keys = Object.keys(message)
+  if (keys.length !== 2 || keys.indexOf("v") === -1 || message.v !== 1) {
+    return null
+  }
+
+  if (keys.indexOf("recovery") !== -1) {
+    if (message.recovery !== "started") return null
+    return { title: RECOVERY_TITLE, body: undefined, url: SIGN_IN_URL }
+  }
+
   if (
-    keys.length !== 2 ||
-    keys.indexOf("v") === -1 ||
     keys.indexOf("pending") === -1 ||
-    message.v !== 1 ||
     !Number.isSafeInteger(message.pending) ||
     message.pending < 0
   ) {
@@ -105,5 +118,6 @@ function notificationForPush(payload) {
       (message.pending === 1
         ? " approval is waiting for your review."
         : " approvals are waiting for your review."),
+    url: APPROVAL_QUEUE_URL,
   }
 }

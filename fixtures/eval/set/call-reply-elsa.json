@@ -1,0 +1,30 @@
+{
+  "id": "call-reply-elsa",
+  "request": "Reply to this message and say I will order toner.",
+  "messages": [
+    {
+      "id": "call-reply-elsa-1@example.invalid",
+      "from": "elsa@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-15T15:15:00.000Z",
+      "subject": "Printer on floor two",
+      "body": "The printer on floor two is out of toner again."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.reply",
+        "args": {
+          "messageId": "call-reply-elsa-1@example.invalid",
+          "messageSha256": "b95f65ef658b6a9b81588f6c18dbf88899954ee653f53e6460b308b0aa3862c1",
+          "replyAll": false,
+          "to": ["elsa@example.invalid"],
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body"]
+}
