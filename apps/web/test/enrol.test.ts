@@ -127,6 +127,22 @@ describe("safeEnrolNext and enrolUrl", () => {
 })
 
 describe("enrol", () => {
+  it("returns the recovery key the gate sends with the first enrolment", async () => {
+    setup({
+      routes: {
+        "/api/gate/passkey/enroll": () =>
+          json(200, {
+            expiresAt: "2026-10-27T22:00:00Z",
+            recoveryKey: "ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-2345-6789",
+          }),
+      },
+    })
+    expect(await enrol("ABCD-EFGH", "eido.tail1234.ts.net")).toEqual({
+      ok: true,
+      recoveryKey: "ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-2345-6789",
+    })
+  })
+
   it("posts the code and registration after creating the passkey", async () => {
     const { create, fetchStub } = setup({})
     const result = await enrol("ABCD-EFGH", "eido.tail1234.ts.net")

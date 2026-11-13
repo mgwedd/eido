@@ -44,6 +44,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     if (
       pathname === "/unlock" ||
       pathname === "/enroll" ||
+      pathname === "/recover" ||
       pathname === "/healthz"
     ) {
       return NextResponse.next()

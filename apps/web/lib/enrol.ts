@@ -77,7 +77,11 @@ export function toRegistration(
 }
 
 export type EnrolResult =
-  | { ok: true }
+  | {
+      ok: true
+      /** The owner's recovery key, present only on the gate's first passkey. Show it once. */
+      recoveryKey?: string
+    }
   | {
       ok: false
       reason: "offline" | "cancelled" | "rejected"
@@ -116,7 +120,8 @@ async function refusal(response: Response): Promise<EnrolResult> {
 /**
  * Enrols this device: asks the gate for a challenge (this consumes nothing), creates the
  * passkey, and posts the registration with the code. Nothing is retried. The
- * code, challenge and registration are only held in this call: not logged, not stored. The
+ * code, challenge, registration and the recovery key in the reply are only held in this call and
+ * handed back to the caller: not logged, not stored. The
  * session is the HttpOnly cookie the gate sets.
  */
 export async function enrol(code: string, rpId: string): Promise<EnrolResult> {
@@ -165,9 +170,10 @@ export async function enrol(code: string, rpId: string): Promise<EnrolResult> {
   if (response === null) return { ok: false, reason: "offline", message: "" }
   if (!response.ok) return refusal(response)
   try {
-    return validateGateEnrolled(await response.json()).ok
-      ? { ok: true }
-      : rejected(UNREADABLE)
+    const parsed = validateGateEnrolled(await response.json())
+    if (!parsed.ok) return rejected(UNREADABLE)
+    const { recoveryKey } = parsed.value
+    return recoveryKey === undefined ? { ok: true } : { ok: true, recoveryKey }
   } catch {
     return rejected(UNREADABLE)
   }
