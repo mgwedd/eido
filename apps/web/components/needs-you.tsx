@@ -9,6 +9,10 @@ import { Button, buttonVariants } from "@eido/ui/components/button"
 import { Card, CardContent, CardHeader } from "@eido/ui/components/card"
 import { Skeleton } from "@eido/ui/components/skeleton"
 import {
+  ConnectorsCard,
+  type ConnectorsCardState,
+} from "@/components/connectors-card"
+import {
   DoneAutomaticallyCard,
   type DoneAutomaticallyState,
 } from "@/components/done-automatically-card"
@@ -17,6 +21,7 @@ import { MorningBriefCard } from "@/components/morning-brief-card"
 import { PhoneMoreLinks } from "@/components/phone-more-links"
 import { loadAudit } from "@/lib/activity"
 import { expiredUnlockUrl } from "@/lib/auth/unlock"
+import { loadConnectors } from "@/lib/connectors"
 import { formatWaiting } from "@/lib/relative-time"
 import {
   describeKind,
@@ -129,6 +134,36 @@ function signedOut() {
   window.location.replace(
     expiredUnlockUrl(window.location.pathname + window.location.search)
   )
+}
+
+function useConnectors(): {
+  state: ConnectorsCardState
+  retry: () => void
+} {
+  const [state, setState] = React.useState<ConnectorsCardState>({
+    status: "loading",
+  })
+  const [attempt, setAttempt] = React.useState(0)
+
+  React.useEffect(() => {
+    const controller = new AbortController()
+    void loadConnectors(controller.signal).then((result) => {
+      if (controller.signal.aborted) return
+      if (result.status === "unauthenticated") return signedOut()
+      setState(
+        result.status === "ready"
+          ? { status: "ready", connectors: result.connectors }
+          : { status: "error" }
+      )
+    })
+    return () => controller.abort()
+  }, [attempt])
+
+  const retry = React.useCallback(() => {
+    setState({ status: "loading" })
+    setAttempt((n) => n + 1)
+  }, [])
+  return { state, retry }
 }
 
 function useDoneAutomatically(): {
@@ -380,6 +415,7 @@ function TodayView() {
     retry: retryDone,
     refresh: refreshDone,
   } = useDoneAutomatically()
+  const { state: connectorsState, retry: retryConnectors } = useConnectors()
   const { activeEntity, setEntity } = useEntityFilter()
 
   const today = React.useSyncExternalStore(
@@ -436,6 +472,11 @@ function TodayView() {
             state={needsState}
             now={loadedAt}
             onRetry={retryNeeds}
+          />
+          <ConnectorsCard
+            state={connectorsState}
+            now={loadedAt}
+            onRetry={retryConnectors}
           />
         </div>
       </div>
