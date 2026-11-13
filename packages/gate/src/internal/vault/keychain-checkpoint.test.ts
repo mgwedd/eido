@@ -38,7 +38,8 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-describe("KeychainControlStore", () => {
+// The store checks POSIX owner and mode bits, which Windows does not have; it only runs on the Mac.
+describe.skipIf(process.platform === "win32")("KeychainControlStore", () => {
   it("reads the checkpoint item through the Keychain bridge with the request on stdin only", () => {
     mocked.spawnSync.mockReturnValue(
       reply({ status: 0, data: Buffer.from("record-text").toString("base64") })
