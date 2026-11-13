@@ -1,0 +1,67 @@
+{
+  "name": "proton-calendar",
+  "version": 1,
+  "description": "Proton Calendar via invitations through Proton Bridge SMTP: events are created, updated and cancelled by sending iCalendar invitations from the assistant identity.",
+  "auth": {
+    "type": "password",
+    "scopes": ["bridge-password"]
+  },
+  "egress": {
+    "hosts": [],
+    "local": [
+      {
+        "protocol": "smtp",
+        "host": "127.0.0.1",
+        "port": 1025
+      }
+    ]
+  },
+  "operations": [
+    {
+      "name": "event_create",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "intentKind": "calendar.create",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["bridge-password"]
+    },
+    {
+      "name": "event_update",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "intentKind": "calendar.edit",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["bridge-password"]
+    },
+    {
+      "name": "event_delete",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "intentKind": "calendar.delete",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["bridge-password"]
+    }
+  ],
+  "triggers": [],
+  "ledgerMapping": {
+    "source": "proton-calendar",
+    "refField": "event_uid"
+  },
+  "health": {
+    "backoff": {
+      "baseMs": 1000,
+      "maxMs": 300000,
+      "jitter": true
+    },
+    "breaker": {
+      "failureThreshold": 3,
+      "halfOpenProbeAfterMs": 60000
+    }
+  }
+}

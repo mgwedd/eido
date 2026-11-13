@@ -23,8 +23,8 @@ The same command connects a connector for the first time and reconnects one late
 
 - **The gate must be running.** The command asks the gate for connector health before it prompts for anything. If the gate is not reachable, or the connector is not pinned, it stops and nothing is stored.
 - **The connector must already be pinned.** Pin its reviewed manifest first; this command does not pin. On a fresh install, in this order:
-  1. Place the reviewed manifest on the Mac: `pnpm --silent --filter @eido/core connector-manifest gmail | EIDO_GATE_DATA_DIR=<gate data dir> pnpm --filter @eido/gate reviewed-manifest -` (see `docs/gate-signed-control-changes.md`).
-  2. On the phone, open Connectors, choose Review and pin on the Not pinned card, and sign with the passkey.
+  1. Nothing to place: every connector's reviewed manifest is committed in `packages/schemas/manifests/` and the gate offers it. Only a SimpleFIN daily budget below the default needs a placed file (`pnpm --silent --filter @eido/core connector-manifest simplefin | EIDO_GATE_DATA_DIR=<gate data dir> pnpm --filter @eido/gate reviewed-manifest -`, see `docs/gate-signed-control-changes.md`).
+  2. In the Admin page (or on the phone), open Connectors, choose Review and pin on the Not pinned card, and sign with the passkey.
   3. Run `pnpm stack:gate connect gmail`.
 
 ## What the command does
@@ -151,7 +151,7 @@ Core environment:
 
 Assign each SimpleFIN account an entity in Settings, under SimpleFIN accounts. Until an account has one, none of its transactions are stored, and connector health says how many accounts need one. Assigning an entity to an account that has already synced reads its older transactions once (one request, back as far as `EIDO_SIMPLEFIN_MAX_RANGE_DAYS`), when the daily budget allows.
 
-SimpleFIN allows 24 requests a day and 90 days per request. The manifest's daily limit defaults to that; set `EIDO_SIMPLEFIN_REQUESTS_PER_DAY` when building the manifest (`connector-manifest simplefin`) to pin a lower one. When the limit is spent the proxy answers `daily_limit` and core waits for the next day.
+SimpleFIN allows 24 requests a day and 90 days per request. The manifest's daily limit defaults to that; set `EIDO_SIMPLEFIN_REQUESTS_PER_DAY` when building the manifest (`connector-manifest simplefin`) to pin a lower one (the committed copy the Admin page pins declares 24, so place this one first). When the limit is spent the proxy answers `daily_limit` and core waits for the next day.
 
 ## Reading the result
 

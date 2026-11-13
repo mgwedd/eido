@@ -2530,11 +2530,14 @@ describe("phoneHandler: first pin of a never-pinned connector (#627)", () => {
       state.reviewedManifest = (name) => readReviewedManifest(dataDir, name)
       enrol(auth)
       const cookie = await signIn()
-      // Drive has a committed manifest and is not pinned yet; the placed gmail file wins over
-      // gmail's committed one, as the pinned hash below shows.
+      // Drive, Proton and SimpleFIN have committed manifests and are not pinned yet; the placed
+      // gmail file wins over gmail's committed one, as the pinned hash below shows.
       expect((await settings(cookie)).unpinned?.map((u) => u.name)).toEqual([
         "drive",
         "gmail",
+        "proton-calendar",
+        "proton-mail",
+        "simplefin",
       ])
       const prepared = await prepare(cookie)
       const done = await call("POST", DECIDE, {
