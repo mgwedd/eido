@@ -296,3 +296,117 @@ export async function checkJsonSchema(
     }
   return { ok: true }
 }
+
+/**
+ * Tokens that mark hidden reasoning or control structure. A reply that contains one leaked the
+ * model's internal format. A profile names its own in `hidden_tokens`; with none, these apply.
+ */
+export const DEFAULT_HIDDEN_TOKENS: readonly string[] = [
+  "<think>",
+  "</think>",
+  "<|channel|>",
+  "<|start|>",
+  "<|end|>",
+  "<|im_start|>",
+  "<|im_end|>",
+  "<unused",
+]
+
+/** Reasoning blocks a generation prompt must not leave open: the opening tag and its closing tag. */
+const REASONING_BLOCKS = [
+  { open: "<think>", close: "</think>" },
+  { open: "<thinking>", close: "</thinking>" },
+] as const
+
+/** The earliest listed token the text contains, with the character where it starts. */
+export function findHiddenToken(
+  text: string,
+  tokens: readonly string[]
+): { token: string; at: number } | undefined {
+  let found: { token: string; at: number } | undefined
+  for (const token of tokens) {
+    const at = text.indexOf(token)
+    if (at !== -1 && (found === undefined || at < found.at))
+      found = { token, at }
+  }
+  return found
+}
+
+/** The opening tag of a reasoning block that the rendered prompt starts and never closes. */
+export function openReasoningBlock(prompt: string): string | undefined {
+  return REASONING_BLOCKS.find(
+    ({ open, close }) => prompt.lastIndexOf(open) > prompt.lastIndexOf(close)
+  )?.open
+}
+
+async function renderedPrompt(
+  port: number,
+  fetch: Fetch
+): Promise<string | Check> {
+  let body: unknown
+  try {
+    const response = await fetch(`${baseUrl(port)}/apply-template`, {
+      method: "POST",
+      body: JSON.stringify({ messages: FIXED_CONVERSATION }),
+    })
+    body = await response.json()
+  } catch (error) {
+    return { ok: false, message: `/apply-template failed: ${errorText(error)}` }
+  }
+  const prompt = isRecord(body) ? body["prompt"] : undefined
+  return typeof prompt === "string"
+    ? prompt
+    : { ok: false, message: "/apply-template returned no prompt" }
+}
+
+/**
+ * The generation prompt must not open a reasoning block (the profile's kwargs should have closed
+ * it), and one plain completion, with no schema, must not contain a hidden-reasoning or control
+ * token. Names the token and where it appeared.
+ */
+export async function checkHiddenTokens(
+  port: number,
+  tokens: readonly string[],
+  fetch: Fetch
+): Promise<Check> {
+  const prompt = await renderedPrompt(port, fetch)
+  if (typeof prompt !== "string") return prompt
+  const open = openReasoningBlock(prompt)
+  if (open !== undefined)
+    return {
+      ok: false,
+      message: `the generation prompt opens ${open} and never closes it; set the profile's chat_template_kwargs or flags to turn thinking off`,
+    }
+  let body: unknown
+  try {
+    const response = await fetch(`${baseUrl(port)}/v1/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({
+        messages: [
+          { role: "user", content: "Say hello in one short sentence." },
+        ],
+        temperature: 0,
+        max_tokens: 100,
+      }),
+    })
+    body = await response.json()
+  } catch (error) {
+    return {
+      ok: false,
+      message: `/v1/chat/completions failed: ${errorText(error)}`,
+    }
+  }
+  const choices = isRecord(body) ? body["choices"] : undefined
+  const first: unknown = Array.isArray(choices) ? choices[0] : undefined
+  const message = isRecord(first) ? first["message"] : undefined
+  const content = isRecord(message) ? message["content"] : undefined
+  if (typeof content !== "string")
+    return { ok: false, message: "the completion has no message content" }
+  const hit = findHiddenToken(content, tokens)
+  if (hit !== undefined)
+    return {
+      ok: false,
+      message: `the reply contains ${hit.token} at character ${hit.at}: ${JSON.stringify(content.slice(Math.max(0, hit.at - 20), hit.at + 40))}`,
+    }
+  return { ok: true }
+}

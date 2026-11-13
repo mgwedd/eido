@@ -620,6 +620,7 @@ describe("llama check-template", () => {
       "ok: chat template",
       "ok: rendered prompt",
       "ok: JSON-schema request",
+      "ok: no hidden tokens",
       "ok: template check passed on b11149 with gemma-4-26B_q4_0-it.gguf",
       `ok: recorded the pass for gemma-4-26b-a4b in ${RECORD}`,
     ])
@@ -647,8 +648,23 @@ describe("llama check-template", () => {
       `note: no reference prompt at ${join("/nowhere", "gemma-4-26B_q4_0-it.gguf.prompt.txt")}; the rendered prompt is not compared`,
       "ok: chat template",
     ])
-    expect(h.requests.some((r) => r.includes("/apply-template"))).toBe(false)
     expect(h.err[0]).toMatch(/^FAIL: JSON-schema request: /)
+  })
+
+  it("fails and records nothing when a reply leaks a reasoning token", async () => {
+    const h = harness({
+      http: {
+        "/v1/chat/completions": reply(200, {
+          choices: [{ message: { content: "<think>hmm</think>" } }],
+        }),
+      },
+    })
+    expect(await main(["check-template"], h.deps)).toBe(1)
+    expect(h.err).toEqual([
+      expect.stringMatching(/^FAIL: JSON-schema request: /),
+      'FAIL: no hidden tokens: the reply contains <think> at character 0: "<think>hmm</think>"',
+    ])
+    expect(h.written).toEqual({})
   })
 
   it("will not check an unverified active profile, since launch does not run it", async () => {

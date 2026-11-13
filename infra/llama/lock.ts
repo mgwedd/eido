@@ -38,6 +38,11 @@ export type ModelProfile = {
   chatTemplateMarker: string | undefined
   /** Passed to llama-server as `--chat-template-kwargs`, so every templated request gets them. */
   chatTemplateKwargs: Record<string, unknown> | undefined
+  /**
+   * Hidden-reasoning and control tokens a reply must not contain, from `hidden_tokens` in
+   * model.lock. Absent: `llama check-template` uses its default set.
+   */
+  hiddenTokens?: string[] | undefined
   /** Extra llama-server flags, appended after the base flags. */
   flags: string[]
   /**
@@ -90,6 +95,7 @@ const PROFILE_KEYS = [
   "sha256",
   "chat_template_marker",
   "chat_template_kwargs",
+  "hidden_tokens",
   "flags",
   "verified",
 ] as const
@@ -253,6 +259,7 @@ function profileOf(
 
   const kwargsText = get("chat_template_kwargs")
   const flagsText = get("flags")
+  const hiddenText = get("hidden_tokens")
   const verifiedText = get("verified")
   if (verifiedText !== undefined && origin === "user")
     throw new Error(
@@ -277,6 +284,8 @@ function profileOf(
         : get("chat_template_marker"),
     chatTemplateKwargs:
       kwargsText === undefined ? undefined : kwargs(kwargsText, where),
+    hiddenTokens:
+      hiddenText === undefined ? undefined : hiddenText.split(/\s+/),
     flags: flagsText === undefined ? [] : flags(flagsText, where),
     verified: verifiedText === "true",
     origin,
