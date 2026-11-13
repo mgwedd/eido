@@ -40,6 +40,19 @@ describe("describeIntent", () => {
     expect(describeIntent(json(intent))).toBe("Added a to-do in Things")
   })
 
+  it.each([
+    ["email.label", "Changed labels on 1 message"],
+    ["email.untrash", "Restored 1 message from trash"],
+    ["things.complete_todo", "Completed a to-do in Things"],
+    ["things.cancel_todo", "Cancelled a to-do in Things"],
+    ["things.update_todo", "Updated a to-do in Things"],
+    ["things.schedule_todo", "Scheduled a to-do in Things"],
+    ["things.add_project", "Added a project in Things"],
+    ["reminder.create", "Added a reminder"],
+  ] as const)("describes %s", (kind, sentence) => {
+    expect(describeIntent(json(sample(kind)))).toBe(sentence)
+  })
+
   it("returns undefined for a kind with no sentence", () => {
     expect(describeIntent(json(sample("file.delete")))).toBeUndefined()
   })
