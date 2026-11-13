@@ -143,7 +143,12 @@ async function click(label: string) {
   if (target === undefined) throw new Error(`no button "${label}"`)
   await act(async () => {
     target.click()
-    await new Promise((resolve) => setTimeout(resolve, 25))
+    // The passkey calls hash with crypto.subtle, which takes real time: wait for the
+    // "Waiting for ..." state to end instead of guessing a delay.
+    for (let i = 0; i < 100; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      if (!(container.textContent ?? "").includes("Waiting for")) break
+    }
   })
 }
 
