@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest"
 import {
   checkJsonSchema,
   checkProps,
+  CURRENT_DATE,
   checkRenderedPrompt,
   firstDifference,
   matchesSchema,
@@ -255,6 +256,46 @@ describe("checkRenderedPrompt", () => {
         `^rendered prompt differs from the reference at character ${reference.indexOf("Thanks.") + 6}: `
       )
     )
+  })
+
+  describe("a reference prompt with the current date", () => {
+    const withDate = `Current date: ${CURRENT_DATE}\n\nReasoning: low`
+    const on = (date: string) => `Current date: ${date}\n\nReasoning: low`
+    const serve =
+      (prompt: string): Fetch =>
+      () =>
+        Promise.resolve(reply(200, { prompt }))
+    // Local midnight constructors, so the dates do not depend on the host's time zone.
+    const day = (month: number, date: number, hour = 12) =>
+      new Date(2026, month - 1, date, hour)
+
+    it("passes when the server prints the local date", async () => {
+      expect(
+        await checkRenderedPrompt(8080, withDate, serve(on("2026-11-05")), () =>
+          day(11, 5)
+        )
+      ).toEqual({ ok: true })
+    })
+
+    it("fails when the server prints another day", async () => {
+      const result = await checkRenderedPrompt(
+        8080,
+        withDate,
+        serve(on("2024-06-01")),
+        () => day(11, 5)
+      )
+      expect(result.ok === false && result.message).toMatch(
+        /^rendered prompt differs from the reference at character 17: expected "Current date: 2026-11-05.*actual "Current date: 2024-06-01/
+      )
+    })
+
+    it("passes on either side of midnight", async () => {
+      const clock = [day(12, 31, 23), day(1, 1, 0)]
+      const now = () => clock.shift() ?? day(1, 1, 0)
+      expect(
+        await checkRenderedPrompt(8080, withDate, serve(on("2026-12-31")), now)
+      ).toEqual({ ok: true })
+    })
   })
 
   it("fails without a prompt or on a failed request", async () => {

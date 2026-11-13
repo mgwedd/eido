@@ -171,12 +171,31 @@ export function firstDifference(a: string, b: string): number {
   return -1
 }
 
-/** `/apply-template` on the fixed conversation must return exactly the reference prompt. */
+/**
+ * A reference prompt writes this where its template prints today's date (gpt-oss: `Current date:`,
+ * from `strftime_now`). The check swaps in the host's local date, which is what llama.cpp prints.
+ */
+export const CURRENT_DATE = "{{current_date}}"
+
+const localDate = (at: Date): string =>
+  [
+    String(at.getFullYear()).padStart(4, "0"),
+    String(at.getMonth() + 1).padStart(2, "0"),
+    String(at.getDate()).padStart(2, "0"),
+  ].join("-")
+
+/**
+ * `/apply-template` on the fixed conversation must return exactly the reference prompt, with
+ * `CURRENT_DATE` replaced by the local date. The date is read before and after the request, so a
+ * check that straddles midnight passes on either.
+ */
 export async function checkRenderedPrompt(
   port: number,
   reference: string,
-  fetch: Fetch
+  fetch: Fetch,
+  now: () => Date = () => new Date()
 ): Promise<Check> {
+  const before = localDate(now())
   let body: unknown
   try {
     const response = await fetch(`${baseUrl(port)}/apply-template`, {
@@ -190,13 +209,17 @@ export async function checkRenderedPrompt(
   const prompt = isRecord(body) ? body["prompt"] : undefined
   if (typeof prompt !== "string")
     return { ok: false, message: "/apply-template returned no prompt" }
-  const at = firstDifference(prompt, reference)
-  if (at === -1) return { ok: true }
+  const expected = [before, localDate(now())].map((date) =>
+    reference.replaceAll(CURRENT_DATE, date)
+  )
+  if (expected.includes(prompt)) return { ok: true }
+  const against = expected[expected.length - 1] ?? reference
+  const at = firstDifference(prompt, against)
   const around = (text: string) =>
     JSON.stringify(text.slice(Math.max(0, at - 20), at + 40))
   return {
     ok: false,
-    message: `rendered prompt differs from the reference at character ${at}: expected ${around(reference)}, actual ${around(prompt)}`,
+    message: `rendered prompt differs from the reference at character ${at}: expected ${around(against)}, actual ${around(prompt)}`,
   }
 }
 
