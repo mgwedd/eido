@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateRecoveryWindow",
+  "description": "A pending passkey recovery. Response of POST /passkey/recover/start and the recovery field of GET /passkey/status while a recovery is pending. It cannot be completed before maturesAt (24 hours after startedAt) and cannot be completed after expiresAt (24 hours after maturesAt). Any unrevoked passkey can cancel it until it completes.",
+  "type": "object",
+  "properties": {
+    "startedAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
+    },
+    "maturesAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
+    }
+  },
+  "required": ["startedAt", "maturesAt", "expiresAt"],
+  "additionalProperties": false
+}

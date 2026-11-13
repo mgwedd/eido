@@ -698,6 +698,7 @@ export async function runGate(
             push: {
               publicKey: async () => vapidPublicKey((await privateKey()) ?? ""),
               notifyPending: () => notifier?.notifyPending(),
+              notifyRecovery: async () => notifier?.notifyRecovery(),
             },
           }),
     })

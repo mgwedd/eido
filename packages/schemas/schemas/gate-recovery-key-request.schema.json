@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateRecoveryKeyRequest",
+  "description": "Body of POST /passkey/recover/start and POST /passkey/recover/options on the phone listener: the owner's recovery key as typed. Case, spaces and dashes are ignored. The gate checks it against its salted slow hash and never stores or logs it.",
+  "type": "object",
+  "properties": {
+    "recoveryKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    }
+  },
+  "required": ["recoveryKey"],
+  "additionalProperties": false
+}

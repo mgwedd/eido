@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateEnrolled",
+  "description": "Response of POST /passkey/enroll: the session the enrolment started (as GateSession) and, only when this enrolment is the gate's first passkey, the owner's recovery key, shown once. Later enrolments carry no recoveryKey.",
+  "type": "object",
+  "properties": {
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 40
+    },
+    "recoveryKey": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){7}$"
+    }
+  },
+  "required": ["expiresAt"],
+  "additionalProperties": false
+}

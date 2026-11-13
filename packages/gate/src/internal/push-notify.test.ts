@@ -1,7 +1,7 @@
 import { createECDH, randomBytes } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { propose } from "./intents"
-import { createPushNotifier, pushPayload } from "./push-notify"
+import { createPushNotifier, pushPayload, recoveryPayload } from "./push-notify"
 import { generateVapidPrivateKey } from "./push-crypto"
 import {
   checkedSubscription,
@@ -452,6 +452,154 @@ describe("count-only Web Push", () => {
       )
     } finally {
       notifier.close()
+      s.cleanup()
+    }
+  })
+})
+
+describe("recovery alert push (issue 682)", () => {
+  function subscribed(s: ReturnType<typeof setup>, names: string[]) {
+    return names.map((name) => {
+      const subscription = {
+        endpoint: `https://push.example.invalid/send/${name}`,
+        ...keys(),
+      }
+      const id = registerPushSubscription(
+        s.db,
+        subscription,
+        controlAuthorization(s.db, preparePushRegistration(s.db, subscription))
+      )
+      return { id, endpoint: subscription.endpoint }
+    })
+  }
+
+  it("carries only that a recovery started", () => {
+    expect(recoveryPayload()).toBe('{"v":1,"recovery":"started"}')
+  })
+
+  it("sends at once to every verified subscription, with no coalescing window", async () => {
+    const s = setup()
+    const targets = subscribed(s, ["one", "two"])
+    const sent: string[] = []
+    const notifier = createPushNotifier({
+      db: s.db,
+      now: () => 5_000,
+      subject: "mailto:ops@example.invalid",
+      privateKey: () => Promise.resolve(privateKey()),
+      fetch: (url) => {
+        sent.push(requestUrl(url))
+        return Promise.resolve(new Response(null, { status: 201 }))
+      },
+    })
+    try {
+      await notifier.notifyRecovery()
+      expect(sent.sort()).toEqual(targets.map((t) => t.endpoint).sort())
+      const audited = auditRows(s.db)
+        .filter((row) => row.action === "push.recovery_sent")
+        .map((row) => row.target)
+        .sort()
+      expect(audited).toEqual(targets.map((t) => t.id).sort())
+    } finally {
+      notifier.close()
+      s.cleanup()
+    }
+  })
+
+  it("revokes a gone subscription, keeps one that failed, and still reaches the others", async () => {
+    const s = setup()
+    const [gone, failing, fine] = subscribed(s, ["gone", "failing", "fine"])
+    if (gone === undefined || failing === undefined || fine === undefined)
+      throw new Error("no subscriptions")
+    const statuses = new Map([
+      [gone.endpoint, 410],
+      [failing.endpoint, 503],
+      [fine.endpoint, 201],
+    ])
+    const notifier = createPushNotifier({
+      db: s.db,
+      now: () => 5_000,
+      subject: "mailto:ops@example.invalid",
+      privateKey: () => Promise.resolve(privateKey()),
+      fetch: (url) =>
+        Promise.resolve(
+          new Response(null, { status: statuses.get(requestUrl(url)) ?? 500 })
+        ),
+    })
+    try {
+      await notifier.notifyRecovery()
+      expect(
+        pushSubscriptions(s.db)
+          .map((item) => item.id)
+          .sort()
+      ).toEqual([failing.id, fine.id].sort())
+      const outcomes = auditRows(s.db)
+        .filter((row) => row.action.startsWith("push.recovery_"))
+        .map((row) => [row.action, row.target])
+        .sort()
+      expect(outcomes).toEqual(
+        [
+          ["push.recovery_gone", gone.id],
+          ["push.recovery_failed", failing.id],
+          ["push.recovery_sent", fine.id],
+        ].sort()
+      )
+    } finally {
+      notifier.close()
+      s.cleanup()
+    }
+  })
+
+  it("does not read the vault or send when nobody is subscribed or the notifier is closed", async () => {
+    const s = setup()
+    let keyReads = 0
+    const notifier = createPushNotifier({
+      db: s.db,
+      subject: "mailto:ops@example.invalid",
+      privateKey: () => {
+        keyReads++
+        return Promise.resolve(privateKey())
+      },
+      fetch: () => Promise.reject(new Error("nothing may be sent")),
+    })
+    try {
+      await notifier.notifyRecovery()
+      subscribed(s, ["late"])
+      notifier.close()
+      await notifier.notifyRecovery()
+      expect(keyReads).toBe(0)
+    } finally {
+      s.cleanup()
+    }
+  })
+
+  it("audits an unavailable key and an egress that is no longer approved", async () => {
+    const s = setup()
+    const [first, second] = subscribed(s, ["first", "second"])
+    if (first === undefined || second === undefined)
+      throw new Error("no subscriptions")
+    s.db
+      .prepare("UPDATE push_subscriptions SET endpoint = ? WHERE id = ?")
+      .run("https://attacker.example.invalid/send", second.id)
+    const noKey = createPushNotifier({
+      db: s.db,
+      subject: "mailto:ops@example.invalid",
+      privateKey: () => Promise.resolve(undefined),
+      fetch: () => Promise.reject(new Error("nothing may be sent")),
+    })
+    try {
+      await noKey.notifyRecovery()
+      const rows = auditRows(s.db)
+        .filter((row) => row.action.startsWith("push.recovery_"))
+        .map((row) => [row.action, row.target])
+        .sort()
+      expect(rows).toEqual(
+        [
+          ["push.recovery_unavailable", first.id],
+          ["push.recovery_refused_egress", second.id],
+        ].sort()
+      )
+    } finally {
+      noKey.close()
       s.cleanup()
     }
   })

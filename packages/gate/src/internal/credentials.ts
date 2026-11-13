@@ -5,6 +5,14 @@ import { payloadHash } from "./canonical"
 import { consumeEnrolmentCode } from "./enrolment"
 import type { ConsumeRefusal } from "./enrolment"
 import { newNonce } from "./nonces"
+import {
+  auditRecoveryCompleted,
+  checkRecoveryReady,
+  consumeRecovery,
+  issueRecoveryKey,
+  refuseRecoveryComplete,
+} from "./recovery"
+import type { RecoveryRefusal } from "./recovery"
 import { startSession } from "./sessions"
 import type { Clock, WebSessionKeyPair } from "./sessions"
 import type { Surface } from "./surface"
@@ -61,8 +69,22 @@ export type EnrolResult =
       token: string
       webSessionToken: string
       expiresAt: Date
+      /** The owner's recovery key, present only when this enrolment issued the first one. */
+      recoveryKey?: string
     }
   | { ok: false; code: RegistrationRefusal | ConsumeRefusal }
+
+export type RecoverResult =
+  | {
+      ok: true
+      credentialId: string
+      token: string
+      webSessionToken: string
+      expiresAt: Date
+      /** The replacement for the consumed recovery key. */
+      recoveryKey: string
+    }
+  | { ok: false; code: RegistrationRefusal | RecoveryRefusal }
 
 export type RevokeResult =
   | { ok: true }
@@ -303,9 +325,65 @@ export function enrolWithCode(
     if (claimed !== undefined) return refuse(claimed)
     const consumed = consumeEnrolmentCode(db, "phone", code, () => at)
     if (!consumed.ok) return consumed
+    // The first passkey is the moment the owner gets a recovery key; later ones get none.
+    const first =
+      db.prepare("SELECT 1 FROM credentials LIMIT 1").get() === undefined
     storeCredential(db, "phone", registration, accepted, at)
     const session = startSession(db, registration.credentialId, at, keys)
-    return { ok: true, credentialId: registration.credentialId, ...session }
+    const recoveryKey = first ? issueRecoveryKey(db, now) : undefined
+    return {
+      ok: true,
+      credentialId: registration.credentialId,
+      ...session,
+      ...(recoveryKey === undefined ? {} : { recoveryKey }),
+    }
+  })
+}
+
+/**
+ * Completes a matured recovery (issue 682): enrols one new passkey from the phone with the owner's
+ * recovery key and signs the phone in. In one transaction the challenge and the key are consumed,
+ * the credential is stored, a session starts and a replacement key is issued. Nothing else
+ * changes: earlier credentials, connectors and policy are untouched. A refusal is audited with
+ * its outcome only and leaves the key and the recovery as they were.
+ */
+export function recoverWithKey(
+  db: DatabaseSync,
+  config: WebAuthnConfig,
+  recoveryKey: string,
+  registration: Registration,
+  now: Clock,
+  keys?: WebSessionKeyPair
+): RecoverResult {
+  const ready = checkRecoveryReady(db, recoveryKey, now)
+  if (!ready.ok) return ready
+  const refuse = (code: RegistrationRefusal): RecoverResult => {
+    refuseRecoveryComplete(db, code)
+    return { ok: false, code }
+  }
+  const checked = checkRegistration(db, config, registration)
+  if (!checked.ok) return refuse(checked.code)
+  const { accepted } = checked
+  const at = now()
+  return atomically(db, (): RecoverResult => {
+    const claimed = claimChallenge(db, registration, accepted, at)
+    if (claimed !== undefined) return refuse(claimed)
+    const consumed = consumeRecovery(db, ready.keyId, at)
+    if (!consumed.ok) return consumed
+    storeCredential(db, "phone", registration, accepted, at)
+    const session = startSession(db, registration.credentialId, at, keys)
+    auditRecoveryCompleted(
+      db,
+      ready.keyId,
+      consumed.recoveryId,
+      hex(registration.credentialId)
+    )
+    return {
+      ok: true,
+      credentialId: registration.credentialId,
+      ...session,
+      recoveryKey: issueRecoveryKey(db, now),
+    }
   })
 }
 

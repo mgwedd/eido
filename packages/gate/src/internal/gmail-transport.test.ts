@@ -1640,7 +1640,11 @@ async function draftDiscardFixture(draftResult?: Record<string, unknown>) {
     gate: () => ({
       ...setUp,
       webAuthn: WEBAUTHN,
-      push: { publicKey: () => Promise.resolve("synthetic"), notifyPending },
+      push: {
+        publicKey: () => Promise.resolve("synthetic"),
+        notifyPending,
+        notifyRecovery: () => Promise.resolve(),
+      },
     }),
     allowedHosts: ["eido.example.invalid"],
     basePath: "/api/gate",

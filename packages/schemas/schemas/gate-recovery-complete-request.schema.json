@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateRecoveryCompleteRequest",
+  "description": "Body of POST /passkey/recover/complete on the phone listener: the recovery key and the registration over the challenge from POST /passkey/recover/options. Refused before the recovery matures and after it expires.",
+  "type": "object",
+  "properties": {
+    "recoveryKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "registration": {
+      "$ref": "gate-webauthn-registration.schema.json"
+    }
+  },
+  "required": ["recoveryKey", "registration"],
+  "additionalProperties": false
+}
