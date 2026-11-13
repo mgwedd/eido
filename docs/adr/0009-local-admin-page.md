@@ -104,7 +104,7 @@ A small process in `infra/stack` that runs as the owner. The gate runs no repo s
 | Local admin actions     | `elevated`                    | Model choice, start, stop and restart, start at login, remove connector, operational settings                                                  |
 | Install pins, read-only | None (changed by the install) | `EIDO_WEBAUTHN_RP_ID` and `_ORIGIN`, allowed hosts, `EIDO_FILE_HELPER_PATH` and `_SHA256`, the keychain path, data directories, sockets, ports |
 
-- **Reviewed connector manifests** become committed JSON in `@eido/schemas`, with a core test that fails when they differ from core's source. The gate never runs core code to place one.
+- **Reviewed connector manifests** become committed JSON in `@eido/schemas`, with a core test that fails when they differ from core's source. The gate never runs core code to place one. This covers Proton Mail, Proton Calendar and SimpleFIN too: core reads their environment (the Proton addresses, the SimpleFIN budget) only to validate it, and the addresses are not in the manifest, so one file serves every owner. Rejected: core handing the gate an env-derived manifest at startup (a compromised core would choose what the owner is shown and signs), and owner values as signed parameters (the gate would rebuild core's manifest). SimpleFIN's committed copy declares the default budget of 24 requests a day; a lower budget is pinned from a manifest the owner places on the Mac (`docs/gate-signed-control-changes.md`), which the gate reads first.
 - **Bridge certificate pin.** It is set only together with the Bridge password, on the secret page. Changing it deletes the stored password.
 
 ## Decision 8: Windows

@@ -49,7 +49,7 @@ The file holds only schema fields (names, scopes, egress hosts, operations, trig
 
 On a fresh install no connector is pinned, so re-pin has nothing to compare against. The first pin uses the same `manifest.pin` ceremony, `prepareManifestPin` and `withControlApproval`, over the same reviewed manifest file:
 
-1. Place the reviewed manifest with the two commands above (step 2). Any version is accepted, since there is no earlier pin.
+1. Nothing to place for `drive`, `files`, `gmail`, `things`, `proton-mail`, `proton-calendar` and `simplefin`: the gate offers the manifest committed in `packages/schemas/manifests/`, and a core test fails when it differs from core's source (issue 669). Place a file (the two commands above, step 2) only to pin something else, or to pin SimpleFIN with a daily budget below the default 24 (`EIDO_SIMPLEFIN_REQUESTS_PER_DAY`); a placed file wins over the committed one. Any version is accepted, since there is no earlier pin.
 2. `GET /connector-settings` lists each placed manifest that has no connector row under `unpinned`, with its tool names and scopes. Connectors shows it as Not pinned, with Review and pin.
 3. Review and pin prepares the ceremony at `POST /connector-settings/:id/pin`. The phone checks that the prepared payload is that connector's manifest with exactly the tools it showed, then signs with the passkey and posts the assertion to `/pin/decision`.
 

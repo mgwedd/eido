@@ -1,0 +1,134 @@
+{
+  "name": "proton-mail",
+  "version": 1,
+  "description": "Proton Mail through Proton Bridge: mail is read and written by the gate; core indexes it and proposes intents as the assistant identity.",
+  "auth": {
+    "type": "password",
+    "scopes": ["bridge-password"]
+  },
+  "egress": {
+    "hosts": [],
+    "local": [
+      {
+        "protocol": "imap",
+        "host": "127.0.0.1",
+        "port": 1143
+      },
+      {
+        "protocol": "smtp",
+        "host": "127.0.0.1",
+        "port": 1025
+      }
+    ]
+  },
+  "operations": [
+    {
+      "name": "mail_search",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["bridge-password"]
+    },
+    {
+      "name": "mail_thread",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["bridge-password"]
+    },
+    {
+      "name": "mail_get",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["bridge-password"]
+    },
+    {
+      "name": "attachment_text",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["bridge-password"]
+    },
+    {
+      "name": "draft_create",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "intentKind": "email.draft",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["bridge-password"]
+    },
+    {
+      "name": "send",
+      "effect": "write",
+      "reversibility": "irreversible",
+      "defaultTier": "approval",
+      "intentKind": "email.send",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["bridge-password"]
+    },
+    {
+      "name": "reply",
+      "effect": "write",
+      "reversibility": "irreversible",
+      "defaultTier": "approval",
+      "intentKind": "email.reply",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["bridge-password"]
+    },
+    {
+      "name": "forward",
+      "effect": "write",
+      "reversibility": "irreversible",
+      "defaultTier": "approval",
+      "intentKind": "email.forward",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["bridge-password"]
+    },
+    {
+      "name": "trash",
+      "effect": "write",
+      "reversibility": "reversible",
+      "defaultTier": "approval",
+      "intentKind": "email.trash",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["bridge-password"]
+    }
+  ],
+  "triggers": [
+    {
+      "kind": "poll",
+      "stream": "INBOX",
+      "intervalSeconds": 60
+    }
+  ],
+  "ledgerMapping": {
+    "source": "proton",
+    "refField": "message_id"
+  },
+  "health": {
+    "backoff": {
+      "baseMs": 1000,
+      "maxMs": 300000,
+      "jitter": true
+    },
+    "breaker": {
+      "failureThreshold": 3,
+      "halfOpenProbeAfterMs": 60000
+    }
+  }
+}
