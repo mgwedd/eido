@@ -175,6 +175,25 @@ launchd restarts the launcher whenever it exits, and every restart re-verifies t
 
 Install it only after `llama verify` passes; `install` refuses when the binary or model file is missing or the active profile is not verified, since launchd would restart a launcher that refuses it. The plist does not name the profile: each start reads it from `stack.env`, so `llama use` needs no reinstall. The node path written into the plist is the one that ran `install`, so after upgrading node, run `llama install` again.
 
+### Recorded results (2026-11-13, prompt-prefix reuse, Gemma 4 26B-A4B only, #708)
+
+Only `gemma-4-26b-a4b` was measured; the other two profiles are not downloaded on the measuring Mac (disk), so "per profile" is not done yet (#731). Build b11149, M3 Max, 36 GB. Flags were the committed `serverArgs` (the line under `launch` above, with `--reasoning off`), plus the one flag under test. The Mac was busy with other work (load average about 10), so absolute times drift from run to run: the cold time for the 2,076-token prompt was 2,755 ms, then 3,487 ms, then 4,188 ms across three runs in a row. Compare the cold and warm columns inside one run, not across runs.
+
+Method: the probe follows core's path (`/apply-template`, `/tokenize`, then `/completion` with token ids, `stream: true`, `cache_prompt: true`, `temperature: 0`, 16 tokens) and times the request until the first streamed token. The system prompt is core's `ANSWER_SYSTEM` (1,446 characters), with a block of synthetic lines after it for the larger sizes. Each round begins with a random line, so the cold request cannot match anything already cached. Each round sends 1 cold request and 2 warm ones: the same system prompt with a different one-line question. Medians over 5 rounds (5 cold, 10 warm requests). Time to first token, ms:
+
+| Prompt tokens |  Cold | Warm (same prefix) |
+| ------------: | ----: | -----------------: |
+|           382 |   446 |                440 |
+|           797 |   945 |                982 |
+|         1,223 | 1,632 |                118 |
+|         2,076 | 2,755 |                120 |
+
+- **Defaults reuse the prefix, from about 1.2k tokens.** At 1,223 and 2,076 tokens a warm request is about 14x and 23x faster. A first run through `llama launch` (5 rounds, same method) gave 2,259 ms cold and 108 ms warm at 2,075 tokens, and the server reported 2,061 of 2,075 prompt tokens as cached. At 382 and 797 tokens nothing was reused (warm equals cold; at 381 tokens the server reported 0 cached). The cause was not investigated (#732). Core's `ANSWER_SYSTEM` alone is about 380 tokens, so on this profile the system prompt by itself is not served from the cache. A longer stable prefix is.
+- **`--cache-reuse 256` did not help.** The server logged `cache_reuse is not supported by this context, it will be disabled` for this model. A probe with the same head and tail and a middle section of different length (3 rounds) reused 0 of about 1,964 tokens under the defaults and under `--cache-reuse 256`. Cold and warm times with the flag were no better than the defaults (382 tokens: 568 cold, 559 warm; 2,076 tokens: 3,487 cold, 130 warm, from a slower run).
+- **`--slot-prompt-similarity 0.5` did not help either.** The server already picked the matching slot at the default threshold of 0.10 (similarity 0.96 to 0.99 in its log). Times with 0.5: 383 tokens 827 cold, 816 warm; 2,078 tokens 4,188 cold, 165 warm, again from a slower run.
+
+Decision: the default is enough on this profile, and `serverArgs` is unchanged. Not measured: Qwen3.6 and gpt-oss (#731), and any case with a prefix under about 800 tokens that does get reused (#732).
+
 ### Recorded results (2026-11-12, hidden-token check, same Mac, port 8080)
 
 `llama check-template --model <id>` on b11149 printed `ok: no hidden tokens` and `ok: template check passed` for all three committed profiles: `gemma-4-26b-a4b` (also `ok: chat template`, `ok: rendered prompt`, `ok: JSON-schema request`), `qwen3.6-35b-a3b` and `gpt-oss-20b` (`ok: chat template`, `ok: JSON-schema request`; no reference prompt yet, so the rendered prompt is not compared).
