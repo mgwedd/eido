@@ -175,6 +175,10 @@ launchd restarts the launcher whenever it exits, and every restart re-verifies t
 
 Install it only after `llama verify` passes; `install` refuses when the binary or model file is missing or the active profile is not verified, since launchd would restart a launcher that refuses it. The plist does not name the profile: each start reads it from `stack.env`, so `llama use` needs no reinstall. The node path written into the plist is the one that ran `install`, so after upgrading node, run `llama install` again.
 
+### Recorded results (2026-11-12, hidden-token check, same Mac, port 8080)
+
+`llama check-template --model <id>` on b11149 printed `ok: no hidden tokens` and `ok: template check passed` for all three committed profiles: `gemma-4-26b-a4b` (also `ok: chat template`, `ok: rendered prompt`, `ok: JSON-schema request`), `qwen3.6-35b-a3b` and `gpt-oss-20b` (`ok: chat template`, `ok: JSON-schema request`; no reference prompt yet, so the rendered prompt is not compared).
+
 ### Recorded results (2026-11-03, Gemma 4 26B-A4B QAT Q4_0, same Mac)
 
 Launcher on port 18092, outside launchd.
@@ -225,6 +229,7 @@ The checks:
 1. `/props` reports a chat template containing the profile's `chat_template_marker` (`<|turn>model` for Gemma 4).
 2. `/apply-template` renders the fixed synthetic conversation in `infra/llama/server.ts` (`FIXED_CONVERSATION`: system, user, an assistant tool call, the tool result, an assistant reply, a user turn). The result must equal `infra/llama/fixtures/<model file>.prompt.txt` exactly; on a difference the check names the first differing character. When there is no fixture for the file, the check prints `note: no reference prompt at <path>; the rendered prompt is not compared` and runs the other two.
 3. One `/v1/chat/completions` request constrained by a strict JSON schema (four required string fields, no others) must return content that parses and matches the schema.
+4. No hidden tokens (#707). `/apply-template` renders the fixed conversation again and its generation prompt must not open a `<think>` (or `<thinking>`) block it never closes, which means the profile's `chat_template_kwargs` or flags did not turn thinking off. Then one plain `/v1/chat/completions` request, with no schema, must return a reply with none of the profile's `hidden_tokens`. The list is a whitespace-separated `hidden_tokens` line in the profile (optional); without one the default set applies: `<think>`, `</think>`, `<|channel|>`, `<|start|>`, `<|end|>`, `<|im_start|>`, `<|im_end|>` and `<unused`. It prints `ok: no hidden tokens`, or `FAIL: no hidden tokens:` with the token and the character where it appeared. This check runs for every profile, with or without a reference prompt. Stripping these tokens from replies inside core is not part of it.
 
 The Gemma 4 reference fixture was written by hand from the Gemma 4 template embedded in the GGUF (`tokenizer.chat_template`), not captured from the server:
 

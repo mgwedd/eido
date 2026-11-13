@@ -72,7 +72,9 @@ import {
 } from "./lock.ts"
 import {
   baseUrl,
+  checkHiddenTokens,
   checkJsonSchema,
+  DEFAULT_HIDDEN_TOKENS,
   checkProps,
   checkRenderedPrompt,
   serverArgs,
@@ -379,6 +381,14 @@ async function templateChecks(
           ],
         ] as const)),
     ["JSON-schema request", await checkJsonSchema(config.port, deps.fetch)],
+    [
+      "no hidden tokens",
+      await checkHiddenTokens(
+        config.port,
+        profile.hiddenTokens ?? DEFAULT_HIDDEN_TOKENS,
+        deps.fetch
+      ),
+    ],
   ] as const
   let code = 0
   for (const [name, check] of checks) {

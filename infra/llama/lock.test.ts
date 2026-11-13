@@ -591,3 +591,25 @@ sha256: ${C}
     )
   })
 })
+
+describe("hidden_tokens", () => {
+  it("lists the tokens a profile's replies must not contain", () => {
+    const lock = parseLock(
+      valid.replace(
+        "chat_template_kwargs:",
+        "hidden_tokens: <think> </think> <|channel|>\nchat_template_kwargs:"
+      )
+    )
+    expect(selectProfile(lock, "second").hiddenTokens).toEqual([
+      "<think>",
+      "</think>",
+      "<|channel|>",
+    ])
+  })
+
+  it("is absent when the profile does not name any", () => {
+    expect(
+      selectProfile(parseLock(valid), "second").hiddenTokens
+    ).toBeUndefined()
+  })
+})

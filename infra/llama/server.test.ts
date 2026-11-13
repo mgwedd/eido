@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 
 import {
+  checkHiddenTokens,
   checkJsonSchema,
+  DEFAULT_HIDDEN_TOKENS,
+  findHiddenToken,
+  openReasoningBlock,
   checkProps,
   checkRenderedPrompt,
   firstDifference,
@@ -342,5 +346,150 @@ describe("checkJsonSchema", () => {
       ok: false,
       message: "/v1/chat/completions failed: reset",
     })
+  })
+})
+
+describe("findHiddenToken", () => {
+  it("reports the earliest listed token and where it starts", () => {
+    expect(
+      findHiddenToken("ok <|im_end|> then <think>", DEFAULT_HIDDEN_TOKENS)
+    ).toEqual({
+      token: "<|im_end|>",
+      at: 3,
+    })
+  })
+
+  it("finds nothing in clean text, or for a token the list does not name", () => {
+    expect(
+      findHiddenToken("Hello, world.", DEFAULT_HIDDEN_TOKENS)
+    ).toBeUndefined()
+    expect(findHiddenToken("a <think> b", ["<|channel|>"])).toBeUndefined()
+  })
+})
+
+describe("openReasoningBlock", () => {
+  it("flags a generation prompt that opens a reasoning block", () => {
+    expect(openReasoningBlock("<|im_start|>assistant\n<think>\n")).toBe(
+      "<think>"
+    )
+  })
+
+  it("accepts a block the template closed, and a prompt with none", () => {
+    expect(
+      openReasoningBlock("<|im_start|>assistant\n<think>\n\n</think>\n\n")
+    ).toBeUndefined()
+    expect(openReasoningBlock("<|turn>model\n")).toBeUndefined()
+  })
+})
+
+describe("checkHiddenTokens", () => {
+  const completion = (content: unknown) => ({
+    choices: [{ message: { content } }],
+  })
+  const server =
+    (prompt: string, content: unknown): Fetch =>
+    (url) =>
+      Promise.resolve(
+        reply(
+          200,
+          url.endsWith("/apply-template") ? { prompt } : completion(content)
+        )
+      )
+
+  it("passes a clean reply, sending one plain request with no schema", async () => {
+    let sent: unknown
+    const fetch: Fetch = (url, init) => {
+      if (url.endsWith("/v1/chat/completions"))
+        sent = JSON.parse(init?.body ?? "null")
+      return server("<|turn>model\n", "Hello there.")(url, init)
+    }
+    expect(await checkHiddenTokens(8080, DEFAULT_HIDDEN_TOKENS, fetch)).toEqual(
+      {
+        ok: true,
+      }
+    )
+    expect(sent).not.toHaveProperty("response_format")
+  })
+
+  it("fails a reply that leaks <think>, naming the token and where", async () => {
+    const result = await checkHiddenTokens(
+      8080,
+      DEFAULT_HIDDEN_TOKENS,
+      server("<|turn>model\n", "Hi <think>plan</think>")
+    )
+    expect(result).toEqual({
+      ok: false,
+      message:
+        'the reply contains <think> at character 3: "Hi <think>plan</think>"',
+    })
+  })
+
+  it("fails a reply that leaks <|channel|>analysis", async () => {
+    const result = await checkHiddenTokens(
+      8080,
+      DEFAULT_HIDDEN_TOKENS,
+      server("<|turn>model\n", "<|channel|>analysis<|message|>thinking")
+    )
+    expect(result.ok === false && result.message).toMatch(
+      /^the reply contains <\|channel\|> at character 0: /
+    )
+  })
+
+  it("uses the tokens the profile names instead of the defaults", async () => {
+    const leaky = server("<|turn>model\n", "Hi <think>x")
+    expect(await checkHiddenTokens(8080, ["<|custom|>"], leaky)).toEqual({
+      ok: true,
+    })
+    expect(
+      (
+        await checkHiddenTokens(
+          8080,
+          ["<|custom|>"],
+          server("p", "a <|custom|>")
+        )
+      ).ok
+    ).toBe(false)
+  })
+
+  it("fails when the generation prompt opens a reasoning block", async () => {
+    const result = await checkHiddenTokens(
+      8080,
+      DEFAULT_HIDDEN_TOKENS,
+      server("<|im_start|>assistant\n<think>\n", "Hello.")
+    )
+    expect(result).toEqual({
+      ok: false,
+      message:
+        "the generation prompt opens <think> and never closes it; set the profile's chat_template_kwargs or flags to turn thinking off",
+    })
+  })
+
+  it("fails without message content, without a prompt, or on a failed request", async () => {
+    expect(
+      await checkHiddenTokens(8080, DEFAULT_HIDDEN_TOKENS, server("p", null))
+    ).toEqual({ ok: false, message: "the completion has no message content" })
+    expect(
+      await checkHiddenTokens(8080, DEFAULT_HIDDEN_TOKENS, () =>
+        Promise.resolve(reply(200, {}))
+      )
+    ).toEqual({ ok: false, message: "/apply-template returned no prompt" })
+    expect(
+      await checkHiddenTokens(8080, DEFAULT_HIDDEN_TOKENS, () =>
+        Promise.reject(new Error("ECONNREFUSED"))
+      )
+    ).toEqual({ ok: false, message: "/apply-template failed: ECONNREFUSED" })
+  })
+
+  it("reports a failed completion request", async () => {
+    const fetch: Fetch = (url) =>
+      url.endsWith("/apply-template")
+        ? Promise.resolve(reply(200, { prompt: "p" }))
+        : Promise.reject(new Error("reset"))
+    expect(await checkHiddenTokens(8080, DEFAULT_HIDDEN_TOKENS, fetch)).toEqual(
+      {
+        ok: false,
+        message: "/v1/chat/completions failed: reset",
+      }
+    )
   })
 })
