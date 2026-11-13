@@ -526,6 +526,22 @@ describe("core API reply draft schemas", () => {
   })
 })
 
+describe("core api error codes for the role check", () => {
+  test("unauthenticated and forbidden are accepted", () => {
+    for (const code of ["unauthenticated", "forbidden"]) {
+      expect(validateCoreApiError({ error: { code, message: "x" } }).ok).toBe(
+        true
+      )
+    }
+  })
+
+  test("a code outside the enum is rejected", () => {
+    expect(
+      validateCoreApiError({ error: { code: "unauthorized", message: "x" } }).ok
+    ).toBe(false)
+  })
+})
+
 describe("verbs", () => {
   test("email connector selectors are validated and described in the generated prompt", () => {
     const intent = {
