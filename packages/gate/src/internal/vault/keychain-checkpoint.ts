@@ -36,29 +36,36 @@ function runSync(command: KeychainCommand): GateKeychainResult {
   return checked.value
 }
 
+function checkPrivateFile(path: string): void {
+  const info = lstatSync(path)
+  const uid = process.getuid?.()
+  if (
+    !info.isFile() ||
+    uid === undefined ||
+    info.uid !== uid ||
+    (info.mode & 0o077) !== 0
+  )
+    throw new Error(
+      "Keychain file must exist, be private, and belong to the gate user"
+    )
+}
+
 export class KeychainControlStore implements ControlStore {
   private readonly path: string
+  private readonly checkFile: (path: string) => void
 
-  constructor(options: { path: string }) {
+  /** `checkFile` replaces the owner and mode check, for hosts without POSIX file modes (tests only). */
+  constructor(options: { path: string; checkFile?: (path: string) => void }) {
     if (process.platform !== "darwin")
       throw new Error("Keychain control store requires macOS")
     if (!isAbsolute(options.path) || options.path.includes("\0"))
       throw new Error("Keychain path must be absolute and contain no NUL")
     this.path = options.path
+    this.checkFile = options.checkFile ?? checkPrivateFile
   }
 
   private checkPath(): void {
-    const info = lstatSync(this.path)
-    const uid = process.getuid?.()
-    if (
-      !info.isFile() ||
-      uid === undefined ||
-      info.uid !== uid ||
-      (info.mode & 0o077) !== 0
-    )
-      throw new Error(
-        "Keychain file must exist, be private, and belong to the gate user"
-      )
+    this.checkFile(this.path)
   }
 
   load(): string | undefined {

@@ -18,6 +18,15 @@ let dir: string
 let path: string
 let platform: PropertyDescriptor | undefined
 
+// Windows has no owner or mode bits to check, so there the file check is replaced; the check
+// itself is exercised on POSIX hosts below.
+const WINDOWS = process.platform === "win32"
+function open(): KeychainControlStore {
+  return new KeychainControlStore(
+    WINDOWS ? { path, checkFile: () => undefined } : { path }
+  )
+}
+
 function reply(value: unknown) {
   return { status: 0, stdout: Buffer.from(JSON.stringify(value)) }
 }
@@ -38,13 +47,12 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-// The store checks POSIX owner and mode bits, which Windows does not have; it only runs on the Mac.
-describe.skipIf(process.platform === "win32")("KeychainControlStore", () => {
+describe("KeychainControlStore", () => {
   it("reads the checkpoint item through the Keychain bridge with the request on stdin only", () => {
     mocked.spawnSync.mockReturnValue(
       reply({ status: 0, data: Buffer.from("record-text").toString("base64") })
     )
-    expect(new KeychainControlStore({ path }).load()).toBe("record-text")
+    expect(open().load()).toBe("record-text")
     const call = mocked.spawnSync.mock.calls[0]
     expect(call?.[0]).toBe("/usr/bin/osascript")
     expect(JSON.parse(String(call?.[2].input))).toEqual({
@@ -57,16 +65,14 @@ describe.skipIf(process.platform === "win32")("KeychainControlStore", () => {
 
   it("reports a missing item as an uninitialised store", () => {
     mocked.spawnSync.mockReturnValue(reply({ status: NOT_FOUND }))
-    expect(new KeychainControlStore({ path }).load()).toBeUndefined()
+    expect(open().load()).toBeUndefined()
   })
 
   it("throws, never guesses, when the item cannot be read", () => {
     mocked.spawnSync.mockReturnValue(reply({ status: -25293 }))
-    expect(() => new KeychainControlStore({ path }).load()).toThrow(
-      "control checkpoint could not be read"
-    )
+    expect(() => open().load()).toThrow("control checkpoint could not be read")
     mocked.spawnSync.mockReturnValue(reply({ status: 0, data: "not base64!" }))
-    expect(() => new KeychainControlStore({ path }).load()).toThrow(
+    expect(() => open().load()).toThrow(
       "control checkpoint encoding is invalid"
     )
   })
@@ -78,7 +84,7 @@ describe.skipIf(process.platform === "win32")("KeychainControlStore", () => {
       .mockReturnValueOnce(
         reply({ status: 0, data: Buffer.from(text).toString("base64") })
       )
-    new KeychainControlStore({ path }).save(text)
+    open().save(text)
     expect(
       JSON.parse(String(mocked.spawnSync.mock.calls[0]?.[2].input))
     ).toEqual({
@@ -94,40 +100,37 @@ describe.skipIf(process.platform === "win32")("KeychainControlStore", () => {
       .mockReturnValueOnce(
         reply({ status: 0, data: Buffer.from("older").toString("base64") })
       )
-    expect(() => new KeychainControlStore({ path }).save(text)).toThrow(
+    expect(() => open().save(text)).toThrow(
       "control checkpoint did not read back"
     )
   })
 
   it("throws when the write is refused or the helper fails", () => {
     mocked.spawnSync.mockReturnValue(reply({ status: -25308 }))
-    expect(() => new KeychainControlStore({ path }).save("x")).toThrow(
+    expect(() => open().save("x")).toThrow(
       "control checkpoint could not be stored"
     )
     mocked.spawnSync.mockReturnValue({ status: 1, stdout: Buffer.from("") })
-    expect(() => new KeychainControlStore({ path }).load()).toThrow(
-      "Keychain helper failed"
-    )
+    expect(() => open().load()).toThrow("Keychain helper failed")
     mocked.spawnSync.mockReturnValue({
       status: null,
       error: new Error("timed out"),
       stdout: Buffer.from(""),
     })
-    expect(() => new KeychainControlStore({ path }).load()).toThrow(
-      "Keychain helper failed"
-    )
+    expect(() => open().load()).toThrow("Keychain helper failed")
     mocked.spawnSync.mockReturnValue(reply({ nonsense: true }))
-    expect(() => new KeychainControlStore({ path }).load()).toThrow(
-      "Keychain helper failed"
-    )
+    expect(() => open().load()).toThrow("Keychain helper failed")
   })
 
-  it("refuses a Keychain file that is not private, and paths that are not absolute", () => {
+  it.skipIf(WINDOWS)("refuses a Keychain file that is not private", () => {
     chmodSync(path, 0o644)
-    expect(() => new KeychainControlStore({ path }).load()).toThrow(
+    expect(() => open().load()).toThrow(
       "Keychain file must exist, be private, and belong to the gate user"
     )
     expect(mocked.spawnSync).not.toHaveBeenCalled()
+  })
+
+  it("refuses a path that is not absolute", () => {
     expect(
       () => new KeychainControlStore({ path: "relative.keychain" })
     ).toThrow("Keychain path must be absolute and contain no NUL")
@@ -135,8 +138,6 @@ describe.skipIf(process.platform === "win32")("KeychainControlStore", () => {
 
   it("is macOS only", () => {
     Object.defineProperty(process, "platform", { value: "linux" })
-    expect(() => new KeychainControlStore({ path })).toThrow(
-      "Keychain control store requires macOS"
-    )
+    expect(() => open()).toThrow("Keychain control store requires macOS")
   })
 })
