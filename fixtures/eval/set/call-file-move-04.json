@@ -1,0 +1,27 @@
+{
+  "id": "call-file-move-04",
+  "request": "Put the document taxes/summary.txt from the documents folder into old/taxes/summary.txt.",
+  "messages": [
+    {
+      "id": "call-file-move-04-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-24T16:20:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.move",
+        "args": {
+          "root": "documents",
+          "path": "taxes/summary.txt",
+          "toPath": "old/taxes/summary.txt"
+        }
+      }
+    ]
+  }
+}

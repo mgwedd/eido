@@ -1,0 +1,26 @@
+{
+  "id": "call-file-delete-03",
+  "request": "Please delete scan-0007.pdf from the scans folder.",
+  "messages": [
+    {
+      "id": "call-file-delete-03-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-06T08:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.delete",
+        "args": {
+          "root": "scans",
+          "path": "scan-0007.pdf"
+        }
+      }
+    ]
+  }
+}

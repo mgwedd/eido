@@ -1,0 +1,27 @@
+{
+  "id": "call-file-move-01",
+  "request": "Move the file invoices/2025-03.pdf to archive/2025-03.pdf in the documents folder.",
+  "messages": [
+    {
+      "id": "call-file-move-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-11T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.move",
+        "args": {
+          "root": "documents",
+          "path": "invoices/2025-03.pdf",
+          "toPath": "archive/2025-03.pdf"
+        }
+      }
+    ]
+  }
+}

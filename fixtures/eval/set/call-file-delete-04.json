@@ -1,0 +1,26 @@
+{
+  "id": "call-file-delete-04",
+  "request": "Get rid of the document drafts/v1.txt in the documents folder.",
+  "messages": [
+    {
+      "id": "call-file-delete-04-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-24T16:20:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.delete",
+        "args": {
+          "root": "documents",
+          "path": "drafts/v1.txt"
+        }
+      }
+    ]
+  }
+}

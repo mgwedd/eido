@@ -1,0 +1,27 @@
+{
+  "id": "call-file-move-03",
+  "request": "Please move scan-0042.pdf from the root of the scans folder to receipts/scan-0042.pdf.",
+  "messages": [
+    {
+      "id": "call-file-move-03-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-06T08:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.move",
+        "args": {
+          "root": "scans",
+          "path": "scan-0042.pdf",
+          "toPath": "receipts/scan-0042.pdf"
+        }
+      }
+    ]
+  }
+}

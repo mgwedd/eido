@@ -1,0 +1,26 @@
+{
+  "id": "call-file-delete-02",
+  "request": "In the projects folder, remove the file build/output.log.",
+  "messages": [
+    {
+      "id": "call-file-delete-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-18T14:45:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.delete",
+        "args": {
+          "root": "projects",
+          "path": "build/output.log"
+        }
+      }
+    ]
+  }
+}

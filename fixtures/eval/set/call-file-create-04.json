@@ -1,0 +1,27 @@
+{
+  "id": "call-file-create-04",
+  "request": "New file in my documents folder: path journal/2025-06-01.txt, content \"Quiet day, finished the report.\"",
+  "messages": [
+    {
+      "id": "call-file-create-04-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-24T16:20:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.create",
+        "args": {
+          "root": "documents",
+          "path": "journal/2025-06-01.txt",
+          "content": "Quiet day, finished the report."
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "call-file-rename-03",
+  "request": "Please rename the file scan-0042.pdf in the scans folder to passport-copy.pdf.",
+  "messages": [
+    {
+      "id": "call-file-rename-03-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-06T08:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.rename",
+        "args": {
+          "root": "scans",
+          "path": "scan-0042.pdf",
+          "newName": "passport-copy.pdf"
+        }
+      }
+    ]
+  }
+}

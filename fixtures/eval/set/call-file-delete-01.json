@@ -1,0 +1,26 @@
+{
+  "id": "call-file-delete-01",
+  "request": "Delete the file tmp/old-export.csv in the documents folder.",
+  "messages": [
+    {
+      "id": "call-file-delete-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-11T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "file.delete",
+        "args": {
+          "root": "documents",
+          "path": "tmp/old-export.csv"
+        }
+      }
+    ]
+  }
+}

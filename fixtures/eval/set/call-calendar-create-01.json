@@ -1,0 +1,29 @@
+{
+  "id": "call-calendar-create-01",
+  "request": "Add a meeting called \"Budget review\" to my work calendar from 2025-07-01T14:00:00.000Z to 2025-07-01T15:00:00.000Z.",
+  "messages": [
+    {
+      "id": "call-calendar-create-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-11T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "calendar.create",
+        "args": {
+          "entity": "work",
+          "title": "Budget review",
+          "start": "2025-07-01T14:00:00.000Z",
+          "end": "2025-07-01T15:00:00.000Z",
+          "allDay": false
+        }
+      }
+    ]
+  }
+}
