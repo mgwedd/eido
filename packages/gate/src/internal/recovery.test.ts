@@ -10,6 +10,9 @@ import { issueEnrolmentCode } from "./enrolment"
 import {
   RECOVERY_DELAY_MS,
   RECOVERY_WINDOW_MS,
+  cancelRecovery,
+  consumeRecovery,
+  prepareRecoveryCancel,
   checkRecoveryReady,
   issueRecoveryKey,
   normaliseRecoveryKey,
@@ -391,5 +394,36 @@ describe("recoverWithKey", () => {
     expect(
       control.prepare("SELECT count(*) AS n FROM credentials").get()?.["n"]
     ).toBe(1)
+  })
+})
+
+describe("cancelRecovery and consumeRecovery", () => {
+  it("has no ceremony to prepare and nothing to cancel when no recovery is pending", () => {
+    const control = db()
+    issueRecoveryKey(control, at(0))
+    expect(prepareRecoveryCancel(control, at(0))).toBeUndefined()
+    expect(() =>
+      cancelRecovery(
+        control,
+        { config: WEBAUTHN, request: { id: "x", nonce: "y", assertion: {} } },
+        at(0)
+      )
+    ).toThrow("no recovery is pending")
+  })
+
+  it("consumes nothing for a key that is not the active one", () => {
+    const control = db()
+    const key = issueRecoveryKey(control, at(0))
+    startRecovery(control, key, at(0))
+    expect(
+      consumeRecovery(control, "no-such-key", at(RECOVERY_DELAY_MS)())
+    ).toEqual({ ok: false, code: "invalid_key" })
+    expect(
+      control
+        .prepare(
+          "SELECT count(*) AS n FROM recoveries WHERE completed_at IS NOT NULL"
+        )
+        .get()?.["n"]
+    ).toBe(0)
   })
 })
