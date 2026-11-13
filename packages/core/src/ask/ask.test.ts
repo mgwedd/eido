@@ -336,6 +336,24 @@ describe("refusals", () => {
     ).toBeLessThanOrEqual(3000)
   })
 
+  test("the final user turn ends with the question and the depth and format reminder", async () => {
+    ingestMatching(db, 1, "invoice")
+    model = await scripted([
+      planReply(INVOICE_PLAN),
+      answerReply("The invoice was paid [M1]."),
+    ])
+    await ask("What about the invoice?", deps(model.queue))
+    const turns = model.server.completions()[1]?.turns ?? []
+    const finalTurn = turns.at(-1)
+    expect(finalTurn?.role).toBe("user")
+    const content = finalTurn?.content ?? ""
+    const question = content.indexOf("Question: What about the invoice?")
+    const citeRule = content.indexOf("citing each message you use by its tag")
+    expect(question).toBeGreaterThan(-1)
+    expect(citeRule).toBeGreaterThan(question)
+    expect(content.endsWith('say "no match found".')).toBe(true)
+  })
+
   test("an oversize seed is refused with a reason and no step 2", async () => {
     ingest(
       db,
