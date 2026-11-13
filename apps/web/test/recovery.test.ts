@@ -8,6 +8,7 @@ import {
   completeRecovery,
   delayProgress,
   formatCountdown,
+  formatMaturesIn,
   formatElapsed,
   keyLines,
   recoveryKeyFileText,
@@ -377,5 +378,16 @@ describe("cancelRecovery", () => {
       ok: false,
       reason: "cancelled",
     })
+  })
+})
+
+describe("formatMaturesIn", () => {
+  it("rounds down to whole hours while an hour or more is left", () => {
+    expect(formatMaturesIn(pending, NOW)).toBe("23h")
+  })
+
+  it("counts minutes, rounded up, in the last hour", () => {
+    const at = Date.parse(pending.maturesAt) - 41 * 60_000 + 1
+    expect(formatMaturesIn(pending, at)).toBe("41m")
   })
 })

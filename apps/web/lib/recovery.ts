@@ -47,6 +47,13 @@ export function formatCountdown(window: GateRecoveryWindow, nowMs: number) {
   return hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`
 }
 
+/** Time until `maturesAt` for a Settings line: whole hours while an hour or more is left, else minutes rounded up: "23h", "41m". */
+export function formatMaturesIn(window: GateRecoveryWindow, nowMs: number) {
+  const left = Math.max(0, Date.parse(window.maturesAt) - nowMs)
+  const hours = Math.floor(left / (60 * MINUTE_MS))
+  return hours > 0 ? `${hours}h` : `${Math.ceil(left / MINUTE_MS)}m`
+}
+
 /** Time since the recovery started as "HH:MM", for "Started 00:19 ago". */
 export function formatElapsed(window: GateRecoveryWindow, nowMs: number) {
   const gone = Math.max(0, nowMs - Date.parse(window.startedAt))
