@@ -335,7 +335,9 @@ export function intentBindings(
 ): Array<{ connector: string; operation: string }> {
   return withControlView(db, (view) =>
     db
-      .prepare("SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC")
+      .prepare(
+        "SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC"
+      )
       .all()
       .flatMap((row) => {
         const state = storedRow(db, String(row["name"]), view)
@@ -424,7 +426,9 @@ export function resolveTier(
 export function egressAllowlist(db: DatabaseSync): EgressEntry[] {
   return withControlView(db, (view) => {
     const rows = db
-      .prepare("SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC")
+      .prepare(
+        "SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC"
+      )
       .all()
     return rows.flatMap((row) => {
       const state = storedRow(db, String(row["name"]), view)

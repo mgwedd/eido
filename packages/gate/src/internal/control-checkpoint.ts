@@ -9,7 +9,11 @@ import {
 import type { DatabaseSync } from "node:sqlite"
 import { append, auditRowHash } from "./audit"
 import { payloadHash } from "./canonical"
-import { approvalRefHash, controlChallenge, hexDigest } from "./control-ceremony"
+import {
+  approvalRefHash,
+  controlChallenge,
+  hexDigest,
+} from "./control-ceremony"
 import { atomically } from "./transaction"
 import {
   fromBase64url,
@@ -248,8 +252,7 @@ export function computeSnapshot(db: DatabaseSync): Snapshot {
     )
     .get(...CONTROL_ACTIONS)
   const headSeq = typeof last?.["seq"] === "number" ? last["seq"] : undefined
-  const headHash =
-    headSeq === undefined ? undefined : auditRowHash(db, headSeq)
+  const headHash = headSeq === undefined ? undefined : auditRowHash(db, headSeq)
   return {
     connectors,
     values,
@@ -469,7 +472,11 @@ function acquireLock(path: string): Lock | undefined {
         },
       }
     } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "EEXIST"))
+      if (!(
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "EEXIST"
+      ))
         throw error
       let pid = Number.NaN
       try {
@@ -640,7 +647,8 @@ function viewOf(record: ControlRecord): ControlView {
           p.target === name &&
           p.approvalRefHash === ref
       ),
-    approvalAnchored: (id) => record.provenance.some((p) => p.approvalId === id),
+    approvalAnchored: (id) =>
+      record.provenance.some((p) => p.approvalId === id),
   }
 }
 
@@ -682,7 +690,8 @@ export function controlStatus(
   } catch (error) {
     return {
       enforced: true,
-      denied: error instanceof ControlStateError ? error.reason : "store_unreadable",
+      denied:
+        error instanceof ControlStateError ? error.reason : "store_unreadable",
     }
   }
 }
@@ -708,7 +717,8 @@ export function captureControlAssertion(
   const state = guards.get(db)
   if (state === undefined || state.depth === 0) return
   const rowHash = auditRowHash(db, captured.auditSeq)
-  if (rowHash === undefined) throw new ControlStateError("unsigned_control_change")
+  if (rowHash === undefined)
+    throw new ControlStateError("unsigned_control_change")
   state.pending.push({ ...captured, auditRowHash: rowHash })
 }
 
@@ -802,7 +812,8 @@ export function controlTransaction<T>(
       nextRaw = encode(next)
       return out
     })
-    if (next === undefined) throw new ControlStateError("unsigned_control_change")
+    if (next === undefined)
+      throw new ControlStateError("unsigned_control_change")
     if (next.snapshotHash === state.record?.snapshotHash) return result
     try {
       state.store.save(nextRaw)
@@ -873,7 +884,9 @@ export function establishControlEpoch(
           actor: "system",
           action: "connector.disabled_unanchored",
           target: String(row["name"]),
-          detailHash: payloadHash({ manifestHash: String(row["manifest_hash"]) }),
+          detailHash: payloadHash({
+            manifestHash: String(row["manifest_hash"]),
+          }),
         })
         disabled++
       }
@@ -941,7 +954,8 @@ export function inspectControlCheckpoint(
   }
   if (raw === undefined) return { state: "uninitialized" }
   const record = parseControlRecord(raw)
-  if (record === undefined) return { state: "denied", reason: "store_malformed" }
+  if (record === undefined)
+    return { state: "denied", reason: "store_malformed" }
   const identity = {
     installationId: record.installationId,
     epoch: record.epoch,

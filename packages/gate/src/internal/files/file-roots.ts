@@ -6,10 +6,7 @@ import {
 import type { GateFileRoot, GateFileRoots } from "@eido/schemas"
 import { append } from "../audit"
 import { canonicalize, payloadHash } from "../canonical"
-import {
-  ControlStateError,
-  withControlView,
-} from "../control-checkpoint"
+import { ControlStateError, withControlView } from "../control-checkpoint"
 import type { ControlView } from "../control-checkpoint"
 import {
   approvedControlValue,
@@ -170,7 +167,10 @@ function approvedFileRootsIn(
       )
       .get()
     if (row === undefined) return undefined
-    if (view !== undefined && !view.approvalAnchored(String(row["approval_id"])))
+    if (
+      view !== undefined &&
+      !view.approvalAnchored(String(row["approval_id"]))
+    )
       return undefined
     const roots = checkedFileRoots(JSON.parse(String(row["payload_json"])))
     const hash = payloadHash(roots)

@@ -533,7 +533,8 @@ export async function runGate(
       lockPath: config.controlCheckpoint.lockPath,
     })
     const denied = checkpoint.denied()
-    if (denied !== undefined) log("control_checkpoint_denied", { reason: denied })
+    if (denied !== undefined)
+      log("control_checkpoint_denied", { reason: denied })
   }
   const servers: Server[] = []
   let notifier: ReturnType<typeof createPushNotifier> | undefined

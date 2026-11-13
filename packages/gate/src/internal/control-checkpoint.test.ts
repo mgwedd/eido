@@ -240,8 +240,9 @@ describe("an established installation", () => {
     enrol(db, owner)
     const afterEnrol = guard.generation()
     expect(afterEnrol).toBeGreaterThan(1)
-    expect(registerCredential(db, WEBAUTHN, "phone", registration(owner, "x")))
-      .toMatchObject({ ok: false, code: "admin_only" })
+    expect(
+      registerCredential(db, WEBAUTHN, "phone", registration(owner, "x"))
+    ).toMatchObject({ ok: false, code: "admin_only" })
     expect(guard.generation()).toBe(afterEnrol)
   })
 })
@@ -622,7 +623,9 @@ describe("what the protected record keeps", () => {
     pin(db, owner, { ...manifest("mail", MAIL_OPS), version: 2 })
     const record = parseControlRecord(store.value ?? "")
     expect(
-      record?.provenance.filter((p) => p.target === "mail").map((p) => p.signCount)
+      record?.provenance
+        .filter((p) => p.target === "mail")
+        .map((p) => p.signCount)
     ).toEqual([2])
   })
 })

@@ -305,7 +305,10 @@ function approvedSensitivityIn(
       )
       .get()
     if (row === undefined) return undefined
-    if (view !== undefined && !view.approvalAnchored(String(row["approval_id"])))
+    if (
+      view !== undefined &&
+      !view.approvalAnchored(String(row["approval_id"]))
+    )
       throw new Error("approved sensitivity is not anchored")
     const parsed: unknown = JSON.parse(String(row["payload_json"]))
     const result = parseSensitivityOverlay(parsed, "approved sensitivity")

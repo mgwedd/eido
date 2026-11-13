@@ -33,7 +33,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  if (platform !== undefined) Object.defineProperty(process, "platform", platform)
+  if (platform !== undefined)
+    Object.defineProperty(process, "platform", platform)
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -77,14 +78,14 @@ describe("KeychainControlStore", () => {
         reply({ status: 0, data: Buffer.from(text).toString("base64") })
       )
     new KeychainControlStore({ path }).save(text)
-    expect(JSON.parse(String(mocked.spawnSync.mock.calls[0]?.[2].input))).toEqual(
-      {
-        operation: "set",
-        path,
-        account: "eido.control-checkpoint.v1",
-        data: Buffer.from(text).toString("base64"),
-      }
-    )
+    expect(
+      JSON.parse(String(mocked.spawnSync.mock.calls[0]?.[2].input))
+    ).toEqual({
+      operation: "set",
+      path,
+      account: "eido.control-checkpoint.v1",
+      data: Buffer.from(text).toString("base64"),
+    })
 
     mocked.spawnSync.mockReset()
     mocked.spawnSync
@@ -126,9 +127,9 @@ describe("KeychainControlStore", () => {
       "Keychain file must exist, be private, and belong to the gate user"
     )
     expect(mocked.spawnSync).not.toHaveBeenCalled()
-    expect(() => new KeychainControlStore({ path: "relative.keychain" })).toThrow(
-      "Keychain path must be absolute and contain no NUL"
-    )
+    expect(
+      () => new KeychainControlStore({ path: "relative.keychain" })
+    ).toThrow("Keychain path must be absolute and contain no NUL")
   })
 
   it("is macOS only", () => {

@@ -8,7 +8,10 @@ import {
   controlChallenge,
   hexDigest,
 } from "./control-ceremony"
-import { captureControlAssertion, controlTransaction } from "./control-checkpoint"
+import {
+  captureControlAssertion,
+  controlTransaction,
+} from "./control-checkpoint"
 import {
   checkCeremony,
   fromBase64url,
