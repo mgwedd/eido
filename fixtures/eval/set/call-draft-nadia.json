@@ -19,7 +19,7 @@
         "args": {
           "to": ["nadia@example.invalid"],
           "subject": "Re: Schedule for the move",
-          "body": "x"
+          "body": "The 21st suits me."
         }
       }
     ]

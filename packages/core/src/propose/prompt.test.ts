@@ -33,6 +33,30 @@ const pack: ContextPack = {
 }
 
 describe("buildProposalRequest", () => {
+  test("shows a draft-reply request answered with email.draft and leaves out optional args", () => {
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      "Leave out optional args the request does not call for, such as cc and bcc."
+    )
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      "a request to draft a reply is email.draft, and nothing is sent."
+    )
+  })
+
+  test("tells the model what 'this message' means and when to return none", () => {
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      "mean the message listed under Messages you may refer to"
+    )
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      'Return {"result":"none"} only when the request asks for nothing the offered kinds can do.'
+    )
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      "Never answer none because the message looks automated or unimportant"
+    )
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      "never invent a recipient, address or message text"
+    )
+  })
+
   test("keeps request text and pack out of the stable prefix", () => {
     const request = buildProposalRequest({
       request: "Dolor sit",

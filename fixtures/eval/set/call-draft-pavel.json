@@ -19,7 +19,7 @@
         "args": {
           "to": ["pavel@example.invalid"],
           "subject": "Re: Reference request",
-          "body": "x"
+          "body": "Yes, I am happy to be a reference."
         }
       }
     ]

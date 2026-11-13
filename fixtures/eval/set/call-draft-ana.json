@@ -19,7 +19,7 @@
         "args": {
           "to": ["ana@example.invalid"],
           "subject": "Re: Parking permit renewal",
-          "body": "x"
+          "body": "Yes, please renew my parking permit."
         }
       }
     ]

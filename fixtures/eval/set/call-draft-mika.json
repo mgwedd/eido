@@ -19,7 +19,7 @@
         "args": {
           "to": ["mika@example.invalid"],
           "subject": "Re: Slides for Thursday",
-          "body": "x"
+          "body": "Could you shorten the second section?"
         }
       }
     ]

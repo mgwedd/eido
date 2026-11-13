@@ -19,7 +19,7 @@
         "args": {
           "to": ["hugo@example.invalid"],
           "subject": "Re: Invoice question",
-          "body": "x"
+          "body": "Could you send a corrected invoice for the single licence?"
         }
       }
     ]
