@@ -163,6 +163,63 @@ test("lists passkeys with created time, this device and revoked status", async (
   expect(items[2]?.querySelectorAll("time")).toHaveLength(2)
 })
 
+const recoveryRow = () =>
+  container.querySelector<HTMLAnchorElement>('a[href="/settings/recovery"]')
+
+const statusWith = (recovery?: unknown) =>
+  ok({
+    enrolled: true,
+    revoked: false,
+    sessionExpiresAt: null,
+    ...(recovery === undefined ? {} : { recovery }),
+  })
+
+test("the Devices card links to the recovery page and says none is pending", async () => {
+  gate({ ...healthy, "/api/gate/passkey/status": statusWith() })
+  await render()
+  const row = recoveryRow()
+  expect(row?.textContent).toBe("Passkey recoveryNo recovery pending")
+  expect(row?.closest('[role="group"]')?.textContent).toContain(
+    "Devices and passkeys"
+  )
+})
+
+test("a pending recovery shows the Pending chip and hours to maturity", async () => {
+  const started = Date.now() - 19 * 60_000
+  gate({
+    ...healthy,
+    "/api/gate/passkey/status": statusWith({
+      startedAt: new Date(started).toISOString(),
+      maturesAt: new Date(started + 24 * 3_600_000).toISOString(),
+      expiresAt: new Date(started + 48 * 3_600_000).toISOString(),
+    }),
+  })
+  await render()
+  expect(recoveryRow()?.textContent).toBe(
+    "Passkey recoveryPending · matures in 23hPending"
+  )
+})
+
+test("an expired recovery counts as none pending", async () => {
+  const started = Date.now() - 49 * 3_600_000
+  gate({
+    ...healthy,
+    "/api/gate/passkey/status": statusWith({
+      startedAt: new Date(started).toISOString(),
+      maturesAt: new Date(started + 24 * 3_600_000).toISOString(),
+      expiresAt: new Date(started + 48 * 3_600_000).toISOString(),
+    }),
+  })
+  await render()
+  expect(recoveryRow()?.textContent).toBe("Passkey recoveryNo recovery pending")
+})
+
+test("when the status cannot be read the row still links and claims nothing", async () => {
+  gate(healthy)
+  await render()
+  expect(recoveryRow()?.textContent).toBe("Passkey recovery")
+})
+
 test("an empty passkey list says none is enrolled", async () => {
   gate({ ...healthy, "/api/gate/passkeys": ok({ passkeys: [] }) })
   await render()
@@ -324,7 +381,7 @@ test("a section whose read fails says so; the others still render; retry reloads
     retry.click()
     await new Promise((resolve) => setTimeout(resolve, 0))
   })
-  expect(fn.mock.calls.length).toBe(before + 5)
+  expect(fn.mock.calls.length).toBe(before + 6)
 })
 
 test("an expired session sends the user to unlock", async () => {
