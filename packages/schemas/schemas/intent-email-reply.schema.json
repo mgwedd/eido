@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EmailReplyIntent",
-  "description": "Reply to a message.",
+  "description": "Send a reply to a message now.",
   "type": "object",
   "properties": {
     "kind": {

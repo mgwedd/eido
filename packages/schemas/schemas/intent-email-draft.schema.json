@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EmailDraftIntent",
-  "description": "Save an email draft. Nothing is sent.",
+  "description": "Save a reply or a new message as a draft. Nothing is sent. Use this when the owner asks to draft.",
   "type": "object",
   "properties": {
     "kind": {
