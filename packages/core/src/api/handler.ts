@@ -52,6 +52,7 @@ import {
 } from "./conversation-get-route"
 import { BRIEF_PATH, briefRoute } from "./brief-route"
 import { crossSiteRefused } from "./request-origin"
+import type { RoleGuard } from "./caller-role"
 import { MAIL_SIGNALS_PATH, mailSignalsRoute } from "./mail-signals-route"
 import { dueSoonRoute } from "./due-soon"
 import { SIMPLEFIN_SYNC_PATH, simplefinSyncRoute } from "./simplefin-sync-route"
@@ -118,6 +119,11 @@ export interface ApiDeps {
   conversations?: ConversationStore
   /** The clock `/today/due-soon` reads "today" from. Absent: the system clock. */
   now?: () => Date
+  /**
+   * The caller's role check for state-changing requests (ADR 0010). Absent (single-owner mode,
+   * no Auth0): core has no caller check, as before.
+   */
+  roleGuard?: RoleGuard
 }
 
 export type ApiHandler = (request: Request) => Promise<Response>
@@ -281,6 +287,8 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
     const local = routePath(url.pathname, basePath)
     if (local === null) return failure("not_found", "no such route")
     const path = local.replace(/(.)\/$/, "$1")
+    const refused = deps.roleGuard?.(request, path) ?? null
+    if (refused !== null) return refused
     const notAllowed = (...methods: string[]): Response => {
       const response = failure("method_not_allowed", "method not allowed")
       response.headers.set("allow", methods.join(", "))

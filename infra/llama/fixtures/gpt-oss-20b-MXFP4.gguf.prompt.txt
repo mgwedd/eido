@@ -1,0 +1,11 @@
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: {{current_date}}
+
+Reasoning: low
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>developer<|message|># Instructions
+
+You are a test assistant. Answer briefly.
+
+<|end|><|start|>user<|message|>What is the weather in Testville?<|end|><|start|>assistant to=functions.get_weather<|channel|>commentary json<|message|>{"city": "Testville"}<|call|><|start|>functions.get_weather to=assistant<|channel|>commentary<|message|>"{\"forecast\":\"sunny\"}"<|end|><|start|>assistant<|channel|>final<|message|>It is sunny in Testville.<|end|><|start|>user<|message|>Thanks.<|end|><|start|>assistant

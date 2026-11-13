@@ -62,7 +62,7 @@ size: 22134528992
 sha256: ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61
 chat_template_marker: messages[1].role == 'developer'
 chat_template_kwargs: {"enable_thinking": false}
-verified: false
+verified: true
 
 # The small-memory floor, for 16 GB machines and Windows GPUs. Harmony format: reasoning cannot be
 # switched off, only lowered; low is the least the template documents (its default is medium).
@@ -75,4 +75,4 @@ size: 12109566624
 sha256: 27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901
 chat_template_marker: <|channel|>final
 chat_template_kwargs: {"reasoning_effort": "low"}
-verified: false
+verified: true

@@ -131,7 +131,7 @@ describe("the committed infra/model.lock", () => {
     })
   })
 
-  it("curates Qwen3.6 35B-A3B with thinking off and gpt-oss 20B at low effort, both unverified", () => {
+  it("curates Qwen3.6 35B-A3B with thinking off and gpt-oss 20B at low effort, both verified on the host", () => {
     expect(lock.profiles.map((p) => p.id)).toEqual([
       "gemma-4-26b-a4b",
       "qwen3.6-35b-a3b",
@@ -153,7 +153,7 @@ describe("the committed infra/model.lock", () => {
       chatTemplateMarker: "messages[1].role == 'developer'",
       chatTemplateKwargs: { enable_thinking: false },
       flags: [],
-      verified: false,
+      verified: true,
       origin: "lock",
     })
     expect(selectProfile(lock, "gpt-oss-20b")).toEqual({
@@ -172,7 +172,7 @@ describe("the committed infra/model.lock", () => {
       chatTemplateMarker: "<|channel|>final",
       chatTemplateKwargs: { reasoning_effort: "low" },
       flags: [],
-      verified: false,
+      verified: true,
       origin: "lock",
     })
   })
@@ -589,5 +589,27 @@ sha256: ${C}
     expect(() => withUserProfiles(parseLock(valid), clash, NAME)).toThrow(
       "/stack/profiles.lock: profile first is also in model.lock; rename one of them"
     )
+  })
+})
+
+describe("hidden_tokens", () => {
+  it("lists the tokens a profile's replies must not contain", () => {
+    const lock = parseLock(
+      valid.replace(
+        "chat_template_kwargs:",
+        "hidden_tokens: <think> </think> <|channel|>\nchat_template_kwargs:"
+      )
+    )
+    expect(selectProfile(lock, "second").hiddenTokens).toEqual([
+      "<think>",
+      "</think>",
+      "<|channel|>",
+    ])
+  })
+
+  it("is absent when the profile does not name any", () => {
+    expect(
+      selectProfile(parseLock(valid), "second").hiddenTokens
+    ).toBeUndefined()
   })
 })
