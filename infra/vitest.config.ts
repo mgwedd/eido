@@ -13,6 +13,7 @@ export default defineConfig({
         "bridge/**/*.ts",
         "llama/**/*.ts",
         "host/**/*.ts",
+        "prereq/**/*.ts",
         "ts-hooks.ts",
       ],
       exclude: [
@@ -29,6 +30,7 @@ export default defineConfig({
         "stack/effects.ts", // real processes, signals, files, clock and fetch for the CLI and the supervisor; no logic
         "llama/bin.ts", // entry point: hands process.argv and real files, processes, launchctl, signals and fetch to main()
         "host/bin.ts", // entry point: hands process.argv and the real fdesetup and tailscale to main()
+        "prereq/bin.ts", // entry point: hands process.argv and the real node, pnpm and corepack to main()
         ...(process.platform === "win32"
           ? [
               "backup/**/*.ts", // macOS-only backup via launchd/Keychain (#629)
