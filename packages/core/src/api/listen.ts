@@ -7,6 +7,8 @@ import type { ObligationStateStore } from "../ledger/obligation-state"
 import type { ProfileStore } from "../profile/store"
 import type { DocumentsDeps } from "./documents-route"
 import type { ConversationStore } from "../conversation/store"
+import type { KeyObject } from "node:crypto"
+import { createRoleGuard } from "./caller-role"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
 import type { ReplyDrafter } from "./reply-draft-route"
@@ -78,6 +80,11 @@ export type CoreApiOptions = {
   documents?: DocumentsDeps
   /** The conversation store behind `/conversations/search`. */
   conversations?: ConversationStore
+  /**
+   * The web app's role-assertion public key. Set: state-changing requests need an assertion
+   * that grants the route's permission (ADR 0010). Unset: no caller check.
+   */
+  rolePublicKey?: KeyObject
   host: LoopbackHost
   /** 0 picks a free port. */
   port: number
@@ -113,6 +120,9 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
       conversations: options.conversations,
       allowedHosts,
       basePath: options.basePath,
+      ...(options.rolePublicKey === undefined
+        ? {}
+        : { roleGuard: createRoleGuard(options.rolePublicKey) }),
     })
   let handler = handlerFor([])
   const server = createApiServer((request) => handler(request))
