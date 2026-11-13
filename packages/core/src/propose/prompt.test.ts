@@ -33,6 +33,15 @@ const pack: ContextPack = {
 }
 
 describe("buildProposalRequest", () => {
+  test("sends a request to draft a reply to email.draft, not email.reply", () => {
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      "A request to draft or write a reply, or to reply by draft, is email.draft: nothing is sent."
+    )
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      "Use email.reply or email.send only when the owner asks to send."
+    )
+  })
+
   test("tells the model what 'this message' means and when to return none", () => {
     expect(PROPOSE_SYSTEM_PROMPT).toContain(
       "mean the message listed under Messages you may refer to"
