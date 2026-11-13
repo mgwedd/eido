@@ -1,0 +1,25 @@
+{
+  "id": "call-archive-07-survey",
+  "request": "Archive this survey email.",
+  "messages": [
+    {
+      "id": "call-archive-07-survey-1@example.invalid",
+      "from": "survey@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-07T10:15:00.000Z",
+      "subject": "Survey results",
+      "body": "Automated message about: survey results."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.archive",
+        "args": {
+          "messageIds": ["call-archive-07-survey-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

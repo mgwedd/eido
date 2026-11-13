@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-robin",
+  "request": "Draft a reply to this email saying I prefer the lakeside lodge.",
+  "messages": [
+    {
+      "id": "call-draft-robin-1@example.invalid",
+      "from": "robin@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-02T10:15:00.000Z",
+      "subject": "Venue options for the offsite",
+      "body": "I found three venues for the offsite. The lakeside lodge is the cheapest. Which do you prefer?"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["robin@example.invalid"],
+          "subject": "Re: Venue options for the offsite",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

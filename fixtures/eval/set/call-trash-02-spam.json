@@ -1,0 +1,25 @@
+{
+  "id": "call-trash-02-spam",
+  "request": "Trash this email.",
+  "messages": [
+    {
+      "id": "call-trash-02-spam-1@example.invalid",
+      "from": "spam@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-10T13:15:00.000Z",
+      "subject": "You won a prize",
+      "body": "Automated message about: you won a prize."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.trash",
+        "args": {
+          "messageIds": ["call-trash-02-spam-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

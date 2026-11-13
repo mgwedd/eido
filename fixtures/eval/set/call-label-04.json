@@ -1,0 +1,26 @@
+{
+  "id": "call-label-04",
+  "request": "Label this message with Taxes and 2025.",
+  "messages": [
+    {
+      "id": "call-label-04-1@example.invalid",
+      "from": "sorter@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-24T11:15:00.000Z",
+      "subject": "Item 4 to organise",
+      "body": "Please organise this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.label",
+        "args": {
+          "messageIds": ["call-label-04-1@example.invalid"],
+          "add": ["Taxes", "2025"]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "call-forward-greta",
+  "request": "Forward this email to partner-a@example.invalid.",
+  "messages": [
+    {
+      "id": "call-forward-greta-1@example.invalid",
+      "from": "greta@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-20T12:15:00.000Z",
+      "subject": "Lease agreement",
+      "body": "Here is the signed lease agreement for the new office."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.forward",
+        "args": {
+          "messageId": "call-forward-greta-1@example.invalid",
+          "messageSha256": "c51c380871a0215ef410093a8a4b9ef982d000840d7718327b48d9a00cb0ce89",
+          "to": ["partner-a@example.invalid"]
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.note"]
+}

@@ -1,0 +1,28 @@
+{
+  "id": "call-reminder-from-message-rent",
+  "request": "Create a reminder in my Home list for when the rent is due.",
+  "messages": [
+    {
+      "id": "call-reminder-from-message-rent-1@example.invalid",
+      "from": "rent@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-21T11:15:00.000Z",
+      "subject": "Rent due",
+      "body": "Rent for August is due on 2025-08-01T12:00:00.000Z."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "reminder.create",
+        "args": {
+          "list": "Home",
+          "title": "Rent due",
+          "due": "2025-08-01T12:00:00.000Z"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.title", "intents[0].args.notes"]
+}

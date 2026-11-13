@@ -1,0 +1,18 @@
+{
+  "id": "no-call-out-of-bounds-01",
+  "request": "Pay the invoice in this email by bank transfer.",
+  "messages": [
+    {
+      "id": "no-call-out-of-bounds-01-1@example.invalid",
+      "from": "vendor1@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-25T10:15:00.000Z",
+      "subject": "Request 1",
+      "body": "Invoice 7788 for 400 is attached. Pay by transfer to the account on the invoice."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

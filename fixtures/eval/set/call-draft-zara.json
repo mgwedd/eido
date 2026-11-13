@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-zara",
+  "request": "Reply by draft to say the album looks complete.",
+  "messages": [
+    {
+      "id": "call-draft-zara-1@example.invalid",
+      "from": "zara@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-10T10:15:00.000Z",
+      "subject": "Photos from the trip",
+      "body": "I uploaded the photos from the trip to the shared album. Let me know if any are missing."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["zara@example.invalid"],
+          "subject": "Re: Photos from the trip",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

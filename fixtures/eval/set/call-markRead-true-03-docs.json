@@ -1,0 +1,26 @@
+{
+  "id": "call-markRead-true-03-docs",
+  "request": "Mark this mail as read.",
+  "messages": [
+    {
+      "id": "call-markRead-true-03-docs-1@example.invalid",
+      "from": "docs@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-08-17T12:15:00.000Z",
+      "subject": "Comment on your document",
+      "body": "Automated message about: comment on your document."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.markRead",
+        "args": {
+          "messageIds": ["call-markRead-true-03-docs-1@example.invalid"],
+          "read": true
+        }
+      }
+    ]
+  }
+}

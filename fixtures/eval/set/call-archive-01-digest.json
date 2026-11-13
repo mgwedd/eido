@@ -1,0 +1,25 @@
+{
+  "id": "call-archive-01-digest",
+  "request": "Archive this message.",
+  "messages": [
+    {
+      "id": "call-archive-01-digest-1@example.invalid",
+      "from": "digest@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-01T12:15:00.000Z",
+      "subject": "Newsletter: weekly digest",
+      "body": "Automated message about: newsletter: weekly digest."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.archive",
+        "args": {
+          "messageIds": ["call-archive-01-digest-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "call-forward-petra",
+  "request": "Forward this email to support-g@example.invalid.",
+  "messages": [
+    {
+      "id": "call-forward-petra-1@example.invalid",
+      "from": "petra@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-08-26T10:15:00.000Z",
+      "subject": "Warranty card",
+      "body": "The warranty card for the laptop."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.forward",
+        "args": {
+          "messageId": "call-forward-petra-1@example.invalid",
+          "messageSha256": "0a543e57ba5e23819cc64c37e12726839fc170196ba9abd92d93d640a50a3ee1",
+          "to": ["support-g@example.invalid"]
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.note"]
+}

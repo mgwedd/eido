@@ -1,0 +1,30 @@
+{
+  "id": "call-reply-felix",
+  "request": "Reply to this message to say someone will be home.",
+  "messages": [
+    {
+      "id": "call-reply-felix-1@example.invalid",
+      "from": "felix@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-09-18T10:15:00.000Z",
+      "subject": "Delivery window",
+      "body": "Your parcel will arrive between two and four on Wednesday."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.reply",
+        "args": {
+          "messageId": "call-reply-felix-1@example.invalid",
+          "messageSha256": "d9e72a1e43f15800799b7f7330d772fff09320e0de9896962706665e7753bd93",
+          "replyAll": false,
+          "to": ["felix@example.invalid"],
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body"]
+}

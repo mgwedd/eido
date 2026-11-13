@@ -1,0 +1,25 @@
+{
+  "id": "call-archive-05-carrier",
+  "request": "Archive this mail.",
+  "messages": [
+    {
+      "id": "call-archive-05-carrier-1@example.invalid",
+      "from": "carrier@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-05T16:15:00.000Z",
+      "subject": "Shipping update",
+      "body": "Automated message about: shipping update."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.archive",
+        "args": {
+          "messageIds": ["call-archive-05-carrier-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

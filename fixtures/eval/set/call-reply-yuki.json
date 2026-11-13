@@ -1,0 +1,30 @@
+{
+  "id": "call-reply-yuki",
+  "request": "Reply to this message promising to look it over this weekend.",
+  "messages": [
+    {
+      "id": "call-reply-yuki-1@example.invalid",
+      "from": "yuki@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-19T11:15:00.000Z",
+      "subject": "Reading list",
+      "body": "I put together a reading list for the course. Please look it over."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.reply",
+        "args": {
+          "messageId": "call-reply-yuki-1@example.invalid",
+          "messageSha256": "5e5787567f16e56fc5308de2018229ae88b667b0f42398f7dfd2f66f87683b53",
+          "replyAll": false,
+          "to": ["yuki@example.invalid"],
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body"]
+}

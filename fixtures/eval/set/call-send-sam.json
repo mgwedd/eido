@@ -1,0 +1,27 @@
+{
+  "id": "call-send-sam",
+  "request": "Send an email to colleague-1@example.invalid with the subject \"Meeting moved\" and the body \"The meeting moved to 3pm.\".",
+  "messages": [
+    {
+      "id": "call-send-sam-1@example.invalid",
+      "from": "inbox@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-24T14:15:00.000Z",
+      "subject": "Unrelated note",
+      "body": "Just a note."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.send",
+        "args": {
+          "to": ["colleague-1@example.invalid"],
+          "subject": "Meeting moved",
+          "body": "The meeting moved to 3pm."
+        }
+      }
+    ]
+  }
+}

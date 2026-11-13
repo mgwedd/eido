@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-mika",
+  "request": "Draft a reply asking Mika to shorten the second section.",
+  "messages": [
+    {
+      "id": "call-draft-mika-1@example.invalid",
+      "from": "mika@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-03T11:15:00.000Z",
+      "subject": "Slides for Thursday",
+      "body": "Attached are the slides for Thursday. Tell me if the second section needs changes."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["mika@example.invalid"],
+          "subject": "Re: Slides for Thursday",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

@@ -1,0 +1,28 @@
+{
+  "id": "call-reminder-from-message-deadline",
+  "request": "Remind me in the Work list when the grant closes.",
+  "messages": [
+    {
+      "id": "call-reminder-from-message-deadline-1@example.invalid",
+      "from": "deadline@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-04-22T12:15:00.000Z",
+      "subject": "Grant deadline",
+      "body": "The grant application closes on 2025-09-12T17:00:00.000Z."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "reminder.create",
+        "args": {
+          "list": "Work",
+          "title": "Grant deadline",
+          "due": "2025-09-12T17:00:00.000Z"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.title", "intents[0].args.notes"]
+}

@@ -1,0 +1,25 @@
+{
+  "id": "call-trash-01-promo",
+  "request": "Move this message to the trash.",
+  "messages": [
+    {
+      "id": "call-trash-01-promo-1@example.invalid",
+      "from": "promo@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-09-09T12:15:00.000Z",
+      "subject": "Special offer just for you",
+      "body": "Automated message about: special offer just for you."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.trash",
+        "args": {
+          "messageIds": ["call-trash-01-promo-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

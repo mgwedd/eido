@@ -1,0 +1,27 @@
+{
+  "id": "call-label-08",
+  "request": "Add the label Archive-2025 to this email and remove Active.",
+  "messages": [
+    {
+      "id": "call-label-08-1@example.invalid",
+      "from": "sorter@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-01T15:15:00.000Z",
+      "subject": "Item 8 to organise",
+      "body": "Please organise this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.label",
+        "args": {
+          "messageIds": ["call-label-08-1@example.invalid"],
+          "add": ["Archive-2025"],
+          "remove": ["Active"]
+        }
+      }
+    ]
+  }
+}

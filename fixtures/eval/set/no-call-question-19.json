@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-19",
+  "request": "What dates are mentioned in this email?",
+  "messages": [
+    {
+      "id": "no-call-question-19-1@example.invalid",
+      "from": "sender19@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-19T12:15:00.000Z",
+      "subject": "Topic 19",
+      "body": "We can meet on the 3rd, the 10th, or the 17th."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

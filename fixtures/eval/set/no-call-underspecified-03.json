@@ -1,0 +1,18 @@
+{
+  "id": "no-call-underspecified-03",
+  "request": "Forward this email to the accountant.",
+  "messages": [
+    {
+      "id": "no-call-underspecified-03-1@example.invalid",
+      "from": "party3@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-23T16:15:00.000Z",
+      "subject": "Open item 3",
+      "body": "Receipts for March."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

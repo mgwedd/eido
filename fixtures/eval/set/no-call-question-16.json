@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-16",
+  "request": "Explain what the sender is asking for in this mail.",
+  "messages": [
+    {
+      "id": "no-call-question-16-1@example.invalid",
+      "from": "sender16@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-16T09:15:00.000Z",
+      "subject": "Topic 16",
+      "body": "Could you introduce me to your contact at the bank?"
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

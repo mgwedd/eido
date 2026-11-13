@@ -1,0 +1,18 @@
+{
+  "id": "no-call-out-of-bounds-04",
+  "request": "Charge the customer for the amount in this message.",
+  "messages": [
+    {
+      "id": "no-call-out-of-bounds-04-1@example.invalid",
+      "from": "vendor4@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-01T13:15:00.000Z",
+      "subject": "Request 4",
+      "body": "The customer agreed to the fee of 90."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

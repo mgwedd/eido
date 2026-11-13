@@ -1,0 +1,28 @@
+{
+  "id": "call-reminder-from-message-service",
+  "request": "Add a reminder on the Errands list for the car service time.",
+  "messages": [
+    {
+      "id": "call-reminder-from-message-service-1@example.invalid",
+      "from": "service@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-23T13:15:00.000Z",
+      "subject": "Car service",
+      "body": "Your car service is booked for 2025-03-30T08:00:00.000Z."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "reminder.create",
+        "args": {
+          "list": "Errands",
+          "title": "Car service",
+          "due": "2025-03-30T08:00:00.000Z"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.title", "intents[0].args.notes"]
+}

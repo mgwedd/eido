@@ -1,0 +1,30 @@
+{
+  "id": "call-reply-kai",
+  "request": "Reply to this email saying I am vegetarian.",
+  "messages": [
+    {
+      "id": "call-reply-kai-1@example.invalid",
+      "from": "kai@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-14T14:15:00.000Z",
+      "subject": "Team lunch",
+      "body": "We are ordering lunch on Friday. Any dietary needs?"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.reply",
+        "args": {
+          "messageId": "call-reply-kai-1@example.invalid",
+          "messageSha256": "d59c8fa4dbe8761eae18e2491d08df5e53cd7ba2627899f1dfffdae38eb8af7f",
+          "replyAll": false,
+          "to": ["kai@example.invalid"],
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body"]
+}
