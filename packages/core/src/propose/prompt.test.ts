@@ -40,6 +40,9 @@ describe("buildProposalRequest", () => {
     expect(PROPOSE_SYSTEM_PROMPT).toContain(
       'Return {"result":"none"} only when the request asks for nothing the offered kinds can do.'
     )
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      "Never answer none because the message looks automated or unimportant"
+    )
   })
 
   test("keeps request text and pack out of the stable prefix", () => {
