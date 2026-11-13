@@ -43,6 +43,9 @@ describe("buildProposalRequest", () => {
     expect(PROPOSE_SYSTEM_PROMPT).toContain(
       "Never answer none because the message looks automated or unimportant"
     )
+    expect(PROPOSE_SYSTEM_PROMPT).toContain(
+      "never invent a recipient, address or message text"
+    )
   })
 
   test("keeps request text and pack out of the stable prefix", () => {
