@@ -85,3 +85,26 @@ EIDO_EVAL_CASES="$D/cases" EIDO_EVAL_OUT="$D/results" \
 ```
 
 The runner prints one row per candidate and the ids of the cases to read, and writes `results.json` with scores, model ids and per-case diffs. Baseline mode exits 0 unless a candidate could not run. `--enforce` also needs the confirmed `packages/core/src/eval/thresholds.json` and exits 1 when it is missing or a score misses it.
+
+## Ask answer eval
+
+The Ask answer step (`packages/core/src/ask/ask.ts`: `ANSWER_SYSTEM`, and `ANSWER_REMINDER` repeated beside the question, #709) has its own eval (#717). It is separate from the proposal path above: no verdicts, no JSON schema, and the model's free-text answer is scored by plain functions in `packages/core/src/eval/ask-eval.ts`.
+
+`fixtures/eval/ask/cases.json` holds 12 synthetic cases (invented names, `example.invalid` addresses): single and multi-source answers, a thread with a correction, a document, two count questions, four no-match questions (one baiting a "never happened" claim) and one message with a planted instruction. Each case lists the message tags that answer it and the placeholders the answer must write. The runner builds each request the way `ask()` builds its final user turn (system prompt, facts, fenced messages, question) and runs every case twice: with `ANSWER_REMINDER` after the question and without it.
+
+Three scores, each a share from 0 to 1:
+
+| Score        | A case passes when                                                                                                                                                             |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Tag citation | every tag is a real `[M<n>]` of the case, none is written in another form (`[M1, M2]`, `M1`, `[Message 1]`), and an answerable case cites at least one message that answers it |
+| Placeholders | every placeholder the case requires (`{matches}`, `{read}`, `{searched}`) is written and no count of messages is written as a number (`3 messages`, `1,284 matching messages`) |
+| No match     | (no-match cases only) the answer says "no match found" and does not claim that something never happened or does not exist                                                      |
+
+```bash
+D="$HOME/Library/Application Support/eido-dev/eval"
+pnpm --filter @eido/core eval-ask -- --candidates "$D/candidates.json" --out "$D/results"
+```
+
+`--candidates` takes the candidates file described above (one entry per profile: `gemma-4-26b-a4b`, `qwen3.6-35b-a3b`, `gpt-oss-20b`); `--cases` replaces the committed set and `--out` sets where `ask-results.json` is written (default `.eval-results`, git-ignored). Temperature is 0 and the seed is 329. The table has one row per candidate and variant, then the ids of the cases to read; the per-case answers are in `ask-results.json`. A candidate that could not run sets exit code 1.
+
+The tests run the runner against an oracle model and the stub server, so they check the cases, the scoring and the request shape, not any model's behaviour. Keep `ANSWER_REMINDER` only if its row is at least as good as the "without" row on all three scores for each profile; otherwise revert it.
