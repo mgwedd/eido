@@ -35,7 +35,7 @@ describe("serverArgs", () => {
     expect(args).not.toContain("0.0.0.0")
   })
 
-  it("passes the model and port, the flags measured in #69, then the profile's flags", () => {
+  it("passes the model and port, the flags measured in #69, `--swa-full` (#732), then the profile's flags", () => {
     expect(args).toEqual([
       "-m",
       "/m/model.gguf",
@@ -60,6 +60,7 @@ describe("serverArgs", () => {
       "2048",
       "-t",
       "8",
+      "--swa-full",
       "--reasoning",
       "off",
     ])
@@ -86,7 +87,7 @@ describe("serverArgs with chat template kwargs", () => {
         chatTemplateKwargs: undefined,
         flags: [],
       }).at(-1)
-    ).toBe("8")
+    ).toBe("--swa-full")
   })
 })
 

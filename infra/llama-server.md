@@ -153,7 +153,7 @@ pnpm --filter @eido/infra llama status          # launchd's view, who listens on
 `launch` does these steps in order:
 
 1. Refuses an unverified profile, then verifies the binary and the model; on any failure it exits 1 and does not start the server.
-2. Starts `llama-server -m <model> --jinja --host 127.0.0.1 --port <port> -c 8192 -fa on --cache-type-k q8_0 --cache-type-v q8_0 -ngl 99 -b 2048 -ub 2048 -t 8`, then `--chat-template-kwargs <json>` when the profile has kwargs, then the profile's `flags`. These are the flags measured in #69, plus the fixed loopback bind. Gemma 4's `flags: --reasoning off` keeps it out of thinking mode: with the default (`auto`) the template injects `<|think|>` into the system turn and a schema-constrained completion comes back with empty content.
+2. Starts `llama-server -m <model> --jinja --host 127.0.0.1 --port <port> -c 8192 -fa on --cache-type-k q8_0 --cache-type-v q8_0 -ngl 99 -b 2048 -ub 2048 -t 8 --swa-full`, then `--chat-template-kwargs <json>` when the profile has kwargs, then the profile's `flags`. These are the flags measured in #69, `--swa-full` (#732, below), plus the fixed loopback bind. Gemma 4's `flags: --reasoning off` keeps it out of thinking mode: with the default (`auto`) the template injects `<|think|>` into the system turn and a schema-constrained completion comes back with empty content.
 3. Waits up to 180 s for `/health`.
 4. Checks that `/props` reports a chat template containing the profile's `chat_template_marker` (or any template, for a profile without one). If not, it stops the server and exits 1.
 5. Stays in the foreground. It exits non-zero if the server dies, and on SIGTERM it stops the server and exits 0.
@@ -188,11 +188,38 @@ Method: the probe follows core's path (`/apply-template`, `/tokenize`, then `/co
 |         1,223 | 1,632 |                118 |
 |         2,076 | 2,755 |                120 |
 
-- **Defaults reuse the prefix, from about 1.2k tokens.** At 1,223 and 2,076 tokens a warm request is about 14x and 23x faster. A first run through `llama launch` (5 rounds, same method) gave 2,259 ms cold and 108 ms warm at 2,075 tokens, and the server reported 2,061 of 2,075 prompt tokens as cached. At 382 and 797 tokens nothing was reused (warm equals cold; at 381 tokens the server reported 0 cached). The cause was not investigated (#732). Core's `ANSWER_SYSTEM` alone is about 380 tokens, so on this profile the system prompt by itself is not served from the cache. A longer stable prefix is.
+- **Defaults reuse the prefix, from about 1.2k tokens.** At 1,223 and 2,076 tokens a warm request is about 14x and 23x faster. A first run through `llama launch` (5 rounds, same method) gave 2,259 ms cold and 108 ms warm at 2,075 tokens, and the server reported 2,061 of 2,075 prompt tokens as cached. At 382 and 797 tokens nothing was reused (warm equals cold; at 381 tokens the server reported 0 cached). The cause is in the #732 section below. Core's `ANSWER_SYSTEM` alone is about 380 tokens, so on this profile the system prompt by itself is not served from the cache. A longer stable prefix is.
 - **`--cache-reuse 256` did not help.** The server logged `cache_reuse is not supported by this context, it will be disabled` for this model. A probe with the same head and tail and a middle section of different length (3 rounds) reused 0 of about 1,964 tokens under the defaults and under `--cache-reuse 256`. Cold and warm times with the flag were no better than the defaults (382 tokens: 568 cold, 559 warm; 2,076 tokens: 3,487 cold, 130 warm, from a slower run).
 - **`--slot-prompt-similarity 0.5` did not help either.** The server already picked the matching slot at the default threshold of 0.10 (similarity 0.96 to 0.99 in its log). Times with 0.5: 383 tokens 827 cold, 816 warm; 2,078 tokens 4,188 cold, 165 warm, again from a slower run.
 
-Decision: the default is enough on this profile, and `serverArgs` is unchanged. Not measured: Qwen3.6 and gpt-oss (#731), and any case with a prefix under about 800 tokens that does get reused (#732).
+Decision (#708): the defaults reuse a prefix only from about 1.2k tokens. #732, below, found why and changed `serverArgs`. Not measured: Qwen3.6 and gpt-oss (#731).
+
+### Recorded results (2026-11-13, short-prefix reuse on Gemma 4, #732)
+
+Same Mac, build b11149, committed `serverArgs` with `--reasoning off`, plus one change per configuration. The probe is the #708 method (core's `ANSWER_SYSTEM` plus synthetic lines, random first line per round so the cold request matches nothing, 5 rounds of 1 cold and 2 warm requests, medians, 16 tokens, time to first token), written in the session scratchpad and not kept in the repo. Sizes are the prompt tokens after the chat template (418 rather than 380 because the template adds tokens). "Cached" is the `cache_n` the server reports on the warm requests (0 on every cold request). The Mac was busy (load average 5 to 8), so compare columns inside one configuration; the cold column varies about 20 percent between runs.
+
+| Configuration                  | Tokens | Cold ms | Warm ms | Warm cached |
+| ------------------------------ | -----: | ------: | ------: | ----------: |
+| committed (`-b 2048 -ub 2048`) |    418 |     497 |     471 |           0 |
+|                                |    831 |     897 |     858 |           0 |
+|                                |  2,112 |   2,774 |     130 |       2,090 |
+| `-b 512 -ub 512`               |    419 |     484 |     481 |           0 |
+|                                |    831 |     936 |     593 |         319 |
+|                                |  2,111 |   2,439 |     132 |       2,090 |
+| `-b 256 -ub 256`               |    417 |     563 |     352 |         163 |
+|                                |    830 |   1,069 |     361 |         575 |
+|                                |  2,111 |   2,660 |     133 |       2,091 |
+| `--swa-full`                   |    418 |     454 |      93 |         399 |
+|                                |    828 |     826 |      95 |         809 |
+|                                |  2,109 |   2,226 |     104 |       2,089 |
+
+- **Cause: sliding-window attention.** Gemma 4 uses a sliding-window KV cache. The server can restore a prefix from a checkpoint it took while processing the prompt, and a checkpoint exists only at a micro-batch boundary. With `-ub 2048` a prompt under 2,048 tokens is one micro-batch, so no checkpoint lies inside the shared prefix. Smaller micro-batches confirm it: reuse grows as `-ub` shrinks (0 cached at 831 tokens with 2,048, 319 with 512, 575 with 256; 163 at 418 only with 256), but a checkpoint still sits short of the end of the shared prefix, so warm requests stay about 4 to 6 times slower than full reuse, and `-ub 256` made cold prompts at 418 and 831 tokens 13 and 19 percent slower than the committed args.
+- **`--swa-full` fixes it.** It keeps the full-size KV cache for the sliding-window layers, so the server no longer needs a checkpoint to restore a prefix. The warm request reused 399 of 418 and 809 of 828 tokens (the rest is the changed question) and was about 5x and 9x faster. The cold prompt at 2,109 tokens took 2,226 ms against 2,774 ms with the committed args (2,439 and 2,660 ms in the other two runs), so it is not slower.
+- **Cost.** `--swa-full` allocates the full KV cache for the sliding-window layers at the 8,192-token context, which uses more memory. The resident size of the server read 16.6 GB after the probe with it, against 15.0 GB for a freshly started committed server; the two are not like for like, so this is an indication, not a measurement.
+- **`--ctx-checkpoints 32` was not run.** The pinned build's `--help` lists `-ctxcp, --ctx-checkpoints N` with a default of 32, so that configuration is the committed one. The same help lists `-cms, --checkpoint-min-step N` (default 8192 tokens); it was not tried, since `--swa-full` already solved the case.
+- **Not measured:** Qwen3.6 and gpt-oss with `--swa-full` (#731). `serverArgs` is shared by every profile, so the flag applies to all three. Its effect on models without sliding-window layers was not checked here.
+
+Decision: `--swa-full` is added to `serverArgs` (`infra/llama/server.ts`, with `infra/llama/server.test.ts` covering the list). Core does not need a longer stable prefix on this profile once the server runs with it: the 380-token `ANSWER_SYSTEM` is reused. A server started before this change keeps the old behaviour until it restarts.
 
 ### Recorded results (2026-11-12, hidden-token check, same Mac, port 8080)
 
