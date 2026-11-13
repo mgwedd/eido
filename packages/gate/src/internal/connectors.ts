@@ -15,6 +15,8 @@ import type {
   ControlAuthorization,
   PreparedControlApproval,
 } from "./control-approvals"
+import { ControlStateError, withControlView } from "./control-checkpoint"
+import type { ControlView } from "./control-checkpoint"
 
 // Pinned connector manifests. The pinned manifest is the only description of a connector that
 // policy reads: what a server says about its own tools (names, annotations) is never trusted.
@@ -77,9 +79,14 @@ function parseDrift(value: unknown): DriftDetails | null {
   return { added: parsed.added, removed: parsed.removed }
 }
 
+// `view` is the verified control view of the protected checkpoint. A connector is enabled only
+// when its stored flag is set and its current pin is anchored there; with no view (no checkpoint
+// attached, or a write path that only reads the row to decide what to refuse) the stored flag
+// stands alone.
 function storedRow(
   db: DatabaseSync,
-  name: string
+  name: string,
+  view: ControlView | undefined
 ):
   | {
       manifest: ConnectorManifest
@@ -132,10 +139,22 @@ function storedRow(
   return {
     manifest: parseStored(String(row["manifest_json"]), hash),
     hash,
-    enabled: Number(row["enabled"]) === 1,
+    enabled:
+      Number(row["enabled"]) === 1 &&
+      (view === undefined || view.pinAnchored(name, approvalRefHash)),
     approvalRefHash,
     drift: parseDrift(row["drift_json"]),
   }
+}
+
+/** Whether the connector's newest control event is the epoch disabling it until a fresh signed pin. */
+function disabledUnanchored(db: DatabaseSync, name: string): boolean {
+  const newest = db
+    .prepare(
+      "SELECT action FROM audit_log WHERE target = ? AND action IN ('connector.pinned', 'connector.disabled_unanchored') ORDER BY seq DESC LIMIT 1"
+    )
+    .get(name)
+  return newest?.["action"] === "connector.disabled_unanchored"
 }
 
 function inTransaction<T>(db: DatabaseSync, work: () => T): T {
@@ -186,7 +205,7 @@ export function pinManifest(
       ) {
         throw new Error(`connector ${valid.name} is already pinned`)
       }
-      const current = storedRow(db, valid.name)
+      const current = storedRow(db, valid.name, undefined)
       if (current !== undefined && valid.version <= current.manifest.version) {
         // A changed manifest is a new review, so it needs a new version. A drift-disabled
         // connector is re-enabled only by such a re-review, never by re-pinning the same manifest.
@@ -197,7 +216,8 @@ export function pinManifest(
         }
         if (
           !current.enabled &&
-          (current.approvalRefHash !== null || current.drift !== null)
+          (current.approvalRefHash !== null || current.drift !== null) &&
+          !disabledUnanchored(db, valid.name)
         ) {
           throw new Error(
             `connector ${valid.name} is disabled after drift: pin a re-reviewed manifest with a version above ${current.manifest.version}`
@@ -260,8 +280,10 @@ export function getPinnedManifest(
   db: DatabaseSync,
   name: string
 ): ConnectorManifest | undefined {
-  const row = storedRow(db, name)
-  return row?.enabled ? row.manifest : undefined
+  return withControlView(db, (view) => {
+    const row = storedRow(db, name, view)
+    return row?.enabled ? row.manifest : undefined
+  })
 }
 
 /** Administrative state for re-review, including a disabled manifest and its last drift. */
@@ -269,9 +291,23 @@ export function getConnectorState(
   db: DatabaseSync,
   name: string
 ): ConnectorState | undefined {
-  const row = storedRow(db, name)
+  // An administrative read: while the control state is unverified it reports the connector as
+  // disabled instead of failing, so the owner can still see what needs a fresh signed pin.
+  let view: ControlView | undefined
+  let unverified = false
+  try {
+    view = withControlView(db, (verified) => verified)
+  } catch (error) {
+    if (!(error instanceof ControlStateError)) throw error
+    unverified = true
+  }
+  const row = storedRow(db, name, view)
   if (row === undefined) return undefined
-  return { manifest: row.manifest, enabled: row.enabled, drift: row.drift }
+  return {
+    manifest: row.manifest,
+    enabled: row.enabled && !unverified,
+    drift: row.drift,
+  }
 }
 
 /**
@@ -283,9 +319,11 @@ export function pinnedOperation(
   connector: string,
   operation: string
 ): ConnectorOperation | undefined {
-  const row = storedRow(db, connector)
-  if (row === undefined || !row.enabled) return undefined
-  return row.manifest.operations.find((op) => op.name === operation)
+  return withControlView(db, (view) => {
+    const row = storedRow(db, connector, view)
+    if (row === undefined || !row.enabled) return undefined
+    return row.manifest.operations.find((op) => op.name === operation)
+  })
 }
 
 /**
@@ -295,16 +333,20 @@ export function intentBindings(
   db: DatabaseSync,
   intentKind: string
 ): Array<{ connector: string; operation: string }> {
-  return db
-    .prepare("SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC")
-    .all()
-    .flatMap((row) => {
-      const state = storedRow(db, String(row["name"]))
-      if (state === undefined || !state.enabled) return []
-      return state.manifest.operations
-        .filter((op) => op.intentKind === intentKind)
-        .map((op) => ({ connector: state.manifest.name, operation: op.name }))
-    })
+  return withControlView(db, (view) =>
+    db
+      .prepare(
+        "SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC"
+      )
+      .all()
+      .flatMap((row) => {
+        const state = storedRow(db, String(row["name"]), view)
+        if (state === undefined || !state.enabled) return []
+        return state.manifest.operations
+          .filter((op) => op.intentKind === intentKind)
+          .map((op) => ({ connector: state.manifest.name, operation: op.name }))
+      })
+  )
 }
 
 /** Whether a disabled connector declared this kind, without exposing its operation. */
@@ -312,16 +354,18 @@ export function hasDisabledIntentBinding(
   db: DatabaseSync,
   intentKind: string
 ): boolean {
-  const rows = db
-    .prepare("SELECT name FROM connectors WHERE enabled = 0 ORDER BY name ASC")
-    .all()
-  return rows.some((row) => {
-    const state = storedRow(db, String(row["name"]))
-    return (
-      state !== undefined &&
-      !state.enabled &&
-      state.manifest.operations.some((op) => op.intentKind === intentKind)
-    )
+  return withControlView(db, (view) => {
+    const rows = db
+      .prepare("SELECT name FROM connectors ORDER BY name ASC")
+      .all()
+    return rows.some((row) => {
+      const state = storedRow(db, String(row["name"]), view)
+      return (
+        state !== undefined &&
+        !state.enabled &&
+        state.manifest.operations.some((op) => op.intentKind === intentKind)
+      )
+    })
   })
 }
 
@@ -336,7 +380,8 @@ export function checkDrift(
   observedToolNames: string[]
 ): Drift {
   return inTransaction(db, () => {
-    const row = storedRow(db, name)
+    // Reads the stored row only to decide whether to disable it; disabling is always safe.
+    const row = storedRow(db, name, undefined)
     if (row === undefined) {
       throw new Error(`connector ${name} is not pinned`)
     }
@@ -379,17 +424,21 @@ export function resolveTier(
 
 /** Egress entries of enabled connectors, the source of the proxy allowlist (#14). */
 export function egressAllowlist(db: DatabaseSync): EgressEntry[] {
-  const rows = db
-    .prepare("SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC")
-    .all()
-  return rows.flatMap((row) => {
-    const state = storedRow(db, String(row["name"]))
-    if (state === undefined || !state.enabled) return []
-    return state.manifest.egress.hosts.map((entry) => ({
-      connector: state.manifest.name,
-      host: entry.host,
-      methods: [...entry.methods],
-      pathPrefixes: [...entry.pathPrefixes],
-    }))
+  return withControlView(db, (view) => {
+    const rows = db
+      .prepare(
+        "SELECT name FROM connectors WHERE enabled = 1 ORDER BY name ASC"
+      )
+      .all()
+    return rows.flatMap((row) => {
+      const state = storedRow(db, String(row["name"]), view)
+      if (state === undefined || !state.enabled) return []
+      return state.manifest.egress.hosts.map((entry) => ({
+        connector: state.manifest.name,
+        host: entry.host,
+        methods: [...entry.methods],
+        pathPrefixes: [...entry.pathPrefixes],
+      }))
+    })
   })
 }

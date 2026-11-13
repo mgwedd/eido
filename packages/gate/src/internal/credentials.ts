@@ -16,7 +16,7 @@ import type { RecoveryRefusal } from "./recovery"
 import { startSession } from "./sessions"
 import type { Clock, WebSessionKeyPair } from "./sessions"
 import type { Surface } from "./surface"
-import { atomically } from "./transaction"
+import { controlTransaction } from "./control-checkpoint"
 import {
   ES256,
   checkCeremony,
@@ -236,7 +236,7 @@ export function registerCredential(
   const checked = checkRegistration(db, config, registration)
   if (!checked.ok) return refuse(checked.code)
   const { accepted } = checked
-  return atomically(db, () => {
+  return controlTransaction(db, "roster", () => {
     const at = new Date()
     const claimed = claimChallenge(db, registration, accepted, at)
     if (claimed !== undefined) return refuse(claimed)
@@ -320,7 +320,7 @@ export function enrolWithCode(
   if (!checked.ok) return refuse(checked.code)
   const { accepted } = checked
   const at = now()
-  return atomically(db, (): EnrolResult => {
+  return controlTransaction(db, "roster", (): EnrolResult => {
     const claimed = claimChallenge(db, registration, accepted, at)
     if (claimed !== undefined) return refuse(claimed)
     const consumed = consumeEnrolmentCode(db, "phone", code, () => at)
@@ -365,7 +365,7 @@ export function recoverWithKey(
   if (!checked.ok) return refuse(checked.code)
   const { accepted } = checked
   const at = now()
-  return atomically(db, (): RecoverResult => {
+  return controlTransaction(db, "roster", (): RecoverResult => {
     const claimed = claimChallenge(db, registration, accepted, at)
     if (claimed !== undefined) return refuse(claimed)
     const consumed = consumeRecovery(db, ready.keyId, at)
@@ -444,7 +444,7 @@ export function revokeCredential(
   surface: Surface,
   credentialId: string
 ): RevokeResult {
-  return atomically(db, () => {
+  return controlTransaction(db, "roster", () => {
     const refuse = (
       code: Extract<RevokeResult, { ok: false }>["code"]
     ): RevokeResult => {

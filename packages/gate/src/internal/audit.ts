@@ -55,6 +55,15 @@ function toRow(raw: Record<string, unknown>): Row {
   }
 }
 
+/** The row hash of the audit row at `seq`, or undefined when there is none. */
+export function auditRowHash(
+  db: DatabaseSync,
+  seq: number
+): string | undefined {
+  const row = db.prepare("SELECT * FROM audit_log WHERE seq = ?").get(seq)
+  return row === undefined ? undefined : rowHash(toRow(row))
+}
+
 /**
  * Appends one row to the hash chain. Takes only a hash of the detail, never the detail.
  * Runs in its own write transaction, or in a SAVEPOINT when the caller already has one open.

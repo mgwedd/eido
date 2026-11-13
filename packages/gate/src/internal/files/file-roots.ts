@@ -6,6 +6,8 @@ import {
 import type { GateFileRoot, GateFileRoots } from "@eido/schemas"
 import { append } from "../audit"
 import { canonicalize, payloadHash } from "../canonical"
+import { ControlStateError, withControlView } from "../control-checkpoint"
+import type { ControlView } from "../control-checkpoint"
 import {
   approvedControlValue,
   controlApprovalChallenge,
@@ -151,6 +153,13 @@ export function approvedFileRoot(
 
 /** The complete root set only when its owner approval and audit binding still verify. */
 export function approvedFileRoots(db: DatabaseSync): GateFileRoots | undefined {
+  return withControlView(db, (view) => approvedFileRootsIn(db, view))
+}
+
+function approvedFileRootsIn(
+  db: DatabaseSync,
+  view: ControlView | undefined
+): GateFileRoots | undefined {
   try {
     const row = db
       .prepare(
@@ -158,6 +167,11 @@ export function approvedFileRoots(db: DatabaseSync): GateFileRoots | undefined {
       )
       .get()
     if (row === undefined) return undefined
+    if (
+      view !== undefined &&
+      !view.approvalAnchored(String(row["approval_id"]))
+    )
+      return undefined
     const roots = checkedFileRoots(JSON.parse(String(row["payload_json"])))
     const hash = payloadHash(roots)
     const approvalId = String(row["approval_id"])
@@ -182,7 +196,8 @@ export function approvedFileRoots(db: DatabaseSync): GateFileRoots | undefined {
     )
       return undefined
     return roots
-  } catch {
+  } catch (error) {
+    if (error instanceof ControlStateError) throw error
     return undefined
   }
 }

@@ -3,13 +3,20 @@ import type { DatabaseSync } from "node:sqlite"
 import type { GateDecisionRequest } from "@eido/schemas"
 import { verifyChain } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
-import { atomically } from "./transaction"
+import {
+  approvalRefHash,
+  controlChallenge,
+  hexDigest,
+} from "./control-ceremony"
+import {
+  captureControlAssertion,
+  controlTransaction,
+} from "./control-checkpoint"
 import {
   checkCeremony,
   fromBase64url,
   parseAuthenticatorData,
   parseClientData,
-  sha256,
   verifyAssertionSignature,
 } from "./webauthn"
 import type { WebAuthnConfig } from "./webauthn"
@@ -34,23 +41,11 @@ export type ControlApprovalRequest = {
 }
 export type ControlAuthorization = { config: WebAuthnConfig; request: unknown }
 
-function challenge(
-  purpose: string,
-  target: string,
-  id: string,
-  hash: string,
-  nonce: string
-): string {
-  return sha256(
-    canonicalize(["eido.control.v1", purpose, target, id, hash, nonce])
-  ).toString("base64url")
-}
-
 /** Browser challenge for an already prepared signed control change. */
 export function controlApprovalChallenge(
   prepared: PreparedControlApproval
 ): string {
-  return challenge(
+  return controlChallenge(
     prepared.purpose,
     prepared.target,
     prepared.id,
@@ -66,7 +61,7 @@ export function prepareControlApproval(
   target: string,
   payload: unknown
 ): PreparedControlApproval {
-  return atomically(db, () => {
+  return controlTransaction(db, "signed", () => {
     const id = randomUUID()
     const nonce = randomBytes(32).toString("base64url")
     const hash = payloadHash(payload)
@@ -118,7 +113,6 @@ function request(value: unknown): ControlApprovalRequest | undefined {
 const refused = (): never => {
   throw new Error("control approval refused")
 }
-const digest = (text: string): string => sha256(text).toString("hex")
 
 /** Verifies at the mutation boundary; no caller-supplied "verified" object can authorize a write. */
 export function withControlApproval<T>(
@@ -132,7 +126,7 @@ export function withControlApproval<T>(
     approvalId: string
   ) => { result: T; auditSeq: number }
 ): T {
-  return atomically(db, () => {
+  return controlTransaction(db, "signed", () => {
     const signed = request(authorization?.request)
     if (authorization === undefined || signed === undefined) return refused()
     const row = db
@@ -184,7 +178,7 @@ export function withControlApproval<T>(
         (storedCount === 0 && auth.signCount === 0)
       ) ||
       client.challenge !==
-        challenge(purpose, target, signed.id, hash, signed.nonce) ||
+        controlChallenge(purpose, target, signed.id, hash, signed.nonce) ||
       !verifyAssertionSignature(
         Buffer.from(String(credential["public_key"]), "base64url"),
         authBytes,
@@ -193,9 +187,9 @@ export function withControlApproval<T>(
       )
     )
       return refused()
-    const credentialHash = digest(assertion.credentialId)
-    const signatureHash = digest(assertion.signature)
-    const approvalRefHash = payloadHash({
+    const credentialHash = hexDigest(assertion.credentialId)
+    const signatureHash = hexDigest(assertion.signature)
+    const approvalRef = approvalRefHash({
       id: signed.id,
       purpose,
       target,
@@ -203,7 +197,7 @@ export function withControlApproval<T>(
       credentialHash,
       signatureHash,
       signCount: auth.signCount,
-      nonceHash: digest(signed.nonce),
+      nonce: signed.nonce,
     })
     const changed = db
       .prepare(
@@ -211,14 +205,14 @@ export function withControlApproval<T>(
       )
       .run(auth.signCount, assertion.credentialId, storedCount)
     if (Number(changed.changes) !== 1) return refused()
-    const outcome = mutate(approvalRefHash, signed.id)
+    const outcome = mutate(approvalRef, signed.id)
     const consumed = db
       .prepare(
         "UPDATE control_approvals SET used_at = ?, approval_ref_hash = ?, credential_hash = ?, signature_hash = ?, sign_count = ?, audit_seq = ? WHERE id = ? AND used_at IS NULL AND superseded_at IS NULL"
       )
       .run(
         new Date().toISOString(),
-        approvalRefHash,
+        approvalRef,
         credentialHash,
         signatureHash,
         auth.signCount,
@@ -226,6 +220,22 @@ export function withControlApproval<T>(
         signed.id
       )
     if (Number(consumed.changes) !== 1) return refused()
+    captureControlAssertion(db, {
+      approvalId: signed.id,
+      purpose,
+      target,
+      payloadHash: hash,
+      nonce: signed.nonce,
+      approvalRefHash: approvalRef,
+      credentialId: assertion.credentialId,
+      signCount: auth.signCount,
+      auditSeq: outcome.auditSeq,
+      assertion: {
+        authenticatorData: assertion.authenticatorData,
+        clientDataJSON: assertion.clientDataJSON,
+        signature: assertion.signature,
+      },
+    })
     return outcome.result
   })
 }
@@ -250,7 +260,7 @@ export function approvedControlValue(
     row["payload_hash"] !== hash
   )
     return false
-  const ref = payloadHash({
+  const ref = approvalRefHash({
     id,
     purpose,
     target,
@@ -258,7 +268,7 @@ export function approvedControlValue(
     credentialHash: String(row["credential_hash"]),
     signatureHash: String(row["signature_hash"]),
     signCount: Number(row["sign_count"]),
-    nonceHash: digest(String(row["nonce"])),
+    nonce: String(row["nonce"]),
   })
   if (ref !== row["approval_ref_hash"]) return false
   const audit = db

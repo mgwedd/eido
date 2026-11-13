@@ -5,6 +5,7 @@ import type { ConnectorOperation } from "@eido/schemas"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
 import { egressAllowlist, getPinnedManifest } from "./connectors"
+import { ControlStateError } from "./control-checkpoint"
 import { connectorRevocationDeps, refreshGoogleToken } from "./oauth-refresh"
 import type { ConnectorProbe, ProbeOutcome } from "./connector-connect"
 import { authorizedCall } from "./vault/authorized-call"
@@ -163,6 +164,24 @@ function selectedRoute(
   target: URL,
   method: string,
   healthAttempt: ReadAttempt | boolean = false
+): Route {
+  try {
+    return selectedRouteVerified(db, connector, target, method, healthAttempt)
+  } catch (error) {
+    // The pinned manifests are authority: while they do not match the protected checkpoint,
+    // nothing is routed.
+    if (error instanceof ControlStateError)
+      return fail(503, "control_state_unverified")
+    throw error
+  }
+}
+
+function selectedRouteVerified(
+  db: DatabaseSync,
+  connector: string,
+  target: URL,
+  method: string,
+  healthAttempt: ReadAttempt | boolean
 ): Route {
   const state = db
     .prepare(
