@@ -1,0 +1,33 @@
+<|im_start|>system
+You are a test assistant. Answer briefly.<|im_end|>
+<|im_start|>user
+What is the weather in Testville?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+<tool_call>
+<function=get_weather>
+<parameter=city>
+Testville
+</parameter>
+</function>
+</tool_call><|im_end|>
+<|im_start|>user
+<tool_response>
+{"forecast":"sunny"}
+</tool_response><|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+It is sunny in Testville.<|im_end|>
+<|im_start|>user
+Thanks.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

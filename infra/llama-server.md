@@ -63,7 +63,7 @@ The MVP starts on the default. Llama 3.1 8B Q4_0, the earlier stand-in from #69,
 - model.lock says `verified: true`: it passed `llama check-template` on a real host with the pinned build; or
 - this machine has a recorded pass: `llama check-template --model <id>` passed here with this file and build, and wrote `<id> <sha256> <build>` to `<stack dir>/verified-profiles`. A pass for another file hash or another build does not count, so a new pin needs a new pass.
 
-`qwen3.6-35b-a3b` and `gpt-oss-20b` ship `verified: false`. They have no reference prompt fixture yet, so their check covers the template marker and the JSON-schema request but not the rendered prompt. Run `llama check-template --model <id>` once on the host before using them, and run the model eval (#28) before relying on one.
+`qwen3.6-35b-a3b` and `gpt-oss-20b` are `verified: true`: each passed `llama check-template` on the host with b11149 (see "Recorded results"), against a reference prompt written by hand from its template. Run the model eval (#28) before relying on one.
 
 ### Default locations
 
@@ -187,6 +187,17 @@ Launcher on port 18092, outside launchd.
 
 The altered-copy, server-killed and launchd runs below were recorded on the Llama pin; the launcher code they exercise is unchanged.
 
+### Recorded results (2026-11-12, Qwen3.6 35B-A3B and gpt-oss 20B, development Mac: M3 Max, 36 GB)
+
+`llama fetch --model <id>` verified the size and SHA-256 of each file (`gpt-oss-20b-MXFP4.gguf` 12.1 GB, `Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` 22.1 GB), then `llama check-template --model <id>` printed, for each:
+
+- `ok: chat template`
+- `ok: rendered prompt`
+- `ok: JSON-schema request`
+- `ok: template check passed on b11149 with <file>`
+
+Qwen's first run failed `rendered prompt` at character 156 (the empty `<think>` block on assistant turns, above); it passed after the fixture was corrected from the template's `preserve_thinking` branch. gpt-oss passed on the first run.
+
 ### Recorded results (2026-11-02, Llama 3.1 8B pin, development Mac: M3 Max, 36 GB)
 
 These runs used the launcher on port 18091, outside launchd.
@@ -235,6 +246,18 @@ The Gemma 4 reference fixture was written by hand from the Gemma 4 template embe
 - **Reply:** the assistant reply after the tool result continues that turn, with no new header.
 - **Generation prompt:** with thinking off, it is `<|turn>model\n<|channel>thought\n<channel|>`.
 - **`<bos>`:** llama.cpp adds it when it tokenizes, so the fixture leaves it out.
+
+The Qwen3.6 and gpt-oss fixtures were written the same way, from the templates in the Hub's GGUF metadata at the pinned revisions:
+
+- **Qwen3.6 (`<|im_start|>` turns):**
+  - The tool call renders as `<tool_call>\n<function=get_weather>\n<parameter=city>\nTestville\n</parameter>\n</function>\n</tool_call>`, and the tool result becomes a `user` turn holding `<tool_response>`.
+  - llama.cpp sets `preserve_thinking` true by default (`/props` reports `preserve_reasoning`), so every assistant turn carries an empty `<think>\n\n</think>\n\n` block. My first fixture left it out, following the template's default branch, and the check caught it.
+  - The generation prompt with `enable_thinking: false` is `<|im_start|>assistant\n<think>\n\n</think>\n\n`, so the file ends in a blank line.
+- **gpt-oss (harmony):**
+  - The template prints today's date (`strftime_now`), so the fixture writes `{{current_date}}` and the check replaces it with the host's local date (read before and after the request, so a run across midnight still passes).
+  - `reasoning_effort: low` shows as `Reasoning: low`.
+  - The system message becomes the `developer` turn under `# Instructions`.
+  - The tool call and its result are `commentary` messages, with the arguments and the result passed through `tojson`.
 
 Unlike the earlier Llama 3.1 8B pin, whose template dropped the call itself and rendered an empty assistant turn, this template carries the tool call to the model. The Llama fixture stays in `infra/llama/fixtures/` for the benchmark in #532.
 
