@@ -2,6 +2,7 @@
 
 import {
   ChevronRight,
+  Clock,
   Loader2,
   RefreshCw,
   Shield,
@@ -11,6 +12,8 @@ import {
 import Link from "next/link"
 import { useTheme } from "next-themes"
 import * as React from "react"
+
+import type { GateRecoveryWindow } from "@eido/schemas"
 
 import { Alert, AlertDescription } from "@eido/ui/components/alert"
 import { Badge } from "@eido/ui/components/badge"
@@ -27,8 +30,9 @@ import { Skeleton } from "@eido/ui/components/skeleton"
 import { Switch } from "@eido/ui/components/switch"
 import { TooltipProvider } from "@eido/ui/components/tooltip"
 import { InfoTip } from "@/components/info-tip"
-import { expiredUnlockUrl } from "@/lib/auth/unlock"
+import { expiredUnlockUrl, loadCredentialStatus } from "@/lib/auth/unlock"
 import { formatDateTime } from "@/lib/connectors"
+import { formatMaturesIn, recoveryPhase } from "@/lib/recovery"
 import {
   browserPushDevice,
   loadPushStatus,
@@ -87,7 +91,13 @@ import {
 
 type Settled<T> = Exclude<SectionLoad<T>, { status: "unauthenticated" }>
 
+/** The pending recovery from the gate's status, or none; `unavailable` when the status could not be read. */
+type RecoveryLoad =
+  | { status: "ready"; value: GateRecoveryWindow | null }
+  | { status: "unavailable" }
+
 type SettingsData = {
+  recovery: RecoveryLoad
   passkeys: Settled<Passkey[]>
   permissions: Settled<PermissionList>
   backup: Settled<BackupStatus>
@@ -110,7 +120,8 @@ function useSettings(): { state: SettingsState; retry: () => void } {
       loadBackupStatus(controller.signal),
       loadAuditChain(controller.signal),
       loadFileRoots(controller.signal),
-    ]).then(([passkeys, permissions, backup, chain, fileRoots]) => {
+      loadCredentialStatus(controller.signal),
+    ]).then(([passkeys, permissions, backup, chain, fileRoots, credential]) => {
       if (controller.signal.aborted) return
       if (
         passkeys.status === "unauthenticated" ||
@@ -126,6 +137,9 @@ function useSettings(): { state: SettingsState; retry: () => void } {
       }
       setState({
         status: "loaded",
+        recovery: credential.ok
+          ? { status: "ready", value: credential.status.recovery ?? null }
+          : { status: "unavailable" },
         passkeys:
           passkeys.status === "ready"
             ? { status: "ready", value: passkeys.value.passkeys }
@@ -352,7 +366,58 @@ function SectionError({
   )
 }
 
-function PasskeysSection({ load }: { load: SettingsData["passkeys"] }) {
+/** The "Passkey recovery" row: what is pending, and a link to the recovery page. */
+function RecoveryRow({ load, now }: { load: RecoveryLoad; now?: number }) {
+  const [loadedAt] = React.useState(() => now ?? Date.now())
+  const window =
+    load.status === "ready" &&
+    load.value !== null &&
+    recoveryPhase(load.value, loadedAt) !== "expired"
+      ? load.value
+      : null
+  const status =
+    load.status === "unavailable"
+      ? null
+      : window === null
+        ? "No recovery pending"
+        : recoveryPhase(window, loadedAt) === "matured"
+          ? "Pending · matured"
+          : `Pending · matures in ${formatMaturesIn(window, loadedAt)}`
+  return (
+    <Link
+      href="/settings/recovery"
+      className="flex min-h-11 items-center justify-between gap-3 py-2 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      <div className="flex min-w-0 flex-col">
+        <span className="text-sm">Passkey recovery</span>
+        {status === null ? null : (
+          <span role="status" className="text-xs text-muted-foreground">
+            {status}
+          </span>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        {window === null ? null : (
+          <Badge variant="outline">
+            <Clock aria-hidden />
+            Pending
+          </Badge>
+        )}
+        <ChevronRight aria-hidden className="size-4 text-muted-foreground" />
+      </div>
+    </Link>
+  )
+}
+
+function PasskeysSection({
+  load,
+  recovery,
+  now,
+}: {
+  load: SettingsData["passkeys"]
+  recovery: RecoveryLoad
+  now?: number
+}) {
   return (
     <Section
       id="devices"
@@ -412,6 +477,7 @@ function PasskeysSection({ load }: { load: SettingsData["passkeys"] }) {
       ) : (
         <SectionError load={load} what="Passkeys" />
       )}
+      <RecoveryRow load={recovery} now={now} />
     </Section>
   )
 }
@@ -989,11 +1055,14 @@ function SettingsBody({
   onRetry,
   about = aboutInfo(),
   pushDevice,
+  now,
 }: {
   state: SettingsState
   onRetry: () => void
   about?: AboutInfo | null
   pushDevice?: PushDevice
+  /** The time the recovery countdown is measured from; the current time when omitted. */
+  now?: number
 }) {
   if (state.status === "loading")
     return (
@@ -1024,7 +1093,11 @@ function SettingsBody({
       <PhoneRows />
       <AppearanceSection key="appearance" />
       <NotificationsSection key="notifications" device={pushDevice} />
-      <PasskeysSection load={state.passkeys} />
+      <PasskeysSection
+        load={state.passkeys}
+        recovery={state.recovery}
+        now={now}
+      />
       <PermissionsSection load={state.permissions} />
       <DataSection load={state.backup} fileRoots={state.fileRoots} />
       <SimpleFinAccountsSection key="simplefin" />
