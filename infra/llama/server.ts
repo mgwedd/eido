@@ -7,8 +7,9 @@ import type { ModelProfile } from "./lock.ts"
 export const LOOPBACK = "127.0.0.1"
 
 /**
- * The flags measured on the host in #69, with the bind address fixed, then the profile's chat
- * template kwargs and its own flags. `--jinja` applies the model's own chat template from the GGUF;
+ * The flags measured on the host in #69, with the bind address fixed, `--swa-full` (measured in
+ * #732: without it a sliding-window model such as Gemma 4 reuses no prompt prefix under about
+ * 1,200 tokens), then the profile's chat template kwargs and its own flags. `--jinja` applies the model's own chat template from the GGUF;
  * `--chat-template-kwargs` makes the profile's kwargs the default for every templated request, so
  * core and the template check render with them. The lock refuses profile flags that would change
  * the model, the bind or the template.
@@ -42,6 +43,7 @@ export function serverArgs(
     "2048",
     "-t",
     "8",
+    "--swa-full",
     ...(profile.chatTemplateKwargs === undefined
       ? []
       : ["--chat-template-kwargs", JSON.stringify(profile.chatTemplateKwargs)]),
