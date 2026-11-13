@@ -18,6 +18,8 @@ import type {
 import { append } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
 import { approvedFileRoot } from "./files/file-roots"
+import { withControlView } from "./control-checkpoint"
+import type { ControlView } from "./control-checkpoint"
 import {
   approvedControlValue,
   prepareControlApproval,
@@ -628,6 +630,13 @@ function configHash(
 }
 
 function approvedOverlay(db: DatabaseSync): PermissionTable | undefined {
+  return withControlView(db, (view) => approvedOverlayIn(db, view))
+}
+
+function approvedOverlayIn(
+  db: DatabaseSync,
+  view: ControlView | undefined
+): PermissionTable | undefined {
   const row = db
     .prepare(
       "SELECT payload_json, payload_hash, approval_id FROM approved_policy WHERE singleton = 1"
@@ -645,6 +654,10 @@ function approvedOverlay(db: DatabaseSync): PermissionTable | undefined {
       throw new Error("approved policy is missing")
     return undefined
   }
+  // The signed approval must be one the protected checkpoint retains; a row the database alone
+  // vouches for is not authority.
+  if (view !== undefined && !view.approvalAnchored(String(row["approval_id"])))
+    throw new Error("approved policy is not anchored")
   const parsed: unknown = JSON.parse(String(row["payload_json"]))
   const result = parseTable(parsed, "approved policy")
   if (!result.ok) throw new Error("invalid approved policy")

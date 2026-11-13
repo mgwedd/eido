@@ -71,6 +71,12 @@ import { assertFileHelperInstall } from "./internal/files/file-install"
 import { devFlagFromEnv, FileVault } from "./internal/vault/file-vault"
 import type { Vault } from "./internal/vault/vault"
 import { KeychainVault } from "./internal/vault/keychain-vault"
+import { attachControlCheckpoint } from "./internal/control-checkpoint"
+import type {
+  ControlCheckpoint,
+  ControlStore,
+} from "./internal/control-checkpoint"
+import { KeychainControlStore } from "./internal/vault/keychain-checkpoint"
 import type { WebAuthnConfig } from "./internal/webauthn"
 import { initializeProfileAudit } from "./internal/profile-audit"
 import type { ProfileAudit } from "./internal/profile-audit"
@@ -88,6 +94,7 @@ import type { GoogleTarget } from "./internal/google-connect"
 // `pnpm --filter @eido/gate start`.
 
 export const CONTROL_DB_FILE = "eido-control.db"
+export const CONTROL_LOCK_FILE = "eido-control.lock"
 export const GATE_LOG_FILE = "gate.log"
 
 // The data-plane socket is group-accessible so the data-plane user can be given it (#70); the
@@ -196,6 +203,12 @@ export type GateConfig = {
     redirectUri: string
     clientIds: Partial<Record<GoogleTarget, string>>
   }
+  /**
+   * The protected control-state checkpoint (#200, ADR 0005). Present exactly when the vault is the
+   * gate user's Keychain: the checkpoint lives in that Keychain, and the lock file keeps a second
+   * gate off the same checkpoint. Absent with the file dev vault, where nothing is enforced.
+   */
+  controlCheckpoint?: { keychainPath: string; lockPath: string }
   /** The calendar connector's sent record tracker (#21, #290). */
   calendarTracker?: CalendarTracker
   /** Overrides the stored attendees reader for policy (#168, #290). */
@@ -362,6 +375,14 @@ export function gateConfig(
       ? {}
       : { fileHelper: { path: fileHelperPath, sha256: fileHelperSha256 } }),
     ...(vault === undefined ? {} : { vault, profileAudit: { vault, epoch } }),
+    ...(vault?.kind === "keychain"
+      ? {
+          controlCheckpoint: {
+            keychainPath: vault.path,
+            lockPath: join(config.dataDir, CONTROL_LOCK_FILE),
+          },
+        }
+      : {}),
     ...(google === undefined ? {} : { google }),
     ...(port === "" ? {} : { phone: phoneConfig(env, port) }),
     ...(bridge === undefined ? {} : { bridge: bridgeVault(env, bridge) }),
@@ -486,7 +507,9 @@ export type RunningGate = {
 export async function runGate(
   config: GateConfig,
   now: Clock = () => new Date(),
-  vaultFactory: (config: VaultConfig) => Vault = createVault
+  vaultFactory: (config: VaultConfig) => Vault = createVault,
+  controlStoreFactory: (keychainPath: string) => ControlStore = (path) =>
+    new KeychainControlStore({ path })
 ): Promise<RunningGate> {
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
   const log = fileLog(join(config.dataDir, GATE_LOG_FILE))
@@ -499,6 +522,18 @@ export async function runGate(
       brokenAtSeq: chain.brokenAtSeq,
       reason: chain.reason,
     })
+  }
+  // Before anything reads connector, policy or credential authority from the database: it is
+  // used only while it matches the checkpoint held outside it. A mismatch is reported, and every
+  // authority read then refuses until the owner runs supervised recovery.
+  let checkpoint: ControlCheckpoint | undefined
+  if (config.controlCheckpoint !== undefined) {
+    checkpoint = attachControlCheckpoint(db, {
+      store: controlStoreFactory(config.controlCheckpoint.keychainPath),
+      lockPath: config.controlCheckpoint.lockPath,
+    })
+    const denied = checkpoint.denied()
+    if (denied !== undefined) log("control_checkpoint_denied", { reason: denied })
   }
   const servers: Server[] = []
   let notifier: ReturnType<typeof createPushNotifier> | undefined
@@ -785,6 +820,7 @@ export async function runGate(
     await egressProxy?.close()
     await Promise.all(servers.filter((s) => s.listening).map(close))
     stopGate()
+    checkpoint?.close()
     db.close()
     throw error
   }
@@ -798,6 +834,7 @@ export async function runGate(
       await egressProxy?.close()
       await Promise.all(servers.map(close))
       stopGate()
+      checkpoint?.close()
       db.close()
       log("stopped")
     },

@@ -1,3 +1,4 @@
+import { requireControlState } from "./control-checkpoint"
 import type { DatabaseSync } from "node:sqlite"
 import type { GateDecisionRequest, GateRejectReason } from "@eido/schemas"
 import { append } from "./audit"
@@ -209,6 +210,8 @@ export function checkApproval(
   ) {
     return refuse("malformed")
   }
+  // The credential roster is authority: a key the protected checkpoint does not hold is not one.
+  requireControlState(db)
   const credential = db
     .prepare(
       "SELECT public_key, sign_count, revoked_at FROM credentials WHERE credential_id = ?"

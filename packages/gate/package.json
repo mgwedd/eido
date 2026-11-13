@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/main.ts",
+    "control-checkpoint": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/control-checkpoint.ts",
     "enrol-code": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/enrol-code.ts",
     "connect": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/connect.ts",
     "reviewed-manifest": "node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/reviewed-manifest.ts",

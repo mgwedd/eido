@@ -4,6 +4,8 @@ import type { DatabaseSync } from "node:sqlite"
 import type { Intent } from "@eido/schemas"
 import { append } from "./audit"
 import { canonicalize, payloadHash } from "./canonical"
+import { ControlStateError, withControlView } from "./control-checkpoint"
+import type { ControlView } from "./control-checkpoint"
 import {
   approvedControlValue,
   prepareControlApproval,
@@ -289,6 +291,13 @@ export function isIntentSensitive(
 export function approvedSensitivityOverlay(
   db: DatabaseSync
 ): SensitivityOverlay | undefined {
+  return withControlView(db, (view) => approvedSensitivityIn(db, view))
+}
+
+function approvedSensitivityIn(
+  db: DatabaseSync,
+  view: ControlView | undefined
+): SensitivityOverlay | undefined {
   try {
     const row = db
       .prepare(
@@ -296,6 +305,8 @@ export function approvedSensitivityOverlay(
       )
       .get()
     if (row === undefined) return undefined
+    if (view !== undefined && !view.approvalAnchored(String(row["approval_id"])))
+      throw new Error("approved sensitivity is not anchored")
     const parsed: unknown = JSON.parse(String(row["payload_json"]))
     const result = parseSensitivityOverlay(parsed, "approved sensitivity")
     if (!result.ok) throw new Error("invalid approved sensitivity overlay")
@@ -325,7 +336,9 @@ export function approvedSensitivityOverlay(
       throw new Error("approved sensitivity is stale")
     }
     return result.overlay
-  } catch {
+  } catch (error) {
+    // An unverified control state denies; any other fault leaves no overlay, as before.
+    if (error instanceof ControlStateError) throw error
     return undefined
   }
 }

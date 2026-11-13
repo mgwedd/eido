@@ -1,3 +1,4 @@
+import { requireControlState } from "./control-checkpoint"
 import type { DatabaseSync } from "node:sqlite"
 import type { GateWebAuthnAssertion } from "@eido/schemas"
 import { decodeAssertion, signCountAccepted } from "./approvals"
@@ -141,6 +142,8 @@ function checkLogin(
   if (Date.parse(String(challenge["expires_at"])) <= at.getTime()) {
     return refuse("expired_challenge")
   }
+  // The credential roster is authority: a key the protected checkpoint does not hold is not one.
+  requireControlState(db)
   const credential = db
     .prepare(
       "SELECT public_key, sign_count, revoked_at FROM credentials WHERE credential_id = ?"
