@@ -36,14 +36,26 @@ function runSync(command: KeychainCommand): GateKeychainResult {
   return checked.value
 }
 
+/** True for a regular file owned by `uid` that no other user can read or write. */
+export function isPrivateOwnedFile(
+  info: { isFile: boolean; uid: number; mode: number },
+  uid: number | undefined
+): boolean {
+  return (
+    info.isFile &&
+    uid !== undefined &&
+    info.uid === uid &&
+    (info.mode & 0o077) === 0
+  )
+}
+
 function checkPrivateFile(path: string): void {
   const info = lstatSync(path)
-  const uid = process.getuid?.()
   if (
-    !info.isFile() ||
-    uid === undefined ||
-    info.uid !== uid ||
-    (info.mode & 0o077) !== 0
+    !isPrivateOwnedFile(
+      { isFile: info.isFile(), uid: info.uid, mode: info.mode },
+      process.getuid?.()
+    )
   )
     throw new Error(
       "Keychain file must exist, be private, and belong to the gate user"

@@ -239,6 +239,61 @@ describe("status and inspection", () => {
   })
 })
 
+describe("reverifying stored assertions", () => {
+  function withProvenance(change: (entry: Record<string, unknown>) => void) {
+    const record = realRecord()
+    const entries = record["provenance"] as Record<string, unknown>[]
+    const first = entries[0]
+    if (first === undefined) throw new Error("no provenance")
+    change(first)
+    store.value = JSON.stringify(record)
+  }
+
+  it("inspection reports a signature from a passkey that is not on the roster", () => {
+    withProvenance((entry) => {
+      entry["credentialId"] = "not-enrolled"
+    })
+    expect(inspectControlCheckpoint(db, store)).toMatchObject({
+      reason: "reverify_failed",
+    })
+  })
+
+  it("inspection reports stored assertion bytes that are not valid base64url", () => {
+    withProvenance((entry) => {
+      entry["assertion"] = {
+        authenticatorData: "***",
+        clientDataJSON: "***",
+        signature: "***",
+      }
+    })
+    expect(inspectControlCheckpoint(db, store)).toMatchObject({
+      reason: "reverify_failed",
+    })
+  })
+
+  it("inspection reports a sign count that differs from the signed authenticator data", () => {
+    withProvenance((entry) => {
+      entry["signCount"] = 99
+    })
+    expect(inspectControlCheckpoint(db, store)).toMatchObject({
+      reason: "reverify_failed",
+    })
+  })
+})
+
+describe("reads inside a caller's transaction", () => {
+  it("verifies without opening or committing a transaction of its own", () => {
+    realRecord()
+    db.exec("BEGIN")
+    try {
+      expect(() => requireControlState(db)).not.toThrow()
+      expect(db.isTransaction).toBe(true)
+    } finally {
+      db.exec("ROLLBACK")
+    }
+  })
+})
+
 describe("the transaction protocol", () => {
   it("lets a nested control change join the outer transaction", () => {
     realRecord()

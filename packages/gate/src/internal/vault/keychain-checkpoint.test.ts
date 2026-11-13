@@ -11,7 +11,7 @@ const mocked = vi.hoisted(() => ({
 }))
 vi.mock("node:child_process", () => ({ spawnSync: mocked.spawnSync }))
 
-import { KeychainControlStore } from "./keychain-checkpoint"
+import { KeychainControlStore, isPrivateOwnedFile } from "./keychain-checkpoint"
 
 const NOT_FOUND = -25300
 let dir: string
@@ -139,5 +139,29 @@ describe("KeychainControlStore", () => {
   it("is macOS only", () => {
     Object.defineProperty(process, "platform", { value: "linux" })
     expect(() => open()).toThrow("Keychain control store requires macOS")
+  })
+})
+
+describe("isPrivateOwnedFile", () => {
+  const mine = { isFile: true, uid: 501, mode: 0o100600 }
+
+  it("accepts a regular file owned by the user with no group or other access", () => {
+    expect(isPrivateOwnedFile(mine, 501)).toBe(true)
+  })
+
+  it("refuses a file another user owns", () => {
+    expect(isPrivateOwnedFile({ ...mine, uid: 0 }, 501)).toBe(false)
+  })
+
+  it("refuses a file that others can read", () => {
+    expect(isPrivateOwnedFile({ ...mine, mode: 0o100644 }, 501)).toBe(false)
+  })
+
+  it("refuses a directory or link", () => {
+    expect(isPrivateOwnedFile({ ...mine, isFile: false }, 501)).toBe(false)
+  })
+
+  it("refuses when the user id is unknown", () => {
+    expect(isPrivateOwnedFile(mine, undefined)).toBe(false)
   })
 })
