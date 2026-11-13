@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto"
 import { execFile } from "node:child_process"
 import {
   existsSync,
@@ -195,6 +196,24 @@ describe("conversation digest timer", () => {
 })
 
 describe("coreApiConfig", () => {
+  test("reads the role public key, and refuses one that is not Ed25519", () => {
+    const { publicKey } = generateKeyPairSync("ed25519")
+    const der = publicKey.export({ format: "der", type: "spki" })
+    const config = coreApiConfig({
+      EIDO_CORE_ROLE_PUBLIC_KEY: der.toString("base64"),
+    })
+    expect(config.rolePublicKey?.asymmetricKeyType).toBe("ed25519")
+    const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 })
+    expect(() =>
+      coreApiConfig({
+        EIDO_CORE_ROLE_PUBLIC_KEY: rsa.publicKey
+          .export({ format: "der", type: "spki" })
+          .toString("base64"),
+      })
+    ).toThrow("Ed25519")
+    expect(coreApiConfig({}).rolePublicKey).toBeUndefined()
+  })
+
   test("reads the bind address, port, base path and extra hosts", () => {
     expect(
       coreApiConfig({

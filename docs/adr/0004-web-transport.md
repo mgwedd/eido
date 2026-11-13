@@ -32,7 +32,7 @@ An origin is scheme, host and port, so `https://<host>.ts.net:8443` is a differe
 ## Trust model
 
 - The tailnet is trusted for core reads and profile writes. Core has no auth and no per-request Unlock; it relies on the tailnet and a loopback bind, and answers only its configured Host headers (421 otherwise, #153).
-- Auth0 roles (`docs/auth0-setup.md`) guard the pages Next serves only. `/api/core` is not behind Next and has no role or session check; any client that can reach the tailnet origin can call it (open issue #613).
+- Auth0 roles (`docs/auth0-setup.md`) guard the pages Next serves only. `/api/core` is not behind Next, so core checks the role itself on state-changing requests from a signed assertion (ADR 0010).
 - Approvals, the audit log and settings need the gate's passkey session (WebAuthn, #15; 12-hour session, #99).
 - `Tailscale-User-Login` is informational: no auth depends on it.
 

@@ -26,6 +26,8 @@ import { ask } from "./ask/ask"
 import type { AskDeps } from "./ask/types"
 import { coverageLabel } from "./ask/answer"
 import type { AskFigure } from "@eido/schemas"
+import type { KeyObject } from "node:crypto"
+import { rolePublicKey } from "./api/caller-role"
 import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
 import type { SimpleFinSyncer } from "./api/simplefin-sync-route"
@@ -121,6 +123,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_CORE_PORT",
   "EIDO_CORE_BASE_PATH",
   "EIDO_CORE_ALLOWED_HOSTS",
+  "EIDO_CORE_ROLE_PUBLIC_KEY",
   "EIDO_GMAIL_PROXY_URL",
   "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
   "EIDO_DIGEST_SECTION_TOKENS",
@@ -198,6 +201,11 @@ export type CoreApiConfig = {
   basePath: string
   /** Host headers answered besides the listen address, such as the one serve forwards. */
   allowedHosts: string[]
+  /**
+   * The web app's role-assertion public key (`EIDO_CORE_ROLE_PUBLIC_KEY`, base64 SPKI). Set when
+   * Auth0 roles are in use: state-changing requests then need a signed role (ADR 0010).
+   */
+  rolePublicKey?: KeyObject
   /** Present only when a local llama-server host and port are configured. */
   modelBaseUrl?: string
   /**
@@ -296,6 +304,9 @@ export function coreApiConfig(env: Env): CoreApiConfig {
       .split(",")
       .map((host) => host.trim())
       .filter((host) => host !== ""),
+    ...(env["EIDO_CORE_ROLE_PUBLIC_KEY"]
+      ? { rolePublicKey: rolePublicKey(env["EIDO_CORE_ROLE_PUBLIC_KEY"]) }
+      : {}),
     conversationDigestIdleTtlMinutes: positiveInteger(
       env["EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES"] ??
         String(DEFAULT_DIGEST_IDLE_TTL_MINUTES),
