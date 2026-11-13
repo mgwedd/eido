@@ -9,6 +9,7 @@ import {
   RUN,
   SETTINGS,
   KEYCHAIN,
+  MODEL,
   SECRET,
   fixture,
   world,
@@ -695,5 +696,136 @@ describe("setup", () => {
       args: ["gmail"],
     })
     expect(parseArgs(["gate", "rm"])).toBeUndefined()
+  })
+})
+
+describe("bootstrap (#648)", () => {
+  const PLIST = "/home/u/Library/LaunchAgents/com.eido.stack.plist"
+  const ENROL = `Enter the code on your phone at https://${HOST}:8443/enroll`
+  const enrolCalls = (w: ReturnType<typeof world>) =>
+    w.interactive.filter((c) => c.args.at(-1) === "./src/enrol-code.ts")
+
+  it("takes a fresh install to the first-run page with no exported variables", async () => {
+    const w = world({ env: {}, settings: { text: FILLED } })
+    expect(await main(["bootstrap"], w.deps)).toBe(0)
+    expect(w.interactive.map((c) => [c.command, ...c.args].join(" "))).toEqual([
+      "pnpm install --frozen-lockfile",
+      "/bin/node --disable-warning=ExperimentalWarning /repo/infra/llama/bin.ts fetch --build-only",
+      "/bin/node --disable-warning=ExperimentalWarning --import ./src/ts-hooks.ts ./src/enrol-code.ts",
+    ])
+    expect(w.procs.map((p) => p.spec.name)).toEqual(["gate", "core", "web"])
+    expect(w.builds()).toBe(1)
+    expect(w.launchctlCalls).toEqual([
+      "print gui/501/com.eido.stack",
+      `bootstrap gui/501 ${PLIST}`,
+    ])
+    expect(w.out.at(-1)).toBe(ENROL)
+  })
+
+  it("runs pnpm through the pnpm that started it when npm_execpath names it", async () => {
+    const w = world({
+      env: { npm_execpath: "/pnpm/pnpm.cjs" },
+      settings: { text: FILLED },
+    })
+    await main(["bootstrap"], w.deps)
+    expect(w.interactive[0]).toMatchObject({
+      command: "/bin/node",
+      args: ["/pnpm/pnpm.cjs", "install", "--frozen-lockfile"],
+    })
+  })
+
+  it("starts without a model: the download is the Admin page's (#628)", async () => {
+    const w = world({ settings: { text: FILLED } })
+    w.stats.delete(MODEL)
+    expect(await main(["bootstrap"], w.deps)).toBe(0)
+    expect(w.procs.every((p) => p.alive)).toBe(true)
+    expect(enrolCalls(w)).toHaveLength(1)
+  })
+
+  it("still refuses to start on a model that fails its pin", async () => {
+    const w = world({ settings: { text: FILLED } })
+    w.stats.set(MODEL, { isFile: true, mode: 0o100644, size: 12 })
+    expect(await main(["boot"], w.deps)).toBe(1)
+    expect(w.procs).toEqual([])
+  })
+
+  it("issues no code once a passkey exists", async () => {
+    const w = world({ settings: { text: FILLED }, enrolled: true })
+    expect(await main(["bootstrap"], w.deps)).toBe(0)
+    expect(enrolCalls(w)).toEqual([])
+    expect(w.out.at(-1)).toBe(
+      "A passkey is already enrolled, so no first-run code is issued. To add a phone or recover after a lost one: pnpm stack:gate enrol-code"
+    )
+  })
+
+  it("stops at the first step that fails and starts nothing", async () => {
+    const w = world({ settings: { text: FILLED } })
+    w.deps.interactive = () => Promise.resolve(7)
+    expect(await main(["bootstrap"], w.deps)).toBe(7)
+    expect(w.err).toEqual([
+      "FAIL: pnpm install --frozen-lockfile exited with code 7",
+    ])
+    expect(w.procs).toEqual([])
+    expect(w.launchctlCalls).toEqual([])
+  })
+
+  it("stops when the llama build cannot be installed", async () => {
+    const w = world({ settings: { text: FILLED } })
+    w.deps.interactive = (command, args) =>
+      Promise.resolve(args.includes("--build-only") ? 1 : 0)
+    expect(await main(["bootstrap"], w.deps)).toBe(1)
+    expect(w.procs).toEqual([])
+  })
+
+  it("leaves a running stack alone when run again", async () => {
+    const w = world({ settings: { text: FILLED } })
+    await main(["bootstrap"], w.deps)
+    w.out.length = 0
+    expect(await main(["bootstrap"], w.deps)).toBe(0)
+    expect(w.builds()).toBe(1)
+    expect(w.out).toContain(
+      "boot: gate, core, web already running; the stack is left as it is"
+    )
+  })
+
+  it("off macOS starts the stack and points at #455 for login start", async () => {
+    const w = world({ settings: { text: FILLED } })
+    w.deps.platform = "linux"
+    const root = "/home/u/.local/share/eido-dev"
+    w.stats.set(`${root}/models/gemma-4-26B_q4_0-it.gguf`, {
+      isFile: true,
+      mode: 0o100644,
+      size: 14439363584,
+    })
+    const files = w.deps.files
+    w.deps.files = {
+      ...files,
+      exists: (path) =>
+        path.endsWith("/gate-data-plane.sock") || files.exists(path),
+    }
+    const exec = w.deps.exec
+    w.deps.exec = (command, args) =>
+      command === `${root}/llama.cpp/b11149/llama-server`
+        ? Promise.resolve({
+            code: 0,
+            stdout: "",
+            stderr: "version: 0.5.0-dev (build 11149, commit d2e54583c)",
+          })
+        : exec(command, args)
+    const code = await main(["bootstrap"], w.deps)
+    expect(w.err).toEqual([])
+    expect(code).toBe(0)
+    expect(w.launchctlCalls).toEqual([])
+    expect(w.out).toContain(
+      "Start at login is macOS only so far (Task Scheduler on Windows is #455); after a restart run pnpm stack:prod --background."
+    )
+  })
+
+  it("rejects arguments", () => {
+    expect(parseArgs(["bootstrap", "--background"])).toBeUndefined()
+    expect(parseArgs(["bootstrap"])).toEqual({
+      command: "bootstrap",
+      flags: { serve: true, background: false },
+    })
   })
 })

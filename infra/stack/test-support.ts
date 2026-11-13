@@ -67,6 +67,8 @@ export function world(
     /** launchctl answers bootstrap or bootout with this failure. */
     launchctlFails?: "bootstrap" | "bootout"
     uid?: number
+    /** The gate reports a passkey on /passkey/status. */
+    enrolled?: boolean
   } = {}
 ) {
   const procs: Proc[] = []
@@ -239,11 +241,20 @@ export function world(
       if (url === "http://127.0.0.1:8080/health")
         return Promise.resolve(new Response(null, { status: 200 }))
       const proc = procs.find((p) => p.alive && p.spec.healthUrl === url)
-      return proc === undefined
-        ? Promise.reject(new Error("ECONNREFUSED"))
-        : Promise.resolve(
-            new Response(null, { status: proc.spec.name === "web" ? 204 : 200 })
+      if (proc === undefined) return Promise.reject(new Error("ECONNREFUSED"))
+      if (proc.spec.name === "gate")
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              enrolled: options.enrolled === true,
+              revoked: false,
+              sessionExpiresAt: null,
+            })
           )
+        )
+      return Promise.resolve(
+        new Response(null, { status: proc.spec.name === "web" ? 204 : 200 })
+      )
     },
     clock: {
       now: () => now,
