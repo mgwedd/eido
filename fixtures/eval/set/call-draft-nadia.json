@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-nadia",
+  "request": "Draft a reply choosing the 21st.",
+  "messages": [
+    {
+      "id": "call-draft-nadia-1@example.invalid",
+      "from": "nadia@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-12T12:15:00.000Z",
+      "subject": "Schedule for the move",
+      "body": "The movers can come on the 14th or the 21st. Which day suits you?"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["nadia@example.invalid"],
+          "subject": "Re: Schedule for the move",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

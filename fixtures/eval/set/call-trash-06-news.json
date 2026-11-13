@@ -1,0 +1,25 @@
+{
+  "id": "call-trash-06-news",
+  "request": "Send this email to the trash.",
+  "messages": [
+    {
+      "id": "call-trash-06-news-1@example.invalid",
+      "from": "news@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-14T09:15:00.000Z",
+      "subject": "Old newsletter",
+      "body": "Automated message about: old newsletter."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.trash",
+        "args": {
+          "messageIds": ["call-trash-06-news-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

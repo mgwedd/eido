@@ -1,0 +1,28 @@
+{
+  "id": "call-forward-bram",
+  "request": "Forward this email to team-f@example.invalid.",
+  "messages": [
+    {
+      "id": "call-forward-bram-1@example.invalid",
+      "from": "bram@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-25T09:15:00.000Z",
+      "subject": "Meeting minutes",
+      "body": "Minutes from yesterday's meeting."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.forward",
+        "args": {
+          "messageId": "call-forward-bram-1@example.invalid",
+          "messageSha256": "2eeed38681ca63b6441d80b2a1a24bbb50713db84c00867aea7b3dc5de3541da",
+          "to": ["team-f@example.invalid"]
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.note"]
+}

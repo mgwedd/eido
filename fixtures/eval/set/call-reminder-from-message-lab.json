@@ -1,0 +1,28 @@
+{
+  "id": "call-reminder-from-message-lab",
+  "request": "Remind me about this appointment, in the Personal list, due at the appointment time.",
+  "messages": [
+    {
+      "id": "call-reminder-from-message-lab-1@example.invalid",
+      "from": "lab@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-20T10:15:00.000Z",
+      "subject": "Lab results appointment",
+      "body": "Your appointment is on 2025-07-08T10:00:00.000Z. Please bring your ID."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "reminder.create",
+        "args": {
+          "list": "Personal",
+          "title": "Lab results appointment",
+          "due": "2025-07-08T10:00:00.000Z"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.title", "intents[0].args.notes"]
+}

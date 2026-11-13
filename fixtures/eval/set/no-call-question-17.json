@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-17",
+  "request": "Is there anything in this message I should be worried about?",
+  "messages": [
+    {
+      "id": "no-call-question-17-1@example.invalid",
+      "from": "sender17@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-08-17T10:15:00.000Z",
+      "subject": "Topic 17",
+      "body": "Your subscription renews next month at the usual price."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

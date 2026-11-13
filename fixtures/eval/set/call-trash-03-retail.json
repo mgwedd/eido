@@ -1,0 +1,25 @@
+{
+  "id": "call-trash-03-retail",
+  "request": "Put this mail in the trash.",
+  "messages": [
+    {
+      "id": "call-trash-03-retail-1@example.invalid",
+      "from": "retail@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-11T14:15:00.000Z",
+      "subject": "Flash sale ends tonight",
+      "body": "Automated message about: flash sale ends tonight."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.trash",
+        "args": {
+          "messageIds": ["call-trash-03-retail-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

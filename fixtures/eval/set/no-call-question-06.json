@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-06",
+  "request": "What is the sender's phone number in this message?",
+  "messages": [
+    {
+      "id": "no-call-question-06-1@example.invalid",
+      "from": "sender6@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-06T15:15:00.000Z",
+      "subject": "Topic 6",
+      "body": "Call me on the office line any weekday morning."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

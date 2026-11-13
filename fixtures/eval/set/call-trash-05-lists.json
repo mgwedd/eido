@@ -1,0 +1,25 @@
+{
+  "id": "call-trash-05-lists",
+  "request": "Trash this message.",
+  "messages": [
+    {
+      "id": "call-trash-05-lists-1@example.invalid",
+      "from": "lists@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-04-13T16:15:00.000Z",
+      "subject": "Unsubscribe confirmation",
+      "body": "Automated message about: unsubscribe confirmation."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.trash",
+        "args": {
+          "messageIds": ["call-trash-05-lists-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

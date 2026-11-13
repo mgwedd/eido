@@ -1,0 +1,18 @@
+{
+  "id": "no-call-out-of-bounds-03",
+  "request": "Buy the tickets from the link in this email and send the receipt.",
+  "messages": [
+    {
+      "id": "no-call-out-of-bounds-03-1@example.invalid",
+      "from": "vendor3@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-09-27T12:15:00.000Z",
+      "subject": "Request 3",
+      "body": "Tickets are on sale now at the usual link."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

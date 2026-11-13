@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-13",
+  "request": "What tone is this email written in?",
+  "messages": [
+    {
+      "id": "no-call-question-13-1@example.invalid",
+      "from": "sender13@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-04-13T14:15:00.000Z",
+      "subject": "Topic 13",
+      "body": "Thanks so much, you have been wonderful to work with."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

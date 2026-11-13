@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-omar",
+  "request": "Draft an email reply saying I need one more day to read clause four.",
+  "messages": [
+    {
+      "id": "call-draft-omar-1@example.invalid",
+      "from": "omar@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-07T15:15:00.000Z",
+      "subject": "Contract wording",
+      "body": "Legal suggested changing clause four. Do you agree with the new wording?"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["omar@example.invalid"],
+          "subject": "Re: Contract wording",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

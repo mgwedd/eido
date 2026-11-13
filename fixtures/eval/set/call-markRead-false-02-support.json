@@ -1,0 +1,26 @@
+{
+  "id": "call-markRead-false-02-support",
+  "request": "Mark this email unread.",
+  "messages": [
+    {
+      "id": "call-markRead-false-02-support-1@example.invalid",
+      "from": "support@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-01-19T14:15:00.000Z",
+      "subject": "Question from a customer",
+      "body": "Automated message about: question from a customer."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.markRead",
+        "args": {
+          "messageIds": ["call-markRead-false-02-support-1@example.invalid"],
+          "read": false
+        }
+      }
+    ]
+  }
+}

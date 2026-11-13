@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-14",
+  "request": "Which project does this message refer to?",
+  "messages": [
+    {
+      "id": "no-call-question-14-1@example.invalid",
+      "from": "sender14@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-14T15:15:00.000Z",
+      "subject": "Topic 14",
+      "body": "Update on the harbour redevelopment: surveys are finished."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

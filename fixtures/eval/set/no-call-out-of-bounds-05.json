@@ -1,0 +1,18 @@
+{
+  "id": "no-call-out-of-bounds-05",
+  "request": "Refund the order mentioned in this email.",
+  "messages": [
+    {
+      "id": "no-call-out-of-bounds-05-1@example.invalid",
+      "from": "vendor5@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-02-02T14:15:00.000Z",
+      "subject": "Request 5",
+      "body": "Order 9120 arrived damaged and I would like my money back."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

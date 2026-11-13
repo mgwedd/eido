@@ -1,0 +1,27 @@
+{
+  "id": "call-reminder-02",
+  "request": "Remind me to \"Send expense report\" in my Work list at 2025-05-02T16:00:00.000Z.",
+  "messages": [
+    {
+      "id": "call-reminder-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-15T13:15:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "reminder.create",
+        "args": {
+          "list": "Work",
+          "title": "Send expense report",
+          "due": "2025-05-02T16:00:00.000Z"
+        }
+      }
+    ]
+  }
+}

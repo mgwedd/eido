@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-04",
+  "request": "When is the invoice due?",
+  "messages": [
+    {
+      "id": "no-call-question-04-1@example.invalid",
+      "from": "sender4@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-04-04T13:15:00.000Z",
+      "subject": "Topic 4",
+      "body": "Invoice 3310 is payable within thirty days of the invoice date."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

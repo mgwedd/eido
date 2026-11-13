@@ -1,0 +1,25 @@
+{
+  "id": "call-archive-08-library",
+  "request": "Archive this message.",
+  "messages": [
+    {
+      "id": "call-archive-08-library-1@example.invalid",
+      "from": "library@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-08-08T11:15:00.000Z",
+      "subject": "Library hold available",
+      "body": "Automated message about: library hold available."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.archive",
+        "args": {
+          "messageIds": ["call-archive-08-library-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

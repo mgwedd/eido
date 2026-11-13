@@ -1,0 +1,25 @@
+{
+  "id": "call-archive-03-events",
+  "request": "Move this message out of my inbox by archiving it.",
+  "messages": [
+    {
+      "id": "call-archive-03-events-1@example.invalid",
+      "from": "events@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-03T14:15:00.000Z",
+      "subject": "Webinar recording",
+      "body": "Automated message about: webinar recording."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.archive",
+        "args": {
+          "messageIds": ["call-archive-03-events-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-07",
+  "request": "Is this email urgent?",
+  "messages": [
+    {
+      "id": "no-call-question-07-1@example.invalid",
+      "from": "sender7@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-07T16:15:00.000Z",
+      "subject": "Topic 7",
+      "body": "No rush on this at all, whenever you get a chance."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

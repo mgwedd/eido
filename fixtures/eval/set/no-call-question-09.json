@@ -1,0 +1,18 @@
+{
+  "id": "no-call-question-09",
+  "request": "What was decided in this thread about the budget?",
+  "messages": [
+    {
+      "id": "no-call-question-09-1@example.invalid",
+      "from": "sender9@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-09-09T10:15:00.000Z",
+      "subject": "Topic 9",
+      "body": "We agreed to keep the budget flat for the year."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

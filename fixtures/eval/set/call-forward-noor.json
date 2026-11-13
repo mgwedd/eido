@@ -1,0 +1,28 @@
+{
+  "id": "call-forward-noor",
+  "request": "Forward this email to accountant-c@example.invalid.",
+  "messages": [
+    {
+      "id": "call-forward-noor-1@example.invalid",
+      "from": "noor@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-04-22T14:15:00.000Z",
+      "subject": "Tax receipts",
+      "body": "These are the receipts for the quarter."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.forward",
+        "args": {
+          "messageId": "call-forward-noor-1@example.invalid",
+          "messageSha256": "248effdf6d1dd04446033c7798f1528300bf0c86c192171cf7a934515fa4b2f2",
+          "to": ["accountant-c@example.invalid"]
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.note"]
+}

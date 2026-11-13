@@ -1,0 +1,28 @@
+{
+  "id": "call-draft-lena",
+  "request": "Draft a reply to this message that confirms dinner.",
+  "messages": [
+    {
+      "id": "call-draft-lena-1@example.invalid",
+      "from": "lena@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-06T14:15:00.000Z",
+      "subject": "Dinner on Saturday",
+      "body": "Are we still on for dinner on Saturday? I booked a table for seven."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.draft",
+        "args": {
+          "to": ["lena@example.invalid"],
+          "subject": "Re: Dinner on Saturday",
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body", "intents[0].args.inReplyToMessageId"]
+}

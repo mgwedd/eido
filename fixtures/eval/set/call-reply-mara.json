@@ -1,0 +1,30 @@
+{
+  "id": "call-reply-mara",
+  "request": "Reply yes to this email and ask Mara to book it.",
+  "messages": [
+    {
+      "id": "call-reply-mara-1@example.invalid",
+      "from": "mara@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-08-17T09:15:00.000Z",
+      "subject": "Room booking",
+      "body": "The meeting room is free on Tuesday at ten. Shall I book it?"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.reply",
+        "args": {
+          "messageId": "call-reply-mara-1@example.invalid",
+          "messageSha256": "704e0a8d46e35bc27f328c2ca3c8e4fb9bd93ea1c8e3d907c9c0b1fd92e976e3",
+          "replyAll": false,
+          "to": ["mara@example.invalid"],
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body"]
+}

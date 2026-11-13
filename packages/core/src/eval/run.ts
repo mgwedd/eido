@@ -42,7 +42,8 @@ function seedCase(testCase: EvalCase): {
       title: message.subject,
       body: message.body,
       occurredAt: message.date,
-      headers: { messageId: message.id },
+      // One thread per case, so the context pack holds every message of a multi-message case.
+      headers: { messageId: message.id, threadId: testCase.id },
       addresses: [
         { role: "from" as const, address: message.from },
         ...message.to.map((address) => ({ role: "to" as const, address })),

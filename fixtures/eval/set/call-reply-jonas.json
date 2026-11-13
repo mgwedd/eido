@@ -1,0 +1,30 @@
+{
+  "id": "call-reply-jonas",
+  "request": "Send a reply thanking Jonas for the feedback.",
+  "messages": [
+    {
+      "id": "call-reply-jonas-1@example.invalid",
+      "from": "jonas@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-16T16:15:00.000Z",
+      "subject": "Feedback on the draft",
+      "body": "I read your draft. The introduction is strong but the ending is rushed."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.reply",
+        "args": {
+          "messageId": "call-reply-jonas-1@example.invalid",
+          "messageSha256": "eca45de36aeee3eb3f38175e870d9dda34730be423d0b4af135cb5adcc32ccfb",
+          "replyAll": false,
+          "to": ["jonas@example.invalid"],
+          "body": "x"
+        }
+      }
+    ]
+  },
+  "free": ["intents[0].args.body"]
+}

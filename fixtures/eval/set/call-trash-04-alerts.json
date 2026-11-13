@@ -1,0 +1,25 @@
+{
+  "id": "call-trash-04-alerts",
+  "request": "Trash this notification email.",
+  "messages": [
+    {
+      "id": "call-trash-04-alerts-1@example.invalid",
+      "from": "alerts@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-03-12T15:15:00.000Z",
+      "subject": "Duplicate notification",
+      "body": "Automated message about: duplicate notification."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "email.trash",
+        "args": {
+          "messageIds": ["call-trash-04-alerts-1@example.invalid"]
+        }
+      }
+    ]
+  }
+}
