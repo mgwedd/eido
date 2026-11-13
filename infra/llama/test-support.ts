@@ -12,10 +12,12 @@ import type { RunResult } from "./verify.ts"
 export const LOCK = readFileSync(
   new URL("../model.lock", import.meta.url),
   "utf8"
-).replace(
-  /(\n\[profile (?:qwen3\.6-35b-a3b|gpt-oss-20b)\]\n(?:(?!\n\[).)*?\nverified: )true/gs,
-  "$1false"
 )
+  .replace(/\r\n/g, "\n") // a Windows checkout has CRLF line ends
+  .replace(
+    /(\n\[profile (?:qwen3\.6-35b-a3b|gpt-oss-20b)\]\n(?:(?!\n\[).)*?\nverified: )true/gs,
+    "$1false"
+  )
 export const SHA =
   "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
 export const SIZE = 14439363584
