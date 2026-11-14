@@ -40,7 +40,7 @@
         "$TURBO_ROOT$/apps/web/components/**",
         "$TURBO_ROOT$/apps/web/lib/**"
       ],
-      "env": ["EIDO_FILE_HELPER"],
+      "env": ["EIDO_FILE_HELPER", "EIDO_EVENTKIT_HELPER"],
       "outputs": ["coverage/**"]
     },
     "test:watch": {

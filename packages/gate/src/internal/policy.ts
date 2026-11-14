@@ -282,6 +282,8 @@ export function kindTier(
     policy.overlay?.tiers[kind] ??
     policy.shipped.tiers[kind] ??
     operation.defaultTier
+  // Apple writes always require a signature; neither local tier configuration nor an overlay can lower this floor.
+  if (kind.startsWith("apple.")) return { tier: "approval" }
   // Moving a file to Trash always needs approval; a forbidden manifest was refused above.
   if (kind === "file.delete") return { tier: "approval" }
   if (configured === "auto" && operation.reversibility !== "reversible") {

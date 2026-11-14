@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AppleEventCreateIntent",
+  "description": "Create an event in an Apple calendar through EventKit. Requires signed approval.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "apple.event_create"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["sensitive"],
+      "maxLength": 20
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "calendarId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "start": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 40,
+          "format": "date-time"
+        },
+        "end": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 40,
+          "format": "date-time"
+        },
+        "allDay": {
+          "type": "boolean"
+        },
+        "location": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20000
+        }
+      },
+      "required": ["calendarId", "title", "start", "end", "allDay"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

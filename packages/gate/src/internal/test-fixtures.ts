@@ -203,6 +203,23 @@ const ARGS = {
     documentTitle: "Invoice #123",
     documentSource: "a scan",
   },
+  "apple.event_create": {
+    calendarId: "cal-1",
+    title: "Calendar meeting",
+    start: "2026-11-14T10:00:00Z",
+    end: "2026-11-14T11:00:00Z",
+    allDay: false,
+  },
+  "apple.event_update": {
+    id: "event-1",
+    calendarId: "cal-1",
+    title: "Calendar meeting",
+    start: "2026-11-14T10:00:00Z",
+    end: "2026-11-14T11:00:00Z",
+    allDay: false,
+  },
+  "apple.reminder_create": { listId: "list-1", title: "Call back" },
+  "apple.reminder_complete": { id: "reminder-1" },
 } satisfies { [K in IntentKind]: Extract<Intent, { kind: K }>["args"] }
 
 /** A valid intent of `kind`, with `args` overriding the sample args; parsed, not cast. */
