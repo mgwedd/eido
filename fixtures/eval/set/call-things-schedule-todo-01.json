@@ -1,0 +1,38 @@
+{
+  "id": "call-things-schedule-todo-01",
+  "request": "Reschedule the todo about the car service to 2025-07-14.",
+  "messages": [
+    {
+      "id": "call-things-schedule-todo-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-07T09:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "todos": [
+    {
+      "id": "Nx8cWr2tLb5Ye9KdQm4HsT",
+      "title": "Book the car service",
+      "status": "open"
+    },
+    {
+      "id": "Je4pVa7hZn1Cs6TgXu3RbD",
+      "title": "Wash the car",
+      "status": "open"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.schedule_todo",
+        "args": {
+          "id": "Nx8cWr2tLb5Ye9KdQm4HsT",
+          "when": "2025-07-14"
+        }
+      }
+    ]
+  }
+}

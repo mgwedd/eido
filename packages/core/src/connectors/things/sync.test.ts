@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest"
 import type { ThingsClient } from "@eido/gate"
 import type { GateThingsTodoItem } from "@eido/schemas"
 import { openDataDb } from "../../ledger/db"
+import { listOpenTodos } from "../../context/todos"
 import { listObligations } from "../../ledger/store"
 import { syncThingsTodos, THINGS_CONNECTOR, THINGS_MIME } from "./sync"
 import type { IngestEntities } from "../ingest-entity"
@@ -263,6 +264,56 @@ describe("Things sync", () => {
       action: "Things to-do",
       status: "dismissed",
       party: null,
+    })
+  })
+
+  describe("open to-do facts (#744)", () => {
+    const entities: IngestEntities = {
+      entityForAccount: () => Promise.resolve(null),
+      getDefaultEntityId: () => Promise.resolve("entity-default"),
+    }
+    const clientFor = (item: GateThingsTodoItem): ThingsClient => ({
+      listTodos: () => Promise.resolve([item]),
+      getItem: () => Promise.resolve(item),
+      listByDeadline: () => Promise.resolve([]),
+      listProjects: () => Promise.resolve([]),
+      listAreas: () => Promise.resolve([]),
+      listTags: () => Promise.resolve([]),
+    })
+
+    test("a synced open to-do is listed with its id and due date; once completed it is not", async () => {
+      const db = setupTestDb()
+      await syncThingsTodos({ db, client: clientFor(sampleTodo), entities })
+      expect(listOpenTodos(db, "file the tax return").todos).toEqual([
+        {
+          id: "todo-abc-123",
+          title: "File tax return",
+          status: "open",
+          due: "2026-04-15",
+        },
+      ])
+      await syncThingsTodos({
+        db,
+        client: clientFor({
+          ...sampleTodo,
+          status: "completed",
+          modificationDate: "2026-04-02T12:00:00Z",
+        }),
+        entities,
+      })
+      expect(listOpenTodos(db, "file the tax return").todos).toEqual([])
+    })
+
+    test("a to-do indexed before the facts table existed gets its facts on the next sync", async () => {
+      const db = setupTestDb()
+      const client = clientFor(sampleTodo)
+      await syncThingsTodos({ db, client, entities })
+      db.exec("DROP TRIGGER things_todo_facts_no_delete")
+      db.exec("DELETE FROM things_todo_facts")
+      expect(listOpenTodos(db, "tax return").todos).toEqual([])
+      const again = await syncThingsTodos({ db, client, entities })
+      expect(again.itemsIngested).toBe(0)
+      expect(listOpenTodos(db, "tax return").todos).toHaveLength(1)
     })
   })
 })

@@ -1,0 +1,38 @@
+{
+  "id": "call-things-cancel-todo-02",
+  "request": "Cancel the todo to water the balcony plants.",
+  "messages": [
+    {
+      "id": "call-things-cancel-todo-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-04T09:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "todos": [
+    {
+      "id": "Ud6bRe1xNq8Ky4PtMj3ZcF",
+      "title": "Water the balcony plants",
+      "status": "open",
+      "due": "2025-06-10"
+    },
+    {
+      "id": "Wy2gHs5vLc9Ta7DnXk4BrJ",
+      "title": "Balcony railing repair",
+      "status": "open"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.cancel_todo",
+        "args": {
+          "id": "Ud6bRe1xNq8Ky4PtMj3ZcF"
+        }
+      }
+    ]
+  }
+}

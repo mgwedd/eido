@@ -15,5 +15,12 @@ export type {
   PackBlock,
   PackMember,
 } from "./pack-store"
-export { TOOL_AREAS, detectAreas, selectTools } from "./tools"
+export {
+  ID_DEPENDENT_THINGS_KINDS,
+  TOOL_AREAS,
+  detectAreas,
+  selectTools,
+} from "./tools"
 export type { ContextBudgets, TaskType, ToolArea } from "./tools"
+export { listOpenTodos, renderTodosBlock } from "./todos"
+export type { OpenTodos, TodoLine } from "./todos"

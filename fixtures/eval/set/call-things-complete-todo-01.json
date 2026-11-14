@@ -1,0 +1,37 @@
+{
+  "id": "call-things-complete-todo-01",
+  "request": "Mark the todo to send the tax receipts as done.",
+  "messages": [
+    {
+      "id": "call-things-complete-todo-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-05T09:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "todos": [
+    {
+      "id": "Ra9nTc3eQw6Lh2YsBp5MxG",
+      "title": "Send the tax receipts to the accountant",
+      "status": "open"
+    },
+    {
+      "id": "Vk7dJf1uXm4Zb8GtNe2HsK",
+      "title": "Sort the tax folder",
+      "status": "open"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.complete_todo",
+        "args": {
+          "id": "Ra9nTc3eQw6Lh2YsBp5MxG"
+        }
+      }
+    ]
+  }
+}

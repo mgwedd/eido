@@ -4,7 +4,8 @@ import type { IntentClient, IntentState, Tier } from "@eido/gate"
 import { INTENT_KINDS } from "@eido/schemas"
 import type { GateIntentInjection, Intent } from "@eido/schemas"
 import { assembleContext } from "../context/assemble"
-import { selectTools } from "../context/tools"
+import { listOpenTodos, renderTodosBlock } from "../context/todos"
+import { ID_DEPENDENT_THINGS_KINDS, selectTools } from "../context/tools"
 import { PromptTooLargeError } from "../inference/errors"
 import { INJECTION_REASONS } from "../inference/fence"
 import type { InferenceQueue } from "../inference/queue"
@@ -150,12 +151,21 @@ export async function proposeIntents(
   if (!deps.limiter.tryAcquire())
     return { ...base, status: "rate_limited", reason: "max_proposals_per_hour" }
 
-  const kinds =
+  const picked =
     request.kinds === undefined
       ? selectTools({ text: request.text, task: "propose" }, INTENT_TOOLS).map(
           (tool) => tool.function.name
         )
       : [...new Set(request.kinds)].sort()
+  // The Todos block exists only when an id-dependent kind is offered. A to-do intent needs an id
+  // the model was shown, so with no matching to-do those kinds are not offered at all.
+  const todos = picked.some((k) => ID_DEPENDENT_THINGS_KINDS.has(k))
+    ? listOpenTodos(deps.db, request.text)
+    : { todos: [], matched: 0 }
+  const kinds =
+    todos.todos.length === 0
+      ? picked.filter((k) => !ID_DEPENDENT_THINGS_KINDS.has(k))
+      : picked
   const pin =
     request.connector === undefined ? {} : { connector: request.connector }
   const assembled = await assembleContext(
@@ -171,7 +181,13 @@ export async function proposeIntents(
     return { ...base, status: "refused", reason: assembled.reason }
   const pack = assembled
   const referable = referableMessages(deps.db, pack)
-  const input = { request: request.text, pack, referable, kinds }
+  const input = {
+    request: request.text,
+    pack,
+    referable,
+    kinds,
+    todos: renderTodosBlock(todos),
+  }
   const draft = request.replyDraft
     ? draftBounds(deps.db, referable, request.seed)
     : undefined
@@ -181,6 +197,7 @@ export async function proposeIntents(
   const context = {
     kinds: new Set(kinds),
     referable,
+    todoIds: new Set(todos.todos.map((t) => t.id)),
     ...(draft === undefined ? {} : { draft }),
   }
   const injection = injectionFlag(pack)

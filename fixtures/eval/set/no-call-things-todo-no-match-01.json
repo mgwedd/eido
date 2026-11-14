@@ -1,0 +1,30 @@
+{
+  "id": "no-call-things-todo-no-match-01",
+  "request": "Cancel the todo about the piano tuning.",
+  "messages": [
+    {
+      "id": "no-call-things-todo-no-match-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-11T09:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "todos": [
+    {
+      "id": "Ax5rLd8cNw2Ye6TbKq9HsV",
+      "title": "Book dentist appointment",
+      "status": "open"
+    },
+    {
+      "id": "Qm3tZk7vXe1Pa4GjBc8WnR",
+      "title": "Renew passport",
+      "status": "open"
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

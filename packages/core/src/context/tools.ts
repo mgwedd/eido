@@ -44,15 +44,24 @@ const READ_ACTIONS = new Set([
 // labels from its authenticated trash receipt, so models never construct this intent directly.
 const GATE_DERIVED_ACTIONS = new Set(["untrash"])
 
-// These Things verbs act on an existing todo and require its `id`. The proposal path never shows
-// the model a Things id (the context pack holds mail, not todos; see #744), so the model could only
-// invent one. They stay unoffered until the pack carries todos.
-const ID_DEPENDENT_THINGS_KINDS = new Set([
-  "things.cancel_todo",
-  "things.complete_todo",
-  "things.schedule_todo",
-  "things.update_todo",
-])
+// These Things verbs act on an existing todo and require its `id`. The model only knows an id from
+// the Todos block of the pack (see `listOpenTodos`), so each is offered only when the request names
+// the action and a Things area word, and the caller drops the offer when no todo matched (#744).
+const ID_DEPENDENT_THINGS_VERBS: Record<string, RegExp> = {
+  "things.cancel_todo":
+    /\b(cancel(l?ed|l?ing)?|drop|abandon(ed)?|scrap(ped)?)\b/i,
+  "things.complete_todo":
+    /\b(complet(e|es|ed|ing)|finish(es|ed|ing)?|done|(check|tick)(ed)?\s+off)\b/i,
+  "things.schedule_todo":
+    /\b(schedul(e|es|ed|ing)|reschedul(e|es|ed|ing)|postpon(e|es|ed|ing)|defer(red|ring)?|snooze)\b/i,
+  "things.update_todo":
+    /\b(updat(e|es|ed|ing)|renam(e|es|ed|ing)|edit(s|ed|ing)?|chang(e|es|ed|ing)|retitle)\b/i,
+}
+
+/** The Things kinds whose args carry the id of an existing todo. */
+export const ID_DEPENDENT_THINGS_KINDS: ReadonlySet<string> = new Set(
+  Object.keys(ID_DEPENDENT_THINGS_VERBS)
+)
 
 /** Money movement and permanent deletes are never offered, whatever the catalog holds. */
 const FORBIDDEN_SEGMENT =
@@ -66,8 +75,10 @@ function isForbidden(tool: ToolDef): boolean {
   return segments(tool).some((s) => FORBIDDEN_SEGMENT.test(s))
 }
 
-function isIdDependentThings(tool: ToolDef): boolean {
-  return ID_DEPENDENT_THINGS_KINDS.has(tool.function.name.toLowerCase())
+/** An id-dependent Things kind is offered only when the request names its action. */
+function idKindNamed(tool: ToolDef, text: string): boolean {
+  const verbs = ID_DEPENDENT_THINGS_VERBS[tool.function.name.toLowerCase()]
+  return verbs !== undefined && verbs.test(text)
 }
 
 function isRead(tool: ToolDef): boolean {
@@ -100,7 +111,12 @@ export function selectTools(
       if (isForbidden(tool)) return false
       if (GATE_DERIVED_ACTIONS.has(segments(tool).at(-1)?.toLowerCase() ?? ""))
         return false
-      if (isIdDependentThings(tool)) return false
+      if (ID_DEPENDENT_THINGS_KINDS.has(tool.function.name.toLowerCase()))
+        return (
+          request.task === "propose" &&
+          areas.has("things") &&
+          idKindNamed(tool, request.text)
+        )
       if (isRead(tool)) return true
       if (request.task !== "propose") return false
       const area = areaOf(tool)

@@ -1,7 +1,7 @@
 import { INTENT_KINDS } from "@eido/schemas"
 import { describe, expect, test } from "vitest"
 import type { ToolDef } from "../inference/types"
-import { detectAreas, selectTools } from "./tools"
+import { ID_DEPENDENT_THINGS_KINDS, detectAreas, selectTools } from "./tools"
 
 const tool = (name: string): ToolDef => ({
   type: "function",
@@ -149,26 +149,34 @@ describe("selectTools", () => {
       expect(detectAreas(text)).not.toContain("things")
   })
 
-  test("the id-dependent Things kinds are never offered, whatever the request says", () => {
-    const idKinds = [
+  test("an id-dependent Things kind is offered only for its action, in a Things request, to propose", () => {
+    const offered = (text: string, task: "propose" | "ask" = "propose") =>
+      names(selectTools({ text, task }, CATALOG)).filter((n) =>
+        ID_DEPENDENT_THINGS_KINDS.has(n)
+      )
+    expect(offered("cancel my passport todo")).toEqual(["things.cancel_todo"])
+    expect(offered("mark the dentist task as done")).toEqual([
+      "things.complete_todo",
+    ])
+    expect(offered("reschedule the report task to Friday")).toEqual([
+      "things.schedule_todo",
+    ])
+    expect(offered("rename the garden todo to Garden shed")).toEqual([
+      "things.update_todo",
+    ])
+    expect(offered("complete, cancel, reschedule and update my todo")).toEqual([
       "things.cancel_todo",
       "things.complete_todo",
       "things.schedule_todo",
       "things.update_todo",
-    ]
-    for (const task of ["propose", "ask"] as const)
-      expect(
-        names(
-          selectTools(
-            {
-              text: "complete, cancel, reschedule and update my todo task, and add a new project",
-              task,
-            },
-            CATALOG
-          )
-        ).filter((n) => idKinds.includes(n))
-      ).toEqual([])
-    expect(INTENT_KINDS).toEqual(expect.arrayContaining(idKinds))
+    ])
+    // Add-only, no Things word, and the ask path get none.
+    expect(offered("add a todo to call the dentist")).toEqual([])
+    expect(offered("cancel the meeting with Ana")).toEqual([])
+    expect(offered("cancel my passport todo", "ask")).toEqual([])
+    expect(INTENT_KINDS).toEqual(
+      expect.arrayContaining([...ID_DEPENDENT_THINGS_KINDS])
+    )
   })
 
   test("output order does not depend on catalog order", () => {

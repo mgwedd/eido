@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { validateIntentResult } from "@eido/schemas"
 import { validateIntent } from "@eido/schemas"
 import type { Intent } from "@eido/schemas"
+import { THINGS_CONNECTOR, THINGS_MIME } from "../connectors/things/sync"
 import { openDataDb } from "../ledger/db"
 import { ingestBatch } from "../index/ingest"
 import { createInferenceQueue } from "../inference/queue"
@@ -56,7 +57,50 @@ function seedCase(testCase: EvalCase): {
     documents,
     nextCursor: "done",
   })
+  seedTodos(db, testCase)
   return { db, seed: documents[0]?.sha256 ?? "" }
+}
+
+/** Index the case's to-dos the way the Things sync does, so the real pack builder lists them. */
+function seedTodos(
+  db: ReturnType<typeof openDataDb>,
+  testCase: EvalCase
+): void {
+  const todos = testCase.todos ?? []
+  if (todos.length === 0) return
+  const documents = todos.map((todo) => ({
+    sha256: createHash("sha256")
+      .update(`${testCase.id}\n${todo.id}\n${todo.title}\n${todo.status}`)
+      .digest("hex"),
+    source: THINGS_CONNECTOR,
+    sourceRef: `things:///show?id=${encodeURIComponent(todo.id)}`,
+    mime: THINGS_MIME,
+    entityId: "eval-entity",
+    title: todo.title,
+    body: todo.title,
+    occurredAt: "2025-01-01T00:00:00.000Z",
+  }))
+  ingestBatch(db, {
+    connector: THINGS_CONNECTOR,
+    stream: `${testCase.id}-todos`,
+    documents,
+    heads: documents.map((d) => ({
+      source: d.source,
+      sourceRef: d.sourceRef,
+      sha256: d.sha256,
+    })),
+    nextCursor: "done",
+  })
+  const insert = db.prepare(
+    "INSERT INTO things_todo_facts (sha256, todo_id, status, due_date) VALUES (?, ?, ?, ?)"
+  )
+  for (const [i, todo] of todos.entries())
+    insert.run(
+      documents[i]?.sha256 ?? "",
+      todo.id,
+      todo.status,
+      todo.due ?? null
+    )
 }
 
 export async function runEval(options: EvalOptions): Promise<EvalReport> {

@@ -1,0 +1,39 @@
+{
+  "id": "call-things-schedule-todo-02",
+  "request": "Postpone the todo to call the landlord until tomorrow.",
+  "messages": [
+    {
+      "id": "call-things-schedule-todo-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-08T09:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "todos": [
+    {
+      "id": "Hc6qBt9wNe3Ys1RkXd7MaZ",
+      "title": "Call the landlord about the boiler",
+      "status": "open",
+      "due": "2025-06-09"
+    },
+    {
+      "id": "Lw2fKj5vPa8Zx4TnCe6GhU",
+      "title": "Pay the parking fee",
+      "status": "open"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.schedule_todo",
+        "args": {
+          "id": "Hc6qBt9wNe3Ys1RkXd7MaZ",
+          "when": "tomorrow"
+        }
+      }
+    ]
+  }
+}

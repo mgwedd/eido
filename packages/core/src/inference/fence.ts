@@ -29,7 +29,7 @@ const INVISIBLE =
 
 // An opening or closing `material` or `summary` tag in any case or spacing, after NFKC has
 // folded fullwidth and small forms of `<` and `/` to ASCII.
-const FENCE_TAG = /<(?=\s*\/?\s*(?:material|summary)(?![a-z0-9_-]))/giu
+const FENCE_TAG = /<(?=\s*(?:\/\s*)?(?:material|summary)(?![a-z0-9_-]))/giu
 
 /** Stands in for `<` in a defused tag: it reads the same to a person and opens nothing. */
 const DEFUSED_LT = "\u2039"
