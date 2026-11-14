@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 13
+export const SCHEMA_VERSION = 14
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -224,6 +224,20 @@ CREATE INDEX transactions_posted ON transactions(posted_at);
   `
 ALTER TABLE accounts ADD COLUMN backfill_pending INTEGER NOT NULL DEFAULT 0
   CHECK (backfill_pending IN (0, 1));
+`,
+  // v14: status and due date of each indexed Things to-do version, so the proposal path can list
+  // the open ones (#744). A to-do version with no row here has unknown status and is never listed.
+  `
+CREATE TABLE things_todo_facts (
+  sha256 TEXT PRIMARY KEY REFERENCES documents(sha256),
+  todo_id TEXT NOT NULL CHECK (length(todo_id) > 0),
+  status TEXT NOT NULL CHECK (status IN ('open', 'completed', 'canceled')),
+  due_date TEXT
+);
+CREATE TRIGGER things_todo_facts_no_update BEFORE UPDATE ON things_todo_facts
+BEGIN SELECT RAISE(ABORT, 'things to-do facts are immutable'); END;
+CREATE TRIGGER things_todo_facts_no_delete BEFORE DELETE ON things_todo_facts
+BEGIN SELECT RAISE(ABORT, 'things to-do facts are immutable'); END;
 `,
 ]
 

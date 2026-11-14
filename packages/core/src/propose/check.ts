@@ -1,5 +1,6 @@
 import { validateIntentResult } from "@eido/schemas"
 import type { Intent } from "@eido/schemas"
+import { ID_DEPENDENT_THINGS_KINDS } from "../context/tools"
 import { parseAddress } from "./draft-recipients"
 import type { DraftBounds } from "./draft-recipients"
 import type { ProposalFailure, ReferableMessage } from "./prompt"
@@ -12,6 +13,8 @@ export interface CheckContext {
   /** The intent kinds offered for the request. */
   kinds: ReadonlySet<string>
   referable: readonly ReferableMessage[]
+  /** The ids of the to-dos shown in the Todos block. A to-do intent may name only these. */
+  todoIds?: ReadonlySet<string>
   /**
    * Set for a reply draft: every `email.draft` must go only to people on the seed's thread, with
    * no bcc, and reply only to the seed message.
@@ -55,6 +58,19 @@ function referenceFailures(
   if (typeof hash === "string" && !hashes.has(hash))
     unknown(`${at}.args.messageSha256`)
   return failures
+}
+
+/** An intent on an existing to-do must carry an id the Todos block showed. */
+function todoFailures(
+  intent: Intent,
+  at: string,
+  shown: ReadonlySet<string>
+): ProposalFailure[] {
+  if (!ID_DEPENDENT_THINGS_KINDS.has(intent.kind)) return []
+  const id = (intent.args as Record<string, unknown>)["id"]
+  return typeof id === "string" && shown.has(id)
+    ? []
+    : [{ code: "unknown_reference", path: `${at}.args.id` }]
 }
 
 function draftFailures(
@@ -124,6 +140,7 @@ export function checkReply(
       return [{ code: "kind_not_offered", path: `${at}.kind` }]
     return [
       ...referenceFailures(intent, at, context),
+      ...todoFailures(intent, at, context.todoIds ?? new Set()),
       ...(context.draft === undefined
         ? []
         : draftFailures(intent, at, context.draft)),

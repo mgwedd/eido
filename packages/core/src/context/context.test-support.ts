@@ -125,3 +125,46 @@ export function generateThread(
   }
   return docs
 }
+
+export interface TodoSpec {
+  id: string
+  title: string
+  status?: "open" | "completed" | "canceled"
+  due?: string
+  /** The Things modification date, which orders to-dos of equal match. */
+  at?: string
+}
+
+/** Index synthetic Things to-dos the way the sync does: a document, its head and its facts. */
+export function indexTodos(db: DatabaseSync, specs: TodoSpec[]): void {
+  const documents = specs.map((spec) => ({
+    sha256: sha(`todo:${spec.id}:${spec.status ?? "open"}`),
+    source: "things",
+    sourceRef: `things:///show?id=${encodeURIComponent(spec.id)}`,
+    mime: "application/x-eido-things-todo",
+    title: spec.title,
+    body: spec.title,
+    occurredAt: spec.at ?? "2030-01-01T00:00:00.000Z",
+  }))
+  ingestBatch(db, {
+    connector: "things",
+    stream: "todos",
+    documents,
+    heads: documents.map((d) => ({
+      source: d.source,
+      sourceRef: d.sourceRef,
+      sha256: d.sha256,
+    })),
+    nextCursor: "c",
+  })
+  const insert = db.prepare(
+    "INSERT INTO things_todo_facts (sha256, todo_id, status, due_date) VALUES (?, ?, ?, ?)"
+  )
+  for (const [i, spec] of specs.entries())
+    insert.run(
+      documents[i]?.sha256 ?? "",
+      spec.id,
+      spec.status ?? "open",
+      spec.due ?? null
+    )
+}

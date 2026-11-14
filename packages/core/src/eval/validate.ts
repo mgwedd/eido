@@ -1,5 +1,5 @@
 import { validateIntent } from "@eido/schemas"
-import type { EvalCase, EvalMessage, Verdicts } from "./types"
+import type { EvalCase, EvalMessage, EvalTodo, Verdicts } from "./types"
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -33,6 +33,24 @@ function parseMessage(value: unknown, path: string): EvalMessage {
   }
 }
 
+function parseTodo(value: unknown, path: string): EvalTodo {
+  if (!record(value)) return fail(path, "expected an object")
+  if (
+    value.status !== "open" &&
+    value.status !== "completed" &&
+    value.status !== "canceled"
+  )
+    return fail(`${path}.status`, 'expected "open", "completed" or "canceled"')
+  return {
+    id: string(value.id, `${path}.id`),
+    title: string(value.title, `${path}.title`),
+    status: value.status,
+    ...(value.due === undefined
+      ? {}
+      : { due: string(value.due, `${path}.due`) }),
+  }
+}
+
 export function parseEvalCase(value: unknown, source = "case"): EvalCase {
   if (!record(value)) return fail(source, "expected an object")
   const id = string(value.id, `${source}.id`)
@@ -44,6 +62,17 @@ export function parseEvalCase(value: unknown, source = "case"): EvalCase {
   )
   if (messages.length === 0)
     return fail(`${source}.messages`, "must not be empty")
+  let todos: EvalTodo[] | undefined
+  if (value.todos !== undefined) {
+    if (!Array.isArray(value.todos))
+      return fail(`${source}.todos`, "expected an array")
+    todos = value.todos.map((item, i) =>
+      parseTodo(item, `${source}.todos[${String(i)}]`)
+    )
+    const ids = todos.map((t) => t.id)
+    if (new Set(ids).size !== ids.length)
+      return fail(`${source}.todos`, "ids must be unique")
+  }
   if (
     value.kind !== "call" &&
     value.kind !== "no_call" &&
@@ -103,6 +132,7 @@ export function parseEvalCase(value: unknown, source = "case"): EvalCase {
     id,
     request,
     messages,
+    ...(todos === undefined ? {} : { todos }),
     kind: value.kind,
     expected: { intents },
     ...(forbidden === undefined ? {} : { forbidden }),

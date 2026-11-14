@@ -1,0 +1,42 @@
+{
+  "id": "call-things-complete-todo-02",
+  "request": "I finished the garden hose task.",
+  "messages": [
+    {
+      "id": "call-things-complete-todo-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-06T09:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "todos": [
+    {
+      "id": "Mb5xQe8rYn2Cw6LtHd9PsA",
+      "title": "Replace the garden hose",
+      "status": "open"
+    },
+    {
+      "id": "Gt1kZv4jWa7Nc3BhRf8XuL",
+      "title": "Mow the lawn",
+      "status": "open"
+    },
+    {
+      "id": "Ps3yHd6mKe9Tb2QwVn5ZcR",
+      "title": "Garden hose reel",
+      "status": "completed"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.complete_todo",
+        "args": {
+          "id": "Mb5xQe8rYn2Cw6LtHd9PsA"
+        }
+      }
+    ]
+  }
+}

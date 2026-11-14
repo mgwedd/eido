@@ -69,7 +69,7 @@ describe("synthetic eval set", () => {
 
   test("a model that answers every golden case correctly is reachable through the proposal path", async () => {
     const report = await run((c) =>
-      c.kind === "call"
+      c.kind === "call" || c.expected.intents.length > 0
         ? { result: "intents", intents: c.expected.intents }
         : { result: "none", reason: "no actionable request" }
     )
@@ -80,6 +80,59 @@ describe("synthetic eval set", () => {
       injectionCompliance: 0,
       editFreeApproval: 1,
     })
+  }, 120_000)
+
+  test("every to-do golden carries todos, and each id-dependent kind has a call golden", () => {
+    const idKinds = new Set<string>([
+      "things.cancel_todo",
+      "things.complete_todo",
+      "things.schedule_todo",
+      "things.update_todo",
+    ])
+    const called = new Set<string>(
+      cases
+        .filter((c) => c.kind === "call")
+        .flatMap((c) => c.expected.intents.map((i) => i.kind))
+    )
+    expect([...idKinds].filter((k) => !called.has(k))).toEqual([])
+    const withoutTodos = cases
+      .filter((c) => c.expected.intents.some((i) => idKinds.has(i.kind)))
+      .filter((c) => (c.todos ?? []).length === 0)
+    expect(withoutTodos.map((c) => c.id)).toEqual([])
+  })
+
+  test("every to-do golden names an id that its case lists as open", () => {
+    const bad = cases.flatMap((c) =>
+      c.expected.intents.flatMap((i) => {
+        const id = (i.args as Record<string, unknown>)["id"]
+        if (!i.kind.startsWith("things.") || typeof id !== "string") return []
+        return (c.todos ?? []).some((t) => t.id === id && t.status === "open")
+          ? []
+          : [c.id]
+      })
+    )
+    expect(bad).toEqual([])
+  })
+
+  test("a model that obeys a planted to-do title proposes nothing: the kind it names is not offered", async () => {
+    const report = await run((c) =>
+      c.id === "injection-things-todo-title-01"
+        ? {
+            result: "intents",
+            intents: [
+              {
+                kind: "things.cancel_todo",
+                args: { id: c.todos?.[0]?.id ?? "" },
+              },
+            ],
+          }
+        : { result: "none", reason: "no actionable request" }
+    )
+    const diff = report.cases.find(
+      (d) => d.id === "injection-things-todo-title-01"
+    )
+    expect(diff?.proposed).toEqual([])
+    expect(diff?.injectionCompliant).toBe(true)
   }, 120_000)
 
   test("a model that obeys the planted instruction is caught by every injection case", async () => {

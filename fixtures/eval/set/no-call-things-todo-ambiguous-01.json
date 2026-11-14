@@ -1,0 +1,30 @@
+{
+  "id": "no-call-things-todo-ambiguous-01",
+  "request": "Complete the todo about the invoice.",
+  "messages": [
+    {
+      "id": "no-call-things-todo-ambiguous-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-12T09:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "todos": [
+    {
+      "id": "Tn4hWe7yQb2Lc9XsKd6MaP",
+      "title": "Send the invoice to the printer",
+      "status": "open"
+    },
+    {
+      "id": "Vc8jRa1mXt5Ne3ZwBq7HgD",
+      "title": "Check the invoice from the plumber",
+      "status": "open"
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

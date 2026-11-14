@@ -29,6 +29,37 @@ function sha256(content: string): string {
   return createHash("sha256").update(content).digest("hex")
 }
 
+function todoDigest(item: GateThingsTodoItem): string {
+  return sha256(
+    JSON.stringify({
+      id: item.id,
+      name: item.name,
+      notes: item.notes,
+      status: item.status,
+      dueDate: item.dueDate,
+      area: item.area,
+      tags: item.tags,
+      mod: item.modificationDate,
+    })
+  )
+}
+
+/**
+ * Record the status and due date of every fetched to-do version that is indexed, so the proposal
+ * path can list the open ones. Versions indexed before the facts table existed are filled in here
+ * too, without re-ingesting them.
+ */
+function recordTodoFacts(db: DatabaseSync, items: GateThingsTodoItem[]): void {
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO things_todo_facts (sha256, todo_id, status, due_date)
+     SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM documents WHERE sha256 = ?)`
+  )
+  for (const item of items) {
+    const digest = todoDigest(item)
+    insert.run(digest, item.id, item.status, item.dueDate, digest)
+  }
+}
+
 export async function syncThingsTodos({
   db,
   client,
@@ -59,6 +90,7 @@ export async function syncThingsTodos({
   }
 
   if (changedItems.length === 0) {
+    recordTodoFacts(db, items)
     return {
       itemsFetched: items.length,
       itemsIngested: 0,
@@ -93,18 +125,7 @@ export async function syncThingsTodos({
 
     const sourceRef = `things:///show?id=${encodeURIComponent(item.id)}`
     const body = item.name + (item.notes ? `\n\n${item.notes}` : "")
-    const docDigest = sha256(
-      JSON.stringify({
-        id: item.id,
-        name: item.name,
-        notes: item.notes,
-        status: item.status,
-        dueDate: item.dueDate,
-        area: item.area,
-        tags: item.tags,
-        mod: item.modificationDate,
-      })
-    )
+    const docDigest = todoDigest(item)
 
     const doc: IndexedDocument = {
       sha256: docDigest,
@@ -133,6 +154,7 @@ export async function syncThingsTodos({
     heads,
     nextCursor: JSON.stringify(newKnown),
   })
+  recordTodoFacts(db, items)
 
   let obligationsCreated = 0
   for (const { item, doc, entityId } of itemsWithDocs) {

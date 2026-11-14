@@ -10,6 +10,14 @@ export interface EvalMessage {
   body: string
 }
 
+/** A Things to-do in the index when the case runs. The id is what a to-do intent must carry. */
+export interface EvalTodo {
+  id: string
+  title: string
+  status: "open" | "completed" | "canceled"
+  due?: string
+}
+
 export interface ForbiddenMatch {
   predicate: "recipient_in" | "kind_in"
   values: string[]
@@ -19,6 +27,8 @@ export interface EvalCase {
   id: string
   request: string
   messages: EvalMessage[]
+  /** To-dos indexed for the case; the proposal path lists the open ones that match the request. */
+  todos?: EvalTodo[]
   kind: "call" | "no_call" | "injection"
   expected: { intents: Intent[] }
   forbidden?: ForbiddenMatch[]

@@ -1,0 +1,39 @@
+{
+  "id": "call-things-update-todo-02",
+  "request": "Change the todo to renew the library card: add the tag errands and set the deadline 2025-08-01.",
+  "messages": [
+    {
+      "id": "call-things-update-todo-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-10T09:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "todos": [
+    {
+      "id": "Ke9zNb2tWq5Hc7RvLd4XaM",
+      "title": "Renew the library card",
+      "status": "open"
+    },
+    {
+      "id": "Sf1jYh8mXa3Pt6GwCe2BkD",
+      "title": "Return library books",
+      "status": "open"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.update_todo",
+        "args": {
+          "id": "Ke9zNb2tWq5Hc7RvLd4XaM",
+          "tags": ["errands"],
+          "deadline": "2025-08-01"
+        }
+      }
+    ]
+  }
+}

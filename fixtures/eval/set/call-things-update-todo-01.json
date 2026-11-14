@@ -1,0 +1,38 @@
+{
+  "id": "call-things-update-todo-01",
+  "request": "Rename the todo about the garden shed to Paint the garden shed.",
+  "messages": [
+    {
+      "id": "call-things-update-todo-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-09T09:10:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "todos": [
+    {
+      "id": "Yd3mTp6xQc9Ne2BwLa5KsH",
+      "title": "Clear the garden shed",
+      "status": "open"
+    },
+    {
+      "id": "Br7vHg1kZs4Wt8NjXe3QcF",
+      "title": "Order compost",
+      "status": "open"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.update_todo",
+        "args": {
+          "id": "Yd3mTp6xQc9Ne2BwLa5KsH",
+          "title": "Paint the garden shed"
+        }
+      }
+    ]
+  }
+}
