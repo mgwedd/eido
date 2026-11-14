@@ -1,0 +1,28 @@
+{
+  "id": "call-things-add-todo-04",
+  "request": "Add a todo \"Pack for the trip\" for tomorrow with the checklist passport, charger, sunscreen and the tags travel and home.",
+  "messages": [
+    {
+      "id": "call-things-add-todo-04-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-19T12:15:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.add_todo",
+        "args": {
+          "title": "Pack for the trip",
+          "when": "tomorrow",
+          "tags": ["travel", "home"],
+          "checklist": ["passport", "charger", "sunscreen"]
+        }
+      }
+    ]
+  }
+}

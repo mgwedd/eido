@@ -115,6 +115,62 @@ describe("selectTools", () => {
     ).toEqual(["email.trash"])
   })
 
+  test("a todo or project request is offered the two Things kinds that need no id", () => {
+    for (const text of [
+      "add a todo to call the dentist",
+      "add a to-do: renew passport",
+      "create a task for the report",
+      "start a new project called Garden",
+    ])
+      expect(
+        names(selectTools({ text, task: "propose" }, CATALOG)).filter((n) =>
+          n.startsWith("things.")
+        )
+      ).toEqual(["things.add_project", "things.add_todo"])
+  })
+
+  test("an email-only request is not offered Things kinds", () => {
+    expect(
+      names(
+        selectTools(
+          { text: "archive the invoice emails", task: "propose" },
+          CATALOG
+        )
+      ).filter((n) => n.startsWith("things."))
+    ).toEqual([])
+  })
+
+  test("a file name or a projects folder does not open the Things kinds", () => {
+    for (const text of [
+      "Create a file notes/todo.txt containing hello",
+      "In the projects folder, rename a.txt to b.txt",
+      'Create a calendar meeting "Project kickoff" on the work calendar',
+    ])
+      expect(detectAreas(text)).not.toContain("things")
+  })
+
+  test("the id-dependent Things kinds are never offered, whatever the request says", () => {
+    const idKinds = [
+      "things.cancel_todo",
+      "things.complete_todo",
+      "things.schedule_todo",
+      "things.update_todo",
+    ]
+    for (const task of ["propose", "ask"] as const)
+      expect(
+        names(
+          selectTools(
+            {
+              text: "complete, cancel, reschedule and update my todo task, and add a new project",
+              task,
+            },
+            CATALOG
+          )
+        ).filter((n) => idKinds.includes(n))
+      ).toEqual([])
+    expect(INTENT_KINDS).toEqual(expect.arrayContaining(idKinds))
+  })
+
   test("output order does not depend on catalog order", () => {
     const request = {
       text: "reply to the email and book a meeting",
@@ -133,6 +189,7 @@ describe("detectAreas", () => {
       "calendar",
       "files",
     ])
+    expect(detectAreas("add a todo and email it")).toEqual(["email", "things"])
     expect(detectAreas("nothing relevant")).toEqual([])
   })
 })

@@ -1,0 +1,25 @@
+{
+  "id": "call-things-add-project-01",
+  "request": "Start a new project called Garden redesign.",
+  "messages": [
+    {
+      "id": "call-things-add-project-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-03T09:40:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.add_project",
+        "args": {
+          "title": "Garden redesign"
+        }
+      }
+    ]
+  }
+}

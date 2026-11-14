@@ -1,0 +1,27 @@
+{
+  "id": "call-things-add-todo-02",
+  "request": "Remind me with a new to-do: renew the passport. Put it in today and tag it admin.",
+  "messages": [
+    {
+      "id": "call-things-add-todo-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-04-22T10:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.add_todo",
+        "args": {
+          "title": "Renew the passport",
+          "when": "today",
+          "tags": ["admin"]
+        }
+      }
+    ]
+  }
+}

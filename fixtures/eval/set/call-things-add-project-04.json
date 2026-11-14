@@ -1,0 +1,26 @@
+{
+  "id": "call-things-add-project-04",
+  "request": "Make a new project \"Learn Portuguese\" in the Personal area.",
+  "messages": [
+    {
+      "id": "call-things-add-project-04-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-15T16:50:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.add_project",
+        "args": {
+          "title": "Learn Portuguese",
+          "area": "Personal"
+        }
+      }
+    ]
+  }
+}

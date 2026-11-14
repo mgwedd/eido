@@ -1,0 +1,18 @@
+{
+  "id": "no-call-things-add-project-01",
+  "request": "Create a new project in Things.",
+  "messages": [
+    {
+      "id": "no-call-things-add-project-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-08-12T11:05:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}
