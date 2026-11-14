@@ -1,0 +1,27 @@
+{
+  "id": "call-things-add-todo-03",
+  "request": "Create a task \"Plan the team offsite\" with the notes \"Shortlist three venues\" and a deadline of 2025-09-30.",
+  "messages": [
+    {
+      "id": "call-things-add-todo-03-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-05-06T08:00:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.add_todo",
+        "args": {
+          "title": "Plan the team offsite",
+          "notes": "Shortlist three venues",
+          "deadline": "2025-09-30"
+        }
+      }
+    ]
+  }
+}

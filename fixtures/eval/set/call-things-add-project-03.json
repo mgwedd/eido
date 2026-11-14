@@ -1,0 +1,27 @@
+{
+  "id": "call-things-add-project-03",
+  "request": "Add a project named Kitchen renovation to start next week, tagged home.",
+  "messages": [
+    {
+      "id": "call-things-add-project-03-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-07-01T11:20:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.add_project",
+        "args": {
+          "title": "Kitchen renovation",
+          "when": "next week",
+          "tags": ["home"]
+        }
+      }
+    ]
+  }
+}

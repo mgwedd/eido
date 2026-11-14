@@ -1,0 +1,28 @@
+{
+  "id": "call-things-add-project-02",
+  "request": "Create a Things project \"Website relaunch\" in the Work area with the notes \"Scope and timeline\" and a deadline of 2025-12-01.",
+  "messages": [
+    {
+      "id": "call-things-add-project-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-17T14:05:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "things.add_project",
+        "args": {
+          "title": "Website relaunch",
+          "area": "Work",
+          "notes": "Scope and timeline",
+          "deadline": "2025-12-01"
+        }
+      }
+    ]
+  }
+}
