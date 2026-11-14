@@ -1,22 +1,28 @@
 import {
   chmodSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
 import { APPLE_MAX_BYTES, createAppleRunner } from "./runner"
 
 const cleanups: (() => void)[] = []
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()))
-function executable(script: string): string {
+function executable(script: string, consumeInput = true): string {
   const dir = mkdtempSync(join(tmpdir(), "eido-apple-runner-"))
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
   const path = join(dir, "helper")
-  writeFileSync(path, `#!/bin/sh\n${script}\n`, { mode: 0o700 })
+  writeFileSync(
+    path,
+    `#!/bin/sh\n${consumeInput ? "/bin/cat >/dev/null\n" : ""}${script}\n`,
+    { mode: 0o700 }
+  )
   return path
 }
 const request = { operation: "list_calendars", args: {} } as const
@@ -57,12 +63,87 @@ describe("Apple Helper private-pipe runner", () => {
     ).rejects.toMatchObject({ code: "unavailable" })
   })
   nativeTest(
+    "refuses a writable ancestor before launching an otherwise private executable",
+    async () => {
+      const path = executable(
+        `printf '%s' '{"ok":true,"result":{"calendars":[]}}'`
+      )
+      const directory = dirname(path)
+      const marker = join(directory, "launched")
+      const nested = join(directory, "private")
+      mkdirSync(nested, { mode: 0o700 })
+      const nestedExecutable = join(nested, "helper")
+      // The intermediate directory and executable are private; only the ancestor is unsafe.
+      writeFileSync(
+        nestedExecutable,
+        `#!/bin/sh\n/bin/cat >/dev/null\n/usr/bin/touch '${marker}'\nprintf '%s' '{"ok":true,"result":{"calendars":[]}}'\n`,
+        { mode: 0o700 }
+      )
+      chmodSync(directory, 0o777)
+      await expect(
+        createAppleRunner(nestedExecutable, options)(request)
+      ).rejects.toMatchObject({ code: "unavailable" })
+      expect(existsSync(marker)).toBe(false)
+      chmodSync(directory, 0o700)
+      await expect(
+        createAppleRunner(nestedExecutable, options)(request)
+      ).resolves.toEqual({ calendars: [] })
+      expect(existsSync(marker)).toBe(true)
+    }
+  )
+  nativeTest(
+    "resolves a directory alias to a protected executable and permits a trusted sticky ancestor",
+    async () => {
+      const path = executable(
+        `printf '%s' '{"ok":true,"result":{"calendars":[]}}'`
+      )
+      const directory = dirname(path)
+      const sticky = join(directory, "sticky")
+      const target = join(sticky, "private")
+      mkdirSync(sticky, { mode: 0o700 })
+      mkdirSync(target, { mode: 0o700 })
+      const nativePath = join(target, "helper")
+      writeFileSync(
+        nativePath,
+        '#!/bin/sh\n/bin/cat >/dev/null\nprintf \'%s\' \'{"ok":true,"result":{"calendars":[]}}\'\n',
+        { mode: 0o700 }
+      )
+      chmodSync(sticky, 0o1777)
+      symlinkSync(target, join(directory, "release"))
+      await expect(
+        createAppleRunner(
+          join(directory, "release", "helper"),
+          options
+        )(request)
+      ).resolves.toEqual({ calendars: [] })
+    }
+  )
+  nativeTest(
+    "refuses a protected target selected through an alias in a writable directory",
+    async () => {
+      const path = executable(
+        `printf '%s' '{"ok":true,"result":{"calendars":[]}}'`
+      )
+      const directory = dirname(path)
+      const unsafe = join(directory, "unsafe")
+      mkdirSync(unsafe, { mode: 0o700 })
+      symlinkSync(directory, join(unsafe, "release"))
+      chmodSync(unsafe, 0o777)
+      await expect(
+        createAppleRunner(join(unsafe, "release", "helper"), options)(request)
+      ).rejects.toMatchObject({ code: "unavailable" })
+    }
+  )
+  nativeTest(
     "passes a single request through stdin and scrubs inherited credentials",
     async () => {
-      const path = executable(`IFS= read -r input || :
+      const path = executable(
+        `IFS= read -r input || :
 case "$input" in *list_calendars*) ;; *) exit 7;; esac
 if [ -n "$EIDO_RUNNER_TEST_SECRET" ]; then exit 8; fi
-printf '%s' '{"ok":true,"result":{"calendars":[{"id":"cal-1","title":"Work","writable":true}]}}'`)
+printf '%s' '{"ok":true,"result":{"calendars":[{"id":"cal-1","title":"Work","writable":true}]}}'`,
+        false
+      )
       const previous = process.env["EIDO_RUNNER_TEST_SECRET"]
       process.env["EIDO_RUNNER_TEST_SECRET"] = "synthetic-not-a-credential"
       try {

@@ -29,6 +29,13 @@ install -m 0500 apps/helper/.build/release/eido-helper "$HOME/Library/Applicatio
 Configure **the gate's** launch environment with `EIDO_EVENTKIT_HELPER` set to
 that installed binary's absolute path. The gate refuses a relative path, symlink,
 non-regular file, executable owned by another user, or group/world-writable file.
+Its containing directories must be owned by the gate user or root and must prevent
+replacement by another OS user. Gate/root-owned sticky directories such as
+`/private/tmp` are allowed. The gate checks both the configured location and its
+resolved target, then launches the resolved executable. Directory aliases such as
+Swift's `.build/release` remain usable when their containing directories are safe.
+When using stack commands, this gate-only key can also be stored in the local
+`stack.env`; the settings API deliberately refuses executable-path changes.
 Do not configure a Helper socket: core uses the gate's HTTP data-plane read routes
 `GET /apple/calendars`, `/apple/reminder-lists`, `/apple/events`, and
 `/apple/reminders`; only the gate launches the native executable. The Apple read
@@ -51,11 +58,25 @@ unless the relevant full-access grant already exists. Permissions can also be
 reviewed in System Settings, Privacy & Security, Calendars and Reminders.
 
 After configuring and authorizing the installed binary, start or restart the gate.
-In Admin (or on the phone), open Connectors, select **Review and pin** on the
+Open the owner Connectors page (`/connectors`, also usable on the phone), select
+**Review and pin** on the
 `apple-eventkit` Not pinned card, and sign with the owner's passkey. Its reviewed
 manifest is committed under `packages/schemas/manifests/`; no credential needs to
 be entered. The existing connector pin ceremony is documented in
 [`infra/connectors.md`](../../infra/connectors.md).
+
+If a read was attempted before permission was granted, the connector records
+`auth_failed` and stays disabled. After granting access, an explicit owner check
+through the gate's local control socket re-enables it and checks both grants:
+
+```sh
+curl --fail --silent --show-error --unix-socket "$EIDO_GATE_CONTROL_SOCKET" \
+  --request POST http://localhost/connectors/apple-eventkit/connected
+```
+
+Run this as the gate user with the running gate's control socket path. The check
+returns connector health, never calendar or reminder contents. A missing or
+drifted signed manifest cannot be recovered this way; review and pin it first.
 
 The automated tests use an in-memory fake store. They do not request TCC access,
 read real calendars, or write real reminders. A successful native build proves

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
-import { lstatSync } from "node:fs"
-import { isAbsolute } from "node:path"
+import { lstatSync, realpathSync, statSync } from "node:fs"
+import { dirname, isAbsolute } from "node:path"
 import {
   validateGateAppleRequest,
   validateGateAppleResponse,
@@ -20,6 +20,35 @@ export class AppleError extends Error {
 }
 export type AppleRunner = (request: GateAppleRequest) => Promise<unknown>
 
+function trustedParents(
+  path: string,
+  uid: number,
+  followAliases: boolean
+): void {
+  let parent = dirname(path)
+  for (;;) {
+    const entry = lstatSync(parent)
+    // Sticky directories protect an alias only from other owners. An alias owned
+    // by an untrusted principal can still redirect a trusted configured path.
+    if (entry.isSymbolicLink() && entry.uid !== uid && entry.uid !== 0) {
+      throw new AppleError("unavailable")
+    }
+    const directory = followAliases ? statSync(parent) : entry
+    if (
+      !directory.isDirectory() ||
+      (directory.uid !== uid && directory.uid !== 0) ||
+      // A gate/root-owned sticky directory (for example /private/tmp) protects its
+      // gate/root-owned children from replacement by another OS principal.
+      ((directory.mode & 0o022) !== 0 && (directory.mode & 0o1000) === 0)
+    ) {
+      throw new AppleError("unavailable")
+    }
+    const ancestor = dirname(parent)
+    if (ancestor === parent) break
+    parent = ancestor
+  }
+}
+
 /** The only peer is the child inheriting these anonymous pipes; no listener is opened. */
 export function createAppleRunner(
   path: string | undefined,
@@ -38,25 +67,43 @@ export function createAppleRunner(
     const input = JSON.stringify(checked.value)
     if (Buffer.byteLength(input) > APPLE_MAX_BYTES)
       throw new AppleError("invalid_request")
+    let executable: string
     try {
-      const file = lstatSync(path)
+      const uid = process.getuid?.()
+      if (uid === undefined || !lstatSync(path).isFile()) {
+        throw new AppleError("unavailable")
+      }
+      // Resolve directory aliases once and launch only this canonical path. Checking the
+      // final inode alone leaves an attacker-writable ancestor free to replace it before spawn.
+      executable = realpathSync(path)
+      const file = lstatSync(executable)
       if (
         !file.isFile() ||
+        file.uid !== uid ||
         (file.mode & 0o022) !== 0 ||
-        (file.mode & 0o111) === 0 ||
-        (process.getuid !== undefined && file.uid !== process.getuid())
+        (file.mode & 0o111) === 0
       ) {
         throw new AppleError("unavailable")
       }
+      // Check the alias location too: an unsafe directory must not choose which
+      // otherwise trusted binary this gate configuration resolves to.
+      trustedParents(path, uid, true)
+      trustedParents(executable, uid, false)
     } catch {
       throw new AppleError("unavailable")
     }
     return new Promise((resolve, reject) => {
-      const child = spawn(path, [], {
-        cwd: "/",
-        env: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8" },
-        stdio: ["pipe", "pipe", "ignore"],
-      })
+      const child = (() => {
+        try {
+          return spawn(executable, [], {
+            cwd: "/",
+            env: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8" },
+            stdio: ["pipe", "pipe", "ignore"],
+          })
+        } catch {
+          throw new AppleError("unavailable")
+        }
+      })()
       let settled = false
       const chunks: Buffer[] = []
       let size = 0
