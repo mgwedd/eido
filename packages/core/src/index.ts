@@ -23,3 +23,5 @@ export * from "./propose/index"
 export * from "./triage/index"
 export * from "./connectors/files/index"
 export * from "./access-audit/index"
+
+export * from "./connectors/apple/index"

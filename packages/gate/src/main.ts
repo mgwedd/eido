@@ -19,6 +19,13 @@ import type {
 import { egressProbe, startEgressProxy } from "./internal/egress"
 import { GMAIL_CONNECTOR, GMAIL_WRITERS } from "./internal/gmail-writers"
 import { THINGS_CONNECTOR } from "./internal/things/things-routes"
+import { APPLE_CONNECTOR } from "./internal/apple/apple-routes"
+import { createAppleRunner } from "./internal/apple/runner"
+import { appleProbe, createAppleReads } from "./internal/apple/apple-adapter"
+import {
+  APPLE_WRITERS,
+  createAppleTransport,
+} from "./internal/apple/apple-writers"
 import { createThingsReads } from "./internal/things/things-adapter"
 import {
   THINGS_WRITERS,
@@ -193,6 +200,8 @@ export type GateConfig = {
   }
   /** Native helper binary and its pinned SHA-256, both required for file execution. */
   fileHelper?: FileHelperConfig
+  /** Optional gate-owned EventKit executable; no Helper code or path reaches the data plane. */
+  appleHelperPath?: string
   backupStampPath?: string
   /** The stack supervisor's socket (#659); absent outside the stack, so the admin routes answer 503. */
   supervisorSocketPath?: string
@@ -290,7 +299,11 @@ export function gateConfig(
   if (supervisorSocket !== "" && !isAbsolute(supervisorSocket)) {
     throw new Error(`${SUPERVISOR_SOCKET_ENV} must be an absolute path`)
   }
+  const appleHelperPath = read("EIDO_EVENTKIT_HELPER")
+  if (appleHelperPath !== "" && !isAbsolute(appleHelperPath))
+    throw new Error("EIDO_EVENTKIT_HELPER must be an absolute path")
   const config: GateConfig = {
+    ...(appleHelperPath === "" ? {} : { appleHelperPath }),
     dataDir: read(REQUIRED.dataDir),
     socketPath: read(REQUIRED.socketPath),
     controlSocketPath: read(REQUIRED.controlSocketPath),
@@ -667,8 +680,13 @@ export async function runGate(
     // The checks the control socket runs after the owner connects a connector (#98). Both Proton
     // connectors sign in to Bridge with the one stored password. Gmail is healthy only when each
     // of its configured clients (compose and read) can make its read.
+    const appleRunner = createAppleRunner(config.appleHelperPath)
+    const apple = createAppleReads(appleRunner)
     const probes: ConnectorProbes = {
       ...readProbes,
+      ...(config.appleHelperPath === undefined
+        ? {}
+        : { [APPLE_CONNECTOR]: appleProbe(apple) }),
       ...(gmailProbes.length === 0
         ? {}
         : { [GMAIL_CONNECTOR]: allProbes(gmailProbes) }),
@@ -746,9 +764,15 @@ export async function runGate(
         : bridgeTransport(mail, { tracker })
     const things = createThingsReads()
     const thingsTransport = createThingsTransport()
+    const appleTransport = createAppleTransport(appleRunner)
     const executor = createExecutor(
       db,
-      [...BRIDGE_WRITERS, ...GMAIL_WRITERS, ...THINGS_WRITERS],
+      [
+        ...BRIDGE_WRITERS,
+        ...GMAIL_WRITERS,
+        ...THINGS_WRITERS,
+        ...APPLE_WRITERS,
+      ],
       (request) =>
         request.connector === GMAIL_CONNECTOR
           ? gmail === undefined
@@ -759,13 +783,15 @@ export async function runGate(
             ? protonTransport(request)
             : request.connector === THINGS_CONNECTOR
               ? thingsTransport(request)
-              : Promise.reject(new Error("no write transport for connector")),
+              : request.connector === APPLE_CONNECTOR
+                ? appleTransport(request)
+                : Promise.reject(new Error("no write transport for connector")),
       nativeFiles
     )
     const execute = (id: string) => executor.execute(id)
     const dataPlane = createGateServer(
       "data-plane",
-      dataPlaneHandler(state, mail, execute, things),
+      dataPlaneHandler(state, mail, execute, things, apple),
       log
     )
     const control = createGateServer("control", controlHandler(state, now), log)

@@ -18,6 +18,8 @@ import {
   pinnedOperation,
 } from "./connectors"
 import { atomically } from "./transaction"
+import { appleDestination } from "./apple/destinations"
+import { APPLE_CONNECTOR } from "./apple/apple-routes"
 
 /** Provider representation before the gate takes an immutable canonical snapshot. */
 export type UpstreamRequest = { method: string; url: string; body: unknown }
@@ -51,8 +53,9 @@ export interface UpstreamWriter {
   /**
    * "bridge": the request goes to Proton Bridge through the gate's own IMAP and SMTP adapter
    * (#195), not over HTTPS, so its destination is one of BRIDGE_DESTINATIONS, not a pinned route.
+   * "eventkit": only the apple-eventkit connector's four fixed native destinations; no network egress.
    */
-  channel?: "bridge"
+  channel?: "bridge" | "eventkit"
 }
 
 /**
@@ -304,6 +307,33 @@ function bridgeDestination(
   return destination
 }
 
+function eventkitConfigured(db: DatabaseSync, connector: string): boolean {
+  const manifest = getPinnedManifest(db, connector)
+  return (
+    connector === APPLE_CONNECTOR &&
+    manifest?.auth.type === "macos-eventkit" &&
+    manifest.egress.hosts.length === 0 &&
+    (manifest.egress.local?.length ?? 0) === 0
+  )
+}
+
+function eventkitDestination(
+  kind: Intent["kind"],
+  operation: string,
+  request: UpstreamRequest
+): string {
+  const destination = appleDestination(kind)
+  if (
+    destination === undefined ||
+    request.method !== "POST" ||
+    request.url !== destination ||
+    destination !== `eventkit:${operation}`
+  ) {
+    throw new Error("unpinned EventKit route")
+  }
+  return destination
+}
+
 export function createExecutor(
   db: DatabaseSync,
   writers: readonly UpstreamWriter[],
@@ -398,7 +428,7 @@ export function createExecutor(
     }
     if (
       direction === "execute" &&
-      intent.kind === "email.untrash" &&
+      (intent.kind === "email.untrash" || intent.kind.startsWith("apple.")) &&
       stored.tier !== "approval"
     )
       return refuse(id, direction, "invalid_state")
@@ -517,6 +547,8 @@ export function createExecutor(
     if (writer === undefined) return refuse(id, direction, "unknown_writer")
     if (writer.channel === "bridge" && !bridgeConfigured(db, connector))
       return refuse(id, direction, "connector_misconfigured")
+    if (writer.channel === "eventkit" && !eventkitConfigured(db, connector))
+      return refuse(id, direction, "connector_misconfigured")
     return { intent, writer, stored, connector, operation }
   }
 
@@ -540,7 +572,9 @@ export function createExecutor(
       const destination =
         writer.channel === "bridge"
           ? bridgeDestination(intent.kind, snapshot)
-          : writeDestination(db, connector, operation, snapshot)
+          : writer.channel === "eventkit"
+            ? eventkitDestination(intent.kind, operation, snapshot)
+            : writeDestination(db, connector, operation, snapshot)
       if (destination !== snapshot.url) throw new Error("noncanonical target")
       const decoded = await writer.intentFromRequest(
         Object.freeze({ ...snapshot, body: parse(snapshot.body) }),

@@ -157,7 +157,18 @@ jobs:
       - name: Enable pnpm (version pinned by packageManager)
         run: corepack enable
       - run: pnpm install --frozen-lockfile
+      - name: EventKit Helper tests (macOS, fake store only)
+        if: matrix.os == 'macos-latest'
+        run: swift test --package-path apps/helper
+      - name: Build EventKit Helper (macOS)
+        if: matrix.os == 'macos-latest'
+        run: swift build --package-path apps/helper -c release
       - name: Gate tests
+        run: pnpm turbo run test --filter=@eido/gate
+      - name: Gate protocol against the native EventKit Helper
+        if: matrix.os == 'macos-latest'
+        env:
+          EIDO_EVENTKIT_HELPER: ${{ github.workspace }}/apps/helper/.build/release/eido-helper
         run: pnpm turbo run test --filter=@eido/gate
       - name: Infra tests (windows-latest)
         if: matrix.os == 'windows-latest'

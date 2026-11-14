@@ -74,6 +74,18 @@
     },
     {
       "$ref": "intent-confirm-field.schema.json"
+    },
+    {
+      "$ref": "intent-apple-event_create.schema.json"
+    },
+    {
+      "$ref": "intent-apple-event_update.schema.json"
+    },
+    {
+      "$ref": "intent-apple-reminder_create.schema.json"
+    },
+    {
+      "$ref": "intent-apple-reminder_complete.schema.json"
     }
   ]
 }

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateAppleResponse",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "result": {
+          "oneOf": [
+            {
+              "$ref": "gate-apple-calendar-list.schema.json"
+            },
+            {
+              "$ref": "gate-apple-event-list.schema.json"
+            },
+            {
+              "$ref": "gate-apple-reminder-list.schema.json"
+            },
+            {
+              "$ref": "gate-apple-item-ref.schema.json"
+            }
+          ]
+        }
+      },
+      "required": ["ok", "result"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "code": {
+          "enum": [
+            "invalid_request",
+            "permission_denied",
+            "not_found",
+            "read_only",
+            "unsupported_event",
+            "unavailable"
+          ]
+        }
+      },
+      "required": ["ok", "code"],
+      "additionalProperties": false
+    }
+  ]
+}

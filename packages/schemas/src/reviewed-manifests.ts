@@ -1,3 +1,4 @@
+import appleEventkit from "../manifests/apple-eventkit.json" with { type: "json" }
 import drive from "../manifests/drive.json" with { type: "json" }
 import files from "../manifests/files.json" with { type: "json" }
 import gmail from "../manifests/gmail.json" with { type: "json" }
@@ -24,4 +25,5 @@ export const REVIEWED_MANIFESTS: Readonly<Record<string, unknown>> = {
   "proton-mail": protonMail,
   simplefin,
   things,
+  "apple-eventkit": appleEventkit,
 }

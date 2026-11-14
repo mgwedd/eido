@@ -12,6 +12,7 @@ it("exports only the intent API, audit, mail/file clients, and web session verif
     "WEB_SESSION_TTL_MS",
     "clearGateSessionCookie",
     "clearWebSessionCookie",
+    "createAppleClient",
     "createAuditClient",
     "createFileClient",
     "createIntentClient",
