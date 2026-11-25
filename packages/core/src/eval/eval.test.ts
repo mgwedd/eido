@@ -160,6 +160,121 @@ describe("eval case validation and scoring", () => {
     expect(seen[0]).not.toContain("t-closed")
   })
 
+  test("an optional events array is parsed, and a bad entry names its path", () => {
+    const base = {
+      id: "x",
+      request: "r",
+      messages: [
+        {
+          id: "m",
+          from: "a@example.invalid",
+          to: [],
+          date: "2025-01-01T00:00:00.000Z",
+          subject: "",
+          body: "",
+        },
+      ],
+      kind: "no_call",
+      expected: { intents: [] },
+    }
+    const events = [
+      {
+        uid: "e1@example.invalid",
+        title: "Offsite",
+        start: "2025-07-01",
+        end: "2025-07-02",
+        allDay: true,
+        source: "proton-calendar",
+      },
+      {
+        uid: "e2",
+        title: "Dentist",
+        start: "2025-07-03T09:00:00.000Z",
+        end: "2025-07-03T10:00:00.000Z",
+        source: "apple-eventkit",
+      },
+    ]
+    expect(parseEvalCase({ ...base, events }, "c.json").events).toEqual(events)
+    expect(parseEvalCase(base, "c.json").events).toBeUndefined()
+    expect(() =>
+      parseEvalCase(
+        { ...base, events: [{ ...events[0], source: "gmail" }] },
+        "c.json"
+      )
+    ).toThrow(
+      'c.json.events[0].source: expected "proton-calendar" or "apple-eventkit"'
+    )
+    expect(() =>
+      parseEvalCase({ ...base, events: [events[0], events[0]] }, "c.json")
+    ).toThrow("c.json.events: uids must be unique")
+  })
+
+  test("the runner lists the case's matching events in the prompt, and offers calendar.edit only for a Proton event", async () => {
+    const seen: string[] = []
+    const message = {
+      id: "m",
+      from: "a@example.invalid",
+      to: [],
+      date: "2025-01-01T00:00:00.000Z",
+      subject: "",
+      body: "",
+    }
+    const build = (id: string, request: string) =>
+      parseEvalCase({
+        id,
+        request,
+        messages: [message],
+        kind: "no_call",
+        expected: { intents: [] },
+        events: [
+          {
+            uid: "proton-offsite@example.invalid",
+            title: "Team offsite",
+            start: "2025-07-01T09:00:00.000Z",
+            end: "2025-07-01T17:00:00.000Z",
+            source: "proton-calendar",
+          },
+          {
+            uid: "apple-dentist",
+            title: "Dentist checkup",
+            start: "2025-07-02T09:00:00.000Z",
+            end: "2025-07-02T10:00:00.000Z",
+            source: "apple-eventkit",
+          },
+        ],
+      })
+    await runEval({
+      cases: [
+        build("proton", "Move the team offsite meeting to Friday"),
+        build("apple", "Move the dentist checkup meeting to Friday"),
+      ],
+      verdicts: {},
+      modelId: "stub",
+      seed: 1,
+      modelForCase: () => ({
+        complete: (request) => {
+          seen.push(
+            request.messages.map((m) => plainContent(m.content)).join("\n")
+          )
+          return Promise.resolve(
+            emptyInferenceResult(
+              JSON.stringify({
+                result: "none",
+                reason: "no actionable request",
+              })
+            )
+          )
+        },
+      }),
+    })
+    expect(seen[0]).toContain(
+      "uid=proton-offsite@example.invalid | Team offsite | 2025-07-01T09:00:00.000Z to 2025-07-01T17:00:00.000Z | source=proton-calendar"
+    )
+    expect(seen[0]).toContain("calendar.edit")
+    expect(seen[1]).toContain("uid=apple-dentist")
+    expect(seen[1]).not.toContain("calendar.edit")
+  })
+
   test("strictly matches canonical fields while excluding only named free paths", () => {
     const golden = [
       {

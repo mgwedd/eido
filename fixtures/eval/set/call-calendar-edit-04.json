@@ -1,0 +1,36 @@
+{
+  "id": "call-calendar-edit-04",
+  "request": "Change the Q3 kickoff meeting title to \"Q3 launch kickoff\" and put it in Room 4.",
+  "messages": [
+    {
+      "id": "call-calendar-edit-04-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-23T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "events": [
+    {
+      "uid": "eido-cal-3cff40bc-7471-43e7-ba07-22a903400e91",
+      "title": "Q3 kickoff",
+      "start": "2025-07-15T15:00:00.000Z",
+      "end": "2025-07-15T16:00:00.000Z",
+      "source": "proton-calendar"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "calendar.edit",
+        "args": {
+          "eventUid": "eido-cal-3cff40bc-7471-43e7-ba07-22a903400e91",
+          "title": "Q3 launch kickoff",
+          "location": "Room 4"
+        }
+      }
+    ]
+  }
+}
