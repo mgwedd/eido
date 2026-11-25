@@ -17,6 +17,9 @@ final class RecordingRunner: ProcessRunner, @unchecked Sendable {
   private let lock = NSLock()
   private var recorded: [Call] = []
   var outcome: ProcessOutcome = .exited(status: 0, stdout: Data("synthetic-out".utf8), stderr: Data())
+  /// When set, each run signals `entered` and then waits on `gate`, holding its connection open.
+  var entered: DispatchSemaphore?
+  var gate: DispatchSemaphore?
 
   var calls: [Call] {
     lock.lock()
@@ -34,6 +37,8 @@ final class RecordingRunner: ProcessRunner, @unchecked Sendable {
         executable: executable, arguments: arguments, environment: environment, stdin: stdin,
         outputLimit: outputLimit, timeout: timeout))
     lock.unlock()
+    entered?.signal()
+    _ = gate?.wait(timeout: .now() + 5)
     return outcome
   }
 }
@@ -85,6 +90,9 @@ func blockingExchange(_ path: String, _ bytes: Data) -> Data? {
   defer { close(fd) }
   var on: Int32 = 1
   _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+  // A socket nobody accepts on fails the test instead of hanging it.
+  var limit = timeval(tv_sec: 10, tv_usec: 0)
+  _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
   var address = sockaddr_un()
   address.sun_family = sa_family_t(AF_UNIX)
   withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: Array(path.utf8)) }
@@ -101,6 +109,34 @@ func blockingExchange(_ path: String, _ bytes: Data) -> Data? {
       guard sent > 0 else { return }
       offset += sent
     }
+  }
+  return readAll(fd)
+}
+
+/// Like `blockingExchange`, but writes `parts` with a pause between them, stopping when the
+/// bridge has closed the connection.
+func dripExchange(_ path: String, _ parts: [Data], gap: TimeInterval) -> Data? {
+  let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+  guard fd >= 0 else { return nil }
+  defer { close(fd) }
+  var on: Int32 = 1
+  _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+  // A socket nobody accepts on fails the test instead of hanging it.
+  var limit = timeval(tv_sec: 10, tv_usec: 0)
+  _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
+  var address = sockaddr_un()
+  address.sun_family = sa_family_t(AF_UNIX)
+  withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: Array(path.utf8)) }
+  let connected = withUnsafePointer(to: &address) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+      connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+    }
+  }
+  guard connected == 0 else { return nil }
+  for (index, part) in parts.enumerated() {
+    if index > 0 { usleep(useconds_t(gap * 1_000_000)) }
+    let sent = part.withUnsafeBytes { write(fd, $0.baseAddress!, $0.count) }
+    guard sent == part.count else { break }
   }
   return readAll(fd)
 }
@@ -149,11 +185,13 @@ final class BridgeTests: XCTestCase {
 
   @MainActor func startServer(
     handler: BridgeHandler, credentials: PeerCredentials = SocketPeerCredentials(),
-    peerUID: uid_t = getuid()
+    peerUID: uid_t = getuid(), maxConnections: Int = BridgeServer.defaultMaxConnections,
+    ioTimeout: TimeInterval = BridgeServer.ioTimeoutSeconds
   ) throws -> (BridgeServer, String) {
     let path = directory + "/bridge.sock"
     let server = BridgeServer(
-      path: path, peerUID: peerUID, credentials: credentials, handler: handler)
+      path: path, peerUID: peerUID, credentials: credentials, handler: handler,
+      maxConnections: maxConnections, ioTimeout: ioTimeout)
     try server.start()
     return (server, path)
   }
@@ -474,6 +512,17 @@ final class BridgeTests: XCTestCase {
     XCTAssertEqual(runner.calls, [])
   }
 
+  @MainActor func testFileReadLimitPastInt64IsRefused() async throws {
+    let handler = try makeHandler()
+    // 2^64 + 1 reads as 1 through `int64Value`, and 2^63 + 1 as a negative number.
+    for limit in ["18446744073709551617", "9223372036854775809"] {
+      let text = #"{"op":"file","request":{"op":"read","root":{"dev":"1a","ino":"2b","path":"/example.invalid/root","trashDir":".eido-trash"},"path":"a","maxBytes":"# + limit + "}}"
+      let response = try decode(await handler.handle(Data(text.utf8)))
+      XCTAssertEqual(response["code"] as? String, "invalid_request", limit)
+    }
+    XCTAssertEqual(runner.calls, [])
+  }
+
   @MainActor func testChangedFileHelperIsNotRun() async throws {
     let handler = try makeHandler()
     try Data("replaced\n".utf8).write(to: URL(fileURLWithPath: directory + "/file-helper"))
@@ -562,6 +611,90 @@ final class BridgeTests: XCTestCase {
     server.stop()
   }
 
+  @MainActor func testStartRefusesALiveSocketAndStopLeavesAReplacementInPlace() async throws {
+    let handler = try makeHandler()
+    let (first, path) = try startServer(handler: handler)
+    XCTAssertThrowsError(try startServer(handler: handler)) {
+      XCTAssertEqual($0 as? BridgeStartError, .socketFailed)
+    }
+    let stillServed = try decode(try body(of: await exchange(path, try frame(listTags()))))
+    XCTAssertEqual(stillServed["ok"] as? Bool, true, "a refused start took over the live socket")
+
+    // Another bridge replaced the path; stopping the first must not remove its socket.
+    unlink(path)
+    let (second, _) = try startServer(handler: handler)
+    defer { second.stop() }
+    first.stop()
+    let served = try decode(try body(of: await exchange(path, try frame(listTags()))))
+    XCTAssertEqual(served["ok"] as? Bool, true, "stop removed another bridge's socket")
+  }
+
+  // MARK: Connection limits
+
+  @MainActor func testConnectionsOverTheCapAreClosedUnread() async throws {
+    let (server, path) = try startServer(handler: try makeHandler(), maxConnections: 1)
+    defer { server.stop() }
+    let entered = DispatchSemaphore(value: 0)
+    let gate = DispatchSemaphore(value: 0)
+    runner.entered = entered
+    runner.gate = gate
+    let request = try frame(listTags())
+    let held = Task.detached { blockingExchange(path, request) }
+    XCTAssertEqual(entered.wait(timeout: .now() + 5), .success, "first request never ran")
+    let refused = await exchange(path, request)
+    XCTAssertEqual(refused, Data(), "a connection over the cap got a response")
+    gate.signal()
+    let first = try decode(try body(of: await held.value))
+    XCTAssertEqual(first["ok"] as? Bool, true)
+    runner.entered = nil
+    runner.gate = nil
+    let next = try decode(try body(of: await exchange(path, request)))
+    XCTAssertEqual(next["ok"] as? Bool, true, "the slot was not released")
+    XCTAssertEqual(runner.calls.count, 2)
+  }
+
+  @MainActor func testStopLetsAnAcceptedRequestFinish() async throws {
+    let (server, path) = try startServer(handler: try makeHandler())
+    let entered = DispatchSemaphore(value: 0)
+    let gate = DispatchSemaphore(value: 0)
+    runner.entered = entered
+    runner.gate = gate
+    let request = try frame(listTags())
+    let held = Task.detached { blockingExchange(path, request) }
+    XCTAssertEqual(entered.wait(timeout: .now() + 5), .success, "request never ran")
+    server.stop()
+    XCTAssertFalse(server.waitForConnections(timeout: 0.2), "drain ended with a request in flight")
+    gate.signal()
+    XCTAssertTrue(server.waitForConnections(timeout: 5))
+    let response = try decode(try body(of: await held.value))
+    XCTAssertEqual(response["ok"] as? Bool, true, "stop cut off an accepted request")
+  }
+
+  @MainActor func testSlowRequestIsDroppedAtTheDeadlineAndSplitWritesAreServed() async throws {
+    let (server, path) = try startServer(handler: try makeHandler(), ioTimeout: 0.6)
+    defer { server.stop() }
+    let request = try frame(listTags())
+    let split = await withCheckedContinuation { continuation in
+      DispatchQueue.global().async {
+        continuation.resume(returning: dripExchange(path, [request.prefix(3), request.dropFirst(3)], gap: 0.1))
+      }
+    }
+    let served = try decode(try body(of: split))
+    XCTAssertEqual(served["ok"] as? Bool, true, "a request split across writes was not served")
+
+    // One byte every 0.2 s: each read is quick, but the whole request misses the deadline.
+    let started = Date()
+    let slow = await withCheckedContinuation { continuation in
+      DispatchQueue.global().async {
+        continuation.resume(
+          returning: dripExchange(path, request.map { Data([$0]) }, gap: 0.2))
+      }
+    }
+    XCTAssertEqual(slow, Data(), "a request past the deadline got a response")
+    XCTAssertLessThan(Date().timeIntervalSince(started), 3, "the slow peer held the connection")
+    XCTAssertEqual(runner.calls.count, 1, "the slow request ran")
+  }
+
   // MARK: Mode switch
 
   func testModeParsing() {
@@ -639,6 +772,17 @@ final class SystemProcessRunnerTests: XCTestCase {
         executable: "/usr/bin/yes", arguments: [], environment: [:], stdin: Data(),
         outputLimit: 4096, timeout: 10),
       .overflow)
+  }
+
+  func testTimeoutHoldsEvenWhenAGrandchildKeepsThePipesOpen() {
+    // The background sleep inherits stdout and stderr and outlives the killed shell.
+    let started = Date()
+    XCTAssertEqual(
+      runner.run(
+        executable: "/bin/sh", arguments: ["-c", "sleep 5 & sleep 30"], environment: [:],
+        stdin: Data(), outputLimit: 1024, timeout: 0.5),
+      .timedOut)
+    XCTAssertLessThan(Date().timeIntervalSince(started), 3)
   }
 
   func testMissingExecutableFailsToStart() {
@@ -727,6 +871,24 @@ final class HelperProcessTests: XCTestCase {
     XCTAssertEqual(kill(pid, SIGTERM), 0)
     XCTAssertTrue(waitUntil(5) { !alive(pid) }, "bridge ignored SIGTERM")
     XCTAssertFalse(FileManager.default.fileExists(atPath: socket), "socket left after SIGTERM")
+  }
+
+  func testUnknownArgumentsExitOneWithInvalidRequest() throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: try executable())
+    process.arguments = ["--bridge", "--socket"]
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+    XCTAssertEqual(process.terminationStatus, 1)
+    let line = output.fileHandleForReading.readDataToEndOfFile()
+    XCTAssertEqual(line.last, 10)
+    let response = try decode(line)
+    XCTAssertEqual(response["ok"] as? Bool, false)
+    XCTAssertEqual(response["code"] as? String, "invalid_request")
+    XCTAssertEqual(Set(response.keys), ["ok", "code"])
   }
 
   func testBridgeRefusesToStartWithAnUnpinnedHelper() throws {

@@ -513,6 +513,7 @@ public enum FileOps {
       return value
     case .readLimit:
       guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+        // Past UInt64 a JSON integer parses as a float, whose `int64Value` can wrap into range.
         !CFNumberIsFloatType(number), (1...8_388_608).contains(number.int64Value)
       else { throw BridgeFailure.invalidRequest }
       return number.int64Value

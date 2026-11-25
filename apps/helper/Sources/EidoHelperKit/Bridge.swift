@@ -129,31 +129,51 @@ public struct SystemProcessRunner: ProcessRunner {
     process.standardOutput = output
     process.standardError = errors
     do { try process.run() } catch { return .failedToStart }
-    let pid = process.processIdentifier
+    let end = (write: input.fileHandleForWriting, out: output.fileHandleForReading,
+      err: errors.fileHandleForReading)
+    defer { [end.write, end.out, end.err].forEach { try? $0.close() } }
+    // Every pipe end is non-blocking and every loop stops at the deadline, so a grandchild that
+    // keeps a pipe open cannot hold this thread past it.
+    let deadline = Date().addingTimeInterval(timeout)
+    for fd in [end.write, end.out, end.err].map(\.fileDescriptor) {
+      _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+    }
+    let stopChild = {
+      if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+    }
     let collected = Collected()
     let group = DispatchGroup()
     DispatchQueue.global().async(group: group) {
-      try? input.fileHandleForWriting.write(contentsOf: stdin)
-      try? input.fileHandleForWriting.close()
+      feed(end.write.fileDescriptor, stdin, until: deadline)
+      try? end.write.close()
     }
     DispatchQueue.global().async(group: group) {
-      collected.stdout = drain(output.fileHandleForReading.fileDescriptor, keep: outputLimit) {
+      collected.stdout = drain(end.out.fileDescriptor, keep: outputLimit, until: deadline) {
         collected.overflow = true
-        kill(pid, SIGKILL)
+        stopChild()
       }
     }
     DispatchQueue.global().async(group: group) {
       // Kept only to recognise the Automation refusal; never returned to the peer.
-      collected.stderr = drain(errors.fileHandleForReading.fileDescriptor, keep: 65_536) {}
+      collected.stderr = drain(end.err.fileDescriptor, keep: 65_536, until: deadline) {}
     }
-    if group.wait(timeout: .now() + timeout) == .timedOut {
-      kill(pid, SIGKILL)
-      group.wait()
+    group.wait()
+    if collected.overflow {
+      process.waitUntilExit()
+      return .overflow
+    }
+    if Date() >= deadline {
+      stopChild()
       process.waitUntilExit()
       return .timedOut
     }
-    process.waitUntilExit()
-    if collected.overflow { return .overflow }
+    // Output is closed, so the child is exiting; wait for it only up to the deadline.
+    while process.isRunning, Date() < deadline { usleep(10_000) }
+    guard !process.isRunning else {
+      stopChild()
+      process.waitUntilExit()
+      return .timedOut
+    }
     let status = process.terminationReason == .exit ? process.terminationStatus : -1
     return .exited(status: status, stdout: collected.stdout, stderr: collected.stderr)
   }
@@ -166,14 +186,44 @@ private final class Collected: @unchecked Sendable {
   var overflow = false
 }
 
-/// Reads to end of file, keeping at most `keep` bytes. Past that, `onOverflow` runs once and
-/// the read stops.
-private func drain(_ fd: Int32, keep: Int, onOverflow: () -> Void) -> Data {
+/// Waits until `fd` is ready for `events` or the deadline passes. False means the deadline.
+private func ready(_ fd: Int32, _ events: Int16, until deadline: Date) -> Bool {
+  while true {
+    let left = deadline.timeIntervalSinceNow
+    guard left > 0 else { return false }
+    var entry = pollfd(fd: fd, events: events, revents: 0)
+    let result = poll(&entry, 1, Int32(min(left, 1) * 1000) + 1)
+    if result > 0 { return true }
+    if result < 0, errno != EINTR { return true }
+  }
+}
+
+/// Writes `data` to a non-blocking descriptor until done, the reader goes away, or the deadline.
+private func feed(_ fd: Int32, _ data: Data, until deadline: Date) {
+  var offset = 0
+  while offset < data.count {
+    let sent = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress! + offset, data.count - offset) }
+    if sent > 0 {
+      offset += sent
+    } else if sent < 0, errno == EAGAIN || errno == EINTR {
+      guard ready(fd, Int16(POLLOUT), until: deadline) else { return }
+    } else {
+      return
+    }
+  }
+}
+
+/// Reads a non-blocking descriptor to end of file or the deadline, keeping at most `keep`
+/// bytes. Past that, `onOverflow` runs once and the read stops.
+private func drain(_ fd: Int32, keep: Int, until deadline: Date, onOverflow: () -> Void) -> Data {
   var data = Data()
   var buffer = [UInt8](repeating: 0, count: 65_536)
   while true {
     let count = read(fd, &buffer, buffer.count)
-    if count < 0, errno == EINTR { continue }
+    if count < 0, errno == EAGAIN || errno == EINTR {
+      guard ready(fd, Int16(POLLIN), until: deadline) else { return data }
+      continue
+    }
     if count <= 0 { return data }
     guard data.count + count <= keep else {
       onOverflow()
@@ -351,33 +401,39 @@ public enum BridgeStartError: String, Error {
 
 /// Listens on a Unix socket and serves one request per connection.
 public final class BridgeServer: @unchecked Sendable {
-  public static let maxConnections = 8
-  public static let ioTimeoutSeconds = 10
+  public static let defaultMaxConnections = 8
+  /// The whole request (header and body) must arrive within this, and each response write
+  /// within it too.
+  public static let ioTimeoutSeconds: TimeInterval = 10
 
   let path: String
   let peerUID: uid_t
   let credentials: PeerCredentials
   let handler: BridgeHandler
-  private let lock = NSLock()
+  let maxConnections: Int
+  let ioTimeout: TimeInterval
+  private let idle = NSCondition()
   private var active = 0
   private var source: DispatchSourceRead?
+  private var boundInode: ino_t?
 
-  public init(path: String, peerUID: uid_t, credentials: PeerCredentials, handler: BridgeHandler) {
+  public init(
+    path: String, peerUID: uid_t, credentials: PeerCredentials, handler: BridgeHandler,
+    maxConnections: Int = BridgeServer.defaultMaxConnections,
+    ioTimeout: TimeInterval = BridgeServer.ioTimeoutSeconds
+  ) {
+    self.ioTimeout = ioTimeout
     self.path = path
     self.peerUID = peerUID
     self.credentials = credentials
     self.handler = handler
+    self.maxConnections = maxConnections
   }
 
   /// Binds the socket with mode 0600 and starts accepting. A stale socket at the path is
-  /// replaced; any other kind of file there is refused.
+  /// replaced; a socket that still accepts connections (another bridge) or any other kind of
+  /// file there is refused.
   public func start() throws {
-    var info = stat()
-    if lstat(path, &info) == 0 {
-      guard info.st_mode & S_IFMT == S_IFSOCK, unlink(path) == 0 else {
-        throw BridgeStartError.socketFailed
-      }
-    }
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
     let bytes = Array(path.utf8)
@@ -387,20 +443,28 @@ public final class BridgeServer: @unchecked Sendable {
     withUnsafeMutableBytes(of: &address.sun_path) { raw in
       raw.copyBytes(from: bytes)
     }
+    var info = stat()
+    if lstat(path, &info) == 0 {
+      guard info.st_mode & S_IFMT == S_IFSOCK, !accepts(&address), unlink(path) == 0 else {
+        throw BridgeStartError.socketFailed
+      }
+    }
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw BridgeStartError.socketFailed }
     _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
     let bound = withUnsafePointer(to: &address) {
       $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-        bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
       }
     }
-    guard bound == 0, chmod(path, 0o600) == 0, listen(fd, 16) == 0,
+    guard bound == 0, chmod(path, 0o600) == 0, lstat(path, &info) == 0, listen(fd, 16) == 0,
       fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0
     else {
       close(fd)
+      if bound == 0 { unlink(path) }
       throw BridgeStartError.socketFailed
     }
+    boundInode = info.st_ino
     let source = DispatchSource.makeReadSource(
       fileDescriptor: fd, queue: DispatchQueue(label: "eido.bridge.accept"))
     source.setEventHandler { [weak self] in self?.acceptPending(fd) }
@@ -409,20 +473,49 @@ public final class BridgeServer: @unchecked Sendable {
     source.resume()
   }
 
-  /// Stops accepting and removes the socket. Connections already accepted finish.
+  /// Stops accepting and removes the socket, unless the path now holds another bridge's
+  /// socket. Connections already accepted finish; `waitForConnections` waits for them.
   public func stop() {
     source?.cancel()
     source = nil
-    unlink(path)
+    var info = stat()
+    if let inode = boundInode, lstat(path, &info) == 0, info.st_ino == inode {
+      unlink(path)
+    }
+    boundInode = nil
+  }
+
+  /// Waits until no accepted connection is still being served, or the timeout passes. True
+  /// means every connection finished.
+  public func waitForConnections(timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    idle.lock()
+    defer { idle.unlock() }
+    while active > 0 {
+      guard idle.wait(until: deadline) else { return active == 0 }
+    }
+    return true
   }
 
   private func acceptPending(_ listener: Int32) {
     while true {
       let fd = accept(listener, nil, nil)
-      guard fd >= 0 else { return }
+      guard fd >= 0 else {
+        // Out of descriptors: back off instead of spinning on a listener that stays readable.
+        if errno == EMFILE || errno == ENFILE { usleep(100_000) }
+        return
+      }
       _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
       _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK)
-      Thread { self.serve(fd) }.start()
+      // Over the cap the connection is closed unread, so a flood cannot start threads.
+      guard reserve() else {
+        close(fd)
+        continue
+      }
+      Thread {
+        self.serve(fd)
+        self.release()
+      }.start()
     }
   }
 
@@ -432,16 +525,10 @@ public final class BridgeServer: @unchecked Sendable {
     guard let uid = credentials.uid(of: fd), uid == peerUID else { return }
     var on: Int32 = 1
     _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-    var timeout = timeval(tv_sec: BridgeServer.ioTimeoutSeconds, tv_usec: 0)
-    for option in [SO_RCVTIMEO, SO_SNDTIMEO] {
-      _ = setsockopt(fd, SOL_SOCKET, option, &timeout, socklen_t(MemoryLayout<timeval>.size))
-    }
-    guard reserve() else {
-      send(fd, BridgeFrame.failure(.unavailable))
-      return
-    }
-    defer { release() }
-    guard let header = receive(fd, BridgeFrame.headerBytes) else { return }
+    var timeout = interval(ioTimeout)
+    _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    let deadline = Date().addingTimeInterval(ioTimeout)
+    guard let header = receive(fd, BridgeFrame.headerBytes, until: deadline) else { return }
     let length = BridgeFrame.length(header)
     guard length <= BridgeFrame.requestLimit else {
       send(fd, BridgeFrame.failure(.frameTooLarge))
@@ -451,7 +538,7 @@ public final class BridgeServer: @unchecked Sendable {
       send(fd, BridgeFrame.failure(.invalidRequest))
       return
     }
-    guard let body = receive(fd, length) else { return }
+    guard let body = receive(fd, length, until: deadline) else { return }
     let response = wait(for: body)
     send(fd, response.count <= BridgeFrame.responseLimit ? response : BridgeFrame.failure(.unavailable))
   }
@@ -469,24 +556,50 @@ public final class BridgeServer: @unchecked Sendable {
   }
 
   private func reserve() -> Bool {
-    lock.lock()
-    defer { lock.unlock() }
-    guard active < BridgeServer.maxConnections else { return false }
+    idle.lock()
+    defer { idle.unlock() }
+    guard active < maxConnections else { return false }
     active += 1
     return true
   }
 
   private func release() {
-    lock.lock()
+    idle.lock()
     active -= 1
-    lock.unlock()
+    idle.broadcast()
+    idle.unlock()
   }
 }
 
-private func receive(_ fd: Int32, _ count: Int) -> Data? {
+/// A socket timeout for `seconds`, never zero (which would mean no timeout).
+private func interval(_ seconds: TimeInterval) -> timeval {
+  let whole = Int(seconds)
+  let micros = max(Int32((seconds - Double(whole)) * 1_000_000), whole == 0 ? 1 : 0)
+  return timeval(tv_sec: whole, tv_usec: micros)
+}
+
+/// True when something is listening on the socket at `address`.
+private func accepts(_ address: inout sockaddr_un) -> Bool {
+  let probe = socket(AF_UNIX, SOCK_STREAM, 0)
+  guard probe >= 0 else { return false }
+  defer { close(probe) }
+  return withUnsafePointer(to: &address) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+      connect(probe, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+    }
+  }
+}
+
+/// Reads exactly `count` bytes, or nil on end of file, an error, or the deadline. The deadline
+/// covers the whole request, so a peer sending a byte at a time cannot hold the connection.
+private func receive(_ fd: Int32, _ count: Int, until deadline: Date) -> Data? {
   var data = Data(count: count)
   var offset = 0
   while offset < count {
+    let left = deadline.timeIntervalSinceNow
+    guard left > 0 else { return nil }
+    var timeout = interval(left)
+    _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
     let read = data.withUnsafeMutableBytes { raw in
       recv(fd, raw.baseAddress! + offset, count - offset, 0)
     }

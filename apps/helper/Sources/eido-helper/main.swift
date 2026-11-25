@@ -17,9 +17,14 @@ import Foundation
     case .bridge(let options):
       await runBridge(options)
     case nil:
+      // The gate never passes arguments, so anything here is a misconfiguration.
       FileHandle.standardOutput.write(Response.failure(.invalidRequest).data() + Data([10]))
+      exit(1)
     }
   }
+
+  /// Held for the life of the process so the signal handlers stay installed.
+  @MainActor static var signalSources: [DispatchSourceSignal] = []
 
   /// Request mode: the gate is the parent, so the Helper ends with it. `--authorize` is run by
   /// hand and the bridge is run by launchd, so neither is watched.
@@ -53,20 +58,26 @@ import Foundation
       FileHandle.standardError.write(Data("\(code)\n".utf8))
       exit(1)
     }
-    var sources: [DispatchSourceSignal] = []
     for number in [SIGTERM, SIGINT] {
       signal(number, SIG_IGN)
       let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
       source.setEventHandler {
+        // Stop accepting, then let accepted requests finish (bounded below launchd's
+        // 20-second exit timeout) before exiting.
         server.stop()
-        exit(0)
+        DispatchQueue.global().async {
+          _ = server.waitForConnections(timeout: drainSeconds)
+          exit(0)
+        }
       }
       source.resume()
-      sources.append(source)
+      signalSources.append(source)
     }
-    // Keeps the signal sources alive; the process ends only from a handler above.
-    await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in
-      _ = sources
+    // The process ends only from a signal handler above.
+    while true {
+      try? await Task.sleep(nanoseconds: 3_600_000_000_000)
     }
   }
+
+  static let drainSeconds: TimeInterval = 15
 }

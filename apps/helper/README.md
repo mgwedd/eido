@@ -226,32 +226,36 @@ eido-helper --bridge \
   --file-helper-sha256 <lowercase hex>
 ```
 
-Each flag is required once, in any order; anything else exits with
-`invalid_request` on stdout. At start the bridge, in this order:
+Each flag is required once, in any order; anything else writes
+`invalid_request` to stdout and exits 1. At start the bridge, in this order:
 
 1. resolves `--peer-user` to a uid once (a later rename does not change it);
 2. reads every Things script in the table below from `--things-scripts`, checks
    each file's SHA-256 against the hash built into the bridge, and keeps the
    checked bytes in memory;
 3. hashes `--file-helper` and compares it with `--file-helper-sha256`;
-4. binds the socket with mode `0600`. A stale socket at the path is replaced; any
-   other kind of file there is refused.
+4. binds the socket with mode `0600`. A stale socket at the path is replaced; a
+   socket that still accepts connections (another bridge) or any other kind of
+   file there is refused.
 
 Any failure stops the start before the socket exists: the bridge writes one code
 to stderr (`peer_user_unknown`, `things_scripts_mismatch`, `file_helper_mismatch`,
 or `socket_failed`) and exits 1. It never serves with a partial table. It does not
-watch its parent (launchd); SIGTERM or SIGINT stops it, removes the socket and
-exits 0. Request mode is unchanged and still exits when the gate exits.
+watch its parent (launchd). SIGTERM or SIGINT stops accepting and removes the
+socket (unless another bridge has since replaced it), lets accepted requests
+finish for up to 15 seconds (inside launchd's 20-second exit timeout), and exits 0. Request mode is unchanged and still exits when the gate exits.
 
 The socket's `0600` mode admits only the owner at the file system; the LaunchAgent
-work in #827 grants the gate user access with an ACL. That is not the check that
+work in #827 grants the gate user access. The bridge creates a new socket file on
+every start, so that access must come from the directory (an inherited ACL), not
+from an ACL set once on the socket. That is not the check that
 matters: each accepted connection's peer uid is read from the kernel with
 `getpeereid` before any byte is read, and a connection from any uid other than the
 `--peer-user` uid is closed with no response. `getpeereid` reports the effective
 uid the peer had when it connected; the bridge does not check the peer's pid,
 audit token, or code signature, since uid is the boundary #781 sets (any process
 running as the gate user is the gate). At most eight connections are served at
-once; a ninth gets `unavailable`.
+once; a ninth is closed unread, with no response.
 
 ### Framing
 
@@ -259,9 +263,10 @@ One request and one response per connection. A frame is a 4-byte big-endian
 unsigned length followed by that many bytes of UTF-8 JSON. Requests are at most
 8 MiB, and responses at most 24 MiB (an over-long response is replaced by
 `unavailable`). A header naming a longer request gets `frame_too_large` without
-the body being read; a zero length gets `invalid_request`. Each read and write
-times out after 10 seconds, and the bridge closes the connection after its
-response. Peer input is parsed, never interpolated: no request field becomes a
+the body being read; a zero length gets `invalid_request`. The whole request
+(header and body) must arrive within 10 seconds of the peer check, or the
+connection is closed with no response; the response write has its own 10-second
+limit. The bridge closes the connection after its response. Peer input is parsed, never interpolated: no request field becomes a
 script, a path to run, a shell word, or an environment variable.
 
 ### Operations
