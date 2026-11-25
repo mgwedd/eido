@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest"
 import {
+  deferredExtractionId,
   filterRenderableBriefLines,
   formatBriefDate,
   formatBriefHeaderMeta,
@@ -69,6 +70,63 @@ describe("filterRenderableBriefLines", () => {
       ledger: { type: "ledger" },
     }
     expect(filterRenderableBriefLines([moreLine])).toHaveLength(1)
+  })
+})
+
+describe("deferred lines in filterRenderableBriefLines", () => {
+  const deferred = (
+    type: "obligation" | "extraction",
+    id: string
+  ): BriefLine => ({
+    kind: "deferred",
+    text: "Lorem ipsum",
+    ledger: { type, id },
+  })
+
+  test("keeps an obligation line and an extraction line with a numeric id", () => {
+    const kept = filterRenderableBriefLines([
+      deferred("obligation", "42"),
+      deferred("extraction", "17"),
+    ])
+    expect(kept.map((line) => "ledger" in line && line.ledger)).toEqual([
+      { type: "obligation", id: "42" },
+      { type: "extraction", id: "17" },
+    ])
+  })
+
+  test("drops an extraction line whose id cannot name an extraction row", () => {
+    expect(
+      filterRenderableBriefLines([
+        deferred("extraction", "x1"),
+        deferred("extraction", "0"),
+        deferred("extraction", "-3"),
+        deferred("extraction", "1.5"),
+        deferred("extraction", "007"),
+        deferred("extraction", "99999999999999999999"),
+      ])
+    ).toEqual([])
+  })
+})
+
+describe("deferredExtractionId", () => {
+  test("returns the number for an extraction line", () => {
+    expect(
+      deferredExtractionId({
+        kind: "deferred",
+        text: "Lorem ipsum",
+        ledger: { type: "extraction", id: "17" },
+      })
+    ).toBe(17)
+  })
+
+  test("returns null for an obligation line", () => {
+    expect(
+      deferredExtractionId({
+        kind: "deferred",
+        text: "Lorem ipsum",
+        ledger: { type: "obligation", id: "17" },
+      })
+    ).toBeNull()
   })
 })
 

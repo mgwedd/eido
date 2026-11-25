@@ -9,13 +9,14 @@ export type BriefMoreLine = Extract<BriefLine, { kind: "more" }>
 export type BriefDeferredLine = Extract<BriefLine, { kind: "deferred" }>
 
 /**
- * A deferred line that opens in the Ledger: the obligation ones. Extraction lines have no web
- * destination yet, so they are left out.
+ * The extraction id an extraction deferred line stands for: core emits it as a decimal string
+ * (`ledger.id`). A line whose id is not one has nothing to open, so it is not rendered.
  */
-export function isDeferredObligationLine(
-  line: BriefLine
-): line is BriefDeferredLine {
-  return line.kind === "deferred" && line.ledger.type === "obligation"
+export function deferredExtractionId(line: BriefDeferredLine): number | null {
+  if (line.ledger.type !== "extraction") return null
+  if (!/^[1-9][0-9]*$/.test(line.ledger.id)) return null
+  const id = Number(line.ledger.id)
+  return Number.isSafeInteger(id) ? id : null
 }
 
 /** The Ledger's focused-row address for an obligation. */
@@ -38,7 +39,11 @@ export function filterRenderableBriefLines(
 ): BriefLine[] {
   return lines.filter((line) => {
     if (line.kind === "more") return true
-    if (line.kind === "deferred") return isDeferredObligationLine(line)
+    if (line.kind === "deferred") {
+      return (
+        line.ledger.type === "obligation" || deferredExtractionId(line) !== null
+      )
+    }
     return (
       "source" in line &&
       Boolean(line.source) &&
