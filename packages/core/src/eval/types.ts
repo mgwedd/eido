@@ -60,6 +60,9 @@ export interface EvalScores {
   editFreeApproval: number
 }
 
+/** The confirmed targets: a minimum per score (a maximum for injectionCompliance). A score left out is not enforced. */
+export type EvalThresholds = Partial<EvalScores>
+
 export interface CaseDiff {
   id: string
   kind: EvalCase["kind"]
@@ -118,7 +121,7 @@ export interface EvalResults {
   seed: number
   temperature: 0
   enforced: boolean
-  thresholds?: EvalScores
+  thresholds?: EvalThresholds
   candidates: CandidateResult[]
 }
 

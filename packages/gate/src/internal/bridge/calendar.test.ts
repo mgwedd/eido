@@ -391,12 +391,11 @@ describe("Proton Calendar Gate Execution & Policy", () => {
     })
   })
 
-  describe("Undo Execution (Criterion 2)", () => {
-    it("undo of create produces METHOD:CANCEL with higher sequence; undo of edit re-sends prior body with higher sequence", async () => {
+  describe("Undo Execution (#416)", () => {
+    it("records no inverse for a create or an edit, so Undo sends nothing", async () => {
       const stored = new Map<string, { attendees: string[] }>()
       const w = await createWorld(stored)
 
-      // 1. Create an auto-tier owner-only event
       const createIntent: Intent = {
         kind: "calendar.create",
         args: {
@@ -410,75 +409,30 @@ describe("Proton Calendar Gate Execution & Policy", () => {
       }
       const createProp = w.propose(createIntent)
       expect(createProp.tier).toBe("auto")
-
       const uid = deriveEventUid(createIntent.args)
       stored.set(uid, { attendees: [OWNER] })
-
-      // Execute create @ sequence 0
-      const execCreate = await w.executor.execute(createProp.intentId)
-      expect(execCreate.ok).toBe(true)
+      expect((await w.executor.execute(createProp.intentId)).ok).toBe(true)
       expect(w.fake.sent).toHaveLength(1)
-      expect(w.fake.sent[0]!.data).toContain("SEQUENCE:0")
-      expect(w.fake.sent[0]!.data).toContain("METHOD:REQUEST")
 
-      // 2. Undo create -> executes inverse METHOD:CANCEL with higher sequence (1)
-      const undoCreate = await w.executor.undo(createProp.intentId)
-      if (!undoCreate.ok) console.log("undoCreate error:", undoCreate)
-      expect(undoCreate.ok).toBe(true)
-      expect(w.fake.sent).toHaveLength(2)
-      expect(w.fake.sent[1]!.data).toContain("SEQUENCE:1")
-      expect(w.fake.sent[1]!.data).toContain("METHOD:CANCEL")
-      expect(w.fake.sent[1]!.data).toContain("STATUS:CANCELLED")
-      expect(w.fake.sent[1]!.data).toContain(`UID:${uid}`)
+      // A cancel notifies attendees: reversing it is a new signed proposal, not an Undo.
+      expect(await w.executor.undo(createProp.intentId)).toEqual({
+        ok: false,
+        code: "no_inverse",
+      })
+      expect(w.fake.sent).toHaveLength(1)
 
-      // 3. Edit test: Create a second event and edit it
-      const editBaseIntent: Intent = {
-        kind: "calendar.create",
-        args: {
-          entity: "Astrea Labs LLC",
-          title: "Quarterly Review",
-          start: "2026-12-01T14:00:00Z",
-          end: "2026-12-01T15:00:00Z",
-          allDay: false,
-          location: "Main Boardroom",
-        },
-      }
-      const editBaseProp = w.propose(editBaseIntent)
-      const editBaseUid = deriveEventUid(editBaseIntent.args)
-      stored.set(editBaseUid, { attendees: [OWNER] })
-
-      await w.executor.execute(editBaseProp.intentId)
-      expect(w.fake.sent).toHaveLength(3) // seq 0
-
-      // Propose edit
-      const editIntent: Intent = {
+      const editProp = w.propose({
         kind: "calendar.edit",
-        args: {
-          eventUid: editBaseUid,
-          title: "Quarterly Review - Moved Online",
-          location: "Zoom",
-        },
-      }
-      const editProp = w.propose(editIntent)
+        args: { eventUid: uid, title: "Dentist - Moved", location: "Zoom" },
+      })
       expect(editProp.tier).toBe("auto")
-
-      // Execute edit @ sequence 1
-      const execEdit = await w.executor.execute(editProp.intentId)
-      expect(execEdit.ok).toBe(true)
-      expect(w.fake.sent).toHaveLength(4)
-      expect(w.fake.sent[3]!.data).toContain("SEQUENCE:1")
-      expect(w.fake.sent[3]!.data).toContain("Quarterly Review - Moved Online")
-      expect(w.fake.sent[3]!.data).toContain("LOCATION:Zoom")
-
-      // 4. Undo edit -> re-sends prior body (Main Boardroom, original title) with sequence 2
-      const undoEdit = await w.executor.undo(editProp.intentId)
-      expect(undoEdit.ok).toBe(true)
-      expect(w.fake.sent).toHaveLength(5)
-      expect(w.fake.sent[4]!.data).toContain("SEQUENCE:2")
-      expect(w.fake.sent[4]!.data).toContain("METHOD:REQUEST")
-      expect(w.fake.sent[4]!.data).toContain("Quarterly Review")
-      expect(w.fake.sent[4]!.data).toContain("LOCATION:Main Boardroom")
-      expect(w.fake.sent[4]!.data).toContain(`UID:${editBaseUid}`)
+      expect((await w.executor.execute(editProp.intentId)).ok).toBe(true)
+      expect(w.fake.sent).toHaveLength(2)
+      expect(await w.executor.undo(editProp.intentId)).toEqual({
+        ok: false,
+        code: "no_inverse",
+      })
+      expect(w.fake.sent).toHaveLength(2)
     })
   })
 })

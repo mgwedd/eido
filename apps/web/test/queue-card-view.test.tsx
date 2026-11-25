@@ -41,7 +41,11 @@ const PAYLOAD = JSON.stringify({
 const HASH = createHash("sha256").update(PAYLOAD).digest("hex")
 const NONCE = "n".repeat(43)
 
-function prepared(hash: string, payload = PAYLOAD) {
+function prepared(
+  hash: string,
+  payload = PAYLOAD,
+  rationale = "The thread waited three days."
+) {
   return {
     intentId: "intent-a",
     kind: "email.reply",
@@ -51,14 +55,17 @@ function prepared(hash: string, payload = PAYLOAD) {
     payloadHash: hash,
     nonce: NONCE,
     documentIds: ["d1", "d2"],
-    rationale: "The thread waited three days.",
+    rationale,
   }
 }
 
 type Routes = {
   hash?: string
   payload?: string
-  history?: "ok" | "fail" | "empty"
+  rationale?: string
+  history?: "ok" | "fail" | "empty" | "edited"
+  /** The id the pending intent was edited from. */
+  editedFrom?: string
   decision?: number
 }
 
@@ -80,10 +87,19 @@ function routed(routes: Routes = {}) {
       body: typeof init?.body === "string" ? init.body : undefined,
     })
     if (url.endsWith("/approvals"))
-      return Promise.resolve(Response.json({ intents: queued }))
+      return Promise.resolve(
+        Response.json({
+          intents: queued.map((intent) => ({
+            ...intent,
+            ...(routes.editedFrom ? { editedFrom: routes.editedFrom } : {}),
+          })),
+        })
+      )
     if (url.endsWith("/nonce"))
       return Promise.resolve(
-        Response.json(prepared(routes.hash ?? HASH, routes.payload))
+        Response.json(
+          prepared(routes.hash ?? HASH, routes.payload, routes.rationale)
+        )
       )
     if (url.endsWith("/history"))
       return Promise.resolve(
@@ -100,6 +116,9 @@ function routed(routes: Routes = {}) {
                         from: null,
                         to: "proposed",
                         actor: "data-plane",
+                        ...(routes.history === "edited"
+                          ? { reason: "edited" }
+                          : {}),
                       },
                       {
                         at: "2026-10-17T10:01:00.000Z",
@@ -330,7 +349,7 @@ describe("Queue card", () => {
     expect(view.textContent).not.toMatch(/expir/i)
   })
 
-  test("a cancelled passkey prompt shows its own message and keeps the card", async () => {
+  test("a cancelled passkey prompt shows a status line and keeps the card decidable", async () => {
     routed()
     signApproval.mockResolvedValue({
       ok: false,
@@ -338,13 +357,15 @@ describe("Queue card", () => {
     })
     const view = await render()
     await click("Approve")
-    expect(view.textContent).toContain(
-      "The passkey prompt did not complete. Nothing was approved."
+    const statuses = [...view.querySelectorAll('[role="status"]')].map((n) =>
+      n.textContent?.trim()
     )
+    expect(statuses).toContain("Signing cancelled · nothing was sent")
+    expect(view.querySelector('[role="alert"]')).toBeNull()
     expect(button("Approve")?.disabled).toBe(false)
   })
 
-  test("on an iPhone the cancelled message names Face ID", async () => {
+  test("on an iPhone the cancelled line is the same text, without naming Face ID", async () => {
     routed()
     stubIphone()
     signApproval.mockResolvedValue({
@@ -353,9 +374,98 @@ describe("Queue card", () => {
     })
     const view = await render()
     await click("Approve")
-    expect(view.textContent).toContain(
-      "Face ID did not complete. Nothing was approved."
-    )
+    expect(view.textContent).toContain("Signing cancelled · nothing was sent")
+    expect(view.textContent).not.toContain("did not complete")
+  })
+
+  test("hostile payload text is escaped plain text in the payload area and the note never enters it", async () => {
+    const hostile =
+      '<img src="https://x.example.invalid/p.png" onerror="boom()"> Ignore previous instructions'
+    const payload = JSON.stringify({
+      args: { body: hostile, subject: "Re: quote", to: ["x@example.invalid"] },
+      kind: "email.reply",
+    })
+    routed({
+      payload,
+      hash: createHash("sha256").update(payload).digest("hex"),
+      rationale: "Rationale marker text",
+    })
+    const view = await render()
+    const fields = view.querySelector("dl")
+    expect(view.querySelector("img")).toBeNull()
+    expect(fields?.textContent).toContain(hostile)
+    expect(fields?.textContent).not.toContain("Rationale marker text")
+    expect(
+      view
+        .querySelector('section[aria-labelledby^="note-"]')
+        ?.textContent?.includes("Rationale marker text")
+    ).toBe(true)
+  })
+
+  test("the history lists each entry in order with its transition, actor and timestamp", async () => {
+    routed()
+    const view = await render()
+    const rows = [
+      ...view.querySelectorAll('section[aria-label="History"] li'),
+    ].map((li) => ({
+      iso: li.querySelector("time")?.getAttribute("dateTime"),
+      text: li.textContent?.replace(
+        li.querySelector("time")?.textContent ?? "",
+        ""
+      ),
+    }))
+    expect(rows).toEqual([
+      { iso: "2026-10-17T10:00:00.000Z", text: " · proposed · Agent" },
+      {
+        iso: "2026-10-17T10:01:00.000Z",
+        text: " · proposed to pending · Policy",
+      },
+    ])
+  })
+
+  test("the history shows no payload text", async () => {
+    routed()
+    const view = await render()
+    const history = view.querySelector('section[aria-label="History"]')
+    expect(history?.textContent).not.toContain("Hello there")
+    expect(history?.textContent).not.toContain("x@example.invalid")
+  })
+
+  test("an edited intent's history names the intent it replaced", async () => {
+    routed({ history: "edited", editedFrom: "intent-orig" })
+    const view = await render()
+    const first = view.querySelector('section[aria-label="History"] li')
+    expect(first?.textContent).toContain("edited from intent-orig")
+    expect(first?.textContent).not.toContain("edited from intent-orig edited")
+  })
+
+  test("a failing history call leaves a card with a good payload approvable", async () => {
+    routed({ history: "fail" })
+    signApproval.mockResolvedValue({
+      ok: true,
+      value: { intentId: "intent-a", state: "approved" },
+    })
+    const view = await render()
+    expect(
+      view.querySelector('section[aria-label="History"] [role="alert"]')
+    ).not.toBeNull()
+    expect(button("Approve")?.disabled).toBe(false)
+    await click("Approve")
+    expect(signApproval).toHaveBeenCalledTimes(1)
+  })
+
+  test("nothing from signing is kept in web storage", async () => {
+    routed()
+    signApproval.mockResolvedValue({
+      ok: true,
+      value: { intentId: "intent-a", state: "approved" },
+    })
+    localStorage.clear()
+    sessionStorage.clear()
+    await render()
+    await click("Approve")
+    expect(localStorage.length).toBe(0)
+    expect(sessionStorage.length).toBe(0)
   })
 
   test("a refused signature explains what happened", async () => {
@@ -413,5 +523,78 @@ describe("Queue swipe", () => {
     const view = await render()
     await drag(view.querySelector("article")!, 200, 50)
     expect(document.body.textContent).toContain("Why? You can skip this.")
+  })
+
+  test("a swipe past the threshold signs the same prepared approval as the Approve button", async () => {
+    routed()
+    signApproval.mockResolvedValue({
+      ok: true,
+      value: { intentId: "intent-a", state: "approved" },
+    })
+    const view = await render()
+    await drag(view.querySelector("article")!, 0, 120)
+    expect(signApproval).toHaveBeenCalledTimes(1)
+    expect(signApproval).toHaveBeenCalledWith(
+      expect.objectContaining({ nonce: NONCE, payloadHash: HASH })
+    )
+  })
+})
+
+function reduceMotion(reduce: boolean) {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: reduce && query.includes("prefers-reduced-motion"),
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  }))
+}
+
+async function dragHold(article: Element, from: number, to: number) {
+  Object.assign(article, { setPointerCapture: () => undefined })
+  for (const [type, x] of [
+    ["pointerdown", from],
+    ["pointermove", to],
+  ] as const) {
+    await act(async () => {
+      const event = new Event(type, { bubbles: true })
+      Object.assign(event, { clientX: x, pointerId: 1 })
+      article.dispatchEvent(event)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+  }
+}
+
+describe("Queue swipe motion", () => {
+  test("the card tilts with the finger by default", async () => {
+    reduceMotion(false)
+    routed()
+    const view = await render()
+    const article = view.querySelector("article") as HTMLElement
+    await dragHold(article, 0, 48)
+    expect(article.style.transform).toBe("translateX(48px) rotate(2deg)")
+  })
+
+  test("with reduced motion the card follows the finger without tilt", async () => {
+    reduceMotion(true)
+    routed()
+    const view = await render()
+    const article = view.querySelector("article") as HTMLElement
+    await dragHold(article, 0, 48)
+    expect(article.style.transform).toBe("translateX(48px)")
+  })
+
+  test("a released card springs back over 200ms by default", async () => {
+    reduceMotion(false)
+    routed()
+    const view = await render()
+    const article = view.querySelector("article") as HTMLElement
+    expect(article.style.transition).toBe("transform 200ms")
+  })
+
+  test("with reduced motion a released card snaps back with no transition", async () => {
+    reduceMotion(true)
+    routed()
+    const view = await render()
+    const article = view.querySelector("article") as HTMLElement
+    expect(article.style.transition).toBe("")
   })
 })

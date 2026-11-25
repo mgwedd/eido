@@ -159,9 +159,9 @@ describe("Queue shortcuts", () => {
       intentId: "intent-a",
       payloadHash: HASH,
     })
-    expect(
-      document.querySelector('[role="alert"], [data-slot="alert"]')?.textContent
-    ).toContain("The passkey prompt did not complete. Nothing was approved.")
+    expect(document.body.textContent).toContain(
+      "Signing cancelled · nothing was sent"
+    )
   })
 
   test("a does not sign while the payload has not loaded", async () => {

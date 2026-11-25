@@ -121,52 +121,38 @@ function mails(f: { fake: FakeBridge }): string[] {
   return f.fake.sent.map((mail) => mail.data)
 }
 
-/** What the route returns, Activity says and the audit chain gained when `id` is undone. */
-async function undoTwice(f: Awaited<ReturnType<typeof world>>, id: string) {
-  expect((await projection(f.handler, f.cookie, id))?.undo).toBe("available")
-  const before = f.actions()
-  const mailsBefore = mails(f).length
-  const first = await call(f.handler, `/executions/${id}/undo`, f.cookie)
-  expect(first.status).toBe(200)
-  expect(first.body).toEqual({ id, undone: true })
-  // The attempt marker written before the upstream call, then the one audited result.
-  expect(f.actions().slice(before.length)).toEqual(["undo.started", "undo"])
-  expect(mails(f)).toHaveLength(mailsBefore + 1)
-  expect((await projection(f.handler, f.cookie, id))?.undo).toBe("done")
-  const rows = auditRows(f.db).filter((row) => row.action === "undo")
-  expect(rows).toHaveLength(1)
-  expect(rows[0]).toMatchObject({ actor: "executor", target: id })
-  const activity = JSON.stringify(
-    (await call(f.handler, "/audit", f.cookie, "GET")).body
-  )
-  for (const text of PRIVATE_TEXT) {
-    expect(loggedText(f.db)).not.toContain(text)
-    expect(activity).not.toContain(text)
-  }
-  const rowCount = auditRows(f.db).length
+/**
+ * What the route returns, Activity says and the audit chain gained when `id` is undone: a calendar
+ * execution records no inverse (#416), so Undo is not offered, the route refuses it as it does any
+ * execution without one, and no mail goes out.
+ */
+async function undoRefused(f: Awaited<ReturnType<typeof world>>, id: string) {
   expect(
-    (await call(f.handler, `/executions/${id}/undo`, f.cookie)).status
-  ).toBe(409)
-  expect(auditRows(f.db)).toHaveLength(rowCount)
-  expect(mails(f)).toHaveLength(mailsBefore + 1)
+    f.db.prepare("SELECT inverse_op FROM executions WHERE intent_id=?").get(id)
+  ).toEqual({ inverse_op: null })
+  expect((await projection(f.handler, f.cookie, id))?.undo).toBe("none")
+  const before = f.actions().length
+  const mailsBefore = mails(f).length
+  const response = await call(f.handler, `/executions/${id}/undo`, f.cookie)
+  expect(response.status).toBe(409)
+  expect(f.actions().slice(before)).toEqual(["undo.refused.no_inverse"])
+  expect(mails(f)).toHaveLength(mailsBefore)
+  expect((await projection(f.handler, f.cookie, id))?.undo).toBe("none")
+  for (const text of PRIVATE_TEXT) expect(loggedText(f.db)).not.toContain(text)
 }
 
 describe("phone Undo through the real executor and Bridge calendar writers", () => {
-  it("undoes a create by cancelling the event once", async () => {
+  it("offers no Undo for a create and sends no cancel", async () => {
     const f = await world()
     const id = await f.execute(CREATE)
-    await undoTwice(f, id)
-    const [, cancel] = mails(f)
-    expect(cancel).toContain("METHOD:CANCEL")
-    expect(cancel).toContain("SEQUENCE:1")
-    expect(cancel).toContain(`UID:${EVENT_UID}`)
+    await undoRefused(f, id)
     expect(f.tracker.get(EVENT_UID)).toMatchObject({
-      sequence: 1,
-      lastMethod: "CANCEL",
+      sequence: 0,
+      lastMethod: "REQUEST",
     })
   })
 
-  it("undoes an edit by re-sending the prior event once", async () => {
+  it("offers no Undo for an edit and leaves the edited event", async () => {
     const f = await world()
     await f.execute(CREATE)
     const id = await f.execute({
@@ -177,37 +163,24 @@ describe("phone Undo through the real executor and Bridge calendar writers", () 
         location: EDITED_PLACE,
       },
     })
-    expect(mails(f)[1]).toContain(EDITED_TITLE)
-    await undoTwice(f, id)
-    const restore = mails(f)[2]
-    expect(restore).toContain("METHOD:REQUEST")
-    expect(restore).toContain("SEQUENCE:2")
-    expect(restore).toContain(TITLE)
-    expect(restore).toContain(`LOCATION:${PLACE}`)
-    expect(restore).not.toContain(EDITED_TITLE)
+    await undoRefused(f, id)
     expect(f.tracker.get(EVENT_UID)?.event).toMatchObject({
-      title: TITLE,
-      location: PLACE,
+      title: EDITED_TITLE,
+      location: EDITED_PLACE,
     })
   })
 
-  it("undoes a delete by re-sending the cancelled event once", async () => {
+  it("offers no Undo for a delete and does not re-send the event", async () => {
     const f = await world()
     await f.execute(CREATE)
     const id = await f.execute({
       kind: "calendar.delete",
       args: { eventUid: EVENT_UID },
     })
-    expect(mails(f)[1]).toContain("METHOD:CANCEL")
-    await undoTwice(f, id)
-    const restore = mails(f)[2]
-    expect(restore).toContain("METHOD:REQUEST")
-    expect(restore).toContain("STATUS:CONFIRMED")
-    expect(restore).toContain("SEQUENCE:2")
-    expect(restore).toContain(`LOCATION:${PLACE}`)
+    await undoRefused(f, id)
     expect(f.tracker.get(EVENT_UID)).toMatchObject({
-      sequence: 2,
-      lastMethod: "REQUEST",
+      sequence: 1,
+      lastMethod: "CANCEL",
     })
   })
 })

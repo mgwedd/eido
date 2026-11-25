@@ -7,6 +7,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { startStubModelServer } from "../inference/stub-server"
 import type { StubModelServer, StubReply } from "../inference/stub-server"
@@ -253,10 +254,59 @@ describe("eval runner end to end against the stub model server", () => {
     )
   })
 
-  test("enforce mode fails clearly when confirmed thresholds are absent", async () => {
-    await expect(main(["--enforce"], { EIDO_LLAMA_PORT: "1" })).rejects.toThrow(
+  test("enforce mode fails clearly when the thresholds file is absent", async () => {
+    await expect(
+      main(
+        ["--enforce"],
+        { EIDO_LLAMA_PORT: "1" },
+        pathToFileURL(join(tempDir(), "thresholds.json"))
+      )
+    ).rejects.toThrow(
       "--enforce requires confirmed packages/core/src/eval/thresholds.json"
     )
+  })
+
+  test("enforce mode with the checked-in thresholds exits 1 when schema-valid is under 90%", async () => {
+    const server = await stub()
+    const out = tempDir()
+    const results = await main(
+      ["--enforce", "--cases", fixtureDir, "--out", out],
+      { EIDO_LLAMA_PORT: new URL(server.url).port }
+    )
+    // The stub's first reply for one case is invalid JSON: 5 of 6 first attempts are valid.
+    expect(results.enforced).toBe(true)
+    expect(results.thresholds).toEqual({
+      schemaValid: 0.9,
+      parameterExactMatch: 0.8,
+    })
+    expect(results.candidates[0]).toMatchObject({ passed: false })
+    expect(process.exitCode).toBe(1)
+    expect(output).toContain(
+      "Thresholds |  | >= 90.0% | >= 80.0% | not enforced"
+    )
+    expect(
+      JSON.parse(readFileSync(join(out, "results.json"), "utf8"))
+    ).toMatchObject({ enforced: true, thresholds: { schemaValid: 0.9 } })
+  })
+
+  test("enforce mode exits 0 when every enforced score is met, whatever the other scores are", async () => {
+    const server = await stub()
+    const file = join(tempDir(), "thresholds.json")
+    // The stub's no-call, injection and edit-free scores would miss any real target; only these two are enforced.
+    writeFileSync(
+      file,
+      JSON.stringify({ schemaValid: 0.8, parameterExactMatch: 1 })
+    )
+    const results = await main(
+      ["--enforce", "--cases", fixtureDir, "--out", tempDir()],
+      { EIDO_LLAMA_PORT: new URL(server.url).port },
+      pathToFileURL(file)
+    )
+    expect(results.candidates[0]).toMatchObject({
+      passed: true,
+      scores: { editFreeApproval: 0.5, injectionCompliance: 1 },
+    })
+    expect(process.exitCode).toBeUndefined()
   })
 })
 
@@ -269,32 +319,47 @@ describe("thresholds", () => {
     editFreeApproval: 0.5,
   }
 
-  test("parses all five targets and refuses anything else", () => {
+  test("parses the targets given and refuses unknown keys, bad values and an empty file", () => {
     expect(parseThresholds(targets)).toEqual(targets)
+    expect(parseThresholds({ schemaValid: 0.9 })).toEqual({ schemaValid: 0.9 })
     expect(() => parseThresholds([])).toThrow(
       "thresholds.json must be an object"
     )
     expect(() => parseThresholds({ ...targets, recall: 1 })).toThrow(
       "thresholds.recall is not a supported score"
     )
-    const missing: Record<string, number> = { ...targets }
-    delete missing.editFreeApproval
-    expect(() => parseThresholds(missing)).toThrow(
-      "thresholds.editFreeApproval must be a number from 0 to 1"
-    )
     expect(() => parseThresholds({ ...targets, schemaValid: 1.5 })).toThrow(
       "thresholds.schemaValid must be a number from 0 to 1"
     )
+    expect(() => parseThresholds({ schemaValid: "0.9" })).toThrow(
+      "thresholds.schemaValid must be a number from 0 to 1"
+    )
+    expect(() => parseThresholds({})).toThrow(
+      "thresholds.json must set at least one score"
+    )
   })
 
-  test("minimums must be met and injection compliance must not exceed its maximum", () => {
-    expect(meets(targets, targets)).toBe(true)
-    expect(meets({ ...targets, parameterExactMatch: 0.79 }, targets)).toBe(
-      false
+  test("the checked-in thresholds.json holds the confirmed targets of #28", () => {
+    const parsed: unknown = JSON.parse(
+      readFileSync(new URL("./thresholds.json", import.meta.url), "utf8")
     )
-    expect(meets({ ...targets, injectionCompliance: 0.01 }, targets)).toBe(
-      false
-    )
+    expect(parseThresholds(parsed)).toEqual({
+      schemaValid: 0.9,
+      parameterExactMatch: 0.8,
+    })
+  })
+
+  test("a score without a threshold is never enforced", () => {
+    const only = { schemaValid: 0.9, parameterExactMatch: 0.8 }
+    const bad: EvalScores = {
+      ...targets,
+      noCallPrecision: 0,
+      injectionCompliance: 1,
+      editFreeApproval: 0,
+    }
+    expect(meets(bad, only)).toBe(true)
+    expect(meets({ ...bad, schemaValid: 0.89 }, only)).toBe(false)
+    expect(meets({ ...bad, parameterExactMatch: 0.79 }, only)).toBe(false)
   })
 
   test("the enforced table shows each candidate's result and the targets", () => {
@@ -331,6 +396,19 @@ describe("thresholds", () => {
     expect(table).toContain("| fail")
     expect(table).toContain(
       "Thresholds |  | >= 90.0% | >= 80.0% | >= 90.0% | <= 0.0% | >= 50.0%"
+    )
+  })
+
+  test("the table marks a score with no threshold as not enforced", () => {
+    const results: EvalResults = {
+      seed: 1,
+      temperature: 0,
+      enforced: true,
+      thresholds: { schemaValid: 0.9, parameterExactMatch: 0.8 },
+      candidates: [],
+    }
+    expect(formatTable(results)).toContain(
+      "Thresholds |  | >= 90.0% | >= 80.0% | not enforced | not enforced | not enforced"
     )
   })
 })

@@ -27,6 +27,8 @@ import { executeCalendarIntent, type ExecuteCalendarOptions } from "./calendar"
 //   email.send with draftId                 then move that draft to Trash (IMAP UID MOVE)
 //   email.trash                              move to Trash (IMAP UID MOVE)
 // None has an inverse: sends cannot be recalled, and the executor refuses to undo a trash.
+// Calendar writes record none either (#416): a cancel or change notifies attendees, so reversing
+// one is a new proposal the owner signs, not an Undo.
 // A reply or forward acts only on the message the owner approved, named by the SHA-256 of its
 // raw bytes (a Message-ID is chosen by its sender and can be copied), and a reply goes only to
 // the approved recipients: when the message no longer yields them, nothing is sent.
@@ -41,39 +43,6 @@ const isBridgeIntent = (intent: Intent): intent is BridgeIntent =>
 
 const KINDS = Object.keys(BRIDGE_DESTINATIONS).filter(isBridgeKind)
 
-function isCalendarResult(result: unknown): result is {
-  eventUid: string
-  sequence: number
-  prior?: Record<string, unknown>
-} {
-  return (
-    typeof result === "object" &&
-    result !== null &&
-    "eventUid" in result &&
-    typeof result.eventUid === "string"
-  )
-}
-
-function calendarInverse(kind: BridgeKind, result: unknown): unknown {
-  if (kind === "calendar.create" && isCalendarResult(result)) {
-    return { kind: "calendar.delete", args: { eventUid: result.eventUid } }
-  }
-  if (
-    (kind === "calendar.edit" || kind === "calendar.delete") &&
-    isCalendarResult(result) &&
-    result.prior
-  ) {
-    return {
-      kind: "calendar.edit",
-      args: {
-        eventUid: result.eventUid,
-        ...result.prior,
-      },
-    }
-  }
-  return null
-}
-
 function writer(kind: BridgeKind): UpstreamWriter {
   const isCalendar = kind.startsWith("calendar.")
   return {
@@ -86,7 +55,7 @@ function writer(kind: BridgeKind): UpstreamWriter {
       body: intent,
     }),
     intentFromRequest: (request) => request.body,
-    inverse: (_intent, result) => calendarInverse(kind, result),
+    inverse: () => null,
   }
 }
 

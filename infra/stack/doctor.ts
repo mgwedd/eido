@@ -25,13 +25,21 @@ import type { Fetch } from "../tailscale/measure.ts"
 import { parseDnsName } from "../tailscale/serve-routes.ts"
 import {
   buildStackConfig,
+  healthUrl,
   pathsFor,
   pidFilePath,
+  planeOf,
   stackDirOf,
   type Env,
   type Platform,
   type StackConfig,
 } from "./config.ts"
+import {
+  describePlaneDaemon,
+  planeDaemon,
+  planeHealth,
+  PLANE_PROCESSES,
+} from "./plane-status.ts"
 import { describeListeners, listenersOn, type Exec } from "./ports.ts"
 import { tailscaleBin } from "./process-control.ts"
 import type { FileStat } from "./settings.ts"
@@ -657,6 +665,50 @@ async function checkPorts(
   return checks
 }
 
+/**
+ * Split mode (#779): the gate and core are the plane's LaunchDaemons, not the stack's processes,
+ * so each is checked as a daemon and, when it runs, by its loopback health URL. The check id is
+ * `ports` and carries no fix, because the report schema has no plane id or action yet. A daemon
+ * that is down does not stop web from starting (`startsWithoutIt`): web shows the gate as
+ * unreachable, and the owner fixes the plane with the plane script.
+ */
+async function checkPlane(
+  deps: DoctorDeps,
+  config: StackConfig
+): Promise<Check[]> {
+  const checks: Check[] = []
+  for (const name of PLANE_PROCESSES) {
+    const daemon = await planeDaemon(name, {
+      exec: deps.exec,
+      exists: deps.files.exists,
+    })
+    const summary = describePlaneDaemon(name, daemon)
+    if (daemon.state !== "running") {
+      checks.push({
+        ...fail("ports", summary, undefined, MAC),
+        startsWithoutIt: true,
+      })
+      continue
+    }
+    const status = await planeHealth(name, config, deps.fetch)
+    const url = healthUrl(name, config.ports[name])
+    checks.push(
+      status === 200
+        ? ok("ports", `${summary}; ${url} answers 200`, undefined, MAC)
+        : {
+            ...fail(
+              "ports",
+              `${summary}; ${url} ${status === undefined ? "does not answer" : `answers ${status}`}`,
+              undefined,
+              MAC
+            ),
+            startsWithoutIt: true,
+          }
+    )
+  }
+  return checks
+}
+
 const parsePidRecordText = (text: string | undefined) =>
   text === undefined ? undefined : parsePidRecord(text)
 
@@ -678,6 +730,7 @@ export async function runDoctor(
     config = buildStackConfig({
       mode: "prod",
       platform: deps.platform,
+      plane: planeOf(deps.env),
       env: deps.env,
       home: deps.home,
       repoRoot: deps.repoRoot,
@@ -699,12 +752,23 @@ export async function runDoctor(
       : undefined
   checks.push(
     checkWebEnv(deps, edgeOrigin),
-    deps.platform === "darwin" ? await checkKeychain(deps) : checkVault(deps),
+    // Split: the vault and its keychain belong to the plane's gate user, not to this account.
+    ...(config?.plane === "split"
+      ? []
+      : [
+          deps.platform === "darwin"
+            ? await checkKeychain(deps)
+            : checkVault(deps),
+        ]),
     checkPush(deps),
     ...(await checkLlama(deps, options.quick)),
     checkGmail(deps)
   )
-  if (config !== undefined) checks.push(...(await checkPorts(deps, config)))
+  if (config !== undefined) {
+    if (config.plane === "split")
+      checks.push(...(await checkPlane(deps, config)))
+    checks.push(...(await checkPorts(deps, config)))
+  }
   return checks
 }
 

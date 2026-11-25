@@ -17,6 +17,11 @@ export const platformOf = (platform: string): Platform =>
 export const pathsFor = (platform: Platform) =>
   platform === "win32" ? win32 : posix
 export type ProcessName = "gate" | "core" | "web"
+/**
+ * `single`: the owner's login agent runs the gate, core and web. `split`: the gate and core run
+ * as LaunchDaemons under their own users (#70, `infra/host/plane.ts`), and the agent runs web only.
+ */
+export type Plane = "single" | "split"
 export type Env = Readonly<Record<string, string | undefined>>
 
 export const LOOPBACK = "127.0.0.1"
@@ -34,6 +39,7 @@ export const DEFAULTS = {
 export const OVERRIDES = [
   "EIDO_STACK_DIR",
   "EIDO_STACK_LOG_DIR",
+  "EIDO_STACK_PLANE",
   "EIDO_TAILNET_HOST",
   "EIDO_EDGE_PORT",
   "EIDO_WEB_PORT",
@@ -108,6 +114,26 @@ function passThrough(
   return picked
 }
 
+/** The path each process answers its health check on. */
+export const HEALTH_PATHS = {
+  gate: "/passkey/status",
+  core: "/connectors/health",
+  web: "/healthz",
+} as const satisfies Record<ProcessName, string>
+
+export const healthUrl = (name: ProcessName, port: number): string =>
+  `http://${LOOPBACK}:${port}${HEALTH_PATHS[name]}`
+
+/** The plane `EIDO_STACK_PLANE` selects; unset or empty is `single`. */
+export function planeOf(env: Env): Plane {
+  const value = env["EIDO_STACK_PLANE"]
+  if (value === undefined || value === "" || value === "single") return "single"
+  if (value === "split") return "split"
+  throw new Error(
+    `EIDO_STACK_PLANE must be single or split, not ${JSON.stringify(value)}`
+  )
+}
+
 export type ProcessSpec = {
   name: ProcessName
   cwd: string
@@ -136,6 +162,7 @@ export const SUPERVISOR_SOCKET_NAME = "supervisor.sock"
 export type StackConfig = {
   mode: Mode
   platform: Platform
+  plane: Plane
   stackDir: string
   runDir: string
   logDir: string
@@ -147,7 +174,7 @@ export type StackConfig = {
   url: string
   /** The `serve-routes` flags that describe this stack's routes. */
   serveFlags: string[]
-  /** In start order: gate, core, web. */
+  /** The processes the owner's stack starts, in start order: gate, core, web; web alone when split. */
   processes: ProcessSpec[]
   /** Directories created with mode 700 before start. */
   privateDirs: string[]
@@ -155,6 +182,12 @@ export type StackConfig = {
 
 export type ConfigInput = {
   mode: Mode
+  /**
+   * Defaults to `single`. Callers that build the stack for the stack's own commands pass
+   * `planeOf(env)`; the plane generator builds the gate and core specs it installs and leaves
+   * this out, so `EIDO_STACK_PLANE` in stack.env never removes them.
+   */
+  plane?: Plane
   /** Defaults to darwin for callers that run on macOS only, such as infra/backup. */
   platform?: Platform
   env: Env
@@ -264,7 +297,11 @@ export const logFilePath = (config: StackConfig, name: ProcessName): string =>
   pathsFor(config.platform).join(config.logDir, `${name}.log`)
 
 export function buildStackConfig(input: ConfigInput): StackConfig {
-  const { env, mode, repoRoot, platform = "darwin" } = input
+  const { env, mode, repoRoot, platform = "darwin", plane = "single" } = input
+  if (plane === "split" && platform !== "darwin")
+    throw new Error(
+      "EIDO_STACK_PLANE=split needs the macOS plane split (#70); there is none on this platform"
+    )
   const join = (...parts: string[]) => pathsFor(platform).join(...parts)
   const tailnetHost = read(env, "EIDO_TAILNET_HOST", input.tailnetHost)
   if (!HOSTNAME.test(tailnetHost))
@@ -303,8 +340,6 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
   const url = new URL(`https://${tailnetHost}:${edgePort}/`)
 
   const watch = mode === "dev" ? ["--watch"] : []
-  const health = (port: number, path: string) =>
-    `http://${LOOPBACK}:${port}${path}`
 
   const gate: ProcessSpec = {
     name: "gate",
@@ -360,7 +395,7 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       ),
     },
     port: ports.gate,
-    healthUrl: health(ports.gate, "/passkey/status"),
+    healthUrl: healthUrl("gate", ports.gate),
     marker: "src/main.ts",
     readyTimeoutMs: 30_000,
   }
@@ -387,7 +422,7 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       ),
     },
     port: ports.core,
-    healthUrl: health(ports.core, "/connectors/health"),
+    healthUrl: healthUrl("core", ports.core),
     marker: "src/main.ts",
     readyTimeoutMs: 30_000,
   }
@@ -412,10 +447,20 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       "-p",
       String(ports.web),
     ],
-    // Read by next.config.ts: lets `next dev` serve HMR and dev assets to the tailnet origin.
-    env: { EIDO_TAILNET_HOST: tailnetHost },
+    // EIDO_TAILNET_HOST is read by next.config.ts: it lets `next dev` serve HMR and dev assets to
+    // the tailnet origin. Split: the gate is the plane's, and the agent's environment carries
+    // none of stack.env, so web is told where it listens (apps/web/lib/auth/web-session.ts).
+    env: {
+      EIDO_TAILNET_HOST: tailnetHost,
+      ...(plane === "split"
+        ? {
+            EIDO_GATE_PHONE_HOST: LOOPBACK,
+            EIDO_GATE_PHONE_PORT: String(ports.gate),
+          }
+        : {}),
+    },
     port: ports.web,
-    healthUrl: health(ports.web, "/healthz"),
+    healthUrl: healthUrl("web", ports.web),
     marker: "next",
     // `next dev` compiles the first page on the first request.
     readyTimeoutMs: mode === "dev" ? 180_000 : 60_000,
@@ -424,6 +469,7 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
   return {
     mode,
     platform,
+    plane,
     stackDir,
     runDir,
     logDir,
@@ -442,7 +488,11 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       "--gate-port",
       String(ports.gate),
     ],
-    processes: [gate, core, web],
-    privateDirs: [stackDir, runDir, gateDataDir, coreDataDir, logDir],
+    processes: plane === "split" ? [web] : [gate, core, web],
+    // Split: the gate's and core's data dirs are the plane's, so the owner's stack makes none.
+    privateDirs:
+      plane === "split"
+        ? [stackDir, runDir, logDir]
+        : [stackDir, runDir, gateDataDir, coreDataDir, logDir],
   }
 }
