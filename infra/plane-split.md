@@ -1,26 +1,27 @@
 # Gate and data-plane split on the Mac (#70)
 
-The gate and the data plane (core) run as two hidden macOS users, each under its own LaunchDaemon. A sandbox profile and a per-user pf anchor fence the data plane's network. This runbook covers creating the split, checking it, updating it and removing it. Only the owner runs these commands; agents never run them.
+The gate and the data plane (core) run as two hidden macOS users, each under its own LaunchDaemon. A sandbox profile and a per-user pf anchor fence the data plane's network, and a second anchor limits the gate user to the hosts the reviewed connector manifests name (#471). This runbook covers creating the split, checking it, updating it and removing it. Only the owner runs these commands; agents never run them.
 
-`node infra/host/bin.ts plane plan` reads the host as you (dscl, `stack.env`, `tailscale status`) and prints a `/bin/sh` script. It changes nothing. You read the script, then run it with `sudo sh`. `plane remove` works the same way.
+`node --import ./infra/ts-hooks.ts infra/host/bin.ts plane plan` reads the host as you (dscl, `stack.env`, `tailscale status`) and prints a `/bin/sh` script. It changes nothing. You read the script, then run it with `sudo sh`. `plane remove` works the same way.
 
 ## What it creates
 
-| Item                                    | Value                                                                                                                                                                                                   |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gate user and group                     | `_eidogate`, uid and gid 451 (`--first-id` moves all three ids)                                                                                                                                         |
-| Data-plane user and group               | `_eidodata`, uid and gid 452                                                                                                                                                                            |
-| Socket group                            | `_eidoipc`, gid 453, members `_eidogate` and `_eidodata`                                                                                                                                                |
-| Gate data (`eido-control.db`)           | `/Library/Application Support/Eido/gate`, `_eidogate`, 0700                                                                                                                                             |
-| Data-plane data (`eido-data.db`, blobs) | `/Library/Application Support/Eido/data`, `_eidodata`, 0700                                                                                                                                             |
-| Sockets                                 | `/Library/Application Support/Eido/run`, `_eidogate:_eidoipc`, 0750. The data-plane socket is 0660 and the control socket 0600 (ADR 0003), so only the gate's data-plane socket is open to `_eidodata`. |
-| Gate keychain                           | `/Library/Application Support/Eido/home/gate/Library/Keychains/eido/eido.keychain-db`                                                                                                                   |
-| App copy                                | `/Library/Application Support/Eido/app`, `root:wheel`, not writable by either user                                                                                                                      |
-| Sandbox profiles                        | `/Library/Application Support/Eido/policy/core.sb` (core) and `parser.sb` (no network)                                                                                                                  |
-| pf anchor                               | `com.apple/eido.plane`, from `/Library/Application Support/Eido/policy/eido-plane.pf`. `/etc/pf.conf` is not edited.                                                                                    |
-| Daemons                                 | `com.eido.plane.pf` (root, reloads the anchor every 5 minutes), `com.eido.plane.gate` (`_eidogate`), `com.eido.plane.core` (`_eidodata`, under `sandbox-exec -f core.sb`)                               |
-| Logs                                    | `/Library/Logs/Eido/{gate,data,pf}`                                                                                                                                                                     |
-| Supervisor socket                       | ACL entries give `_eidogate` search on your home down to your stack run dir, and read and write on `supervisor.sock`. `_eidodata` gets none.                                                            |
+| Item                                    | Value                                                                                                                                                                                                                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Gate user and group                     | `_eidogate`, uid and gid 451 (`--first-id` moves all three ids)                                                                                                                                                                                                          |
+| Data-plane user and group               | `_eidodata`, uid and gid 452                                                                                                                                                                                                                                             |
+| Socket group                            | `_eidoipc`, gid 453, members `_eidogate` and `_eidodata`                                                                                                                                                                                                                 |
+| Gate data (`eido-control.db`)           | `/Library/Application Support/Eido/gate`, `_eidogate`, 0700                                                                                                                                                                                                              |
+| Data-plane data (`eido-data.db`, blobs) | `/Library/Application Support/Eido/data`, `_eidodata`, 0700                                                                                                                                                                                                              |
+| Sockets                                 | `/Library/Application Support/Eido/run`, `_eidogate:_eidoipc`, 0750. The data-plane socket is 0660 and the control socket 0600 (ADR 0003), so only the gate's data-plane socket is open to `_eidodata`.                                                                  |
+| Gate keychain                           | `/Library/Application Support/Eido/home/gate/Library/Keychains/eido/eido.keychain-db`                                                                                                                                                                                    |
+| App copy                                | `/Library/Application Support/Eido/app`, `root:wheel`, not writable by either user                                                                                                                                                                                       |
+| Sandbox profiles                        | `/Library/Application Support/Eido/policy/core.sb` (core) and `parser.sb` (no network)                                                                                                                                                                                   |
+| pf anchor                               | `com.apple/eido.plane`, from `/Library/Application Support/Eido/policy/eido-plane.pf`. `/etc/pf.conf` is not edited.                                                                                                                                                     |
+| Gate egress anchor                      | `com.apple/eido.egress`, from `/Library/Application Support/Eido/policy/eido-egress.pf`, with the host list `eido-egress.hosts`. See `infra/llama-server.md`, "Outbound allowlist".                                                                                      |
+| Daemons                                 | `com.eido.plane.pf` (root, reloads the anchor every 5 minutes), `com.eido.plane.egress` (root, adds the hosts' addresses to the egress table every 5 minutes), `com.eido.plane.gate` (`_eidogate`), `com.eido.plane.core` (`_eidodata`, under `sandbox-exec -f core.sb`) |
+| Logs                                    | `/Library/Logs/Eido/{gate,data,pf}` (the egress job logs to `pf/egress.err.log`)                                                                                                                                                                                         |
+| Supervisor socket                       | ACL entries give `_eidogate` search on your home down to your stack run dir, and read and write on `supervisor.sock`. `_eidodata` gets none.                                                                                                                             |
 
 What core may reach: the gate's data-plane socket, `127.0.0.1` on the gate's egress proxy port (`--egress-port`) and on the llama-server port (`EIDO_LLAMA_PORT`), and inbound connections on its own port. The sandbox denies all other network, DNS included, and denies reads of the gate's data dir and home. pf blocks every new outbound TCP connection and all UDP from `_eidodata`, except to those two loopback ports.
 
@@ -35,7 +36,7 @@ What core may reach: the gate's data-plane socket, `127.0.0.1` on the gate's egr
 
 ```sh
 cd ~/dev/eido
-node infra/host/bin.ts plane plan --egress-port <gate egress proxy port> > ~/eido-plane.sh
+node --import ./infra/ts-hooks.ts infra/host/bin.ts plane plan --egress-port <gate egress proxy port> > ~/eido-plane.sh
 less ~/eido-plane.sh        # every command it will run, as root
 sudo sh ~/eido-plane.sh
 ```
@@ -81,9 +82,12 @@ Unlocking that keychain while the gate runs under launchd without a login sessio
    sandbox-exec -f "/Library/Application Support/Eido/policy/core.sb" /usr/bin/true && echo parses
    ```
 
+   Then the gate's egress allowlist: the checks in `infra/llama-server.md`, "Outbound allowlist".
+
 5. Daemons under the right users:
 
    ```sh
+   sudo launchctl print system/com.eido.plane.egress | grep -E 'last exit code'   # 0
    sudo launchctl print system/com.eido.plane.gate | grep -E 'state|username'
    sudo launchctl print system/com.eido.plane.core | grep -E 'state|username'
    ps -o user=,command= -U _eidogate,_eidodata
@@ -119,24 +123,24 @@ Unlocking that keychain while the gate runs under launchd without a login sessio
 
 ## Update
 
-After pulling a new `main`, or after changing `stack.env`, the egress port or the llama port, run the plan again and apply it. The script is idempotent: it rewrites the users' attributes, the group members, the modes, the app copy, the profiles, the anchor and the plists, then restarts the three daemons.
+After pulling a new `main`, or after changing `stack.env`, the egress port or the llama port, run the plan again and apply it. The script is idempotent: it rewrites the users' attributes, the group members, the modes, the app copy, the profiles, the anchors, the host list and the plists, then restarts the four daemons. A connector manifest added or changed on `main` reaches the egress host list only through this step.
 
 ```sh
-node infra/host/bin.ts plane plan --egress-port <port> > ~/eido-plane.sh
+node --import ./infra/ts-hooks.ts infra/host/bin.ts plane plan --egress-port <port> > ~/eido-plane.sh
 sudo sh ~/eido-plane.sh
 ```
 
-Run it twice and diff `sudo pfctl -a com.apple/eido.plane -sr`, `id _eidogate` and `ls -le` between the runs: they match.
+Run it twice and diff `sudo pfctl -a com.apple/eido.plane -sr`, `sudo pfctl -a com.apple/eido.egress -sr`, `id _eidogate` and `ls -le` between the runs: they match.
 
 ## Remove
 
 ```sh
-node infra/host/bin.ts plane remove > ~/eido-plane-remove.sh
+node --import ./infra/ts-hooks.ts infra/host/bin.ts plane remove > ~/eido-plane-remove.sh
 less ~/eido-plane-remove.sh
 sudo sh ~/eido-plane-remove.sh
 ```
 
-This boots out and deletes the three daemons, flushes the anchor, removes the ACL entries, deletes the users and groups that exist, and removes the policy files, the app copy and the run dir. It keeps the gate's and data plane's data, the gate keychain and the logs. The script ends by printing the `sudo rm -rf` command that deletes them, once you have backed them up. pf stays enabled; `sudo pfctl -d` disables it if nothing else uses it.
+This boots out and deletes the four daemons, flushes both anchors, removes the ACL entries, deletes the users and groups that exist, and removes the policy files, the app copy and the run dir. It keeps the gate's and data plane's data, the gate keychain and the logs. The script ends by printing the `sudo rm -rf` command that deletes them, once you have backed them up. pf stays enabled; `sudo pfctl -d` disables it if nothing else uses it.
 
 To go back to the single-user stack, run `pnpm stack:install`.
 

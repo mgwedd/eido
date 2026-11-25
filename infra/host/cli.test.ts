@@ -20,6 +20,7 @@ function harness(results: Record<string, RunResult>) {
     files: { read: () => undefined, stat: () => undefined },
     repoRoot: "/repo",
     execPath: "/opt/node",
+    manifests: {},
   }
   return { out, err, calls, deps }
 }

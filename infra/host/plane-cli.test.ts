@@ -1,3 +1,4 @@
+import { REVIEWED_MANIFESTS } from "@eido/schemas"
 import { describe, expect, it } from "vitest"
 
 import { plane, type PlaneDeps, type RunResult } from "./plane-cli.ts"
@@ -20,6 +21,7 @@ function harness(
   results: Record<string, RunResult> = HOST,
   options: {
     env?: Record<string, string>
+    manifests?: Record<string, unknown>
     files?: Record<string, { text: string; mode: number }>
   } = {}
 ) {
@@ -47,6 +49,7 @@ function harness(
     },
     repoRoot: "/Users/owner/dev/eido",
     execPath: "/opt/homebrew/bin/node",
+    manifests: options.manifests ?? REVIEWED_MANIFESTS,
     out: (text) => out.push(text),
     err: (line) => err.push(line),
   }
@@ -69,7 +72,19 @@ describe("host plane plan", () => {
       "/usr/bin/rsync -a --delete --exclude=/.git --exclude=.turbo --exclude=/apps/web/.next --exclude=coverage /Users/owner/dev/eido/ '/Library/Application Support/Eido/app/'"
     )
     expect(script).toContain("<string>https://mac.example.ts.net:8443</string>")
+    expect(script).toContain(
+      "/usr/bin/tee '/Library/Application Support/Eido/policy/eido-egress.hosts' >/dev/null <<'EIDO_EOF'\nbridge.simplefin.org\ngmail.googleapis.com\noauth2.googleapis.com\nweb.push.apple.com\nwww.googleapis.com\nEIDO_EOF"
+    )
     expect(h.err).toEqual([])
+  })
+
+  it("stops when a reviewed manifest does not validate, rather than leave its hosts out", async () => {
+    const h = harness(HOST, { manifests: { gmail: { name: "gmail" } } })
+    expect(await plane(["plan"], h.deps)).toBe(1)
+    expect(h.err).toEqual([
+      "the gmail manifest is not a valid connector manifest",
+    ])
+    expect(h.out).toEqual([])
   })
 
   it("takes the owner from sudo and the tailnet name and llama port from stack.env", async () => {
