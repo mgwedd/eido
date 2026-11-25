@@ -17,6 +17,7 @@ import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import {
   PROBES,
+  attemptKeychainWrite,
   createCanaries,
   createRunDirCanary,
   judge,
@@ -71,6 +72,8 @@ const CANARIES: Canaries = {
   port: 40001,
   keychainService: "eido-isolation-canary-0011223344556677",
   keychainDigest: "a".repeat(64),
+  keychainAddService: "eido-isolation-canary-0011223344556677-add",
+  keychainModifyService: "eido-isolation-canary-0011223344556677-modify",
   canaryDb: "/var/empty/gate/.eido-isolation-canary-0011223344556677.db",
   dbDigest: "b".repeat(64),
 }
@@ -171,6 +174,10 @@ describe("runLive", () => {
         "PASS llama",
         "PASS keychain (EACCES)",
         "PASS keychain.control",
+        "PASS keychain-add (EACCES)",
+        "PASS keychain-add.control",
+        "PASS keychain-modify (EACCES)",
+        "PASS keychain-modify.control",
         "PASS control-db (EACCES)",
         "PASS control-db.control",
         "PASS control-socket (EACCES)",
@@ -318,6 +325,14 @@ describe("runLive", () => {
     expect(target("data", "control-socket")).toMatchObject({
       path: "/var/empty/control.sock",
     })
+    expect(target("data", "keychain-add")).toMatchObject({
+      keychain: CONFIG.gateKeychain,
+      service: CANARIES.keychainAddService,
+    })
+    expect(target("data", "keychain-modify")).toMatchObject({
+      keychain: CONFIG.gateKeychain,
+      service: CANARIES.keychainModifyService,
+    })
     expect(target("data", "control-db")).toMatchObject({
       path: CANARIES.canaryDb,
       digest: CANARIES.dbDigest,
@@ -338,6 +353,8 @@ describe("runLive", () => {
       "tcp-public",
       "loopback-canary",
       "keychain",
+      "keychain-add",
+      "keychain-modify",
       "control-db",
       "control-socket",
       "parser",
@@ -353,6 +370,16 @@ describe("runLive", () => {
       "FAIL loopback-canary: reached as the data-plane user",
     ],
     ["keychain", REACHED, "FAIL keychain: reached as the data-plane user"],
+    [
+      "keychain-add",
+      REACHED,
+      "FAIL keychain-add: reached as the data-plane user",
+    ],
+    [
+      "keychain-modify",
+      REACHED,
+      "FAIL keychain-modify: reached as the data-plane user",
+    ],
     ["control-db", REACHED, "FAIL control-db: reached as the data-plane user"],
     [
       "control-socket",
@@ -408,6 +435,8 @@ describe("runLive", () => {
     "tcp-public",
     "loopback-canary",
     "keychain",
+    "keychain-add",
+    "keychain-modify",
     "control-db",
     "control-socket",
     "parser",
@@ -813,7 +842,7 @@ describe("parseSpec and parseResult", () => {
   })
 })
 
-function fakeHost(failAt?: "listen" | "keychain" | "file") {
+function fakeHost(failAt?: "listen" | "keychain" | "modify" | "file") {
   const log: string[] = []
   let n = 0
   const host: CanaryHost = {
@@ -833,7 +862,10 @@ function fakeHost(failAt?: "listen" | "keychain" | "file") {
       })
     },
     addKeychainItem: (keychain, service) => {
-      if (failAt === "keychain")
+      if (
+        failAt === "keychain" ||
+        (failAt === "modify" && service.endsWith("-modify"))
+      )
         throw Object.assign(new Error(), { code: "SECURITY_EXIT_51" })
       log.push(`add ${service} to ${keychain}`)
     },
@@ -981,6 +1013,108 @@ describe("the stack run dir", () => {
   })
 })
 
+describe("attemptKeychainWrite", () => {
+  const KEYCHAIN = "/var/empty/gate/test.keychain-db"
+  const ADD = "eido-isolation-canary-0011223344556677-add"
+  const MODIFY = "eido-isolation-canary-0011223344556677-modify"
+  const fixed = (bytes: number) => Buffer.alloc(bytes, 0xab)
+  const record = () => {
+    const calls: (readonly string[])[] = []
+    return { calls, run: (args: readonly string[]) => void calls.push(args) }
+  }
+
+  test("adds under the new service name without -U, so it can only create", () => {
+    const { calls, run } = record()
+    expect(attemptKeychainWrite("add", KEYCHAIN, ADD, run, fixed)).toEqual(
+      REACHED
+    )
+    expect(calls).toEqual([
+      [
+        "add-generic-password",
+        "-a",
+        ADD,
+        "-s",
+        ADD,
+        "-w",
+        "ab".repeat(32),
+        KEYCHAIN,
+      ],
+    ])
+  })
+
+  test("modifies the canary with -U, matching it on account and service", () => {
+    const { calls, run } = record()
+    expect(
+      attemptKeychainWrite("modify", KEYCHAIN, MODIFY, run, fixed)
+    ).toEqual(REACHED)
+    expect(calls).toEqual([
+      [
+        "add-generic-password",
+        "-U",
+        "-a",
+        MODIFY,
+        "-s",
+        MODIFY,
+        "-w",
+        "ab".repeat(32),
+        KEYCHAIN,
+      ],
+    ])
+  })
+
+  test("is blocked, with the error code only, when security refuses", () => {
+    expect(
+      attemptKeychainWrite(
+        "add",
+        KEYCHAIN,
+        ADD,
+        () => {
+          throw Object.assign(new Error("secret-ish message"), {
+            code: "SECURITY_EXIT_1",
+          })
+        },
+        fixed
+      )
+    ).toEqual({ ran: true, reached: false, code: "SECURITY_EXIT_1" })
+  })
+
+  test.each([
+    ["add", "login"],
+    ["add", "eido-isolation-canary-0011223344556677"],
+    ["add", MODIFY],
+    ["modify", ADD],
+    ["modify", "eido-gate-token"],
+    ["modify", "eido-isolation-canary-0011223344556677-modify; x"],
+  ] as const)(
+    "%s refuses the service name %s without running security, so no real item is touched",
+    (mode, service) => {
+      const { calls, run } = record()
+      expect(attemptKeychainWrite(mode, KEYCHAIN, service, run, fixed)).toEqual(
+        {
+          ran: false,
+          code: "BAD_SERVICE",
+        }
+      )
+      expect(calls).toEqual([])
+    }
+  )
+
+  test("a probe child given no service name reports a bad spec", async () => {
+    expect(
+      await runProbe(
+        {
+          name: "keychain-modify",
+          gateUser: "g",
+          dataUser: "d",
+          timeoutMs: 10,
+          keychain: KEYCHAIN,
+        },
+        false
+      )
+    ).toEqual({ ran: false, code: "BAD_SPEC" })
+  })
+})
+
 describe("createCanaries", () => {
   const spec = {
     controlDb: "/var/empty/gate/eido-control.db",
@@ -997,6 +1131,8 @@ describe("createCanaries", () => {
       // DB canary's 64 bytes of 0x03. The fake host's random() fills each call with its count.
       keychainDigest:
         "749f1a97ff6cd00ea46ccb3a47bb123283fe56c8fa324bea295d928f558161df",
+      keychainAddService: "eido-isolation-canary-0101010101010101-add",
+      keychainModifyService: "eido-isolation-canary-0101010101010101-modify",
       canaryDb: "/var/empty/gate/.eido-isolation-canary-0101010101010101.db",
       dbDigest:
         "6aa56c4bcd208911792ad24c7681fefb93bed51903afc54860c9bd37e41e5a31",
@@ -1006,9 +1142,13 @@ describe("createCanaries", () => {
       "listen",
       "add eido-isolation-canary-0101010101010101 to /var/empty/gate/test.keychain-db",
       "write /var/empty/gate/.eido-isolation-canary-0101010101010101.db mode 600",
+      "add eido-isolation-canary-0101010101010101-modify to /var/empty/gate/test.keychain-db",
     ])
+    expect(JSON.stringify(set.canaries)).not.toContain("04".repeat(32))
     expect(await set.cleanup()).toEqual([])
-    expect(log.slice(3)).toEqual([
+    expect(log.slice(4)).toEqual([
+      "delete eido-isolation-canary-0101010101010101-modify from /var/empty/gate/test.keychain-db",
+      "delete eido-isolation-canary-0101010101010101-add from /var/empty/gate/test.keychain-db",
       "remove /var/empty/gate/.eido-isolation-canary-0101010101010101.db",
       "delete eido-isolation-canary-0101010101010101 from /var/empty/gate/test.keychain-db",
       "close listener",
@@ -1041,11 +1181,49 @@ describe("createCanaries", () => {
       throw new Error("locked")
     }
     const set = await createCanaries(spec, host)
-    expect(await set.cleanup()).toEqual(["keychain"])
-    expect(log.slice(3)).toEqual([
+    expect(await set.cleanup()).toEqual([
+      "keychain-modify",
+      "keychain-add",
+      "keychain",
+    ])
+    expect(log.slice(4)).toEqual([
       "remove /var/empty/gate/.eido-isolation-canary-0101010101010101.db",
       "close listener",
     ])
+  })
+
+  test("undoes everything made so far when the modify canary cannot be added", async () => {
+    const { host, log } = fakeHost("modify")
+    await expect(createCanaries(spec, host)).rejects.toMatchObject({
+      code: "SECURITY_EXIT_51",
+      failed: [],
+    })
+    expect(log.slice(3)).toEqual([
+      "delete eido-isolation-canary-0101010101010101-add from /var/empty/gate/test.keychain-db",
+      "remove /var/empty/gate/.eido-isolation-canary-0101010101010101.db",
+      "delete eido-isolation-canary-0101010101010101 from /var/empty/gate/test.keychain-db",
+      "close listener",
+    ])
+  })
+
+  test("treats an add-probe item that does not exist as already removed, and no other missing item", async () => {
+    const { host, log } = fakeHost()
+    host.deleteKeychainItem = (_keychain, service) => {
+      log.push(`delete ${service}`)
+      throw Object.assign(new Error(), { code: "SECURITY_EXIT_44" })
+    }
+    const set = await createCanaries(spec, host)
+    expect(await set.cleanup()).toEqual(["keychain-modify", "keychain"])
+  })
+
+  test("reports an add-probe item it could not remove for another reason", async () => {
+    const { host } = fakeHost()
+    host.deleteKeychainItem = (_keychain, service) => {
+      if (service.endsWith("-add"))
+        throw Object.assign(new Error(), { code: "SECURITY_EXIT_36" })
+    }
+    const set = await createCanaries(spec, host)
+    expect(await set.cleanup()).toEqual(["keychain-add"])
   })
 })
 
