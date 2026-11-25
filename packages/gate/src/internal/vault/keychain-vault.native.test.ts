@@ -4,11 +4,14 @@ import { chmod, mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, describe, expect, test } from "vitest"
+import { ControlStoreLockedError } from "../control-checkpoint"
 import {
   KEYCHAIN_SCRIPT,
+  runKeychainCommand,
   startKeychainWorker,
   unlockKeychain,
 } from "./keychain-bridge"
+import { KeychainControlStore } from "./keychain-checkpoint"
 import { KeychainVault } from "./keychain-vault"
 import { vaultContract } from "./vault-contract"
 import { vaultKeyId } from "./vault"
@@ -196,9 +199,7 @@ describe.skipIf(process.platform !== "darwin")(
       expect(
         await unlockKeychain(f.path, Buffer.from("synthetic-wrong-passphrase"))
       ).toBe("locked")
-      await expect(f.vault.get(KEY)).rejects.toThrow(
-        "Keychain credential could not be read"
-      )
+      await expect(f.vault.get(KEY)).rejects.toThrow("Keychain is locked")
       expect(await unlockKeychain(f.path, Buffer.from(f.password))).toBe(
         "unlocked"
       )
@@ -212,6 +213,44 @@ describe.skipIf(process.platform !== "darwin")(
       expect(await f.vault.get(KEY)).toBe("synthetic-after-unlock")
       await f.vault.delete(KEY)
       expect(await f.vault.get(KEY)).toBeUndefined()
+    })
+
+    test("a locked keychain is reported as locked; a missing item or keychain is not", async () => {
+      const f = await fixture()
+      const account = vaultKeyId(KEY)
+      await f.vault.set(KEY, "synthetic-lock-status")
+      expect(
+        await runKeychainCommand({ operation: "get", path: f.path, account: "absent" })
+      ).toEqual({ status: -25300 })
+      expect(await nativeFixture({ ...f, operation: "lock" })).toBe("0")
+      for (const command of [
+        { operation: "get", path: f.path, account },
+        { operation: "set", path: f.path, account, data: "AAAA" },
+      ] as const) {
+        const result = await runKeychainCommand(command)
+        expect(result.status).not.toBe(0)
+        expect(result.locked).toBe(true)
+      }
+      // A keychain that does not exist has no lock status to read: unreadable, not locked.
+      const missing = await runKeychainCommand({
+        operation: "get",
+        path: join(f.dir, "missing.keychain-db"),
+        account,
+      })
+      expect(missing.status).not.toBe(0)
+      expect(missing).not.toHaveProperty("locked")
+    })
+
+    test("the checkpoint store throws the locked error while locked and reads again once unlocked", async () => {
+      const f = await fixture()
+      const store = new KeychainControlStore({ path: f.path })
+      store.save("synthetic-checkpoint")
+      expect(await nativeFixture({ ...f, operation: "lock" })).toBe("0")
+      expect(() => store.load()).toThrow(ControlStoreLockedError)
+      expect(await unlockKeychain(f.path, Buffer.from(f.password))).toBe(
+        "unlocked"
+      )
+      expect(store.load()).toBe("synthetic-checkpoint")
     })
 
     test.each([

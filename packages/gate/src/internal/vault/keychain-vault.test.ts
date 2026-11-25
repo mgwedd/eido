@@ -104,6 +104,12 @@ test.each([
     new KeychainVault({ path: "/test.keychain-db" }).get(KEY)
   ).rejects.toThrow("Keychain credential")
 })
+test("a read the helper reports as locked says the keychain is locked", async () => {
+  run.mockResolvedValue({ status: -25293, locked: true })
+  await expect(
+    new KeychainVault({ path: "/test.keychain-db" }).get(KEY)
+  ).rejects.toThrow("Keychain is locked")
+})
 test("write/delete failures expose only static messages", async () => {
   run.mockResolvedValue({ status: -25293 })
   const vault = new KeychainVault({ path: "/test.keychain-db" })

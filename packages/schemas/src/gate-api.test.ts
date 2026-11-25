@@ -31,6 +31,8 @@ import {
   validateGateProposeRefusal,
   validateGateProposeResult,
   validateGateRejectReason,
+  validateGateControlDenyReason,
+  validateGateKeychainResult,
   validateGateRepinPrepared,
   validateGateRepinRequest,
   validateGateRepinResult,
@@ -941,6 +943,25 @@ describe("reject reason", () => {
       expect(validateGateRejectReason(code).ok).toBe(true)
     }
     expect(errorsOf(validateGateRejectReason("spam"))).toHaveLength(1)
+  })
+})
+
+describe("control-state denial reason", () => {
+  test("names a locked keychain apart from an unreadable store", () => {
+    expect(validateGateControlDenyReason("keychain_locked").ok).toBe(true)
+    expect(validateGateControlDenyReason("store_unreadable").ok).toBe(true)
+    expect(errorsOf(validateGateControlDenyReason("locked"))).toHaveLength(1)
+  })
+})
+
+describe("keychain helper result", () => {
+  test("carries the locked flag only as true", () => {
+    expect(validateGateKeychainResult({ status: -25308, locked: true })).toEqual(
+      { ok: true, value: { status: -25308, locked: true } }
+    )
+    expect(
+      errorsOf(validateGateKeychainResult({ status: -25308, locked: false }))
+    ).toHaveLength(1)
   })
 })
 

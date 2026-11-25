@@ -7,6 +7,7 @@ import {
   writeSync,
 } from "node:fs"
 import type { DatabaseSync } from "node:sqlite"
+import type { GateControlDenyReason } from "@eido/schemas"
 import { append, auditRowHash } from "./audit"
 import { payloadHash } from "./canonical"
 import {
@@ -42,10 +43,21 @@ import {
 // state at all.
 
 export type ControlStore = {
-  /** The stored record, or undefined when the store was never initialised. Throws when unreadable. */
+  /**
+   * The stored record, or undefined when the store was never initialised. Throws when unreadable,
+   * and throws `ControlStoreLockedError` only when the store reports itself locked.
+   */
   load: () => string | undefined
   /** Replaces the stored record. Throws when the write cannot be confirmed. */
   save: (value: string) => void
+}
+
+/** A store that cannot be read because its keychain is locked; it may become readable later. */
+export class ControlStoreLockedError extends Error {
+  constructor() {
+    super("control checkpoint store is locked")
+    this.name = "ControlStoreLockedError"
+  }
 }
 
 /** In-memory store for tests and for tools that provide their own protection. */
@@ -53,8 +65,11 @@ export class MemoryControlStore implements ControlStore {
   value: string | undefined
   failSaves = false
   failLoads = false
+  /** Loads fail as a locked keychain would. */
+  locked = false
 
   load(): string | undefined {
+    if (this.locked) throw new ControlStoreLockedError()
     if (this.failLoads) throw new Error("store unreadable")
     return this.value
   }
@@ -65,17 +80,7 @@ export class MemoryControlStore implements ControlStore {
   }
 }
 
-export type DenyReason =
-  | "uninitialized"
-  | "store_unreadable"
-  | "store_malformed"
-  | "reverify_failed"
-  | "control_state_mismatch"
-  | "stale_generation"
-  | "checkpoint_write_failed"
-  | "second_instance"
-  | "unsupported_transaction"
-  | "unsigned_control_change"
+export type DenyReason = GateControlDenyReason
 
 /** Authority-bearing reads and control changes throw this while the control state is unverified. */
 export class ControlStateError extends Error {
@@ -500,6 +505,7 @@ function acquireLock(path: string): Lock | undefined {
 
 type State = {
   store: ControlStore
+  retry: Retry
   lock: Lock | undefined
   denied: DenyReason | undefined
   record: ControlRecord | undefined
@@ -519,16 +525,115 @@ export type ControlCheckpoint = {
   close: () => void
 }
 
+/** Runs `run` once after `delayMs` and returns a function that cancels it. */
+export type RetrySchedule = (run: () => void, delayMs: number) => () => void
+
 export type AttachOptions = {
   store: ControlStore
   /** The single-instance lock file; a second live gate on the same store is denied. */
   lockPath?: string
+  /** Schedules the next checkpoint load while the store is locked. Defaults to an unref'd timer. */
+  schedule?: RetrySchedule
+  /** Told each time a locked-store retry or a control change moves the denial after attach. */
+  onChange?: (denied: DenyReason | undefined) => void
+}
+
+/** Locked-store retries: the first after 5 s, doubling, then every 5 min until the load succeeds. */
+export const LOCKED_RETRY_FIRST_MS = 5_000
+export const LOCKED_RETRY_MAX_MS = 300_000
+
+/** The delay before retry number `attempt` (0 for the first). */
+export function lockedRetryDelay(attempt: number): number {
+  return Math.min(LOCKED_RETRY_FIRST_MS * 2 ** attempt, LOCKED_RETRY_MAX_MS)
+}
+
+type Retry = {
+  schedule: RetrySchedule
+  onChange: (denied: DenyReason | undefined) => void
+  attempt: number
+  cancel: (() => void) | undefined
+  closed: boolean
+}
+
+const unrefTimer: RetrySchedule = (run, delayMs) => {
+  const timer = setTimeout(run, delayMs)
+  // A pending retry never keeps the process alive on its own.
+  timer.unref()
+  return () => clearTimeout(timer)
 }
 
 function deny(state: State, reason: DenyReason): void {
   state.denied = reason
   state.record = undefined
   state.raw = undefined
+}
+
+/**
+ * Loads the stored record and verifies it against the database: the one check that admits
+ * authority, at startup and on every locked-store retry. A store that reports itself locked
+ * denies as `keychain_locked`; any other load failure is `store_unreadable`.
+ */
+function loadAndVerify(db: DatabaseSync, state: State): void {
+  let raw: string | undefined
+  try {
+    raw = state.store.load()
+  } catch (error) {
+    deny(
+      state,
+      error instanceof ControlStoreLockedError
+        ? "keychain_locked"
+        : "store_unreadable"
+    )
+    return
+  }
+  const snapshot = computeSnapshot(db)
+  if (raw === undefined) {
+    if (hasControlState(snapshot)) {
+      deny(state, "uninitialized")
+      return
+    }
+    const record = initialRecord(snapshot)
+    try {
+      raw = encode(record)
+      state.store.save(raw)
+    } catch {
+      deny(state, "checkpoint_write_failed")
+      return
+    }
+    state.denied = undefined
+    state.record = record
+    state.raw = raw
+    return
+  }
+  const record = parseControlRecord(raw)
+  if (record === undefined) {
+    deny(state, "store_malformed")
+  } else if (!reverify(record)) {
+    deny(state, "reverify_failed")
+  } else if (snapshotHash(snapshot) !== record.snapshotHash) {
+    deny(state, "control_state_mismatch")
+  } else {
+    state.denied = undefined
+    state.record = record
+    state.raw = raw
+  }
+}
+
+/** While the store is locked, schedules the next load. Only `keychain_locked` is ever retried. */
+function scheduleRetry(db: DatabaseSync, state: State): void {
+  const retry = state.retry
+  if (retry.closed || retry.cancel !== undefined) return
+  if (state.denied !== "keychain_locked") return
+  const delay = lockedRetryDelay(retry.attempt)
+  retry.attempt++
+  retry.cancel = retry.schedule(() => {
+    retry.cancel = undefined
+    if (retry.closed || state.denied !== "keychain_locked") return
+    loadAndVerify(db, state)
+    if (state.denied === undefined) retry.attempt = 0
+    if (state.denied !== "keychain_locked") retry.onChange(state.denied)
+    scheduleRetry(db, state)
+  }, delay)
 }
 
 function initialRecord(snapshot: Snapshot): ControlRecord {
@@ -546,8 +651,10 @@ function initialRecord(snapshot: Snapshot): ControlRecord {
 /**
  * Attaches the checkpoint to this database. Startup fails closed: a missing, unreadable,
  * malformed, unverifiable or mismatched record denies every authority read until supervised
- * recovery. A store that was never initialised is initialised only when the database holds no
- * control state at all; otherwise it stays denied until `establishControlEpoch` runs.
+ * recovery. A store that reports itself locked denies as `keychain_locked` and is loaded again on
+ * a back-off timer, with the same verification, until it verifies or fails another way. A store
+ * that was never initialised is initialised only when the database holds no control state at all;
+ * otherwise it stays denied until `establishControlEpoch` runs.
  */
 export function attachControlCheckpoint(
   db: DatabaseSync,
@@ -555,6 +662,13 @@ export function attachControlCheckpoint(
 ): ControlCheckpoint {
   const state: State = {
     store: options.store,
+    retry: {
+      schedule: options.schedule ?? unrefTimer,
+      onChange: options.onChange ?? (() => undefined),
+      attempt: 0,
+      cancel: undefined,
+      closed: false,
+    },
     lock: undefined,
     denied: undefined,
     record: undefined,
@@ -570,42 +684,8 @@ export function attachControlCheckpoint(
       return handle(db, state)
     }
   }
-  let raw: string | undefined
-  try {
-    raw = options.store.load()
-  } catch {
-    deny(state, "store_unreadable")
-    return handle(db, state)
-  }
-  const snapshot = computeSnapshot(db)
-  if (raw === undefined) {
-    if (hasControlState(snapshot)) {
-      deny(state, "uninitialized")
-      return handle(db, state)
-    }
-    const record = initialRecord(snapshot)
-    try {
-      raw = encode(record)
-      options.store.save(raw)
-    } catch {
-      deny(state, "checkpoint_write_failed")
-      return handle(db, state)
-    }
-    state.record = record
-    state.raw = raw
-    return handle(db, state)
-  }
-  const record = parseControlRecord(raw)
-  if (record === undefined) {
-    deny(state, "store_malformed")
-  } else if (!reverify(record)) {
-    deny(state, "reverify_failed")
-  } else if (snapshotHash(snapshot) !== record.snapshotHash) {
-    deny(state, "control_state_mismatch")
-  } else {
-    state.record = record
-    state.raw = raw
-  }
+  loadAndVerify(db, state)
+  scheduleRetry(db, state)
   return handle(db, state)
 }
 
@@ -614,6 +694,9 @@ function handle(db: DatabaseSync, state: State): ControlCheckpoint {
     denied: () => state.denied,
     generation: () => state.record?.generation,
     close: () => {
+      state.retry.closed = true
+      state.retry.cancel?.()
+      state.retry.cancel = undefined
       state.lock?.release()
       if (guards.get(db) === state) guards.delete(db)
     },
@@ -798,9 +881,16 @@ export function controlTransaction<T>(
       let stored: string | undefined
       try {
         stored = state.store.load()
-      } catch {
-        deny(state, "store_unreadable")
-        throw new ControlStateError("store_unreadable")
+      } catch (error) {
+        // A keychain locked after startup denies until a retried load verifies again.
+        const reason =
+          error instanceof ControlStoreLockedError
+            ? "keychain_locked"
+            : "store_unreadable"
+        deny(state, reason)
+        state.retry.onChange(reason)
+        scheduleRetry(db, state)
+        throw new ControlStateError(reason)
       }
       // Another gate instance moved the protected record on: stop, never overwrite it.
       if (stored !== state.raw) throw new ControlStateError("stale_generation")
@@ -949,8 +1039,14 @@ export function inspectControlCheckpoint(
   let raw: string | undefined
   try {
     raw = store.load()
-  } catch {
-    return { state: "denied", reason: "store_unreadable" }
+  } catch (error) {
+    return {
+      state: "denied",
+      reason:
+        error instanceof ControlStoreLockedError
+          ? "keychain_locked"
+          : "store_unreadable",
+    }
   }
   if (raw === undefined) return { state: "uninitialized" }
   const record = parseControlRecord(raw)
