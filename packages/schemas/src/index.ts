@@ -163,6 +163,7 @@ export {
 export { validateConnectorManifest } from "./manifest"
 export { REVIEWED_MANIFESTS } from "./reviewed-manifests"
 export { gateAuditDisplayActor } from "./gate-audit-display"
+export { allDayDate, appleEventDatesError } from "./apple-dates"
 export {
   parseMoney,
   parseDate,
