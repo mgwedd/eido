@@ -78,9 +78,13 @@ func isRecurring(_ event: EKEvent) -> Bool {
     } else {
       event = EKEvent(eventStore: store)
     }
-    guard let start = Dates.parse(value.start), let end = Dates.parse(value.end) else {
-      throw HelperFailure.invalidRequest
-    }
+    let range =
+      value.allDay
+      ? Dates.allDayRange(start: value.start, end: value.end, in: TimeZone.current)
+      : Dates.parse(value.start).flatMap { start in
+        Dates.parse(value.end).map { (start: start, end: $0) }
+      }
+    guard let (start, end) = range else { throw HelperFailure.invalidRequest }
     event.calendar = calendar
     event.title = value.title
     event.startDate = start
@@ -112,13 +116,7 @@ func isRecurring(_ event: EKEvent) -> Bool {
     reminder.title = value.title
     reminder.notes = value.notes
     if let due = value.due.flatMap(Dates.parse) {
-      var utc = Calendar(identifier: .gregorian)
-      utc.timeZone = TimeZone.gmt
-      var components = utc.dateComponents(
-        [.year, .month, .day, .hour, .minute, .second], from: due)
-      components.calendar = utc
-      components.timeZone = utc.timeZone
-      reminder.dueDateComponents = components
+      reminder.dueDateComponents = Dates.dueComponents(due, in: TimeZone.current)
     }
     try store.save(reminder, commit: true)
     return reminder.calendarItemIdentifier
@@ -129,9 +127,19 @@ func isRecurring(_ event: EKEvent) -> Bool {
       isRecurring(event)
       ? "recurrence:\(event.calendarItemIdentifier):\(Dates.text(event.occurrenceDate ?? event.startDate))"
       : event.calendarItemIdentifier
+    // EventKit ends an all-day event within its last day; the wire end is the next midnight.
+    let start =
+      event.isAllDay
+      ? Dates.allDayText(event.startDate, in: TimeZone.current) : Dates.text(event.startDate)
+    let end =
+      event.isAllDay
+      ? Dates.allDayText(
+        Calendar.current.date(byAdding: .day, value: 1, to: event.endDate.addingTimeInterval(-1))
+          ?? event.endDate, in: TimeZone.current)
+      : Dates.text(event.endDate)
     return EventValue(
       id: id, calendarId: event.calendar.calendarIdentifier, title: event.title ?? "",
-      start: Dates.text(event.startDate), end: Dates.text(event.endDate), allDay: event.isAllDay,
+      start: start, end: end, allDay: event.isAllDay,
       location: event.location, notes: event.notes,
       modifiedAt: event.lastModifiedDate.map(Dates.text))
   }
