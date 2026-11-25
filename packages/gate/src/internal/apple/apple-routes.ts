@@ -117,9 +117,12 @@ export async function appleRoute(
   } catch (error) {
     const code = error instanceof AppleError ? error.code : "unavailable"
     audit(`.failed.${code}`)
+    // A caller's bad id or arguments says nothing about the Helper's health,
+    // like an upstream 4xx on the mail and Things routes.
     if (code === "permission_denied")
       disableConnectorAfterAuthFailure(db, APPLE_CONNECTOR)
-    else recordConnectorReadFailure(db, APPLE_CONNECTOR, "unavailable", attempt)
+    else if (code !== "not_found" && code !== "invalid_request")
+      recordConnectorReadFailure(db, APPLE_CONNECTOR, "unavailable", attempt)
     if (code === "not_found")
       return apiError(404, "not_found", "Apple calendar or list was not found")
     if (code === "invalid_request")

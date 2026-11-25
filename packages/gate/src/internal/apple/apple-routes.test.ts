@@ -120,6 +120,11 @@ describe("Apple data-plane reads", () => {
       "calendarId=cal&start=2026-11-14T00:00:00Z&end=2028-11-15T00:00:00Z",
     ],
     ["/apple/events", "calendarId=cal&start=nope&end=nope"],
+    [
+      "/apple/events",
+      "calendarId=cal&start=2026-02-28T00:00:00Z&end=2026-02-31T00:00:00Z",
+    ],
+    ["/apple/reminders", "listId=list&completedSince=2026-11-01T23:59:60Z"],
     ["/apple/reminders", "listId=list"],
   ])(
     "rejects invalid query parameters before calling Helper (%s)",
@@ -171,6 +176,26 @@ describe("Apple data-plane reads", () => {
             .prepare("SELECT enabled FROM connectors WHERE name=?")
             .get(APPLE_CONNECTOR)?.["enabled"]
         ).toBe(0)
+    }
+  )
+  test.each([
+    ["not_found", "healthy", 0],
+    ["invalid_request", "healthy", 0],
+    ["unavailable", "degraded", 1],
+  ] as const)(
+    "Helper %s leaves connector health %s",
+    async (code, health, failures) => {
+      const state = fixture()
+      const apple = reads()
+      apple.listCalendars = () => Promise.reject(new AppleError(code))
+      await appleRoute(req("/apple/calendars"), state.db, apple)
+      expect(
+        state.db
+          .prepare(
+            "SELECT health,consecutive_failures FROM connectors WHERE name=?"
+          )
+          .get(APPLE_CONNECTOR)
+      ).toMatchObject({ health, consecutive_failures: failures })
     }
   )
   test("does not expose arbitrary subprocess errors", async () => {
