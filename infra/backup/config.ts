@@ -4,7 +4,7 @@
 // EIDO_GATE_DATA_DIR moves the backup with it. Nothing here is a secret; the repository
 // passphrase is never part of the config (see `resticEnv`). `EIDO_BACKUP_PLANE=split` selects the
 // plane's directories instead (#782).
-import { isAbsolute, join } from "node:path"
+import { isAbsolute, join, posix } from "node:path"
 
 import { PLANE_LOGS, PLANE_ROOT } from "../host/plane.ts"
 import { buildStackConfig, type Env } from "../stack/config.ts"
@@ -76,8 +76,8 @@ export function planeBackupConfig(repository: string): BackupConfig {
   const stagingDir = `${PLANE_BACKUP_DIR}/staging`
   const database = (name: string, dir: string) => ({
     name,
-    path: join(dir, name),
-    staged: join(stagingDir, name),
+    path: posix.join(dir, name),
+    staged: posix.join(stagingDir, name),
   })
   return {
     plane: "split",
@@ -85,12 +85,12 @@ export function planeBackupConfig(repository: string): BackupConfig {
       database(DATA_DB_FILE, PLANE_DATA_DIR),
       database(CONTROL_DB_FILE, PLANE_GATE_DIR),
     ],
-    blobDir: join(PLANE_DATA_DIR, "blobs"),
+    blobDir: posix.join(PLANE_DATA_DIR, "blobs"),
     stagingDir,
     repository,
     logDir: PLANE_BACKUP_LOG_DIR,
     // The gate reads the stamp for its backup status, so it sits where the gate user can read it.
-    stampFile: join(PLANE_LOGS, "backup-last-success"),
+    stampFile: posix.join(PLANE_LOGS, "backup-last-success"),
     passwordFile: `${PLANE_BACKUP_DIR}/restic-password`,
   }
 }
