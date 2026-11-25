@@ -52,6 +52,9 @@ client allows 35 seconds per call, covering the native runner's 30-second limit.
 The gate runs at most four Helper processes at once and refuses a call beyond that
 with `unavailable` instead of queueing it. Each Helper runs in its own process
 group, and a timeout kills the whole group, including anything the Helper started.
+If the gate dies mid-request, the Helper notices its parent exit and quits at
+once; `--authorize` is not watched.
+(ADR 0006, #773).
 
 The Helper needs full Calendar and Reminder access. The owner explicitly grants
 access to the **exact installed binary** before enabling the connector:

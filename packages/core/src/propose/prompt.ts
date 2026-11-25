@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite"
 import { INTENT_PROMPT_TEXT, INTENT_RESULT_JSON_SCHEMA } from "@eido/schemas"
+import type { JsonSchema } from "@eido/schemas"
 import { COMPACTION_LEGEND } from "../context/compact"
 import { blockParts } from "../context/pack-store"
 import type { ContextPack } from "../context/pack-store"
@@ -76,6 +77,36 @@ export interface PromptInput {
   todos?: readonly PromptPart[]
 }
 
+/**
+ * The reply grammar for one request: `INTENT_RESULT_JSON_SCHEMA` with the intent kinds cut down to
+ * the offered ones, so the model cannot name a kind it was not offered (#759). With no kind offered
+ * only `{"result":"none"}` remains.
+ */
+export function replySchemaFor(kinds: readonly string[]): JsonSchema {
+  const offered = new Set(kinds)
+  const [intentsBranch, ...rest] = INTENT_RESULT_JSON_SCHEMA.oneOf ?? []
+  const intentSchema = intentsBranch?.properties?.["intents"]?.items
+  if (intentsBranch === undefined || intentSchema === undefined)
+    return INTENT_RESULT_JSON_SCHEMA
+  if (offered.size === 0) return { ...INTENT_RESULT_JSON_SCHEMA, oneOf: rest }
+  const narrowed: JsonSchema = {
+    ...intentsBranch,
+    properties: {
+      ...intentsBranch.properties,
+      intents: {
+        ...intentsBranch.properties?.["intents"],
+        items: {
+          ...intentSchema,
+          oneOf: (intentSchema.oneOf ?? []).filter((branch) =>
+            offered.has(String(branch.properties?.["kind"]?.const))
+          ),
+        },
+      },
+    },
+  }
+  return { ...INTENT_RESULT_JSON_SCHEMA, oneOf: [narrowed, ...rest] }
+}
+
 /** The note a retry adds: each failure by code and field path, never a value. */
 export function retryNote(failures: readonly ProposalFailure[]): string {
   const named = failures
@@ -121,7 +152,13 @@ export function buildProposalRequest(
   return {
     system: PROPOSE_SYSTEM_PROMPT,
     messages: [{ role: "user", content }],
-    jsonSchema: { ...INTENT_RESULT_JSON_SCHEMA },
+    // Narrowing the grammar made other requests drift from "none" to a forced kind, so it applies
+    // only when a Todos block is shown, where a to-do request otherwise gets an add_todo beside it.
+    jsonSchema: {
+      ...((input.todos ?? []).length === 0
+        ? INTENT_RESULT_JSON_SCHEMA
+        : replySchemaFor(input.kinds)),
+    },
     temperature: 0,
   }
 }

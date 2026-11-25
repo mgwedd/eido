@@ -17,6 +17,9 @@ import Foundation
       FileHandle.standardOutput.write(Response.failure(.invalidRequest).data() + Data([10]))
       return
     }
+    // Request path only: the gate is the parent here. `--authorize` is run by hand and may
+    // have launchd as its parent, so it is not watched.
+    exitWhenParentExits()
     do {
       var input = Data()
       while let chunk = try FileHandle.standardInput.read(
