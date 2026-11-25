@@ -160,10 +160,12 @@ export async function proposeIntents(
         )
       : [...new Set(request.kinds)].sort()
   // The Todos block exists only when an id-dependent kind is offered. A to-do intent needs an id
-  // the model was shown, so with no matching to-do those kinds are not offered at all.
-  const todos = picked.some((k) => ID_DEPENDENT_THINGS_KINDS.has(k))
+  // the model was shown, so with no matching to-do those kinds are not offered at all. Nor are
+  // they when the two best matches are equally good: the model would pick one of them (#758).
+  const listed = picked.some((k) => ID_DEPENDENT_THINGS_KINDS.has(k))
     ? listOpenTodos(deps.db, request.text)
-    : { todos: [], matched: 0 }
+    : { todos: [], matched: 0, ambiguous: false }
+  const todos = listed.ambiguous ? { todos: [], matched: 0 } : listed
   const kinds =
     todos.todos.length === 0
       ? picked.filter((k) => !ID_DEPENDENT_THINGS_KINDS.has(k))

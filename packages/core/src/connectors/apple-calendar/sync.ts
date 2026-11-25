@@ -189,8 +189,12 @@ async function syncCalendar(
     return { calendarId, status: "failed", reason: "entity_required" }
   const interval = { start: start.toISOString(), end: end.toISOString() }
   let events: AppleEvent[]
+  let complete: boolean
   try {
-    events = (await client.listEvents({ calendarId, ...interval })).events
+    const list = await client.listEvents({ calendarId, ...interval })
+    events = list.events
+    // A reply that reports items the Helper dropped (`skipped`, #765) is not a whole snapshot.
+    complete = !("skipped" in list) || list.skipped === 0
   } catch (error) {
     return {
       calendarId,
@@ -205,13 +209,9 @@ async function syncCalendar(
   const documents = events.map((event) => eventDocument(event, entityId))
   return writeQueueFor(db).run(() => {
     const kept = new Set(documents.map((doc) => doc.sourceRef))
-    const retired = headsToRetire(
-      db,
-      calendarId,
-      start.getTime(),
-      end.getTime(),
-      kept
-    )
+    const retired = complete
+      ? headsToRetire(db, calendarId, start.getTime(), end.getTime(), kept)
+      : []
     const heads: DocumentHeadChange[] = [
       ...documents.map((doc) => ({
         source: APPLE_CALENDAR_CONNECTOR,
@@ -245,8 +245,9 @@ async function syncCalendar(
 /**
  * Read each enabled Apple calendar over the sync window and reconcile the index with it. A
  * successful read is a complete snapshot of its own calendar and interval only: events of that
- * calendar wholly inside the interval and missing from it are retired. A failed, refused or
- * malformed read changes nothing for its calendar; the other calendars still sync.
+ * calendar wholly inside the interval and missing from it are retired. A read that reports
+ * skipped items indexes what it returned and retires nothing. A failed, refused or malformed read
+ * changes nothing for its calendar; the other calendars still sync.
  */
 export async function syncAppleCalendars(
   options: AppleCalendarSyncOptions

@@ -22,9 +22,16 @@ public struct StoredEvent {
   func saveReminder(_ value: ReminderValue, existingId: String?) throws -> String
 }
 
+/// How far back a reminder read may ask for completed items; matches the event read window.
+public let completedSinceLimit: TimeInterval = 366 * 86400
+
 @MainActor public struct HelperService {
   public let store: CalendarStore
-  public init(store: CalendarStore) { self.store = store }
+  public let now: () -> Date
+  public init(store: CalendarStore, now: @escaping () -> Date = Date.init) {
+    self.store = store
+    self.now = now
+  }
 
   public func handle(_ data: Data) async -> Response {
     do {
@@ -68,6 +75,9 @@ public struct StoredEvent {
       return .events(values)
     case .listReminders:
       guard let id = a.listId, let since = a.completedSince.flatMap(Dates.parse) else {
+        throw HelperFailure.invalidRequest
+      }
+      guard since >= now().addingTimeInterval(-completedSinceLimit) else {
         throw HelperFailure.invalidRequest
       }
       _ = try calendar(id, reminders: true)

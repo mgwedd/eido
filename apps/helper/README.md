@@ -112,7 +112,13 @@ are accepted. Responses emit UTC timestamps with milliseconds. Event intervals
 must have a strictly later end, and read intervals may span at most 366 days.
 Reminder reads return all incomplete items and completed items whose completion
 timestamp is at or after `completedSince`. Items with unknown completion timestamps
-are not represented as recently completed. Date-only Reminder due dates are
+are not represented as recently completed. `completedSince` may be at most 366 days
+before the request (the same span as an event read window); an older cutoff is
+refused with `invalid_request`, by the gate's `GET /apple/reminders` route before
+the Helper starts and by the Helper itself. When a list's completed history in
+that window exceeds the item or byte bound, read its incomplete reminders alone
+by passing the request time (or later) as `completedSince`, then narrow the
+window to read recent completions. Date-only Reminder due dates are
 interpreted at midnight in their recorded timezone, or the host timezone when
 EventKit supplies none, and returned as UTC.
 
