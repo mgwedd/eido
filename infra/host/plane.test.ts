@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 
+import { supervisorSocketPath } from "../stack/supervisor.ts"
+
 import {
   accountProblems,
   applySteps,
@@ -66,8 +68,11 @@ describe("planeLayout", () => {
     expect(layout.keychain).toBe(
       "/Library/Application Support/Eido/home/gate/Library/Keychains/eido/eido.keychain-db"
     )
+    expect(layout.supervisorDir).toBe(
+      "/Users/owner/Library/Application Support/eido-dev/run/supervisor"
+    )
     expect(layout.supervisorSocket).toBe(
-      "/Users/owner/Library/Application Support/eido-dev/run/supervisor.sock"
+      "/Users/owner/Library/Application Support/eido-dev/run/supervisor/supervisor.sock"
     )
   })
 
@@ -79,7 +84,7 @@ describe("planeLayout", () => {
       env: { EIDO_STACK_DIR: "/Users/owner/eido-stack" },
     })
     expect(moved.supervisorSocket).toBe(
-      "/Users/owner/eido-stack/run/supervisor.sock"
+      "/Users/owner/eido-stack/run/supervisor/supervisor.sock"
     )
   })
 
@@ -403,7 +408,7 @@ describe("planeServices", () => {
 })
 
 describe("supervisorAces", () => {
-  it("lets the gate user search from the owner's home down and inherit access to new files in the run dir", () => {
+  it("lets the gate user search from the owner's home down and inherit access to new files in the supervisor dir only", () => {
     expect(
       supervisorAces(layout).map(({ path, ace }) => `${ace} @ ${path}`)
     ).toEqual([
@@ -412,8 +417,22 @@ describe("supervisorAces", () => {
       "_eidogate allow search @ /Users/owner/Library/Application Support",
       "_eidogate allow search @ /Users/owner/Library/Application Support/eido-dev",
       "_eidogate allow search @ /Users/owner/Library/Application Support/eido-dev/run",
-      "_eidogate allow read,write,file_inherit,only_inherit @ /Users/owner/Library/Application Support/eido-dev/run",
+      "_eidogate allow search @ /Users/owner/Library/Application Support/eido-dev/run/supervisor",
+      "_eidogate allow read,write,file_inherit,only_inherit @ /Users/owner/Library/Application Support/eido-dev/run/supervisor",
     ])
+  })
+
+  it("never puts an inheriting entry on the run dir or above, so no other file in the run dir gains access", () => {
+    const inheriting = supervisorAces(layout).filter(({ ace }) =>
+      ace.includes("inherit")
+    )
+    expect(inheriting.map(({ path }) => path)).toEqual([layout.supervisorDir])
+  })
+
+  it("names the socket the stack's supervisor listens on", () => {
+    expect(layout.supervisorSocket).toBe(
+      supervisorSocketPath({ platform: "darwin", env: {}, home: HOME })
+    )
   })
 })
 
@@ -483,6 +502,38 @@ describe("applySteps", () => {
     expect(all).toContain(
       "/bin/chmod 0700 /Library/Application Support/Eido/data"
     )
+  })
+
+  it("creates the supervisor dir as the owner at 0700 after checking the run dir exists, and before any ACL entry names it", () => {
+    const runDir = "/Users/owner/Library/Application Support/eido-dev/run"
+    const supervisorDir = `${runDir}/supervisor`
+    const create = at(`/usr/bin/install -d -o owner -m 0700 ${supervisorDir}`)
+    expect(at(`/bin/test -d ${runDir}`)).toBeLessThan(create)
+    expect(create).toBeLessThan(
+      at(`/bin/chmod +a _eidogate allow search ${supervisorDir}`)
+    )
+  })
+
+  it("drops the inherited entry an earlier apply put on the run dir, tolerating its absence, before granting the new ones", () => {
+    const runDir = "/Users/owner/Library/Application Support/eido-dev/run"
+    const drop = `/bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit ${runDir}`
+    const dropStep = steps.find((step) => line(step) === drop)
+    expect(dropStep?.mayFail).toBe(true)
+    expect(at(drop)).toBeLessThan(
+      at(
+        `/bin/chmod +a _eidogate allow read,write,file_inherit,only_inherit ${runDir}/supervisor`
+      )
+    )
+  })
+
+  it("never grants an inheriting entry anywhere but the supervisor dir", () => {
+    const granted = steps.filter(
+      (step) =>
+        step.argv[1] === "+a" && (step.argv[2] ?? "").includes("inherit")
+    )
+    expect(granted.map((step) => step.argv[3])).toEqual([
+      "/Users/owner/Library/Application Support/eido-dev/run/supervisor",
+    ])
   })
 
   it("never grants the data user anything outside the plane", () => {
@@ -578,11 +629,15 @@ describe("applySteps", () => {
     )
   })
 
-  it("only creates or sets, so it can run again on a host it already ran on", () => {
-    const destructive = all.filter((text) =>
-      /\s-delete\s|^\/bin\/rm\b|^\/bin\/chmod -a\s/.test(text)
+  it("only creates or sets, apart from dropping the old run dir entry, which it tolerates being absent, so it can run again on a host it already ran on", () => {
+    const destructive = steps.filter((step) =>
+      /\s-delete\s|^\/bin\/rm\b|^\/bin\/chmod -a\s/.test(line(step))
     )
-    expect(destructive).toEqual([])
+    expect(
+      destructive.map((step) => `${line(step)} | mayFail=${step.mayFail}`)
+    ).toEqual([
+      "/bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit /Users/owner/Library/Application Support/eido-dev/run | mayFail=true",
+    ])
   })
 })
 
@@ -607,6 +662,9 @@ describe("removeSteps", () => {
     )
     expect(all).toContain(
       "/bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit /Users/owner/Library/Application Support/eido-dev/run"
+    )
+    expect(all).toContain(
+      "/bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit /Users/owner/Library/Application Support/eido-dev/run/supervisor"
     )
     expect(all.filter((text) => text.includes("-delete"))).toEqual([
       "/usr/bin/dscl . -delete /Users/_eidogate",

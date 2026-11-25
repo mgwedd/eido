@@ -21,7 +21,7 @@ The gate and the data plane (core) run as two hidden macOS users, each under its
 | Gate egress anchor                      | `com.apple/eido.egress`, from `/Library/Application Support/Eido/policy/eido-egress.pf`, with the host list `eido-egress.hosts`. See `infra/llama-server.md`, "Outbound allowlist".                                                                                      |
 | Daemons                                 | `com.eido.plane.pf` (root, reloads the anchor every 5 minutes), `com.eido.plane.egress` (root, adds the hosts' addresses to the egress table every 5 minutes), `com.eido.plane.gate` (`_eidogate`), `com.eido.plane.core` (`_eidodata`, under `sandbox-exec -f core.sb`) |
 | Logs                                    | `/Library/Logs/Eido/{gate,data,pf}` (the egress job logs to `pf/egress.err.log`)                                                                                                                                                                                         |
-| Supervisor socket                       | ACL entries give `_eidogate` search on your home down to your stack run dir, and read and write on `supervisor.sock`. `_eidodata` gets none.                                                                                                                             |
+| Supervisor socket                       | ACL entries give `_eidogate` search on your home down to `run/supervisor/` in your stack dir, and read and write on `supervisor.sock` through an entry inherited only in that directory. The rest of `run/` stays closed to it. `_eidodata` gets none.                   |
 
 What core may reach: the gate's data-plane socket, `127.0.0.1` on the gate's egress proxy port (`--egress-port`) and on the llama-server port (`EIDO_LLAMA_PORT`), and inbound connections on its own port. The sandbox denies all other network, DNS included, and denies reads of the gate's data dir and home. pf blocks every new outbound TCP connection and all UDP from `_eidodata`, except to those two loopback ports.
 
@@ -72,7 +72,7 @@ Unlocking that keychain while the gate runs under launchd without a login sessio
 
    `gate` is `_eidogate` 0700 and `data` is `_eidodata` 0700. `gate-data-plane.sock` is `srw-rw----` `_eidogate _eidoipc`. `gate-control.sock` is `srw-------`.
 
-3. Supervisor socket ACL: `ls -le ~/Library/"Application Support"/eido-dev/run/supervisor.sock` (or `$EIDO_STACK_DIR/run`) shows `user:_eidogate allow read,write` and no entry for `_eidodata`.
+3. Supervisor socket ACL: `ls -le ~/Library/"Application Support"/eido-dev/run/supervisor/supervisor.sock` (or `$EIDO_STACK_DIR/run/supervisor`) shows `user:_eidogate allow read,write` and no entry for `_eidodata`. `ls -lde ~/Library/"Application Support"/eido-dev/run` shows no `_eidogate` entry with `file_inherit`, and `sudo -u _eidogate ls ~/Library/"Application Support"/eido-dev/run` is refused.
 
 4. pf and the profiles:
 
