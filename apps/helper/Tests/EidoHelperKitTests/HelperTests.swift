@@ -346,6 +346,50 @@ final class HelperTests: XCTestCase {
     XCTAssertEqual(result["skipped"] as? Int, 1)
   }
 
+  @MainActor func testReminderReadRefusesCompletedSinceBeyondTheBound() async throws {
+    let store = FakeStore()
+    let now = try XCTUnwrap(Dates.parse("2026-11-14T10:00:00Z"))
+    let service = HelperService(store: store, now: { now })
+    store.reminderRows = ["open": reminder("open")]
+    // 366 days before now is the oldest accepted cutoff; one second earlier is refused.
+    try assertFailure(
+      await service.handle(
+        try request(
+          "list_reminders", ["listId": "calendar-1", "completedSince": "2025-11-13T09:59:59Z"])),
+      "invalid_request")
+    XCTAssertEqual(store.calendarReads, 0)
+    let accepted = try object(
+      await service.handle(
+        try request(
+          "list_reminders", ["listId": "calendar-1", "completedSince": "2025-11-13T10:00:00Z"])))
+    XCTAssertEqual(accepted["ok"] as? Bool, true)
+  }
+
+  @MainActor func testIncompleteRemindersStayReadableWhenCompletedHistoryExceedsTheBound()
+    async throws
+  {
+    let store = FakeStore()
+    let now = try XCTUnwrap(Dates.parse("2026-11-14T10:00:00Z"))
+    let service = HelperService(store: store, now: { now })
+    store.reminderRows["open"] = reminder("open")
+    for index in 0..<2000 {
+      store.reminderRows["done-\(index)"] = reminder(
+        "done-\(index)", completed: true, completedAt: "2026-11-01T00:00:00Z")
+    }
+    try assertFailure(
+      await service.handle(
+        try request(
+          "list_reminders", ["listId": "calendar-1", "completedSince": "2026-10-01T00:00:00Z"])),
+      "unavailable")
+    // The documented incomplete-only read: a cutoff at the request time.
+    let open = try object(
+      await service.handle(
+        try request(
+          "list_reminders", ["listId": "calendar-1", "completedSince": "2026-11-14T10:00:00Z"])))
+    let items = (open["result"] as? [String: Any])?["reminders"] as? [[String: Any]]
+    XCTAssertEqual(items?.compactMap { $0["id"] as? String }, ["open"])
+  }
+
   @MainActor func testBoundsAndNativeFailuresReturnFixedError() async throws {
     let store = FakeStore()
     let service = HelperService(store: store)

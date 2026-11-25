@@ -143,6 +143,25 @@ describe("Apple data-plane reads", () => {
       expect(apple.listReminders).not.toHaveBeenCalled()
     }
   )
+  test("bounds the completed-reminder lookback to 366 days before the request", async () => {
+    const state = fixture()
+    const apple = reads()
+    const now = () => Date.parse("2026-11-14T10:00:00Z")
+    const read = (since: string) =>
+      appleRoute(
+        req("/apple/reminders", `listId=list&completedSince=${since}`),
+        state.db,
+        apple,
+        now
+      )
+    expect((await read("2025-11-13T09:59:59Z"))?.status).toBe(400)
+    expect(apple.listReminders).not.toHaveBeenCalled()
+    expect((await read("2025-11-13T10:00:00Z"))?.status).toBe(200)
+    expect(apple.listReminders).toHaveBeenCalledWith(
+      "list",
+      "2025-11-13T10:00:00Z"
+    )
+  })
   test("has no write route and refuses a disabled connector", async () => {
     const state = fixture()
     const apple = reads()

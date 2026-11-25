@@ -22,8 +22,13 @@ const ROUTES: Readonly<Record<string, string>> = {
   "/apple/events": "list_events",
   "/apple/reminders": "list_reminders",
 }
+/** Event windows and the completed-reminder lookback share one bound. */
+const READ_WINDOW_MS = 366 * 86_400_000
 
-function readRequest(request: GateRequest): GateAppleRequest | undefined {
+function readRequest(
+  request: GateRequest,
+  now: number
+): GateAppleRequest | undefined {
   const operation = ROUTES[request.path]
   const args = Object.fromEntries(request.query)
   if (
@@ -37,19 +42,25 @@ function readRequest(request: GateRequest): GateAppleRequest | undefined {
   if (parsed.value.operation === "list_events") {
     const { start, end } = parsed.value.args
     const duration = Date.parse(end) - Date.parse(start)
-    if (!(duration > 0 && duration <= 366 * 86_400_000)) return undefined
+    if (!(duration > 0 && duration <= READ_WINDOW_MS)) return undefined
   }
+  if (
+    parsed.value.operation === "list_reminders" &&
+    Date.parse(parsed.value.args.completedSince) < now - READ_WINDOW_MS
+  )
+    return undefined
   return parsed.value
 }
 
 export async function appleRoute(
   request: GateRequest,
   db: DatabaseSync,
-  apple: AppleReads
+  apple: AppleReads,
+  now: () => number = Date.now
 ): Promise<Reply | undefined> {
   if (request.method !== "GET" || ROUTES[request.path] === undefined)
     return undefined
-  const parsed = readRequest(request)
+  const parsed = readRequest(request, now())
   if (parsed === undefined)
     return apiError(400, "invalid_request", "Invalid Apple read parameters")
   const action = `apple.read.${parsed.operation}`
