@@ -29,6 +29,21 @@ test.each([
   expect(env).toEqual({ RESTIC_REPOSITORY: config.repository })
 })
 
+test("a split host reads the passphrase from its root-only file, not the Keychain", () => {
+  const split = { ...config, passwordFile: "/secure/restic-password" }
+  expect(resticEnv(split, {})).toEqual({
+    RESTIC_REPOSITORY: config.repository,
+    RESTIC_PASSWORD_FILE: "/secure/restic-password",
+  })
+})
+
+test("a passphrase source in the caller's environment still wins on a split host", () => {
+  const split = { ...config, passwordFile: "/secure/restic-password" }
+  expect(resticEnv(split, { RESTIC_PASSWORD_COMMAND: "cat /x" })).toEqual({
+    RESTIC_REPOSITORY: config.repository,
+  })
+})
+
 test("the backup includes the staging copies and the blob store, and skips temporary blob files", () => {
   expect(backupArgs(config, true)).toEqual([
     "backup",

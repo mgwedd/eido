@@ -122,6 +122,10 @@ Unlocking that keychain while the gate runs under launchd without a login sessio
 
 8. Reboot, then repeat steps 4, 5 and 7.
 
+## Back up
+
+The owner's nightly backup cannot read the plane's data dirs. A root LaunchDaemon, `com.eido.plane.backup`, backs up both from the plane; set it up and restore from it as described under "Split host" in [backup-restore.md](backup-restore.md).
+
 ## Update
 
 After pulling a new `main`, or after changing `stack.env`, the egress port or the llama port, run the plan again and apply it. The script is idempotent: it rewrites the users' attributes, the group members, the modes, the app copy, the profiles, the anchors, the host list and the plists, then restarts the four daemons. A connector manifest added or changed on `main` reaches the egress host list only through this step.
@@ -152,5 +156,4 @@ To go back to the single-user stack, run `pnpm stack:install`.
 - #779: a stack mode that runs only web and the supervisor under your user.
 - #780: headless unlock of the gate keychain.
 - #781: Things, EventKit and file-root writes from the gate user.
-- #782: backups of the plane's gate and data dirs.
 - #783: the supervisor socket in a directory of its own.

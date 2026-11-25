@@ -4,6 +4,7 @@
 // snapshot is older than 36 hours. Both fail loudly, never write outside the repository, and
 // never create a repository: a missing or unmounted drive is an error.
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   renameSync,
@@ -64,6 +65,9 @@ function writeStamp(path: string, when: Date): void {
   mkdirSync(dirname(path), { recursive: true })
   const temp = `${path}.tmp`
   writeFileSync(temp, `${when.toISOString()}\n`)
+  // A timestamp is no secret, and on a split host it sits where the gate user can read it (the gate
+  // does not read it yet: #801). The daemon's umask would otherwise leave it private.
+  chmodSync(temp, 0o644)
   renameSync(temp, path)
 }
 

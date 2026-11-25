@@ -75,3 +75,12 @@ Implementing SQLCipher in Eido would impose significant burdens:
 2. **POSIX enforcement**: Eido enforces strict `0700` directory and `0600` file permissions on all database and blob directories at startup.
 3. **No SQLCipher for MVP**: Application-level database encryption is explicitly omitted from MVP and Wave 1.
 4. **Honest boundaries**: Documentation, plan checklists, and backup runbooks must accurately document this boundary: when the host Mac is powered on and unlocked, protection against local access rests on OS user isolation and the gate process boundary, not cryptographic database locks.
+
+## Amendment: the backup on a split host (#782, part of #70)
+
+On a split host the databases belong to `_eidogate` and `_eidodata`, and the owner's LaunchAgent cannot read them, so a root LaunchDaemon (`com.eido.plane.backup`) backs them up (`infra/backup-restore.md`, Split host). That departs from this ADR in two places, both forced by running as root:
+
+1. **The repository passphrase has a second home.** The ADR keeps it only in the owner's Keychain. A root daemon cannot read a login Keychain, so on a split host it is also a root-only file, `/Library/Application Support/Eido/backup/restic-password` (0600, inside a 0700 root directory), which the owner fills from the Keychain. The off-host copy of the passphrase is still required. Root already reads every database in the plane, so the file widens access to nobody who could not already read the data; neither service user can read it.
+2. **The restore scratch is under `/var/root`.** The inventory's drill restores into `~/eido-restore-scratch`. On a split host the restore runs as root into `/var/root/eido-restore` (0700), so the restored files keep their owners and modes (`_eidogate` 0600, `_eidodata` 0600) and the owner's home never holds a copy the service users' isolation was meant to keep apart. It is purged the same way after the drill.
+
+The daemon runs only root-owned binaries (node and restic under `/Library/Application Support/Eido/bin`), found by absolute path, and the generated script refuses to install otherwise.
