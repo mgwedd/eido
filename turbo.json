@@ -12,7 +12,7 @@
       "outputs": ["src/generated/**"]
     },
     "build": {
-      "dependsOn": ["^build", "^codegen", "codegen"],
+      "dependsOn": ["^build", "^typecheck", "^codegen", "codegen"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "env": ["EIDO_TAILNET_HOST"],
       "outputs": [".next/**", "!.next/cache/**", "!.next/dev/**", "dist/**"]
