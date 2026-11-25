@@ -5,7 +5,7 @@
 //     --intent-socket <path> --control-socket <path> --control-db <path> --gate-keychain <path> \
 //     --proxy-port <port> --llama-port <port> --parser-profile <path> \
 //     --public-host <hostname> --public-ip <IPv4 address> [--data-profile <path>] \
-//     [--timeout-ms 3000]
+//     [--stack-dir <owner's stack dir>] [--timeout-ms 3000]
 //
 // It runs as root only to start its children through `sudo -u`: one long-lived child as the gate
 // user holds the synthetic canaries (a loopback TCP listener, a Keychain item, a copy of the
@@ -14,14 +14,20 @@
 // data plane runs) and then, for every blocked probe, as the gate user with `--as-gate` (the
 // positive control, so a FAIL cannot come from a broken probe). It prints one `PASS name` or
 // `FAIL name: reason` line per probe and exits 1 on any FAIL. Canaries are random, never printed,
-// and removed on exit, on failure and on Ctrl-C. See docs/isolation-tests.md.
+// and removed on exit, on failure and on Ctrl-C. With `--stack-dir`, two more probes run as the gate
+// user alone (#70): it connects to the supervisor socket and reads no other file in the stack's run
+// dir. See docs/isolation-tests.md.
 import { spawn, spawnSync } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
 import dns from "node:dns"
 import {
   chmodSync,
+  chownSync,
+  closeSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -31,6 +37,10 @@ import { tmpdir, userInfo } from "node:os"
 import { dirname, isAbsolute, join } from "node:path"
 import { createInterface } from "node:readline"
 import { fileURLToPath } from "node:url"
+import {
+  SUPERVISOR_DIR_NAME,
+  SUPERVISOR_SOCKET_NAME,
+} from "../infra/stack/config.ts"
 
 export type Role = "data" | "gate"
 
@@ -45,9 +55,13 @@ export type ProbeName =
   | "control-db"
   | "control-socket"
   | "parser"
+  | "supervisor-socket"
+  | "run-dir-files"
 
 export type ProbeDef = {
   name: ProbeName
+  /** Who is probed: the data-plane user, or the gate user alone (no control run). */
+  subject: Role
   /** What the data-plane user must see. */
   data: "blocked" | "allowed"
   /** Also run as the gate user, where it must succeed. Every blocked probe has one. */
@@ -69,11 +83,19 @@ export const PROBES: readonly ProbeDef[] = [
   { ...probeDef("control-db", "blocked"), permission: true },
   { ...probeDef("control-socket", "blocked"), permission: true },
   { ...probeDef("parser", "blocked"), canaryListener: true },
+  { ...probeDef("supervisor-socket", "allowed"), subject: "gate" },
+  {
+    ...probeDef("run-dir-files", "blocked"),
+    subject: "gate",
+    control: false,
+    permission: true,
+  },
 ]
 
 function probeDef(name: ProbeName, data: "blocked" | "allowed"): ProbeDef {
   return {
     name,
+    subject: "data",
     data,
     control: data === "blocked",
     canaryListener: false,
@@ -98,6 +120,8 @@ export type LiveConfig = {
   parserProfile: string
   /** The core sandbox profile: when set, data-plane probes run under `sandbox-exec -f` it. */
   dataProfile?: string
+  /** The owner's stack dir: when set, the supervisor probes run (`run/supervisor/supervisor.sock`). */
+  stackDir?: string
   publicHost: string
   publicIp: string
   timeoutMs: number
@@ -112,6 +136,9 @@ export type Canaries = {
   dbDigest: string
 }
 
+/** The regular files in the stack run dir, outside the supervisor dir, for the gate user to try. */
+export type StackFiles = string[]
+
 /** Everything one probe child needs, passed as one JSON argument. */
 export type ProbeSpec = {
   name: ProbeName
@@ -125,11 +152,18 @@ export type ProbeSpec = {
   keychain?: string
   service?: string
   profile?: string
+  paths?: string[]
 }
 
 export type LiveRunner = {
   setup: () => Promise<Canaries>
   probe: (role: Role, spec: ProbeSpec) => Promise<ProbeResult>
+  /**
+   * Root side, `--stack-dir` only: puts a canary file in the run dir, so a file created there is
+   * tested even when the run dir is otherwise empty, and lists every regular file outside the
+   * supervisor dir. `teardown` removes the canary.
+   */
+  stackFiles: (stackDir: string) => Promise<StackFiles>
   /** Connections the canary listener has accepted so far. */
   connections: () => Promise<number>
   teardown: () => Promise<void>
@@ -159,12 +193,13 @@ const STRING_FLAGS = {
   "--gate-keychain": "gateKeychain",
   "--parser-profile": "parserProfile",
   "--data-profile": "dataProfile",
+  "--stack-dir": "stackDir",
   "--public-host": "publicHost",
   "--public-ip": "publicIp",
 } as const
 
 /** Flags the run works without. */
-const OPTIONAL_STRING_KEYS: readonly string[] = ["dataProfile"]
+const OPTIONAL_STRING_KEYS: readonly string[] = ["dataProfile", "stackDir"]
 
 const PORT_FLAGS = {
   "--proxy-port": "proxyPort",
@@ -178,6 +213,7 @@ const PATH_KEYS = [
   "gateKeychain",
   "parserProfile",
   "dataProfile",
+  "stackDir",
 ] as const
 
 const USER_NAME = /^[a-z_][a-z0-9_.-]{0,31}$/
@@ -186,7 +222,7 @@ export const USAGE =
   "usage: sudo node scripts/check-isolation-live.ts --gate-user <user> --data-user <user> " +
   "--intent-socket <path> --control-socket <path> --control-db <path> --gate-keychain <path> " +
   "--proxy-port <port> --llama-port <port> --parser-profile <path> --public-host <hostname> " +
-  "--public-ip <IPv4> [--data-profile <path>] [--timeout-ms <ms>]"
+  "--public-ip <IPv4> [--data-profile <path>] [--stack-dir <path>] [--timeout-ms <ms>]"
 
 function isKey<T extends object>(
   table: T,
@@ -261,6 +297,7 @@ export function parseArgs(
     gateKeychain,
     parserProfile,
     dataProfile,
+    stackDir,
     publicHost,
     publicIp,
   } = strings
@@ -293,6 +330,7 @@ export function parseArgs(
       llamaPort,
       parserProfile,
       ...(dataProfile === undefined ? {} : { dataProfile }),
+      ...(stackDir === undefined ? {} : { stackDir }),
       publicHost,
       publicIp,
       timeoutMs,
@@ -337,7 +375,8 @@ export function refusal(
 export function probeSpec(
   name: ProbeName,
   config: LiveConfig,
-  canaries: Canaries
+  canaries: Canaries,
+  stackFiles: StackFiles = []
 ): ProbeSpec {
   const base = {
     name,
@@ -371,7 +410,78 @@ export function probeSpec(
       return { ...base, path: config.controlSocket }
     case "parser":
       return { ...base, port: canaries.port, profile: config.parserProfile }
+    // Without --stack-dir the spec lacks its target and runProbe reports BAD_SPEC; runLive never
+    // gets there, it skips these two probes.
+    case "supervisor-socket":
+      return config.stackDir === undefined
+        ? base
+        : { ...base, path: stackPaths(config.stackDir).socket }
+    case "run-dir-files":
+      return { ...base, paths: stackFiles }
   }
+}
+
+// ---- the stack run dir (#70) ---------------------------------------------------------------------
+
+/** Where the supervisor socket sits below the owner's stack dir (`infra/stack/config.ts`). */
+export function stackPaths(stackDir: string): {
+  runDir: string
+  supervisorDir: string
+  socket: string
+} {
+  const runDir = join(stackDir, "run")
+  const supervisorDir = join(runDir, SUPERVISOR_DIR_NAME)
+  return {
+    runDir,
+    supervisorDir,
+    socket: join(supervisorDir, SUPERVISOR_SOCKET_NAME),
+  }
+}
+
+/**
+ * Every regular file below the run dir, outside the supervisor dir. Sockets and links are left out:
+ * opening a socket fails whatever its permissions, so it would not show a denial.
+ */
+export function listRunDirFiles(stackDir: string): StackFiles {
+  const { runDir, supervisorDir } = stackPaths(stackDir)
+  const files: string[] = []
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (path === supervisorDir) continue
+      if (entry.isDirectory()) walk(path)
+      else if (entry.isFile()) files.push(path)
+    }
+  }
+  walk(runDir)
+  return files
+}
+
+/**
+ * Creates `.eido-isolation-canary-<random>` in the run dir, mode 0600 and owned like the run dir,
+ * as a file the stack writes there would be. The gate user must be refused it: a file created in
+ * the run dir after the ACLs are applied must not inherit an entry for the gate user. Returns the
+ * path and a remover.
+ */
+export function createRunDirCanary(
+  stackDir: string,
+  random: (bytes: number) => Buffer = randomBytes
+): { path: string; remove: () => void } {
+  const { runDir } = stackPaths(stackDir)
+  const path = join(
+    runDir,
+    `.eido-isolation-canary-${random(8).toString("hex")}`
+  )
+  const { uid, gid } = statSync(runDir)
+  writeFileSync(path, random(64), { flag: "wx", mode: 0o600 })
+  try {
+    chmodSync(path, 0o600)
+    chownSync(path, uid, gid)
+  } catch (error) {
+    rmSync(path, { force: true })
+    throw error
+  }
+  return { path, remove: () => rmSync(path, { force: true }) }
 }
 
 /** One output line for one probe run. `newConnections` is the canary listener's count change. */
@@ -381,9 +491,20 @@ export function judge(
   result: ProbeResult,
   newConnections: number
 ): string {
-  const label = role === "data" ? def.name : `${def.name}.control`
+  const label =
+    role === "data" || def.subject === "gate" ? def.name : `${def.name}.control`
   const code = safeCode(result.code)
   if (!result.ran) return `FAIL ${label}: the probe did not run (${code})`
+  if (def.subject === "gate") {
+    if (def.data === "allowed")
+      return result.reached
+        ? `PASS ${label}`
+        : `FAIL ${label}: the gate user cannot reach it (${code})`
+    if (result.reached) return `FAIL ${label}: reached as the gate user`
+    if (def.permission && !PERMISSION_CODES.has(code))
+      return `FAIL ${label}: refused with ${code}, not permission denied`
+    return `PASS ${label} (${code})`
+  }
   if (role === "gate") {
     const listenerSaw = !def.canaryListener || newConnections > 0
     return result.reached && code === "OK" && listenerSaw
@@ -429,12 +550,29 @@ export async function runLive(
         `FAIL setup: the canaries could not be created (${safeCode(error)})`
       )
     }
+    let stackFiles: StackFiles | undefined
+    if (canaries !== undefined && config.stackDir !== undefined) {
+      try {
+        stackFiles = await runner.stackFiles(config.stackDir)
+      } catch (error) {
+        report(
+          `FAIL run-dir-files: the run dir could not be read or given a canary (${safeCode(error)})`
+        )
+      }
+    }
     if (canaries !== undefined) {
       for (const def of PROBES) {
-        const spec = probeSpec(def.name, config, canaries)
-        for (const role of def.control
-          ? (["data", "gate"] as const)
-          : (["data"] as const)) {
+        if (def.subject === "gate" && config.stackDir === undefined) {
+          print(`SKIP ${def.name}: no --stack-dir given`)
+          continue
+        }
+        if (def.name === "run-dir-files" && stackFiles === undefined) continue
+        const spec = probeSpec(def.name, config, canaries, stackFiles)
+        for (const role of def.subject === "gate"
+          ? (["gate"] as const)
+          : def.control
+            ? (["data", "gate"] as const)
+            : (["data"] as const)) {
           const before = def.canaryListener ? await runner.connections() : 0
           const result = await attempt(role, spec)
           const after = def.canaryListener ? await runner.connections() : 0
@@ -719,6 +857,29 @@ export async function reachDns(
   }
 }
 
+/**
+ * Opens each file for reading. Reached means one could be opened. Otherwise the code is the first
+ * refusal that was not permission denied (a missing file, say), else the first permission code, so
+ * a path that does not exist cannot pass for a denial. An empty list proves nothing: not run.
+ */
+export function openFiles(
+  paths: readonly string[],
+  open: (path: string) => void = (path) => closeSync(openSync(path, "r"))
+): ProbeResult {
+  if (paths.length === 0) return { ran: false, code: "NO_FILES" }
+  const codes: string[] = []
+  for (const path of paths) {
+    try {
+      open(path)
+      return { ran: true, reached: true, code: "OK" }
+    } catch (error) {
+      codes.push(safeCode(error))
+    }
+  }
+  const other = codes.find((code) => !PERMISSION_CODES.has(code))
+  return { ran: true, reached: false, code: other ?? codes[0] ?? "error" }
+}
+
 /** Reads a file. Reached means it could be read; OK means its content has the expected digest. */
 export function readMatches(
   read: () => Buffer | string,
@@ -844,6 +1005,12 @@ export async function runProbe(
       return spec.path === undefined
         ? missing
         : await reachUnixSocket(spec.path, spec.timeoutMs)
+    case "supervisor-socket":
+      return spec.path === undefined
+        ? missing
+        : await reachUnixSocket(spec.path, spec.timeoutMs)
+    case "run-dir-files":
+      return spec.paths === undefined ? missing : openFiles(spec.paths)
     case "keychain": {
       const { keychain, service, digest } = spec
       return keychain === undefined ||
@@ -913,6 +1080,13 @@ export function parseSpec(text: string): ProbeSpec | undefined {
   const port = field("port")
   if (typeof port === "number") spec.port = port
   else if (port !== undefined) return undefined
+  const paths = field("paths")
+  if (
+    Array.isArray(paths) &&
+    paths.every((path: unknown) => typeof path === "string")
+  )
+    spec.paths = paths
+  else if (paths !== undefined) return undefined
   return spec
 }
 
@@ -999,6 +1173,20 @@ function sudoRunner(config: LiveConfig): LiveRunner {
   const exited = new Promise<number | null>((resolve) =>
     holder.once("close", resolve)
   )
+  // The run dir canary is made by this root process, so it is removed here, on exit and on Ctrl-C.
+  let runDirCanary: { path: string; remove: () => void } | undefined
+  const removeRunDirCanary = () => {
+    try {
+      runDirCanary?.remove()
+      runDirCanary = undefined
+    } catch {
+      // teardown reports a canary that is still there
+    }
+  }
+  process.once("SIGINT", () => {
+    removeRunDirCanary()
+    process.exit(130)
+  })
   const pending: ((message: unknown) => void)[] = []
   let last: unknown
   createInterface({ input: holder.stdout }).on("line", (line) => {
@@ -1041,6 +1229,11 @@ function sudoRunner(config: LiveConfig): LiveRunner {
         })
       return { port, keychainService, keychainDigest, canaryDb, dbDigest }
     },
+    stackFiles: (stackDir) => {
+      const files = listRunDirFiles(stackDir)
+      runDirCanary = createRunDirCanary(stackDir)
+      return Promise.resolve([...files, runDirCanary.path])
+    },
     connections: async () => {
       const reply = next()
       holder.stdin.write("count\n")
@@ -1062,9 +1255,10 @@ function sudoRunner(config: LiveConfig): LiveRunner {
     },
     // The holder prints `cleaned` last: after stdin closes, or at once when it could not set up.
     teardown: async () => {
+      removeRunDirCanary()
       holder.stdin.end()
       await exited
-      if (field(last, "cleaned") !== true)
+      if (runDirCanary !== undefined || field(last, "cleaned") !== true)
         throw Object.assign(new Error("cleanup failed"), {
           code: "CANARY_CLEANUP",
         })

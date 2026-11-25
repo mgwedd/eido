@@ -45,6 +45,15 @@ export const PROPOSE_SYSTEM_PROMPT = [
   'Leave out optional args the request does not call for, such as cc and bcc.\n\nExample: owner request "Draft a reply saying I will call on Monday." answers with {"result":"intents","intents":[{"kind":"email.draft","args":{"to":["<sender>"],"subject":"Re: <subject>","body":"I will call on Monday.","inReplyToMessageId":"<messageId>"}}]}, not email.reply: a request to draft a reply is email.draft, and nothing is sent.',
 ].join("\n\n")
 
+/**
+ * Added to the task only when a Todos block is shown. The reply grammar writes an intent's args
+ * required first, then the optional ones alphabetically, so an optional arg the model skips cannot
+ * be added after a later one: a request that names a tag first got "when" for its deadline (#776).
+ * Kept out of the stable prefix: as a global rule it moved unrelated no-call requests (#776).
+ */
+export const TODO_ARG_ORDER_NOTE =
+  "Write each intent's args in a fixed order: the required args first, then the optional ones in alphabetical order of their names. The reply is checked in that order, so an optional arg you skip cannot be added after a later one: decide every optional arg in that order before you move on."
+
 /** The pack members that are messages (not attachments), with the ids an intent may use. */
 export function referableMessages(
   db: DatabaseSync,
@@ -143,6 +152,7 @@ export function buildProposalRequest(
   const task = [
     `Intent kinds offered for this request: ${input.kinds.length === 0 ? "(none)" : input.kinds.join(", ")}`,
     `Owner request:\n${input.request}`,
+    ...((input.todos ?? []).length === 0 ? [] : [TODO_ARG_ORDER_NOTE]),
     ...(failures.length === 0 ? [] : [retryNote(failures)]),
   ]
   const content: PromptPart[] = [

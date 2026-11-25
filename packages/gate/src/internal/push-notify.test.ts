@@ -1,9 +1,17 @@
-import { createECDH, randomBytes } from "node:crypto"
+import { createECDH, randomBytes, randomUUID } from "node:crypto"
+import type { DatabaseSync } from "node:sqlite"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { append } from "./audit"
+import { payloadHash } from "./canonical"
+import {
+  prepareControlApproval,
+  withControlApproval,
+} from "./control-approvals"
 import { propose } from "./intents"
 import { createPushNotifier, pushPayload, recoveryPayload } from "./push-notify"
 import { generateVapidPrivateKey } from "./push-crypto"
 import {
+  PushHostRefused,
   checkedSubscription,
   preparePushRegistration,
   pushEgressAllowed,
@@ -24,6 +32,58 @@ function keys() {
   }
 }
 
+/**
+ * Stores a signed subscription the way registration did before push hosts were checked (#789):
+ * the same approval binding, row and audit entry, without `checkedSubscription`. It stands for a
+ * subscription already in a gate's database when it upgrades.
+ */
+function storeUncheckedSubscription(
+  db: DatabaseSync,
+  subscription: { endpoint: string; p256dh: string; auth: string }
+): string {
+  const target = `push:${payloadHash(subscription.endpoint)}`
+  const binding = {
+    origin: new URL(subscription.endpoint).origin,
+    endpointHash: payloadHash(subscription.endpoint),
+    keysHash: payloadHash({
+      p256dh: subscription.p256dh,
+      auth: subscription.auth,
+    }),
+  }
+  const hash = payloadHash(binding)
+  const prepared = prepareControlApproval(db, "policy.set", target, binding)
+  return withControlApproval(
+    db,
+    "policy.set",
+    target,
+    hash,
+    controlAuthorization(db, prepared),
+    (ref, approvalId) => {
+      const id = randomUUID()
+      db.prepare(
+        "INSERT INTO push_subscriptions (id, endpoint, p256dh, auth, created_at, revoked_at, approval_id) VALUES (?, ?, ?, ?, ?, NULL, ?)"
+      ).run(
+        id,
+        subscription.endpoint,
+        subscription.p256dh,
+        subscription.auth,
+        new Date().toISOString(),
+        approvalId
+      )
+      const { seq } = append(db, {
+        actor: "approver",
+        action: "push.registered",
+        target,
+        detailHash: payloadHash({
+          subscriptionHash: hash,
+          approvalRefHash: ref,
+        }),
+      })
+      return { result: id, auditSeq: seq }
+    }
+  )
+}
+
 function privateKey(): string {
   return generateVapidPrivateKey()
 }
@@ -41,13 +101,13 @@ describe("count-only Web Push", () => {
   afterEach(() => vi.useRealTimers())
 
   it.each([
-    "http://push.example.invalid/send",
-    "https://push.example.invalid:444/send",
-    "https://user@push.example.invalid/send",
-    "https://push.example.invalid/send#fragment",
+    "http://web.push.apple.com/send",
+    "https://web.push.apple.com:444/send",
+    "https://user@web.push.apple.com/send",
+    "https://web.push.apple.com/send#fragment",
     "https://localhost/send",
     "https://127.0.0.1/send",
-    "https://push.example.invalid/old/../send",
+    "https://web.push.apple.com/old/../send",
   ])("rejects an unsafe or noncanonical endpoint: %s", (endpoint) => {
     expect(() => checkedSubscription({ endpoint, ...keys() })).toThrow(
       "invalid push subscription"
@@ -57,18 +117,114 @@ describe("count-only Web Push", () => {
   it("refuses a subscription whose authentication secret is malformed", () => {
     expect(() =>
       checkedSubscription({
-        endpoint: "https://push.example.invalid/send",
+        endpoint: "https://web.push.apple.com/send",
         ...keys(),
         auth: "short",
       })
     ).toThrow("invalid push subscription")
   })
 
+  it.each([
+    "https://push.example.invalid/send",
+    "https://web.push.apple.com.example.invalid/send",
+    "https://example.invalid/web.push.apple.com/send",
+  ])(
+    "refuses a well-formed endpoint on a push host the gate does not send to: %s",
+    (endpoint) => {
+      expect(() => checkedSubscription({ endpoint, ...keys() })).toThrow(
+        PushHostRefused
+      )
+    }
+  )
+
+  it("refuses to prepare or register a subscription on another push host, storing nothing", () => {
+    const s = setup()
+    try {
+      const allowed = {
+        endpoint: "https://web.push.apple.com/send/approved",
+        ...keys(),
+      }
+      // A valid passkey approval, so only the host can be what refuses the registration.
+      const authorization = controlAuthorization(
+        s.db,
+        preparePushRegistration(s.db, allowed)
+      )
+      const elsewhere = {
+        ...allowed,
+        endpoint: "https://push.example.invalid/send/approved",
+      }
+      const audited = auditRows(s.db).length
+      expect(() => preparePushRegistration(s.db, elsewhere)).toThrow(
+        PushHostRefused
+      )
+      expect(() =>
+        registerPushSubscription(s.db, elsewhere, authorization)
+      ).toThrow(PushHostRefused)
+      expect(pushSubscriptions(s.db)).toEqual([])
+      expect(auditRows(s.db).length).toBe(audited)
+      // The refusal spent nothing: the same approval still registers the allowed endpoint.
+      expect(
+        typeof registerPushSubscription(s.db, allowed, authorization)
+      ).toBe("string")
+    } finally {
+      s.cleanup()
+    }
+  })
+
+  it("never posts to a stored subscription on another push host, for a count or a recovery alert", async () => {
+    const s = setup()
+    let time = 1_000
+    const id = storeUncheckedSubscription(s.db, {
+      endpoint: "https://push.example.invalid/send/stored",
+      ...keys(),
+    })
+    // A control stored the same way on the allowed host: it must be posted, so the refusal above
+    // comes from the host check and not from the helper's stored authority.
+    storeUncheckedSubscription(s.db, {
+      endpoint: "https://web.push.apple.com/send/stored",
+      ...keys(),
+    })
+    const sent: string[] = []
+    const notifier = createPushNotifier({
+      db: s.db,
+      now: () => time,
+      subject: "mailto:ops@example.invalid",
+      privateKey: () => Promise.resolve(privateKey()),
+      fetch: (url) => {
+        sent.push(requestUrl(url))
+        return Promise.resolve(new Response(null, { status: 201 }))
+      },
+    })
+    try {
+      const result = propose(s.db, s.policy, {
+        intent: sample("email.send"),
+        origin: "reactive",
+      })
+      expect(result.ok).toBe(true)
+      notifier.notifyPending()
+      time = 61_000
+      expect(await notifier.flushDue()).toBe(true)
+      await notifier.notifyRecovery()
+      expect(sent).toEqual([
+        "https://web.push.apple.com/send/stored",
+        "https://web.push.apple.com/send/stored",
+      ])
+      expect(
+        auditRows(s.db)
+          .filter((row) => row.target === id)
+          .map((row) => row.action)
+      ).toEqual(["push.refused_egress", "push.recovery_refused_egress"])
+    } finally {
+      notifier.close()
+      s.cleanup()
+    }
+  })
+
   it("requires signed endpoint authority at egress and revokes it on removal", () => {
     const s = setup()
     try {
       const subscription = {
-        endpoint: "https://push.example.invalid/send/auth",
+        endpoint: "https://web.push.apple.com/send/auth",
         ...keys(),
       }
       expect(() => registerPushSubscription(s.db, subscription)).toThrow(
@@ -128,7 +284,7 @@ describe("count-only Web Push", () => {
     const s = setup()
     let time = 1_000
     const subscription = {
-      endpoint: "https://push.example.invalid/send/retry",
+      endpoint: "https://web.push.apple.com/send/retry",
       ...keys(),
     }
     const id = registerPushSubscription(
@@ -243,7 +399,7 @@ describe("count-only Web Push", () => {
       const s = setup()
       let time = 1_000
       const subscription = {
-        endpoint: "https://push.example.invalid/send/one",
+        endpoint: "https://web.push.apple.com/send/one",
         ...keys(),
       }
       const prepared = preparePushRegistration(s.db, subscription)
@@ -295,7 +451,7 @@ describe("count-only Web Push", () => {
     const s = setup()
     let time = 1_000
     const subscription = {
-      endpoint: "https://push.example.invalid/send/one",
+      endpoint: "https://web.push.apple.com/send/one",
       ...keys(),
     }
     const prepared = preparePushRegistration(s.db, subscription)
@@ -343,7 +499,7 @@ describe("count-only Web Push", () => {
     // claiming the window if the macOS runner pauses while the test is active.
     const windowMs = 24 * 60 * 60 * 1_000
     const subscription = {
-      endpoint: "https://push.example.invalid/send/two",
+      endpoint: "https://web.push.apple.com/send/two",
       ...keys(),
     }
     const id = registerPushSubscription(
@@ -407,7 +563,7 @@ describe("count-only Web Push", () => {
     const s = setup()
     let time = 1_000
     const subscription = {
-      endpoint: "https://push.example.invalid/send/three",
+      endpoint: "https://web.push.apple.com/send/three",
       ...keys(),
     }
     const id = registerPushSubscription(
@@ -461,7 +617,7 @@ describe("recovery alert push (issue 682)", () => {
   function subscribed(s: ReturnType<typeof setup>, names: string[]) {
     return names.map((name) => {
       const subscription = {
-        endpoint: `https://push.example.invalid/send/${name}`,
+        endpoint: `https://web.push.apple.com/send/${name}`,
         ...keys(),
       }
       const id = registerPushSubscription(
