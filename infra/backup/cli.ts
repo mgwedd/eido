@@ -1,14 +1,20 @@
-// `backup run|check|restore <dir> [--snapshot <id>]|verify <dir>|plist` (#30)
+// `backup run|check|restore <dir> [--snapshot <id>]|verify <dir>|plist|plane [--node <path>]` (#30)
 //   run      consistent copies of both databases plus the blob store into a restic snapshot,
 //            then retention; writes the last-success stamp
 //   check    exits non-zero when the newest snapshot is over 36 hours old, or the drive is absent
 //   restore  restores a snapshot into a new scratch directory and verifies it
 //   verify   verifies an already-restored directory
 //   plist    prints the nightly LaunchAgent plist; installing it is a manual step
+//   plane    split host (#782): prints the script that sets up the root LaunchDaemon backing up
+//            the plane's gate and data directories; the owner runs it with sudo
+//
+// With EIDO_BACKUP_PLANE=split, run, check, restore and verify use the plane's directories and
+// the root-only passphrase file; run them with sudo.
 import { resolve } from "node:path"
 
 import { runBackup, runCheck, type Deps } from "./backup.ts"
 import { buildBackupConfig } from "./config.ts"
+import { planeBackup, renderPlaneBackup } from "./plane.ts"
 import { renderPlist } from "./plist.ts"
 import { runRestore, verifyRestored, type Check } from "./restore.ts"
 import { BackupError } from "./errors.ts"
@@ -29,7 +35,7 @@ export type Context = Deps & {
 }
 
 const USAGE =
-  "usage: backup run | check | restore <dir> [--snapshot <id>] | verify <dir> | plist"
+  "usage: backup run | check | restore <dir> [--snapshot <id>] | verify <dir> | plist | plane [--node <path>]"
 
 function printChecks(checks: readonly Check[], io: Io): boolean {
   for (const c of checks)
@@ -97,6 +103,10 @@ export async function main(
         return printChecks(verifyRestored(config, resolve(dir)), io) ? 0 : 1
       }
       case "plist": {
+        if (config.plane === "split")
+          throw new BackupError(
+            "a split host backs up from a root LaunchDaemon, not a LaunchAgent: run `backup plane`"
+          )
         io.out(
           renderPlist({
             config,
@@ -105,6 +115,26 @@ export async function main(
             nodePath: ctx.nodePath,
             binPath: ctx.binPath,
           }).trimEnd()
+        )
+        return 0
+      }
+      case "plane": {
+        const flag = rest[0]
+        const node = rest[1]
+        if (
+          (flag !== undefined && (flag !== "--node" || node === undefined)) ||
+          rest.length > 2
+        ) {
+          io.err(USAGE)
+          return 2
+        }
+        io.out(
+          renderPlaneBackup(
+            planeBackup({
+              repository: config.repository,
+              node: node ?? ctx.nodePath,
+            })
+          ).trimEnd()
         )
         return 0
       }

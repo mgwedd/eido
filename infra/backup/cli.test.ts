@@ -155,4 +155,32 @@ describe.skipIf(process.platform === "win32")("backup cli", () => {
     expect(out[0]).toContain("<key>Label</key>")
     expect(out[0]).toContain(ctx.env["EIDO_BACKUP_REPO"])
   })
+
+  test("plain plist refuses on a split host: its databases are not the owner's to back up", async () => {
+    const { ctx, logs } = context({ ...repoEnv(), EIDO_BACKUP_PLANE: "split" })
+    expect(await main(["plist"], ctx)).toBe(1)
+    expect(logs.at(-1)).toContain("run `backup plane`")
+  })
+
+  test("plane prints the script for the plane's data dirs with this node", async () => {
+    const { ctx, out } = context(repoEnv())
+    expect(await main(["plane"], ctx)).toBe(0)
+    expect(out[0]).toMatch(/^#!\/bin\/sh\n/)
+    expect(out[0]).toContain("/Library/Application Support/Eido/gate")
+    expect(out[0]).toContain("<string>/node</string>")
+    expect(out[0]).toContain(ctx.env["EIDO_BACKUP_REPO"])
+  })
+
+  test("plane --node uses the node it is given", async () => {
+    const { ctx, out } = context(repoEnv())
+    expect(await main(["plane", "--node", "/usr/local/bin/node"], ctx)).toBe(0)
+    expect(out[0]).toContain("<string>/usr/local/bin/node</string>")
+    expect(out[0]).not.toContain("<string>/node</string>")
+  })
+
+  test("plane with a stray argument prints usage and exits 2", async () => {
+    const { ctx, err } = context(repoEnv())
+    expect(await main(["plane", "--nod", "/x"], ctx)).toBe(2)
+    expect(err[0]).toMatch(/^usage: backup run/)
+  })
 })

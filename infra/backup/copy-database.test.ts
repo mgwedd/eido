@@ -1,9 +1,15 @@
-import { copyFileSync, existsSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { expect, test } from "vitest"
 
-import { copyDatabase } from "./copy-database.ts"
+import { applyOwnership, copyDatabase } from "./copy-database.ts"
 import { BackupError } from "./errors.ts"
 import { openWal, tempDir } from "./test-support.ts"
 
@@ -70,4 +76,31 @@ test("a source that is not a database fails instead of producing a copy", () => 
   expect(() =>
     copyDatabase(join(dir, "bad.db"), join(dir, "copy.db"))
   ).toThrow()
+})
+
+test("the copy has the source's permission bits, not the writer's default", () => {
+  const dir = tempDir()
+  const live = openWal(join(dir, "live.db"))
+  live.exec("CREATE TABLE t (x); INSERT INTO t VALUES (1)")
+  chmodSync(join(dir, "live.db"), 0o640)
+  copyDatabase(join(dir, "live.db"), join(dir, "copy.db"))
+  expect(statSync(join(dir, "copy.db")).mode & 0o777).toBe(0o640)
+  live.close()
+})
+
+test("applyOwnership hands the copy to the source's owner and group, with the permission bits only", () => {
+  const calls: string[] = []
+  applyOwnership(
+    "/staging/eido-control.db",
+    // A regular file owned by uid 451, mode 0600, as the file type bits stat reports.
+    { uid: 451, gid: 451, mode: 0o100600 },
+    {
+      chown: (path, uid, gid) => calls.push(`chown ${path} ${uid}:${gid}`),
+      chmod: (path, mode) => calls.push(`chmod ${path} ${mode.toString(8)}`),
+    }
+  )
+  expect(calls).toEqual([
+    "chown /staging/eido-control.db 451:451",
+    "chmod /staging/eido-control.db 600",
+  ])
 })

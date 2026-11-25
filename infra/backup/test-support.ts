@@ -18,6 +18,7 @@ export function testConfig(root: string): BackupConfig {
     staged: join(stagingDir, name),
   })
   return {
+    plane: "single",
     databases: [db("eido-data.db", "core"), db("eido-control.db", "gate")],
     blobDir: join(root, "core", "blobs"),
     stagingDir,
