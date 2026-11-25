@@ -19,6 +19,7 @@ import {
   parseResult,
   parseSpec,
   parserOutcome,
+  probeSudoArgs,
   reachDns,
   reachTcp,
   reachUnixSocket,
@@ -469,6 +470,16 @@ describe("parseArgs", () => {
   ]
   test("reads every flag", () => {
     expect(parseArgs(full)).toEqual({ ok: true, config: CONFIG })
+    expect(
+      parseArgs([...full, "--data-profile", "/var/empty/core.sb"])
+    ).toEqual({
+      ok: true,
+      config: { ...CONFIG, dataProfile: "/var/empty/core.sb" },
+    })
+    expect(parseArgs([...full, "--data-profile", "core.sb"])).toEqual({
+      ok: false,
+      errors: ["the dataProfile path must be absolute"],
+    })
     expect(parseArgs([...full, "--timeout-ms", "500"])).toEqual({
       ok: true,
       config: { ...CONFIG, timeoutMs: 500 },
@@ -525,6 +536,56 @@ describe("parseArgs", () => {
       ok: false,
       errors: ["unknown argument --extra"],
     })
+  })
+})
+
+describe("probeSudoArgs", () => {
+  const profiled: LiveConfig = { ...CONFIG, dataProfile: "/var/empty/core.sb" }
+  const specOf = (name: ProbeName): ProbeSpec => ({
+    name,
+    gateUser: CONFIG.gateUser,
+    dataUser: CONFIG.dataUser,
+    timeoutMs: CONFIG.timeoutMs,
+  })
+  /** What sudo starts: everything after the `--`. */
+  const child = (args: readonly string[]) => args.slice(args.indexOf("--") + 1)
+  const sandboxExec = ["/usr/bin/sandbox-exec", "-f", "/var/empty/core.sb"]
+
+  test("starts a data-plane probe under sandbox-exec -f the data profile, as the data user", () => {
+    const args = probeSudoArgs("data", specOf("dns"), profiled)
+    expect(args.slice(0, 4)).toEqual(["-n", "-u", "eido-data-test", "--"])
+    expect(child(args).slice(0, 3)).toEqual(sandboxExec)
+    expect(child(args)[3]).toBe(process.execPath)
+    expect(child(args).slice(-2)).toEqual([
+      "--spec",
+      JSON.stringify(specOf("dns")),
+    ])
+  })
+  test("sandboxes every data-plane probe except the parser, which applies its own profile", () => {
+    for (const def of PROBES) {
+      const started = child(probeSudoArgs("data", specOf(def.name), profiled))
+      expect(started[0] === "/usr/bin/sandbox-exec", def.name).toBe(
+        def.name !== "parser"
+      )
+    }
+  })
+  test("never sandboxes a gate-user control and marks it --as-gate", () => {
+    for (const def of PROBES.filter((probe) => probe.control)) {
+      const args = probeSudoArgs("gate", specOf(def.name), profiled)
+      expect(args.slice(0, 4), def.name).toEqual([
+        "-n",
+        "-u",
+        "eido-gate-test",
+        "--",
+      ])
+      expect(child(args)[0], def.name).toBe(process.execPath)
+      expect(args.at(-1), def.name).toBe("--as-gate")
+    }
+  })
+  test("starts nothing under sandbox-exec without a data profile", () => {
+    const args = probeSudoArgs("data", specOf("dns"), CONFIG)
+    expect(child(args)[0]).toBe(process.execPath)
+    expect(args).not.toContain("/usr/bin/sandbox-exec")
   })
 })
 
