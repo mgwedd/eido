@@ -33,18 +33,29 @@ export function assignableAccounts(
     }))
 }
 
-/** Accounts reported at runtime, one per connector and address, in the order first seen. */
+/**
+ * The most accounts the registry holds. It equals `maxItems` of `CoreApiAccountList`, so
+ * `GET /connectors/accounts` can never answer outside its schema; accounts.test.ts fails
+ * when the two drift apart.
+ */
+export const MAX_ACCOUNTS = 500
+
+/**
+ * Accounts reported at runtime, one per connector and address, in the order first seen.
+ * Once `MAX_ACCOUNTS` are held, an account not already registered is refused (`add` returns
+ * false) and the ones listed stay as they are; re-adding a known account always succeeds.
+ */
 export function createAccountRegistry(): {
-  add: (account: KnownAccount) => void
+  add: (account: KnownAccount) => boolean
   list: () => readonly KnownAccount[]
 } {
   const accounts = new Map<string, KnownAccount>()
   return {
     add: (account) => {
-      accounts.set(
-        JSON.stringify([account.connector, account.accountRef]),
-        account
-      )
+      const key = JSON.stringify([account.connector, account.accountRef])
+      if (!accounts.has(key) && accounts.size >= MAX_ACCOUNTS) return false
+      accounts.set(key, account)
+      return true
     },
     list: () => [...accounts.values()],
   }

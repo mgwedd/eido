@@ -82,7 +82,7 @@ import type { GmailClient } from "./connectors/gmail/client"
 import type { GmailConfig } from "./connectors/gmail/config"
 import { healthAwareSyncRunner } from "./connectors/health-aware-sync"
 import type { ConnectorHealthReader } from "./connectors/health-aware-sync"
-import { createAccountRegistry } from "./connectors/accounts"
+import { MAX_ACCOUNTS, createAccountRegistry } from "./connectors/accounts"
 import { parseAppleCalendarSelection } from "./connectors/apple-calendar/config"
 import type { AppleCalendarSelection } from "./connectors/apple-calendar/config"
 import {
@@ -934,6 +934,14 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     })
   }
   const accounts = createAccountRegistry()
+  const addAccount = (account: KnownAccount): void => {
+    if (!accounts.add(account)) {
+      log("account_list_full", {
+        connector: account.connector,
+        limit: String(MAX_ACCOUNTS),
+      })
+    }
+  }
   let gmailTimer: ReturnType<typeof startSyncTimer> | undefined
   if (config.api.gmailProxyUrl !== undefined) {
     const sync = createGmailSyncRuntime({
@@ -947,7 +955,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       onIngested,
       onBatchCommitted,
       onAccount: (accountRef) =>
-        accounts.add({
+        addAccount({
           connector: GMAIL_CONNECTOR,
           healthName: GMAIL_CONNECTOR,
           accountRef,
@@ -959,7 +967,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
   }
   let protonTimer: ReturnType<typeof startSyncTimer> | undefined
   if (config.api.protonUsername !== undefined) {
-    accounts.add({
+    addAccount({
       connector: PROTON_CONNECTOR,
       healthName: PROTON_HEALTH_NAME,
       accountRef: config.api.protonUsername,
@@ -986,7 +994,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       selection: config.appleCalendars,
       onCalendar: ({ id, title }) => {
         if (id.length > 320) return
-        accounts.add({
+        addAccount({
           connector: APPLE_CALENDAR_CONNECTOR,
           healthName: APPLE_CALENDAR_CONNECTOR,
           accountRef: id,
