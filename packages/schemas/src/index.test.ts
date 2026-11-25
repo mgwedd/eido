@@ -750,6 +750,26 @@ describe("rejections", () => {
     ])
   })
 
+  test.each([
+    ["2026-02-31T10:00:00Z", false],
+    ["2026-04-31T10:00:00Z", false],
+    ["2026-02-29T10:00:00Z", false],
+    ["2100-02-29T10:00:00Z", false],
+    ["2026-11-14T23:59:60Z", false],
+    ["2028-02-29T10:00:00Z", true],
+    ["2000-02-29T10:00:00Z", true],
+    ["2026-12-31T23:59:59.999+05:30", true],
+  ])("date-time %s on a real calendar day: %s", (start, ok) => {
+    expect(
+      validateIntent(
+        intent("calendar.create", {
+          ...(VALID["calendar.create"] as object),
+          start,
+        })
+      ).ok
+    ).toBe(ok)
+  })
+
   test("an intent must not be a non-object", () => {
     expect(validateIntent("email.archive").ok).toBe(false)
     expect(validateIntent([]).ok).toBe(false)
