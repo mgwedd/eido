@@ -3,12 +3,17 @@ import { GateRequestError } from "@eido/gate"
 import type { IntentClient, IntentState, Tier } from "@eido/gate"
 import { INTENT_KINDS } from "@eido/schemas"
 import type { GateIntentInjection, Intent } from "@eido/schemas"
-import { isAppleEventId } from "../connectors/apple-calendar/sync"
+import {
+  APPLE_CALENDAR_CONNECTOR,
+  isAppleEventId,
+} from "../connectors/apple-calendar/sync"
 import { assembleContext } from "../context/assemble"
 import { listOpenTodos, renderTodosBlock } from "../context/todos"
+import { listMatchingEvents, renderEventsBlock } from "../context/events"
 import { ID_DEPENDENT_THINGS_KINDS, selectTools } from "../context/tools"
 import { PromptTooLargeError } from "../inference/errors"
 import { INJECTION_REASONS } from "../inference/fence"
+import type { PromptPart } from "../inference/fence"
 import type { InferenceQueue } from "../inference/queue"
 import type { ToolDef } from "../inference/types"
 import { checkReply } from "./check"
@@ -110,23 +115,40 @@ function gateFailures(
 }
 
 /**
- * What `fence` found in the pack's members, for the gate's approval card: every reason any member
- * was flagged for, in the fence's fixed order. Absent when no member was flagged, so a proposal
- * from clean material carries no flag.
+ * What `fence` found in the pack's members and in the fenced blocks added to the prompt (the
+ * Todos and Events blocks, whose titles come from Things and the calendar), for the gate's
+ * approval card: every reason anything was flagged for, in the fence's fixed order. Absent when
+ * nothing was flagged, so a proposal from clean material carries no flag.
  */
-function injectionFlag(pack: {
-  members: readonly {
-    injectionSuspected: boolean
-    injectionReasons: readonly string[]
-  }[]
-}): { injection?: GateIntentInjection } {
-  const flagged = pack.members.filter((m) => m.injectionSuspected)
-  if (flagged.length === 0) return {}
+function injectionFlag(
+  pack: {
+    members: readonly {
+      injectionSuspected: boolean
+      injectionReasons: readonly string[]
+    }[]
+  },
+  blocks: readonly PromptPart[]
+): { injection?: GateIntentInjection } {
+  const found = [
+    ...pack.members
+      .filter((m) => m.injectionSuspected)
+      .map((m) => m.injectionReasons),
+    ...blocks.flatMap((part) =>
+      typeof part !== "string" && part.injectionSuspected ? [part.reasons] : []
+    ),
+  ]
+  if (found.length === 0) return {}
   const reasons = INJECTION_REASONS.filter((reason) =>
-    flagged.some((m) => m.injectionReasons.includes(reason))
+    found.some((r) => r.includes(reason))
   )
   return { injection: { reasons } }
 }
+
+/** Calendar kinds that name an existing event by its uid: Proton invitation operations. */
+const ID_DEPENDENT_CALENDAR_KINDS: ReadonlySet<string> = new Set([
+  "calendar.edit",
+  "calendar.delete",
+])
 
 function validConfig(config: ProposeConfig): void {
   const max = config.maxIntentsPerRequest
@@ -165,10 +187,24 @@ export async function proposeIntents(
     ? listOpenTodos(deps.db, request.text)
     : { todos: [], matched: 0, ambiguous: false }
   const todos = listed.ambiguous ? { todos: [], matched: 0 } : listed
-  const kinds =
-    todos.todos.length === 0
-      ? picked.filter((k) => !ID_DEPENDENT_THINGS_KINDS.has(k))
-      : picked
+  // The Events block exists only when a calendar kind is offered, so the model can name an event
+  // by its uid. Ambiguous matches get no block, as for to-dos.
+  const matching = picked.some((k) => k.startsWith("calendar."))
+    ? listMatchingEvents(deps.db, request.text, deps.now?.() ?? new Date())
+    : { events: [], matched: 0, ambiguous: false }
+  const events = matching.ambiguous ? { events: [], matched: 0 } : matching
+  // When the request names an indexed event, the uid-dependent calendar kinds are offered only if
+  // the best match is one they can act on: they are Proton invitation operations, and an Apple
+  // Calendar event is read-only. Otherwise the model can only decline, instead of proposing an
+  // intent the check refuses. With no matching event they stay offered: the uid may come from an
+  // invitation in the pack.
+  const readOnlyTarget =
+    matching.ambiguous || events.events[0]?.source === APPLE_CALENDAR_CONNECTOR
+  const kinds = picked.filter(
+    (k) =>
+      !(todos.todos.length === 0 && ID_DEPENDENT_THINGS_KINDS.has(k)) &&
+      !(readOnlyTarget && ID_DEPENDENT_CALENDAR_KINDS.has(k))
+  )
   const pin =
     request.connector === undefined ? {} : { connector: request.connector }
   const assembled = await assembleContext(
@@ -190,6 +226,7 @@ export async function proposeIntents(
     referable,
     kinds,
     todos: renderTodosBlock(todos),
+    events: renderEventsBlock(events),
   }
   const draft = request.replyDraft
     ? draftBounds(deps.db, referable, request.seed)
@@ -204,7 +241,7 @@ export async function proposeIntents(
     isAppleEvent: (eventUid: string) => isAppleEventId(deps.db, eventUid),
     ...(draft === undefined ? {} : { draft }),
   }
-  const injection = injectionFlag(pack)
+  const injection = injectionFlag(pack, [...input.todos, ...input.events])
   const sources = {
     contextPackId: pack.id,
     documentIds: pack.members.map((m) => m.sha256),
