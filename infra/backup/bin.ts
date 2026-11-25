@@ -6,12 +6,16 @@ import { join } from "node:path"
 import { main } from "./cli.ts"
 import type { ResticResult, ResticRun } from "./restic.ts"
 
-const run: ResticRun = (args, env) =>
+// A split host's root daemon names restic by absolute path; PATH is only a single-user fallback.
+const env = process.env
+const RESTIC = env["EIDO_RESTIC_BIN"] ?? "restic"
+
+const run: ResticRun = (args, resticEnv) =>
   new Promise<ResticResult>((resolve) => {
     execFile(
-      "restic",
+      RESTIC,
       [...args],
-      { env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 },
+      { env: { ...env, ...resticEnv }, maxBuffer: 64 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (error === null) resolve({ code: 0, stdout, stderr })
         else if (typeof error.code === "number")
@@ -33,7 +37,7 @@ process.exitCode = await main(process.argv.slice(2), {
   now: () => new Date(),
   // launchd sends stdout and stderr to the same log file.
   log: (line) => console.log(stamp(line)),
-  env: process.env,
+  env,
   home: homedir(),
   repoRoot: join(import.meta.dirname, "..", ".."),
   nodePath: process.execPath,

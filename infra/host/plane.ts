@@ -5,7 +5,6 @@
 // Pure functions: what to create and which commands create it. `plane-cli.ts` reads the host's
 // state and prints the commands as a script the owner runs with sudo; nothing here touches the
 // system.
-import { escapeXml } from "../llama/launchd.ts"
 import { parsePort } from "../tailscale/serve-routes.ts"
 import {
   buildStackConfig,
@@ -23,14 +22,28 @@ import {
   egressRules,
   type EgressTargets,
 } from "./egress.ts"
-import { shellQuote } from "./shell.ts"
+import {
+  DAEMON_DIR,
+  daemonPlist,
+  PLANE_LOGS,
+  PLANE_ROOT,
+  renderStep,
+  shellQuote,
+  type DaemonSpec,
+  type Step,
+} from "./plane-base.ts"
 
-export { shellQuote }
+export {
+  DAEMON_DIR,
+  daemonPlist,
+  PLANE_LOGS,
+  PLANE_ROOT,
+  renderStep,
+  shellQuote,
+  type DaemonSpec,
+  type Step,
+}
 
-/** Where the plane lives: outside every home, so neither service user reads the owner's files. */
-export const PLANE_ROOT = "/Library/Application Support/Eido"
-export const PLANE_LOGS = "/Library/Logs/Eido"
-export const DAEMON_DIR = "/Library/LaunchDaemons"
 /**
  * A child of the `com.apple/*` anchor point that the stock /etc/pf.conf already evaluates, so the
  * rules load without editing /etc/pf.conf and survive the macOS updates that rewrite it.
@@ -54,11 +67,8 @@ export const LABELS = {
 /** The first of three ids (gate uid/gid, data uid/gid, ipc gid): below 500, so the users stay hidden. */
 export const DEFAULT_FIRST_ID = 451
 
-/** launchd's umask for both services: sockets and files start private, then the gate opens one socket to the group. */
-const SERVICE_UMASK = 0o077
 /** How often the pf job reloads the anchor, in case something flushed it. */
 export const PF_RELOAD_SECONDS = 300
-const THROTTLE_SECONDS = 10
 const SERVICE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
 export type PlaneLayout = {
@@ -334,79 +344,6 @@ export function pfAnchor(layout: PlaneLayout, ports: PlanePorts): string {
 
 // ---- LaunchDaemons ---------------------------------------------------------------------------
 
-export type DaemonSpec = {
-  label: string
-  user: string
-  group: string
-  args: readonly string[]
-  cwd: string
-  env: Readonly<Record<string, string>>
-  outLog: string
-  errLog: string
-  /** A service restarts when it exits; the pf job runs at load and every `interval` seconds. */
-  keepAlive: boolean
-  interval?: number
-}
-
-const str = (value: string) => `<string>${escapeXml(value)}</string>`
-
-export function daemonPlist(spec: DaemonSpec): string {
-  const args = spec.args.map((arg) => `    ${str(arg)}`).join("\n")
-  const env = Object.entries(spec.env)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(
-      ([key, value]) => `    <key>${escapeXml(key)}</key>\n    ${str(value)}`
-    )
-    .join("\n")
-  const lifecycle = spec.keepAlive
-    ? [
-        "  <key>KeepAlive</key>",
-        "  <true/>",
-        "  <key>ThrottleInterval</key>",
-        `  <integer>${String(THROTTLE_SECONDS)}</integer>`,
-      ]
-    : spec.interval === undefined
-      ? []
-      : [
-          "  <key>StartInterval</key>",
-          `  <integer>${String(spec.interval)}</integer>`,
-        ]
-  return [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-    '<plist version="1.0">',
-    "<dict>",
-    "  <key>Label</key>",
-    `  ${str(spec.label)}`,
-    "  <key>UserName</key>",
-    `  ${str(spec.user)}`,
-    "  <key>GroupName</key>",
-    `  ${str(spec.group)}`,
-    "  <key>ProgramArguments</key>",
-    "  <array>",
-    args,
-    "  </array>",
-    "  <key>WorkingDirectory</key>",
-    `  ${str(spec.cwd)}`,
-    "  <key>EnvironmentVariables</key>",
-    "  <dict>",
-    env,
-    "  </dict>",
-    "  <key>Umask</key>",
-    `  <integer>${String(SERVICE_UMASK)}</integer>`,
-    "  <key>RunAtLoad</key>",
-    "  <true/>",
-    ...lifecycle,
-    "  <key>StandardOutPath</key>",
-    `  ${str(spec.outLog)}`,
-    "  <key>StandardErrorPath</key>",
-    `  ${str(spec.errLog)}`,
-    "</dict>",
-    "</plist>",
-    "",
-  ].join("\n")
-}
-
 export type PlaneInput = {
   layout: PlaneLayout
   /** The owner's checkout; the plan copies it to the root-owned app dir. */
@@ -581,14 +518,6 @@ export function planeServices(input: PlaneInput): PlaneServices {
 }
 
 // ---- the commands ----------------------------------------------------------------------------
-
-export type Step = {
-  argv: readonly string[]
-  /** Fed to the command's standard input (a file's contents for `tee`). */
-  stdin?: string
-  /** A failure is expected when there is nothing to undo, as with `launchctl bootout`. */
-  mayFail?: boolean
-}
 
 const DSCL = "/usr/bin/dscl"
 const CHOWN = "/usr/sbin/chown"
@@ -866,19 +795,6 @@ export function removeNotes(layout: PlaneLayout): string[] {
     "Kept: the gate's and data plane's data, the gate's keychain and the logs. Back them up, then delete them by hand:",
     `  sudo rm -rf ${shellQuote(layout.root)} ${shellQuote(layout.logs.root)}`,
   ]
-}
-
-const EOF = "EIDO_EOF"
-
-/** The steps as a /bin/sh script: what `plan` prints and what `apply` runs, one line each. */
-export function renderStep(step: Step): string {
-  const command = step.argv.map(shellQuote).join(" ")
-  if (step.stdin !== undefined) {
-    if (step.stdin.split("\n").includes(EOF))
-      throw new Error(`a file to write contains the line ${EOF}`)
-    return `${command} >/dev/null <<'${EOF}'\n${step.stdin}${EOF}`
-  }
-  return step.mayFail === true ? `${command} || true` : command
 }
 
 export function renderScript(

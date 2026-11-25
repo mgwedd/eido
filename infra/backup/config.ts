@@ -6,7 +6,7 @@
 // plane's directories instead (#782).
 import { isAbsolute, join, posix } from "node:path"
 
-import { PLANE_LOGS, PLANE_ROOT } from "../host/plane.ts"
+import { PLANE_LOGS, PLANE_ROOT } from "../host/plane-base.ts"
 import { buildStackConfig, type Env } from "../stack/config.ts"
 import { BackupError } from "./errors.ts"
 
@@ -89,7 +89,8 @@ export function planeBackupConfig(repository: string): BackupConfig {
     stagingDir,
     repository,
     logDir: PLANE_BACKUP_LOG_DIR,
-    // The gate reads the stamp for its backup status, so it sits where the gate user can read it.
+    // 0644 in the plane's log directory, so the gate user could read it. Nothing reads it there yet:
+    // the gate's daemon is not given the path (#801).
     stampFile: posix.join(PLANE_LOGS, "backup-last-success"),
     passwordFile: `${PLANE_BACKUP_DIR}/restic-password`,
   }

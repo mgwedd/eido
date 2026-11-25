@@ -162,25 +162,48 @@ describe.skipIf(process.platform === "win32")("backup cli", () => {
     expect(logs.at(-1)).toContain("run `backup plane`")
   })
 
-  test("plane prints the script for the plane's data dirs with this node", async () => {
+  test("plane prints the script for the plane's data dirs, with the plane's own node and restic by default", async () => {
     const { ctx, out } = context(repoEnv())
     expect(await main(["plane"], ctx)).toBe(0)
     expect(out[0]).toMatch(/^#!\/bin\/sh\n/)
     expect(out[0]).toContain("/Library/Application Support/Eido/gate")
-    expect(out[0]).toContain("<string>/node</string>")
+    expect(out[0]).toContain(
+      "<string>/Library/Application Support/Eido/bin/node</string>"
+    )
+    expect(out[0]).toMatch(
+      /<key>EIDO_RESTIC_BIN<\/key>\s*<string>\/Library\/Application Support\/Eido\/bin\/restic<\/string>/
+    )
     expect(out[0]).toContain(ctx.env["EIDO_BACKUP_REPO"])
   })
 
-  test("plane --node uses the node it is given", async () => {
+  test("plane --node and --restic use the binaries they are given", async () => {
     const { ctx, out } = context(repoEnv())
-    expect(await main(["plane", "--node", "/usr/local/bin/node"], ctx)).toBe(0)
+    const argv = [
+      "plane",
+      "--restic",
+      "/usr/local/libexec/restic",
+      "--node",
+      "/usr/local/bin/node",
+    ]
+    expect(await main(argv, ctx)).toBe(0)
     expect(out[0]).toContain("<string>/usr/local/bin/node</string>")
-    expect(out[0]).not.toContain("<string>/node</string>")
+    expect(out[0]).toContain("<string>/usr/local/libexec/restic</string>")
   })
 
-  test("plane with a stray argument prints usage and exits 2", async () => {
+  test("plane refuses a binary inside a home", async () => {
+    const { ctx, logs } = context(repoEnv())
+    expect(await main(["plane", "--node", "/Users/me/bin/node"], ctx)).toBe(1)
+    expect(logs.at(-1)).toContain("inside a home")
+  })
+
+  test.each([
+    ["a misspelt flag", ["plane", "--nod", "/x"]],
+    ["a flag with no value", ["plane", "--restic"]],
+    ["a repeated flag", ["plane", "--node", "/a", "--node", "/b"]],
+    ["a stray argument", ["plane", "--node", "/a", "extra"]],
+  ])("plane with %s prints usage and exits 2", async (_name, argv) => {
     const { ctx, err } = context(repoEnv())
-    expect(await main(["plane", "--nod", "/x"], ctx)).toBe(2)
+    expect(await main(argv, ctx)).toBe(2)
     expect(err[0]).toMatch(/^usage: backup run/)
   })
 })

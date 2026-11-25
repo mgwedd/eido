@@ -18,20 +18,32 @@ The restic passphrase (Keychain service `eido-backup`, account `restic`) lives o
 
 ## Split host (the #70 plane)
 
-Once the plane is applied (`infra/plane-split.md`), the databases are `/Library/Application Support/Eido/gate/eido-control.db` (`_eidogate`, directory 0700) and `/Library/Application Support/Eido/data/eido-data.db` plus `blobs/` (`_eidodata`, directory 0700). The owner's nightly LaunchAgent cannot read either, so a root LaunchDaemon, `com.eido.plane.backup`, runs the same pipeline (staged `VACUUM INTO` copies, restic, retention, last-success stamp) and runs it as root, once at load and every 24 hours. Each staged copy keeps its source's owner and mode, and restic stores them, so a snapshot holds `eido-control.db` as `_eidogate` 0600 and `eido-data.db` as `_eidodata` 0600.
+Once the plane is applied (`infra/plane-split.md`), the databases are `/Library/Application Support/Eido/gate/eido-control.db` (`_eidogate`, directory 0700) and `/Library/Application Support/Eido/data/eido-data.db` plus `blobs/` (`_eidodata`, directory 0700). The owner's nightly LaunchAgent cannot read either, so a root LaunchDaemon, `com.eido.plane.backup`, runs the same pipeline (staged `VACUUM INTO` copies, restic, retention, last-success stamp) and runs it as root, once a day at 03:15 (the single-user job's time). Each staged copy keeps its source's owner and mode, and restic stores them, so a snapshot holds `eido-control.db` as `_eidogate` 0600 and `eido-data.db` as `_eidodata` 0600.
 
 Who can read the snapshots: root, and the owner, who holds the passphrase and the backup drive. `_eidogate` and `_eidodata` cannot: the repository, the passphrase file (`/Library/Application Support/Eido/backup/restic-password`, root 0600 inside a root 0700 directory) and the staging directory are root only. The backup never gives the gate's control database to the data-plane user or the reverse. The plaintext staged copies are removed after each run; the snapshots are encrypted by restic.
 
+Schedule: the daemon has no `RunAtLoad` and no interval. A job that runs at boot starts before login, when a backup drive that mounts after login is still absent, and an interval restarts at every boot, so a Mac that reboots daily would never reach it. It runs at 03:15 every day instead (`StartCalendarInterval`), and launchd runs a run missed during sleep when the Mac wakes. A Mac that is off at 03:15 and does not wake that day skips the day, and `backup check` fails once the newest snapshot is over 36 hours old. Keep the drive connected overnight. To run it now: `sudo launchctl kickstart system/com.eido.plane.backup`.
+
+The daemon runs as root, so everything it runs must be root-owned: a node or restic that the owner can replace would hand the owner root, and the plane split would mean nothing. It names node and restic by absolute path (`EIDO_RESTIC_BIN` for restic), its `PATH` is `/usr/bin:/bin:/usr/sbin:/sbin`, and the script refuses to install unless both binaries and their directory are owned by root and not writable by group or others. Homebrew's binaries (`/opt/homebrew/bin`) are owned by you and fail that check, as does anything under `/Users`. Install them root-owned before step 1:
+
+```bash
+sudo install -d -o root -g wheel -m 0755 '/Library/Application Support/Eido/bin'
+sudo install -o root -g wheel -m 0755 "$(command -v restic)" '/Library/Application Support/Eido/bin/restic'
+sudo install -o root -g wheel -m 0755 /path/to/node '/Library/Application Support/Eido/bin/node'
+```
+
+restic is a static binary, so a copy of Homebrew's runs. node must be a self-contained build: use the binary from the nodejs.org release (`bin/node` in the tarball). A Homebrew node loads libraries from `/opt/homebrew`, which you own, so a copy of it would still run your code as root. Pass other locations with `--node <path>` and `--restic <path>`; they must pass the same check.
+
 Set up, once. Nothing here is run by an agent:
 
-1. Print the script and read it. It checks the plane exists, creates the root-only `backup` directory, the log directory and an empty passphrase file, and installs the plist:
+1. Print the script and read it. It checks the plane and the binaries, creates the root-only `backup` directory, the log directory and an empty passphrase file, and installs the plist. Write it to your home, not `/tmp`, where `_eidodata` could swap it before `sudo sh` reads it:
 
    ```bash
-   node --disable-warning=ExperimentalWarning infra/backup/bin.ts plane > /tmp/eido-plane-backup.sh
-   sudo sh /tmp/eido-plane-backup.sh
+   node --disable-warning=ExperimentalWarning infra/backup/bin.ts plane > ~/eido-plane-backup.sh
+   sudo sh ~/eido-plane-backup.sh
    ```
 
-   `backup plane` reads `EIDO_BACKUP_REPO` and takes `--node <path>` (default: the node running the command). The plane's copy of the checkout, `/Library/Application Support/Eido/app`, is what the daemon runs, so re-apply the plane script after changing `infra/backup`.
+   `backup plane` reads `EIDO_BACKUP_REPO` (an absolute path with no control characters). The plane's copy of the checkout, `/Library/Application Support/Eido/app`, is what the daemon runs, so re-apply the plane script after changing `infra/backup`.
 
 2. Copy the passphrase into the root-only file. This is a deviation from ADR 0007's Keychain-only storage, needed because a root daemon cannot read your login Keychain. The off-host copy of the passphrase (above) is still required:
 
@@ -39,20 +51,22 @@ Set up, once. Nothing here is run by an agent:
    security find-generic-password -s eido-backup -a restic -w | sudo tee '/Library/Application Support/Eido/backup/restic-password' >/dev/null
    ```
 
-3. Load the daemon and watch its log (`/Library/Logs/Eido/backup/backup.log`, readable by admin users):
+3. Load the daemon, run it once and watch its log (`/Library/Logs/Eido/backup/backup.log`, readable by admin users):
 
    ```bash
    sudo launchctl bootstrap system /Library/LaunchDaemons/com.eido.plane.backup.plist
+   sudo launchctl kickstart system/com.eido.plane.backup
    tail /Library/Logs/Eido/backup/backup.log
    ```
 
 4. Retire your own LaunchAgent: `launchctl bootout gui/$(id -u)/com.eido.backup; rm -f ~/Library/LaunchAgents/com.eido.backup.plist`. `backup plist` refuses when `EIDO_BACKUP_PLANE=split`.
 
-The gate's backup status and `backup check` read the stamp at `/Library/Logs/Eido/backup-last-success` (0644, so `_eidogate` can read it). Check and restore on a split host need root and `EIDO_BACKUP_PLANE=split`, which selects the plane's paths and the passphrase file:
+Each successful run writes the stamp `/Library/Logs/Eido/backup-last-success` (0644, so `_eidogate` can read it). Nothing reads it yet: the gate's daemon is not given the path, so the gate reports the backup as never run on a split host until #801 lands, and `backup check` judges the newest snapshot's age in the repository, not the stamp. Check and restore on a split host need root and `EIDO_BACKUP_PLANE=split`, which selects the plane's paths and the passphrase file. Run them with the same root-owned binaries as the daemon:
 
 ```bash
-sudo env PATH="$PATH" EIDO_BACKUP_PLANE=split EIDO_BACKUP_REPO="$EIDO_BACKUP_REPO" \
-  "$(command -v node)" --disable-warning=ExperimentalWarning infra/backup/bin.ts check
+sudo env PATH=/usr/bin:/bin EIDO_BACKUP_PLANE=split EIDO_BACKUP_REPO="$EIDO_BACKUP_REPO" \
+  EIDO_RESTIC_BIN='/Library/Application Support/Eido/bin/restic' \
+  '/Library/Application Support/Eido/bin/node' --disable-warning=ExperimentalWarning infra/backup/bin.ts check
 ```
 
 ### Restore on a split host
@@ -61,8 +75,9 @@ Restore as root into a root-only scratch directory, so the restored files keep t
 
 ```bash
 sudo mkdir -m 0700 /var/root/eido-restore
-sudo env PATH="$PATH" EIDO_BACKUP_PLANE=split EIDO_BACKUP_REPO="$EIDO_BACKUP_REPO" \
-  "$(command -v node)" --disable-warning=ExperimentalWarning infra/backup/bin.ts restore /var/root/eido-restore
+sudo env PATH=/usr/bin:/bin EIDO_BACKUP_PLANE=split EIDO_BACKUP_REPO="$EIDO_BACKUP_REPO" \
+  EIDO_RESTIC_BIN='/Library/Application Support/Eido/bin/restic' \
+  '/Library/Application Support/Eido/bin/node' --disable-warning=ExperimentalWarning infra/backup/bin.ts restore /var/root/eido-restore
 R='/var/root/eido-restore/Library/Application Support/Eido'
 sudo stat -f '%Su:%Sg %Sp %N' "$R/backup/staging/eido-control.db" "$R/backup/staging/eido-data.db"
 ```

@@ -65,8 +65,8 @@ function writeStamp(path: string, when: Date): void {
   mkdirSync(dirname(path), { recursive: true })
   const temp = `${path}.tmp`
   writeFileSync(temp, `${when.toISOString()}\n`)
-  // A timestamp is no secret and the gate reads it for its status. The daemon's umask would
-  // otherwise leave it private.
+  // A timestamp is no secret, and on a split host it sits where the gate user can read it (the gate
+  // does not read it yet: #801). The daemon's umask would otherwise leave it private.
   chmodSync(temp, 0o644)
   renameSync(temp, path)
 }
