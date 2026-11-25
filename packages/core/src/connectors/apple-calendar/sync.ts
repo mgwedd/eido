@@ -29,10 +29,17 @@ export type AppleCalendarRun =
       fetched: number
       ingested: number
       retired: number
+      /** Items the Helper reported it left out of the read (`skipped`). */
+      skipped: number
+      /** Items core left out: another calendar's, a repeated id, or an id too long to cite. */
+      dropped: number
     }
-  | { calendarId: string; status: "failed"; reason: string }
+  | { calendarId: string; status: "failed"; reason: AppleCalendarFailure }
   /** Enabled by id but not listed by the Helper: nothing is read and nothing is retired. */
   | { calendarId: string; status: "missing" }
+
+/** Fixed reason codes: a gate error message never reaches the log. */
+export type AppleCalendarFailure = "entity_required" | "read_failed"
 
 export interface AppleCalendarSyncResult {
   calendars: AppleCalendarRun[]
@@ -91,25 +98,24 @@ function eventDocument(event: AppleEvent, entityId: string): IndexedDocument {
 }
 
 /**
- * Why `events` is not a whole snapshot of `calendarId`, or undefined when it is. A read the
- * Helper answered for another calendar, with a repeated id, or with an id too long to cite cannot
- * be reconciled against the index.
+ * The events of `events` that can be indexed for `calendarId`, and how many were dropped. An item
+ * the Helper answered for another calendar, an id it returned more than once (every copy, since
+ * neither can be trusted), and an id too long to cite are dropped; the rest of the read still counts.
  */
-function snapshotProblem(
+function usableEvents(
   calendarId: string,
   events: readonly AppleEvent[]
-): string | undefined {
-  const seen = new Set<string>()
-  for (const event of events) {
-    if (event.calendarId !== calendarId) return "foreign_calendar_event"
-    if (seen.has(event.id)) return "duplicate_event_id"
-    seen.add(event.id)
-    if (
-      appleEventSourceRef(calendarId, event.id).length > MAX_SOURCE_REF_LENGTH
-    )
-      return "event_id_too_long"
-  }
-  return undefined
+): { usable: AppleEvent[]; dropped: number } {
+  const counts = new Map<string, number>()
+  for (const event of events)
+    counts.set(event.id, (counts.get(event.id) ?? 0) + 1)
+  const usable = events.filter(
+    (event) =>
+      event.calendarId === calendarId &&
+      counts.get(event.id) === 1 &&
+      appleEventSourceRef(calendarId, event.id).length <= MAX_SOURCE_REF_LENGTH
+  )
+  return { usable, dropped: events.length - usable.length }
 }
 
 function recordEventFacts(
@@ -188,23 +194,16 @@ async function syncCalendar(
   if (entityId === null)
     return { calendarId, status: "failed", reason: "entity_required" }
   const interval = { start: start.toISOString(), end: end.toISOString() }
-  let events: AppleEvent[]
-  let complete: boolean
+  let list: GateAppleEventList
   try {
-    const list = await client.listEvents({ calendarId, ...interval })
-    events = list.events
-    // A reply that reports items the Helper dropped (`skipped`, #765) is not a whole snapshot.
-    complete = !("skipped" in list) || list.skipped === 0
-  } catch (error) {
-    return {
-      calendarId,
-      status: "failed",
-      reason: error instanceof Error ? error.message : "unknown error",
-    }
+    list = await client.listEvents({ calendarId, ...interval })
+  } catch {
+    return { calendarId, status: "failed", reason: "read_failed" }
   }
-  const problem = snapshotProblem(calendarId, events)
-  if (problem !== undefined)
-    return { calendarId, status: "failed", reason: problem }
+  const { usable: events, dropped } = usableEvents(calendarId, list.events)
+  const skipped = list.skipped ?? 0
+  // A read the Helper or core left items out of is not a whole snapshot: index it, retire nothing.
+  const complete = skipped === 0 && dropped === 0
 
   const documents = events.map((event) => eventDocument(event, entityId))
   return writeQueueFor(db).run(() => {
@@ -235,9 +234,11 @@ async function syncCalendar(
     return {
       calendarId,
       status: "synced" as const,
-      fetched: events.length,
+      fetched: list.events.length,
       ingested: result.inserted,
       retired: retired.length,
+      skipped,
+      dropped,
     }
   })
 }
@@ -246,8 +247,8 @@ async function syncCalendar(
  * Read each enabled Apple calendar over the sync window and reconcile the index with it. A
  * successful read is a complete snapshot of its own calendar and interval only: events of that
  * calendar wholly inside the interval and missing from it are retired. A read that reports
- * skipped items indexes what it returned and retires nothing. A failed, refused or malformed read
- * changes nothing for its calendar; the other calendars still sync.
+ * skipped items, or has items core cannot index, indexes the rest and retires nothing. A failed or
+ * refused read changes nothing for its calendar; the other calendars still sync.
  */
 export async function syncAppleCalendars(
   options: AppleCalendarSyncOptions

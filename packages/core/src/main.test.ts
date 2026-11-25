@@ -1892,7 +1892,7 @@ describe("createAppleCalendarSyncRuntime", () => {
       gate: { getConnectorHealth: () => Promise.resolve([]) },
       client: {
         listCalendars: () => Promise.resolve(calendars),
-        listEvents: () => Promise.resolve({ events: [appleEvent] }),
+        listEvents: () => Promise.resolve({ events: [appleEvent], skipped: 2 }),
       },
       entities,
       selection: { kind: "ids", ids: ["cal-synthetic-a", "cal-gone"] },
@@ -1909,6 +1909,8 @@ describe("createAppleCalendarSyncRuntime", () => {
           fetched: "1",
           ingested: "1",
           retired: "0",
+          skipped: "2",
+          dropped: "0",
         },
       ],
       [
@@ -1921,7 +1923,7 @@ describe("createAppleCalendarSyncRuntime", () => {
     db.close()
   })
 
-  it("reports a failed calendar's reason and commits nothing", async () => {
+  it("logs a fixed reason for a failed calendar, never the error text, and commits nothing", async () => {
     const db = dbWithEntity()
     const logged: [string, Readonly<Record<string, string>> | undefined][] = []
     let committed = 0
@@ -1930,7 +1932,8 @@ describe("createAppleCalendarSyncRuntime", () => {
       gate: { getConnectorHealth: () => Promise.resolve([]) },
       client: {
         listCalendars: () => Promise.resolve(calendars),
-        listEvents: () => Promise.reject(new Error("unavailable")),
+        listEvents: () =>
+          Promise.reject(new Error("Helper refused synthetic title")),
       },
       entities,
       selection: { kind: "all" },
@@ -1941,7 +1944,7 @@ describe("createAppleCalendarSyncRuntime", () => {
     expect(logged).toEqual([
       [
         "apple_calendar_sync_failed",
-        { calendar: "cal-synthetic-a", reason: "unavailable" },
+        { calendar: "cal-synthetic-a", reason: "read_failed" },
       ],
     ])
     expect(committed).toBe(0)
@@ -1990,7 +1993,7 @@ describe("createAppleCalendarSyncRuntime", () => {
       client: {
         listCalendars: () => {
           calls += 1
-          return Promise.reject(new Error("helper unavailable"))
+          return Promise.reject(new Error("helper said synthetic title"))
         },
         listEvents: () => Promise.resolve({ events: [] }),
       },
@@ -2001,7 +2004,7 @@ describe("createAppleCalendarSyncRuntime", () => {
     })
     await Promise.all([sync(), sync()])
     expect(calls).toBe(1)
-    expect(logged).toEqual(["apple_calendar_sync_failed helper unavailable"])
+    expect(logged).toEqual(["apple_calendar_sync_failed run_failed"])
     db.close()
   })
 })

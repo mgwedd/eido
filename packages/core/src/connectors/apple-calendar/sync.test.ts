@@ -1,5 +1,10 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { createServer as createHttpServer } from "node:http"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import { describe, expect, test } from "vitest"
+import { createAppleClient } from "@eido/gate"
 import type { AppleClient } from "@eido/gate"
 import type { GateAppleCalendarList, GateAppleEventList } from "@eido/schemas"
 import { openDataDb } from "../../ledger/db"
@@ -60,9 +65,9 @@ type FakeClient = Pick<AppleClient, "listCalendars" | "listEvents"> & {
   reads: { calendarId: string; start: string; end: string }[]
 }
 
-/** A fake gate read client: each calendar answers with its events, or throws its error. */
+/** A fake gate read client: each calendar answers with its events or reply, or throws its error. */
 function fakeClient(
-  events: Record<string, AppleEvent[] | Error>,
+  events: Record<string, AppleEvent[] | GateAppleEventList | Error>,
   calendars: GateAppleCalendarList = CALENDARS
 ): FakeClient {
   const reads: FakeClient["reads"] = []
@@ -72,9 +77,10 @@ function fakeClient(
     listEvents: (args) => {
       reads.push(args)
       const answer = events[args.calendarId] ?? []
-      return answer instanceof Error
-        ? Promise.reject(answer)
-        : Promise.resolve({ events: answer })
+      if (answer instanceof Error) return Promise.reject(answer)
+      return Promise.resolve(
+        Array.isArray(answer) ? { events: answer } : answer
+      )
     },
   }
 }
@@ -146,6 +152,8 @@ describe("syncAppleCalendars", () => {
         fetched: 1,
         ingested: 1,
         retired: 0,
+        skipped: 0,
+        dropped: 0,
       },
       {
         calendarId: "cal-synthetic-b",
@@ -153,6 +161,8 @@ describe("syncAppleCalendars", () => {
         fetched: 0,
         ingested: 0,
         retired: 0,
+        skipped: 0,
+        dropped: 0,
       },
     ])
     expect(client.reads).toEqual([
@@ -287,6 +297,8 @@ describe("syncAppleCalendars", () => {
         fetched: 1,
         ingested: 0,
         retired: 1,
+        skipped: 0,
+        dropped: 0,
       },
     ])
     expect(liveRefs(db)).toEqual([
@@ -313,7 +325,7 @@ describe("syncAppleCalendars", () => {
       {
         calendarId: "cal-synthetic-a",
         status: "failed",
-        reason: "gate unavailable",
+        reason: "read_failed",
       },
       {
         calendarId: "cal-synthetic-b",
@@ -321,6 +333,8 @@ describe("syncAppleCalendars", () => {
         fetched: 0,
         ingested: 0,
         retired: 1,
+        skipped: 0,
+        dropped: 0,
       },
     ])
     expect(liveRefs(db)).toEqual([
@@ -330,28 +344,21 @@ describe("syncAppleCalendars", () => {
 
   test("a read that reports skipped items indexes what it returned and retires nothing", async () => {
     const db = setupDb()
-    await syncAppleCalendars(
-      options(
-        db,
-        fakeClient({
-          "cal-synthetic-a": [event({ id: "dropped" }), event({ id: "kept" })],
-        })
-      )
-    )
+    const events: Record<string, AppleEvent[] | GateAppleEventList> = {
+      "cal-synthetic-a": [event({ id: "unreadable" }), event({ id: "kept" })],
+    }
+    const client = fakeClient(events)
+    await syncAppleCalendars(options(db, client))
 
-    // Built apart from the literal below so the reply can carry `skipped` before the gate's
-    // event-list type declares it (#765).
-    const partial = {
+    events["cal-synthetic-a"] = {
       events: [event({ id: "kept" }), event({ id: "new" })],
       skipped: 1,
     }
-    const client: FakeClient = {
-      reads: [],
-      listCalendars: () =>
-        Promise.resolve({ calendars: CALENDARS.calendars.slice(0, 1) }),
-      listEvents: () => Promise.resolve(partial),
-    }
-    const result = await syncAppleCalendars(options(db, client))
+    const result = await syncAppleCalendars(
+      options(db, client, {
+        selection: { kind: "ids", ids: ["cal-synthetic-a"] },
+      })
+    )
 
     expect(result.calendars).toEqual([
       {
@@ -360,57 +367,140 @@ describe("syncAppleCalendars", () => {
         fetched: 2,
         ingested: 1,
         retired: 0,
+        skipped: 1,
+        dropped: 0,
       },
     ])
     expect(liveRefs(db)).toEqual([
-      appleEventSourceRef("cal-synthetic-a", "dropped"),
       appleEventSourceRef("cal-synthetic-a", "kept"),
       appleEventSourceRef("cal-synthetic-a", "new"),
+      appleEventSourceRef("cal-synthetic-a", "unreadable"),
     ])
   })
 
   test("a read that reports zero skipped items is a whole snapshot", async () => {
     const db = setupDb()
-    await syncAppleCalendars(
-      options(
-        db,
-        fakeClient({
-          "cal-synthetic-a": [event({ id: "gone" }), event({ id: "kept" })],
-        })
-      )
+    const events: Record<string, AppleEvent[] | GateAppleEventList> = {
+      "cal-synthetic-a": [event({ id: "gone" }), event({ id: "kept" })],
+    }
+    const client = fakeClient(events)
+    await syncAppleCalendars(options(db, client))
+
+    events["cal-synthetic-a"] = { events: [event({ id: "kept" })], skipped: 0 }
+    const result = await syncAppleCalendars(
+      options(db, client, {
+        selection: { kind: "ids", ids: ["cal-synthetic-a"] },
+      })
     )
 
-    const whole = { events: [event({ id: "kept" })], skipped: 0 }
-    const client: FakeClient = {
-      reads: [],
-      listCalendars: () =>
-        Promise.resolve({ calendars: CALENDARS.calendars.slice(0, 1) }),
-      listEvents: () => Promise.resolve(whole),
-    }
-    const result = await syncAppleCalendars(options(db, client))
-
-    expect(result.calendars[0]).toMatchObject({ retired: 1 })
+    expect(result.calendars[0]).toMatchObject({ retired: 1, skipped: 0 })
     expect(liveRefs(db)).toEqual([
       appleEventSourceRef("cal-synthetic-a", "kept"),
     ])
   })
 
-  test("a rejection that is not an Error is reported as unknown", async () => {
+  test("a skipped count in the gate's reply, parsed by the real gate client, retires nothing", async () => {
     const db = setupDb()
-    const client: FakeClient = {
-      reads: [],
-      listCalendars: () =>
-        Promise.resolve({ calendars: [CALENDARS.calendars[0]!] }),
-      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the non-Error branch is the case under test
-      listEvents: () => Promise.reject("refused"),
+    let reply: unknown = {
+      events: [event({ id: "unreadable" }), event({ id: "kept" })],
+      skipped: 0,
     }
+    const server = createHttpServer((request, response) => {
+      const body = (request.url ?? "").startsWith("/apple/calendars")
+        ? { calendars: CALENDARS.calendars.slice(0, 1) }
+        : reply
+      response.writeHead(200, { "content-type": "application/json" })
+      response.end(JSON.stringify(body))
+    })
+    const dir = mkdtempSync(join(tmpdir(), "eido-apple-sync-"))
+    const socketPath = join(dir, "gate.sock")
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+    try {
+      const client = createAppleClient({ socketPath })
+      const run = () =>
+        syncAppleCalendars({
+          db,
+          client,
+          entities: defaultOnly,
+          selection: { kind: "all" },
+          now: () => NOW,
+        })
+      await run()
+      reply = { events: [event({ id: "kept" })], skipped: 1 }
+      const result = await run()
+
+      expect(result.calendars[0]).toMatchObject({ retired: 0, skipped: 1 })
+      expect(liveRefs(db)).toEqual([
+        appleEventSourceRef("cal-synthetic-a", "kept"),
+        appleEventSourceRef("cal-synthetic-a", "unreadable"),
+      ])
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("an event moved within the window keeps its id and is re-indexed with its new time", async () => {
+    const db = setupDb()
+    const events: Record<string, AppleEvent[]> = {
+      "cal-synthetic-a": [event({ id: "moved" })],
+    }
+    const client = fakeClient(events)
+    await syncAppleCalendars(options(db, client))
+
+    events["cal-synthetic-a"] = [
+      event({
+        id: "moved",
+        start: "2027-01-10T15:00:00Z",
+        end: "2027-01-10T16:00:00Z",
+        modifiedAt: "2026-12-01T08:00:00Z",
+      }),
+    ]
     const result = await syncAppleCalendars(options(db, client))
-    expect(result.calendars).toEqual([
-      {
-        calendarId: "cal-synthetic-a",
-        status: "failed",
-        reason: "unknown error",
-      },
+
+    expect(result.calendars[0]).toMatchObject({ ingested: 1, retired: 0 })
+    expect(liveRefs(db)).toEqual([
+      appleEventSourceRef("cal-synthetic-a", "moved"),
+    ])
+    const live = db
+      .prepare(
+        `SELECT t.occurred_at FROM document_heads h
+         JOIN document_text t ON t.sha256 = h.sha256
+         WHERE h.source = ?`
+      )
+      .all(APPLE_CALENDAR_CONNECTOR)
+    expect(live.map((row) => row["occurred_at"])).toEqual([
+      "2027-01-10T15:00:00Z",
+    ])
+  })
+
+  test("an event moved out of the window is retired, and indexed again with its new time once the window reaches it", async () => {
+    const db = setupDb()
+    const events: Record<string, AppleEvent[]> = {
+      "cal-synthetic-a": [event({ id: "moved" })],
+    }
+    const client = fakeClient(events)
+    await syncAppleCalendars(options(db, client))
+
+    // Moved to 2027-07-01, past the window's end (2027-05-30): the read no longer returns it.
+    const later = event({
+      id: "moved",
+      start: "2027-07-01T09:00:00Z",
+      end: "2027-07-01T09:30:00Z",
+      modifiedAt: "2026-12-01T08:00:00Z",
+    })
+    events["cal-synthetic-a"] = []
+    const moved = await syncAppleCalendars(options(db, client))
+    expect(moved.calendars[0]).toMatchObject({ retired: 1 })
+    expect(liveRefs(db)).toEqual([])
+
+    events["cal-synthetic-a"] = [later]
+    const reached = await syncAppleCalendars(
+      options(db, client, { now: () => new Date("2027-02-01T12:00:00Z") })
+    )
+    expect(reached.calendars[0]).toMatchObject({ ingested: 1 })
+    expect(liveRefs(db)).toEqual([
+      appleEventSourceRef("cal-synthetic-a", "moved"),
     ])
   })
 
@@ -418,17 +508,17 @@ describe("syncAppleCalendars", () => {
     [
       "an event of another calendar",
       [event({ calendarId: "cal-synthetic-b" })],
-      "foreign_calendar_event",
+      1,
     ],
-    ["a repeated event id", [event(), event()], "duplicate_event_id"],
     [
-      "an id too long to cite",
-      [event({ id: "x".repeat(480) })],
-      "event_id_too_long",
+      "a repeated event id",
+      [event({ title: "Lorem one" }), event({ title: "Lorem two" })],
+      2,
     ],
+    ["an id too long to cite", [event({ id: "x".repeat(480) })], 1],
   ])(
-    "a snapshot with %s is refused and retires nothing",
-    async (_name, bad, reason) => {
+    "a read with %s drops it, indexes the rest and retires nothing",
+    async (_name, bad, dropped) => {
       const db = setupDb()
       const events: Record<string, AppleEvent[]> = {
         "cal-synthetic-a": [event({ id: "existing" })],
@@ -436,7 +526,7 @@ describe("syncAppleCalendars", () => {
       const client = fakeClient(events)
       await syncAppleCalendars(options(db, client))
 
-      events["cal-synthetic-a"] = bad
+      events["cal-synthetic-a"] = [...bad, event({ id: "good" })]
       const result = await syncAppleCalendars(
         options(db, client, {
           selection: { kind: "ids", ids: ["cal-synthetic-a"] },
@@ -444,10 +534,19 @@ describe("syncAppleCalendars", () => {
       )
 
       expect(result.calendars).toEqual([
-        { calendarId: "cal-synthetic-a", status: "failed", reason },
+        {
+          calendarId: "cal-synthetic-a",
+          status: "synced",
+          fetched: bad.length + 1,
+          ingested: 1,
+          retired: 0,
+          skipped: 0,
+          dropped,
+        },
       ])
       expect(liveRefs(db)).toEqual([
         appleEventSourceRef("cal-synthetic-a", "existing"),
+        appleEventSourceRef("cal-synthetic-a", "good"),
       ])
     }
   )
@@ -492,6 +591,8 @@ describe("syncAppleCalendars", () => {
         fetched: 0,
         ingested: 0,
         retired: 0,
+        skipped: 0,
+        dropped: 0,
       },
       { calendarId: "cal-not-listed", status: "missing" },
     ])

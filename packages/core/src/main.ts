@@ -638,6 +638,8 @@ export function createAppleCalendarSyncRuntime(
               fetched: String(calendar.fetched),
               ingested: String(calendar.ingested),
               retired: String(calendar.retired),
+              skipped: String(calendar.skipped),
+              dropped: String(calendar.dropped),
             })
           else
             log("apple_calendar_sync_failed", {
@@ -650,10 +652,8 @@ export function createAppleCalendarSyncRuntime(
         }
         if (run.result.calendars.some((c) => c.status === "synced"))
           onBatchCommitted?.()
-      } catch (error) {
-        log("apple_calendar_sync_failed", {
-          reason: error instanceof Error ? error.message : "unknown error",
-        })
+      } catch {
+        log("apple_calendar_sync_failed", { reason: "run_failed" })
       } finally {
         running = undefined
       }
