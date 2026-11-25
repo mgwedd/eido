@@ -83,8 +83,9 @@ const FLAG_KEYS: ReadonlySet<string> = new Set([
  * them. No web admin page sets them.
  */
 export const API_REFUSED_KEYS: ReadonlySet<string> = new Set([
-  // This chooses executable code run with the gate's identity.
+  // These choose executable code run with the gate's identity.
   "EIDO_EVENTKIT_HELPER",
+  "EIDO_EVENTKIT_HELPER_SHA256",
   "EIDO_DEV_VAULT",
   "EIDO_GATE_VAULT_FILE",
   "EIDO_BRIDGE_ALLOW_SELF_SIGNED",

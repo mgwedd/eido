@@ -27,19 +27,31 @@ install -m 0500 apps/helper/.build/release/eido-helper "$HOME/Library/Applicatio
 ```
 
 Configure **the gate's** launch environment with `EIDO_EVENTKIT_HELPER` set to
-that installed binary's absolute path. The gate refuses a relative path, symlink,
+that installed binary's absolute path and `EIDO_EVENTKIT_HELPER_SHA256` set to its
+lowercase SHA-256. The two are set together; the gate will not start with only one.
+
+```sh
+shasum -a 256 "$HOME/Library/Application Support/eido-dev/helper/eido-helper"
+```
+
+Before every launch the gate hashes the resolved binary and refuses to run it when
+the hash differs from the pin, so a rebuilt or replaced Helper needs a new pin.
+The gate refuses a relative path, symlink,
 non-regular file, executable owned by another user, or group/world-writable file.
 Its containing directories must be owned by the gate user or root and must prevent
 replacement by another OS user. Gate/root-owned sticky directories such as
 `/private/tmp` are allowed. The gate checks both the configured location and its
 resolved target, then launches the resolved executable. Directory aliases such as
 Swift's `.build/release` remain usable when their containing directories are safe.
-When using stack commands, this gate-only key can also be stored in the local
-`stack.env`; the settings API deliberately refuses executable-path changes.
+When using stack commands, these gate-only keys can also be stored in the local
+`stack.env`; the settings API refuses changes to the executable path and its pin.
 Do not configure a Helper socket: core uses the gate's HTTP data-plane read routes
 `GET /apple/calendars`, `/apple/reminder-lists`, `/apple/events`, and
 `/apple/reminders`; only the gate launches the native executable. The Apple read
 client allows 35 seconds per call, covering the native runner's 30-second limit.
+The gate runs at most four Helper processes at once and refuses a call beyond that
+with `unavailable` instead of queueing it. Each Helper runs in its own process
+group, and a timeout kills the whole group, including anything the Helper started.
 
 The Helper needs full Calendar and Reminder access. The owner explicitly grants
 access to the **exact installed binary** before enabling the connector:
