@@ -4,21 +4,9 @@
   "description": "A connector's pinned manifest: auth scopes, egress hosts, operations, sync triggers, ledger mapping and health settings. Changing it is a control-plane change.",
   "type": "object",
   "properties": {
-    "name": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 64
-    },
-    "version": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 1000000
-    },
-    "description": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 500
-    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "version": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "description": { "type": "string", "minLength": 1, "maxLength": 500 },
     "auth": {
       "type": "object",
       "properties": {
@@ -36,11 +24,7 @@
         "scopes": {
           "type": "array",
           "maxItems": 20,
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512
-          }
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
         }
       },
       "required": ["type", "scopes"],
@@ -55,28 +39,18 @@
           "items": {
             "type": "object",
             "properties": {
-              "host": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 253
-              },
+              "host": { "type": "string", "minLength": 1, "maxLength": 253 },
               "methods": {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 5,
-                "items": {
-                  "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
-                }
+                "items": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] }
               },
               "pathPrefixes": {
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 20,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                }
+                "items": { "type": "string", "minLength": 1, "maxLength": 256 }
               }
             },
             "required": ["host", "methods", "pathPrefixes"],
@@ -89,19 +63,9 @@
           "items": {
             "type": "object",
             "properties": {
-              "protocol": {
-                "enum": ["imap", "smtp"]
-              },
-              "host": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 39
-              },
-              "port": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 65535
-              }
+              "protocol": { "enum": ["imap", "smtp"] },
+              "host": { "type": "string", "minLength": 1, "maxLength": 39 },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
             },
             "required": ["protocol", "host", "port"],
             "additionalProperties": false
@@ -115,9 +79,7 @@
       "type": "array",
       "minItems": 1,
       "maxItems": 100,
-      "items": {
-        "$ref": "connector-operation.schema.json"
-      }
+      "items": { "$ref": "connector-operation.schema.json" }
     },
     "triggers": {
       "type": "array",
@@ -125,14 +87,8 @@
       "items": {
         "type": "object",
         "properties": {
-          "kind": {
-            "enum": ["poll", "push"]
-          },
-          "stream": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64
-          },
+          "kind": { "enum": ["poll", "push"] },
+          "stream": { "type": "string", "minLength": 1, "maxLength": 64 },
           "intervalSeconds": {
             "type": "integer",
             "minimum": 1,
@@ -146,16 +102,8 @@
     "ledgerMapping": {
       "type": "object",
       "properties": {
-        "source": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 64
-        },
-        "refField": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 64
-        }
+        "source": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "refField": { "type": "string", "minLength": 1, "maxLength": 64 }
       },
       "required": ["source", "refField"],
       "additionalProperties": false
@@ -166,19 +114,9 @@
         "backoff": {
           "type": "object",
           "properties": {
-            "baseMs": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 3600000
-            },
-            "maxMs": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 86400000
-            },
-            "jitter": {
-              "type": "boolean"
-            }
+            "baseMs": { "type": "integer", "minimum": 1, "maximum": 3600000 },
+            "maxMs": { "type": "integer", "minimum": 1, "maximum": 86400000 },
+            "jitter": { "type": "boolean" }
           },
           "required": ["baseMs", "maxMs", "jitter"],
           "additionalProperties": false
