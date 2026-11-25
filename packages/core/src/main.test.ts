@@ -38,6 +38,7 @@ import {
 } from "./connectors/gmail/fake-gmail.test-support"
 import { createParser } from "./parsers/index"
 import { scheduleIngestedDigests } from "./digest/ingest"
+import { startFakeBroker } from "./parsers/fake-broker.test-support"
 import { textPdf } from "./parsers/fixtures.test-support"
 import {
   DATA_DB_FILE,
@@ -103,6 +104,14 @@ describe("the data plane's environment", () => {
       EIDO_REPLIES_CONFIG: '{"me":["owner@example.com"]}',
       EIDO_PROTON_USERNAME: "assistant@example.com",
     })
+  })
+
+  it("keeps EIDO_PARSER_SOCKET, so the re-run process still knows its broker", () => {
+    const env = { ...parent, EIDO_PARSER_SOCKET: "/run/eido/parser.sock" }
+    expect(dataPlaneEnv(env)["EIDO_PARSER_SOCKET"]).toBe(
+      "/run/eido/parser.sock"
+    )
+    expect(outsideAllowlist(env)).not.toContain("EIDO_PARSER_SOCKET")
   })
 
   it("names the variables outside the allowlist, ignoring what the OS adds", () => {
@@ -413,6 +422,69 @@ describe("dataPlaneParser", () => {
       "Gmail sync requires EIDO_DATA_DIR to configure its parser"
     )
   })
+
+  it("sends parses to the broker at EIDO_PARSER_SOCKET and makes no local scratch dir", async () => {
+    const broker = await startFakeBroker((request) => ({
+      ok: true,
+      sha256: request.header.sha256,
+      trust: "untrusted",
+      text: "from the broker",
+      offsets: [{ offset: 0, line: 1 }],
+      pages: 1,
+    }))
+    try {
+      const dataDir = join(dir, "split-data")
+      const parser = dataPlaneParser(
+        dataDir,
+        undefined,
+        "darwin",
+        broker.socketPath
+      )
+      const result = await parser?.parseBytes(
+        textPdf([["Lorem"]]),
+        "application/pdf"
+      )
+      expect(result?.ok && result.text).toBe("from the broker")
+      expect(broker.requests).toHaveLength(1)
+      expect(existsSync(join(dataDir, "parse-tmp"))).toBe(false)
+    } finally {
+      await broker.close()
+    }
+  })
+
+  it("parses in a local child, never contacting a broker, when EIDO_PARSER_SOCKET is unset or empty", async () => {
+    const broker = await startFakeBroker(() => "hang-up")
+    try {
+      for (const socket of [undefined, ""]) {
+        const dataDir = join(
+          dir,
+          `local-data-${socket === "" ? "empty" : "unset"}`
+        )
+        const parser = dataPlaneParser(dataDir, undefined, "darwin", socket)
+        const result = await parser?.parseBytes(
+          textPdf([["Lorem ipsum"]]),
+          "application/pdf"
+        )
+        expect(result?.ok && result.text).toContain("Lorem ipsum")
+        expect(existsSync(join(dataDir, "parse-tmp"))).toBe(true)
+      }
+      expect(broker.connections()).toBe(0)
+    } finally {
+      await broker.close()
+    }
+  })
+
+  it("refuses a broker socket that is not an absolute path", () => {
+    expect(() =>
+      dataPlaneParser(dir, undefined, "darwin", "parser.sock")
+    ).toThrow("EIDO_PARSER_SOCKET must be an absolute path")
+  })
+
+  it("has no parser on Windows without Gmail even when a broker is set", () => {
+    expect(
+      dataPlaneParser(dir, undefined, "win32", "/run/parser.sock")
+    ).toBeUndefined()
+  })
 })
 
 describe("runDataPlane", () => {
@@ -462,6 +534,17 @@ describe("runDataPlane", () => {
       }
     }
   )
+
+  it("reads EIDO_PARSER_SOCKET from its environment when it builds the parser", () => {
+    const env = {
+      EIDO_DATA_DIR: join(dir, "data"),
+      EIDO_GATE_SOCKET: join(dir, "gate.sock"),
+      EIDO_PARSER_SOCKET: "relative.sock",
+    }
+    expect(() => runDataPlane(dataPlaneConfig(env), env)).toThrow(
+      "EIDO_PARSER_SOCKET must be an absolute path"
+    )
+  })
 
   it("wires POST /intents through the real gate client", async () => {
     let received: unknown

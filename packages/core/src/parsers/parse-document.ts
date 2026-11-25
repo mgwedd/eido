@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { rmSync, statSync, writeFileSync } from "node:fs"
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createLimiter } from "./limiter"
@@ -19,6 +19,18 @@ import type { WorkerPayload } from "./worker"
 
 const WORKER = join(dirname(fileURLToPath(import.meta.url)), "worker.ts")
 
+/**
+ * What the parser needs of the broker's client (`BrokerClient` in broker-client.ts, which imports
+ * this module for `readParseResult`, so the type is named here by shape).
+ */
+export type ParserBroker = {
+  parseBytes: (
+    bytes: Uint8Array,
+    mime: string,
+    limits?: Partial<ParseLimits>
+  ) => Promise<ParseResult>
+}
+
 export type ParserConfig = {
   /** The data plane's data dir: originals live under `blobs/`, parse work dirs under `parse-tmp/`. */
   dataDir: string
@@ -28,6 +40,13 @@ export type ParserConfig = {
   maxConcurrent?: number
   /** Overrides of the default limits for every parse. */
   limits?: Partial<ParseLimits>
+  /**
+   * The parser broker (#817), set under the plane split. Every parse then goes to it and none runs
+   * in a child of this process, so `ocrBinary` is the broker's own setting and no scratch dir is
+   * made here. A broker that fails is a `crashed` result: there is no local fallback, because a
+   * child here would give the parser this process's network reach back.
+   */
+  broker?: ParserBroker
 }
 
 export type Parser = {
@@ -121,7 +140,8 @@ export function createParser(config: ParserConfig): Parser {
   const base = resolveLimits(config.limits)
   const limit = createLimiter(config.maxConcurrent ?? 2)
   const tmpRoot = join(config.dataDir, "parse-tmp")
-  preparePrivateScratchRoot(tmpRoot)
+  const { broker } = config
+  if (broker === undefined) preparePrivateScratchRoot(tmpRoot)
 
   async function parse(
     input: { blobSha256: string; mime: string },
@@ -157,7 +177,33 @@ export function createParser(config: ParserConfig): Parser {
         detail: `${String(size)} bytes, more than ${String(limits.inputBytes)}`,
       }
     }
+    if (broker !== undefined) {
+      return sendToBroker(broker, path, sha256, input.mime, limits)
+    }
     return runWorker(path, sha256, input.mime, limits)
+  }
+
+  /** Reads the stored original and has the broker parse it; the broker hashes what it receives. */
+  async function sendToBroker(
+    client: ParserBroker,
+    path: string,
+    sha256: string,
+    mime: string,
+    limits: ParseLimits
+  ): Promise<ParseResult> {
+    const result = await limit(() =>
+      client.parseBytes(readFileSync(path), mime, limits)
+    )
+    // The blob is named by its hash; bytes that hash to something else are not that original.
+    if (result.sha256 !== sha256) {
+      return {
+        ok: false,
+        sha256,
+        reason: "malformed",
+        detail: "the stored original does not match its hash",
+      }
+    }
+    return result
   }
 
   async function runWorker(
@@ -222,6 +268,10 @@ export function createParser(config: ParserConfig): Parser {
           reason: "oversize",
           detail: `${String(bytes.byteLength)} bytes, more than ${String(limits.inputBytes)}`,
         }
+      }
+      // The broker's client answers `crashed` itself; it does not throw.
+      if (broker !== undefined) {
+        return await limit(() => broker.parseBytes(bytes, mime, limits))
       }
       let workDir: string | undefined
       try {

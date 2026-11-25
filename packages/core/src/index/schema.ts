@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 15
+export const SCHEMA_VERSION = 16
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -257,6 +257,27 @@ CREATE INDEX calendar_event_facts_event ON calendar_event_facts(source, event_id
 CREATE TRIGGER calendar_event_facts_no_update BEFORE UPDATE ON calendar_event_facts
 BEGIN SELECT RAISE(ABORT, 'calendar event facts are immutable'); END;
 CREATE TRIGGER calendar_event_facts_no_delete BEFORE DELETE ON calendar_event_facts
+BEGIN SELECT RAISE(ABORT, 'calendar event facts are immutable'); END;
+`,
+  // v16: the location and notes of each indexed Apple event version as separate values (#815), so
+  // core can propose an `apple.event_update` that keeps them: the Helper clears an omitted field.
+  // `location` and `notes` are NULL when the calendar has none (an empty string is kept as empty).
+  // `details_known` is 0 for a row written before this version: its two values were never stored,
+  // so they are unknown, not absent. The next sync that reads the event fills them in; that
+  // one-way step (unknown to known, nothing else changed) is the only update the trigger allows.
+  `
+ALTER TABLE calendar_event_facts ADD COLUMN details_known INTEGER NOT NULL DEFAULT 0
+  CHECK (details_known IN (0, 1));
+ALTER TABLE calendar_event_facts ADD COLUMN location TEXT;
+ALTER TABLE calendar_event_facts ADD COLUMN notes TEXT;
+DROP TRIGGER calendar_event_facts_no_update;
+CREATE TRIGGER calendar_event_facts_no_update BEFORE UPDATE ON calendar_event_facts
+WHEN NOT (
+  OLD.details_known = 0 AND NEW.details_known = 1
+  AND NEW.sha256 IS OLD.sha256 AND NEW.source IS OLD.source
+  AND NEW.calendar_id IS OLD.calendar_id AND NEW.event_id IS OLD.event_id
+  AND NEW.start_at IS OLD.start_at AND NEW.end_at IS OLD.end_at AND NEW.all_day IS OLD.all_day
+)
 BEGIN SELECT RAISE(ABORT, 'calendar event facts are immutable'); END;
 `,
 ]
