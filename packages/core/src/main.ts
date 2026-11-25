@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { appendFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { dirname, isAbsolute, join } from "node:path"
 import type { DatabaseSync } from "node:sqlite"
 import {
   createAuditClient,
@@ -69,6 +69,7 @@ import { scheduleIngestedDigests } from "./digest/ingest"
 import type { IndexedDocument } from "./index/ingest"
 import { DEFAULT_SECTION_TOKENS } from "./digest/types"
 import { secureDataDir, secureDataFiles } from "./data-perms"
+import { createBrokerClient } from "./parsers/broker-client"
 import { createParser } from "./parsers/index"
 import type { Parser } from "./parsers/index"
 import {
@@ -144,6 +145,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_SIMPLEFIN_MAX_RANGE_DAYS",
   "EIDO_SIMPLEFIN_SYNC_TIME",
   "EIDO_APPLE_CALENDARS",
+  "EIDO_PARSER_SOCKET",
 ] as const
 
 /**
@@ -700,22 +702,40 @@ function startSyncTimer(
   return { stop: () => clearInterval(timer), inFlight: () => current }
 }
 
-function gmailParser(dataDir: string | undefined): Parser {
+function gmailParser(
+  dataDir: string | undefined,
+  parserSocket: string | undefined
+): Parser {
   if (dataDir === undefined || dataDir === "") {
     throw new Error("Gmail sync requires EIDO_DATA_DIR to configure its parser")
   }
-  return createParser({ dataDir })
+  if (parserSocket === undefined || parserSocket === "") {
+    return createParser({ dataDir })
+  }
+  if (!isAbsolute(parserSocket)) {
+    throw new Error("EIDO_PARSER_SOCKET must be an absolute path")
+  }
+  // Under the plane split every parse goes to the parser broker; none runs in a child of core.
+  return createParser({
+    dataDir,
+    broker: createBrokerClient({ socketPath: parserSocket }),
+  })
 }
 
-/** The plane's parser: none only on Windows without Gmail, where the sandbox cannot run. */
+/**
+ * The plane's parser: none only on Windows without Gmail, where the sandbox cannot run. With
+ * `parserSocket` (EIDO_PARSER_SOCKET) the parser sends its work to the broker there; without it,
+ * parses run in a sandboxed child of this process.
+ */
 export function dataPlaneParser(
   dataDir: string | undefined,
   gmailProxyUrl: string | undefined,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  parserSocket?: string
 ): Parser | undefined {
   return gmailProxyUrl === undefined && platform === "win32"
     ? undefined
-    : gmailParser(dataDir)
+    : gmailParser(dataDir, parserSocket)
 }
 
 function createModelQueueProvider(
@@ -806,10 +826,16 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     config.api.modelBaseUrl,
     config.api.chatTemplateKwargs
   )
-  // The files connector reads PDFs through the same sandboxed child. The sandbox's private scratch
-  // is unsupported on Windows, so without Gmail there the plane starts with no parser and the
-  // files connector parses PDFs in process.
-  const parser = dataPlaneParser(config.dataDir, config.api.gmailProxyUrl)
+  // The files connector reads PDFs through the same parser (a sandboxed child, or the broker when
+  // EIDO_PARSER_SOCKET is set). The sandbox's private scratch is unsupported on Windows, so
+  // without Gmail there the plane starts with no parser and the files connector parses PDFs in
+  // process.
+  const parser = dataPlaneParser(
+    config.dataDir,
+    config.api.gmailProxyUrl,
+    process.platform,
+    env["EIDO_PARSER_SOCKET"]
+  )
   secureDataDir(config.dataDir)
   const conversationIndexPath = join(
     dirname(config.dbPath),
