@@ -21,6 +21,7 @@ import {
 import type { Setup } from "../test-fixtures"
 import type { FileHelper } from "./file-helper"
 import { approvedFileRoot } from "./file-roots"
+import { listDisk } from "./disk-listing-double"
 
 // Issue #416, file half: the phone Undo route over the real executor and file operations, against
 // an in-memory disk double behind the native helper interface. Expected disks are hand-written;
@@ -85,6 +86,8 @@ async function world() {
         contentBase64: raw.toString("base64"),
       })
     }
+    if (request.op === "list")
+      return Promise.resolve(listDisk(disk, ROOT.trashDir, request.path))
     if (
       request.op !== "move" &&
       request.op !== "trash" &&
@@ -281,7 +284,7 @@ describe("phone Undo through the real executor and file operations", () => {
       args: { root: "docs", path: SOURCE, newName: RENAMED },
     })
     expect(f.snapshot()).toEqual([[RENAMED, BYTES]])
-    await undoTwice(f, id, ["move"])
+    await undoTwice(f, id, ["list", "move"])
     expect(f.snapshot()).toEqual([[SOURCE, BYTES]])
   })
 
@@ -292,7 +295,7 @@ describe("phone Undo through the real executor and file operations", () => {
       args: { root: "docs", path: SOURCE, toPath: MOVED },
     })
     expect(f.snapshot()).toEqual([[MOVED, BYTES]])
-    await undoTwice(f, id, ["move"])
+    await undoTwice(f, id, ["list", "move"])
     expect(f.snapshot()).toEqual([[SOURCE, BYTES]])
   })
 
@@ -303,7 +306,7 @@ describe("phone Undo through the real executor and file operations", () => {
       args: { root: "docs", path: SOURCE },
     })
     expect(f.snapshot()).toEqual([[`${ROOT.trashDir}/<trashed>`, BYTES]])
-    await undoTwice(f, id, ["restore"])
+    await undoTwice(f, id, ["list", "restore"])
     expect(f.snapshot()).toEqual([[SOURCE, BYTES]])
   })
 

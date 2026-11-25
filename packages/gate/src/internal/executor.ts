@@ -4,7 +4,7 @@ import {
   validateGateFileHelperRequest,
   validateGateFileRoots,
 } from "@eido/schemas"
-import type { Intent, GateFileHelperRequest } from "@eido/schemas"
+import type { Intent, GateFileHelperRequest, GateFileRoot } from "@eido/schemas"
 import { randomUUID } from "node:crypto"
 import type { FileHelper } from "./files/file-helper"
 import { approvedFileRoot } from "./files/file-roots"
@@ -155,6 +155,41 @@ export function isUnsafeInverse(
       /^[0-9a-f-]{36}$/.test(asFile.value.trashName)
     )
   )
+}
+
+/**
+ * The file Undo refusals that leave the attempt unclaimed, so the owner can clear the cause and
+ * retry (#846). Each comes from a read-only helper call made before the attempt is claimed, so
+ * nothing on disk has been written, and each clears by an owner action:
+ *
+ * - `unsafe_inverse` from the create content check (#832): the created file no longer holds the
+ *   created bytes. It clears when the bytes are back. (A stored inverse that `isUnsafeInverse`
+ *   refuses is refused earlier, on every attempt, and is not this case.)
+ * - `file_exists`: a restore or move back finds its destination name taken in the parent folder's
+ *   listing. It clears when the owner moves or renames that entry.
+ *
+ * Nothing else returns before the claim once the helper is involved. A failed listing, one that
+ * does not show the name (also when truncated) and a collision that appears after the check go on
+ * to the claimed write, and every outcome of that write, including the helper's own `exists`,
+ * consumes the attempt. Trash (a create's Undo) has no listing check: it may create the trash
+ * folder before it renames, and its destination is a fresh name no owner action collides with.
+ */
+export const UNCLAIMED_UNDO_REFUSALS = [
+  "unsafe_inverse",
+  "file_exists",
+] as const
+type UnclaimedUndoRefusal = (typeof UNCLAIMED_UNDO_REFUSALS)[number]
+
+/**
+ * Whether `name` is taken among `entries`, compared the way a case- and normalization-insensitive
+ * volume (APFS by default) compares names, so the check never misses a collision the rename hits.
+ */
+function nameTaken(
+  entries: readonly { name: string }[],
+  name: string
+): boolean {
+  const key = (value: string) => value.normalize("NFC").toLowerCase()
+  return entries.some((entry) => key(entry.name) === key(name))
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -680,6 +715,66 @@ export function createExecutor(
     return `${parent}${intent.args.newName}`
   }
 
+  /**
+   * The read-only checks a file Undo makes before its attempt is claimed. A refusal here leaves the
+   * attempt unclaimed (see `UNCLAIMED_UNDO_REFUSALS`); `undefined` means go on to the claim.
+   */
+  async function undoPreWriteRefusal(ready: {
+    intent: FileIntent
+    root: GateFileRoot
+    inverse: GateFileHelperRequest | undefined
+    helper: FileHelper
+  }): Promise<UnclaimedUndoRefusal | undefined> {
+    const { intent, root, inverse, helper } = ready
+    // A create's Undo trashes only the file that create wrote (#832): the entry at its path must
+    // still be a regular file holding exactly the created bytes. Anything else, including a failed
+    // read, is refused, so nothing is moved.
+    if (intent.kind === "file.create") {
+      const created = Buffer.from(intent.args.content, "utf8")
+      try {
+        const reply = await helper({
+          op: "read",
+          root,
+          path: intent.args.path,
+          maxBytes: Math.max(1, created.length),
+        })
+        return reply.ok &&
+          reply.op === "read" &&
+          Buffer.from(reply.contentBase64, "base64").equals(created)
+          ? undefined
+          : "unsafe_inverse"
+      } catch {
+        return "unsafe_inverse"
+      }
+    }
+    // A restore or move back never replaces an entry (#846): a destination name already taken in
+    // its folder is refused here, before the claim, so the owner can clear it and retry. Only a
+    // listing that shows the name proves the collision; anything else goes on to the claimed write,
+    // whose no-replace rename still refuses a collision, consuming the attempt.
+    const destination =
+      inverse?.op === "restore"
+        ? inverse.path
+        : inverse?.op === "move"
+          ? inverse.to
+          : undefined
+    if (destination === undefined) return undefined
+    const slash = destination.lastIndexOf("/")
+    try {
+      const reply = await helper({
+        op: "list",
+        root,
+        path: slash < 0 ? "" : destination.slice(0, slash),
+      })
+      return reply.ok &&
+        reply.op === "list" &&
+        nameTaken(reply.entries, destination.slice(slash + 1))
+        ? "file_exists"
+        : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   /** Files have no HTTP destination: authority is the signed root plus the pinned native helper. */
   async function runFile(
     id: string,
@@ -697,6 +792,16 @@ export function createExecutor(
       } catch {
         return refuse(id, direction, "record_mismatch")
       }
+      // A claimed Undo is never run again, nor its pre-write checks: its outcome is unknown.
+      if (
+        direction === "undo" &&
+        db
+          .prepare(
+            "SELECT 1 FROM execution_attempts WHERE intent_id=? AND direction=?"
+          )
+          .get(id, direction) !== undefined
+      )
+        return refuse(id, direction, "outcome_unresolved")
       const stored = readIntent(db, id)
       if (stored === undefined) return refuse(id, direction, "not_found")
       let intent: Intent
@@ -801,27 +906,9 @@ export function createExecutor(
       return { stored, intent, root, inverse, helper: files }
     })
     if ("ok" in ready) return ready
-    // A create's Undo trashes only the file that create wrote (#832): the entry at its path must
-    // still be a regular file holding exactly the created bytes. Anything else, including a failed
-    // read, is refused before the attempt is claimed, so nothing is moved.
-    if (direction === "undo" && ready.intent.kind === "file.create") {
-      const created = Buffer.from(ready.intent.args.content, "utf8")
-      let unchanged = false
-      try {
-        const reply = await ready.helper({
-          op: "read",
-          root: ready.root,
-          path: ready.intent.args.path,
-          maxBytes: Math.max(1, created.length),
-        })
-        unchanged =
-          reply.ok &&
-          reply.op === "read" &&
-          Buffer.from(reply.contentBase64, "base64").equals(created)
-      } catch {
-        unchanged = false
-      }
-      if (!unchanged) return refuse(id, direction, "unsafe_inverse")
+    if (direction === "undo") {
+      const blocked = await undoPreWriteRefusal(ready)
+      if (blocked !== undefined) return refuse(id, direction, blocked)
     }
     const prepared = atomically(db, () => {
       const claim = db
