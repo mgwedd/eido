@@ -8,7 +8,7 @@
     "backup": "node --disable-warning=ExperimentalWarning backup/bin.ts",
     "bridge": "node --disable-warning=ExperimentalWarning bridge/bin.ts",
     "llama": "node --disable-warning=ExperimentalWarning llama/bin.ts",
-    "host": "node --disable-warning=ExperimentalWarning host/bin.ts",
+    "host": "node --disable-warning=ExperimentalWarning --import ./ts-hooks.ts host/bin.ts",
     "lint": "eslint",
     "typecheck": "tsc -p . --noEmit",
     "test": "vitest run --coverage",

@@ -1,7 +1,8 @@
 // `node infra/host/bin.ts plane plan|remove`: prints, as a /bin/sh script, every command
 // that creates (or takes down) the plane split (#70). It reads the host (dscl, stack.env,
 // tailscale) as the owner and changes nothing; the owner reviews the script and runs it with
-// `sudo sh`. See infra/plane-split.md.
+// `sudo sh`. The gate's egress allowlist comes from the reviewed manifests it is given (#471).
+// See infra/plane-split.md.
 import { parseArgs } from "node:util"
 
 import {
@@ -11,6 +12,7 @@ import {
   type FileStat,
 } from "../stack/settings.ts"
 import { parseDnsName, parsePort } from "../tailscale/serve-routes.ts"
+import { egressTargets } from "./egress.ts"
 import {
   DEFAULT_FIRST_ID,
   accountProblems,
@@ -36,6 +38,8 @@ export type PlaneDeps = {
   repoRoot: string
   /** The node binary running this script: the services' node unless --node says otherwise. */
   execPath: string
+  /** Connector name to unchecked manifest JSON: `REVIEWED_MANIFESTS` from @eido/schemas. */
+  manifests: Readonly<Record<string, unknown>>
   out: (text: string) => void
   err: (line: string) => void
 }
@@ -149,6 +153,7 @@ export async function plane(
       node: values.node ?? deps.execPath,
       tailnetHost,
       settings,
+      allowlist: egressTargets(deps.manifests),
       ...(egress === undefined
         ? {}
         : { egressPort: parsePort(egress, "--egress-port") }),

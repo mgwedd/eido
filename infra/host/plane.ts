@@ -1,9 +1,10 @@
 // The plane split on macOS (#70): a gate user and a data-plane user, their directories and modes,
 // the data plane's sandbox profile, the pf rules for the data-plane user, the LaunchDaemons that
 // start each process under its own user, and the ACL that lets the gate user reach the owner's
-// supervisor socket. Pure functions: what to create and which commands create it. `plane-cli.ts`
-// reads the host's state and prints the commands as a script the owner runs with sudo; nothing
-// here touches the system.
+// supervisor socket. The gate user's outbound allowlist (#471) is egress.ts, wired in here.
+// Pure functions: what to create and which commands create it. `plane-cli.ts` reads the host's
+// state and prints the commands as a script the owner runs with sudo; nothing here touches the
+// system.
 import { escapeXml } from "../llama/launchd.ts"
 import { parsePort } from "../tailscale/serve-routes.ts"
 import {
@@ -12,6 +13,17 @@ import {
   type Env,
   type ProcessSpec,
 } from "../stack/config.ts"
+import {
+  EGRESS_ANCHOR,
+  EGRESS_REFRESH_SECONDS,
+  egressHostList,
+  egressJob,
+  egressRules,
+  type EgressTargets,
+} from "./egress.ts"
+import { shellQuote } from "./shell.ts"
+
+export { shellQuote }
 
 /** Where the plane lives: outside every home, so neither service user reads the owner's files. */
 export const PLANE_ROOT = "/Library/Application Support/Eido"
@@ -32,6 +44,7 @@ export const NAMES = {
 
 export const LABELS = {
   pf: "com.eido.plane.pf",
+  egress: "com.eido.plane.egress",
   gate: "com.eido.plane.gate",
   core: "com.eido.plane.core",
 } as const
@@ -70,13 +83,16 @@ export type PlaneLayout = {
   coreProfile: string
   parserProfile: string
   pfRules: string
+  /** The gate user's egress anchor and the hosts the egress job adds to its table (#471). */
+  egressRules: string
+  egressHosts: string
   logs: { root: string; gate: string; data: string; pf: string }
   gateSocket: string
   controlSocket: string
   /** The owner's stack run dir, which holds the supervisor socket (#644, #659). */
   ownerRunDir: string
   supervisorSocket: string
-  plists: { pf: string; gate: string; core: string }
+  plists: { pf: string; egress: string; gate: string; core: string }
 }
 
 const USER_NAME = /^[a-z_][a-z0-9_.-]{0,31}$/
@@ -136,6 +152,8 @@ export function planeLayout(input: {
     coreProfile: `${policyDir}/core.sb`,
     parserProfile: `${policyDir}/parser.sb`,
     pfRules: `${policyDir}/eido-plane.pf`,
+    egressRules: `${policyDir}/eido-egress.pf`,
+    egressHosts: `${policyDir}/eido-egress.hosts`,
     logs: {
       root: PLANE_LOGS,
       gate: `${PLANE_LOGS}/gate`,
@@ -148,6 +166,7 @@ export function planeLayout(input: {
     supervisorSocket: `${ownerRunDir}/supervisor.sock`,
     plists: {
       pf: `${DAEMON_DIR}/${LABELS.pf}.plist`,
+      egress: `${DAEMON_DIR}/${LABELS.egress}.plist`,
       gate: `${DAEMON_DIR}/${LABELS.gate}.plist`,
       core: `${DAEMON_DIR}/${LABELS.core}.plist`,
     },
@@ -382,13 +401,6 @@ export function daemonPlist(spec: DaemonSpec): string {
   ].join("\n")
 }
 
-/** `value` quoted for /bin/sh: bare when it is safe, else single-quoted. */
-export function shellQuote(value: string): string {
-  return /^[A-Za-z0-9_/.,:=+@%-]+$/.test(value)
-    ? value
-    : `'${value.replaceAll("'", `'\\''`)}'`
-}
-
 export type PlaneInput = {
   layout: PlaneLayout
   /** The owner's checkout; the plan copies it to the root-owned app dir. */
@@ -399,6 +411,8 @@ export type PlaneInput = {
   /** stack.env with the owner's environment over it, as the stack reads it. */
   settings: Env
   egressPort?: number
+  /** What the gate user may reach (#471), from the reviewed manifests: `egressTargets`. */
+  allowlist: EgressTargets
 }
 
 /** Where a setting would point a service somewhere the plane does not allow. */
@@ -435,10 +449,11 @@ export type PlaneServices = {
   gate: DaemonSpec
   core: DaemonSpec
   pf: DaemonSpec
+  egress: DaemonSpec
 }
 
 /**
- * The three LaunchDaemons. The gate and core get the stack's own settings (#374) with the plane's
+ * The four LaunchDaemons. The gate and core get the stack's own settings (#374) with the plane's
  * directories and sockets over them, so one config decides both modes.
  */
 export function planeServices(input: PlaneInput): PlaneServices {
@@ -537,6 +552,24 @@ export function planeServices(input: PlaneInput): PlaneServices {
       errLog: `${layout.logs.pf}/pf.err.log`,
       keepAlive: false,
       interval: PF_RELOAD_SECONDS,
+    },
+    // Runs only /bin/sh and /sbin/pfctl as root, reading root-owned files: nothing the owner or a
+    // service user can write.
+    egress: {
+      label: LABELS.egress,
+      user: "root",
+      group: "wheel",
+      args: [
+        "/bin/sh",
+        "-c",
+        egressJob({ rules: layout.egressRules, hosts: layout.egressHosts }),
+      ],
+      cwd: "/",
+      env: { PATH: SERVICE_PATH },
+      outLog: `${layout.logs.pf}/egress.out.log`,
+      errLog: `${layout.logs.pf}/egress.err.log`,
+      keepAlive: false,
+      interval: EGRESS_REFRESH_SECONDS,
     },
   }
 }
@@ -638,6 +671,9 @@ export function supervisorAces(
   ]
 }
 
+/** The daemons in start order: pf rules first, then the gate's egress table, then the services. */
+const DAEMONS = ["pf", "egress", "gate", "core"] as const
+
 /** Every command that creates or updates the plane. Running it twice gives the same host. */
 export function applySteps(input: PlaneInput): Step[] {
   const { layout } = input
@@ -726,14 +762,23 @@ export function applySteps(input: PlaneInput): Step[] {
       ],
     },
     { argv: [PFCTL, "-a", PF_ANCHOR, "-nf", layout.pfRules] },
+    ...file(
+      layout.egressRules,
+      egressRules({ uid: ids.gateUid, local: input.allowlist.local })
+    ),
+    ...file(layout.egressHosts, egressHostList(input.allowlist.hosts)),
+    { argv: [PFCTL, "-a", EGRESS_ANCHOR, "-nf", layout.egressRules] },
+    // Loads the new rules now; the egress job only loads them into an empty anchor. This empties
+    // the table until the job, started below, adds the hosts again.
+    { argv: [PFCTL, "-a", EGRESS_ANCHOR, "-f", layout.egressRules] },
     ...supervisorAces(layout).map(({ path, ace }) => ({
       argv: [CHMOD, "+a", ace, path],
     })),
-    ...(["pf", "gate", "core"] as const).flatMap((name) => [
+    ...DAEMONS.flatMap((name) => [
       ...file(layout.plists[name], daemonPlist(services[name])),
       { argv: ["/usr/bin/plutil", "-lint", layout.plists[name]] },
     ]),
-    ...(["pf", "gate", "core"] as const).flatMap((name) => [
+    ...DAEMONS.flatMap((name) => [
       { argv: [LAUNCHCTL, "bootout", `system/${LABELS[name]}`], mayFail: true },
       { argv: [LAUNCHCTL, "bootstrap", "system", layout.plists[name]] },
     ]),
@@ -748,11 +793,15 @@ export function applySteps(input: PlaneInput): Step[] {
 export function removeSteps(layout: PlaneLayout, accounts: Accounts): Step[] {
   const { gate, data, ipc } = NAMES
   return [
-    ...(["core", "gate", "pf"] as const).flatMap((name) => [
-      { argv: [LAUNCHCTL, "bootout", `system/${LABELS[name]}`], mayFail: true },
+    ...[...DAEMONS].reverse().flatMap((name) => [
+      {
+        argv: [LAUNCHCTL, "bootout", `system/${LABELS[name]}`],
+        mayFail: true,
+      },
       { argv: ["/bin/rm", "-f", layout.plists[name]] },
     ]),
     { argv: [PFCTL, "-a", PF_ANCHOR, "-F", "all"], mayFail: true },
+    { argv: [PFCTL, "-a", EGRESS_ANCHOR, "-F", "all"], mayFail: true },
     ...supervisorAces(layout).map(({ path, ace }) => ({
       argv: [CHMOD, "-a", ace, path],
       mayFail: true,

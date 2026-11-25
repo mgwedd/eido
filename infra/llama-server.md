@@ -325,4 +325,59 @@ Any change of a model file or of the llama.cpp build:
 
 ## Outbound allowlist
 
-Not built yet: default-deny egress needs a system-level change (pf or LuLu) that the owner makes. It is tracked in #471.
+The gate is the only process that holds credentials and talks to outside services, so it is the one whose outbound traffic is default-deny. The gate user (`_eidogate`, from the plane split in `infra/plane-split.md`) may open TCP on port 443 to the hosts below and to the Proton Bridge ports on loopback, and nothing else: every other new TCP connection and all UDP from that user is blocked. Core is fenced separately by the plane anchor and `core.sb`. Your own user, llama-server and the rest of the Mac are not limited by this.
+
+### Why pf and not LuLu
+
+- pf ships with macOS and is scriptable. The rules are generated from the committed manifests, applied by the same reviewed `sudo sh` plan as the plane split, and reloaded by a launchd job. LuLu's rules are set in its app, one prompt at a time, with no reviewed source in the repo.
+- pf matches by user (`user 451`), so the rules cover exactly the gate. LuLu matches by program, and the gate runs as `node`, which also runs web, core and the scripts.
+- LuLu needs a system extension approval and a GUI. pf needs neither, and `pfctl -n` checks the rules without root (the infra tests do this on macOS).
+- Cost: pf matches addresses, not names, so the hosts are resolved to addresses (see "Limits" below).
+
+### How it works
+
+- `host plane plan` reads the reviewed manifests (`packages/schemas/manifests/*.json`) and `BASE_HOSTS` in `infra/host/egress.ts`, and writes two files: the anchor `com.apple/eido.egress` (`/Library/Application Support/Eido/policy/eido-egress.pf`) and the host list `eido-egress.hosts`. A manifest that fails validation, a host that is not a plain DNS name, or a local endpoint other than `127.0.0.1` or `::1` stops the plan.
+- The anchor holds no host names, only an empty table `<eido_egress>`, so it loads without DNS and egress is closed from boot.
+- The root job `com.eido.plane.egress` runs at load and every 5 minutes. It loads the anchor if it is empty, then runs `pfctl -T add <host>` for each listed host, which adds the host's current addresses to the table. A host that does not resolve is logged to `/Library/Logs/Eido/pf/egress.err.log` and the others still go in. The job runs only `/bin/sh` and `/sbin/pfctl`.
+- Addresses accumulate in the table until the anchor is next loaded (reboot or a new plan), which covers the rotating address pools behind Google's API hosts.
+
+### Hosts
+
+| Host                      | Why                                                                                                         |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `oauth2.googleapis.com`   | Google token exchange and refresh (gate `oauth-refresh.ts`, `connect/oauth.ts`; also in the Gmail manifest) |
+| `gmail.googleapis.com`    | Gmail connector manifest                                                                                    |
+| `www.googleapis.com`      | Drive connector manifest                                                                                    |
+| `web.push.apple.com`      | Web Push to the home-screen app on iPhone (gate `push-notify.ts`)                                           |
+| `bridge.simplefin.org`    | SimpleFIN setup-token claim (gate `connect/simplefin-claim.ts`)                                             |
+| `127.0.0.1:1025`, `:1143` | Proton Bridge SMTP and IMAP (Proton Mail manifest `egress.local`)                                           |
+
+The list is the output of `egressTargets` for the manifests on `main`; the infra tests pin it. A new connector manifest adds its hosts the next time you run the plan.
+
+### Apply
+
+The allowlist is part of the plane split: run `host plane plan` and apply it as in `infra/plane-split.md`, "Create" (or "Update" when the plane already exists). The plan loads the anchor and boots the egress job before the gate starts.
+
+### Check
+
+Run these after applying, and after every reboot:
+
+```sh
+sudo pfctl -a com.apple/eido.egress -sr                      # the pass and block rules for user 451
+sudo pfctl -a com.apple/eido.egress -t eido_egress -T show   # addresses for every listed host
+sudo cat /Library/Logs/Eido/pf/egress.err.log                # empty, or no "was not added" since the last run
+
+# An allowlisted host is reachable: prints an HTTP status code from Google (any code but 000).
+sudo -u _eidogate /usr/bin/curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 https://oauth2.googleapis.com/token
+
+# An unlisted host is refused: curl fails with "Couldn't connect to server" (exit 7) and prints 000.
+sudo -u _eidogate /usr/bin/curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 https://example.com
+```
+
+If the allowlisted host fails too, check `sudo pfctl -s info | head -1` says `Status: Enabled` and that the table is not empty.
+
+### Limits
+
+- pf matches addresses. A listed host on a shared CDN or Google front end makes every other name behind the same addresses reachable on 443. The gate's own egress check (host, method and path prefix from the manifest) still applies on top.
+- Web Push only reaches Apple's push service. A subscription from another browser (FCM, Mozilla) is refused until its host is added: #789.
+- Removing the allowlist alone is not supported; `host plane remove` removes it with the rest of the plane.

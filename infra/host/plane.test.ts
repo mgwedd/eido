@@ -34,6 +34,10 @@ const input = (over: Partial<PlaneInput> = {}): PlaneInput => ({
   node: "/opt/homebrew/bin/node",
   tailnetHost: "mac.example.ts.net",
   settings: {},
+  allowlist: {
+    hosts: ["api.example.com", "push.example.net"],
+    local: [{ host: "127.0.0.1", port: 1143 }],
+  },
   ...over,
 })
 
@@ -384,6 +388,18 @@ describe("planeServices", () => {
     ])
     expect(pf.interval).toBe(300)
   })
+
+  it("refreshes the gate's egress table as root with only sh and pfctl, at load and every five minutes", () => {
+    const { egress } = planeServices(input())
+    expect(egress.user).toBe("root")
+    expect(egress.args.slice(0, 2)).toEqual(["/bin/sh", "-c"])
+    expect(egress.args[2]).toContain(
+      '-T add "$host" || echo "egress: $host was not added" >&2; done < \'/Library/Application Support/Eido/policy/eido-egress.hosts\''
+    )
+    expect(egress.errLog).toBe("/Library/Logs/Eido/pf/egress.err.log")
+    expect(egress.interval).toBe(300)
+    expect(egress.keepAlive).toBe(false)
+  })
 })
 
 describe("supervisorAces", () => {
@@ -516,6 +532,11 @@ describe("applySteps", () => {
         "/bin/launchctl bootstrap system /Library/LaunchDaemons/com.eido.plane.pf.plist",
         false,
       ],
+      ["/bin/launchctl bootout system/com.eido.plane.egress", true],
+      [
+        "/bin/launchctl bootstrap system /Library/LaunchDaemons/com.eido.plane.egress.plist",
+        false,
+      ],
       ["/bin/launchctl bootout system/com.eido.plane.gate", true],
       [
         "/bin/launchctl bootstrap system /Library/LaunchDaemons/com.eido.plane.gate.plist",
@@ -534,6 +555,27 @@ describe("applySteps", () => {
       (step) => step.argv.join(" ") === `/usr/bin/tee ${layout.pfRules}`
     )
     expect(pf?.stdin).toContain("port { 8790 } user 452")
+  })
+
+  it("writes the gate's egress anchor and host list from the allowlist, and checks then loads the anchor before any job starts", () => {
+    const written = (path: string) =>
+      steps.find((step) => line(step) === `/usr/bin/tee ${path}`)?.stdin
+    expect(written(layout.egressHosts)).toBe(
+      "api.example.com\npush.example.net\n"
+    )
+    const rules = written(layout.egressRules)
+    expect(rules).toContain("to <eido_egress> port 443 user 451 ")
+    expect(rules).toContain("to 127.0.0.1 port { 1143 } user 451 ")
+    const check = at(
+      "/sbin/pfctl -a com.apple/eido.egress -nf /Library/Application Support/Eido/policy/eido-egress.pf"
+    )
+    const load = at(
+      "/sbin/pfctl -a com.apple/eido.egress -f /Library/Application Support/Eido/policy/eido-egress.pf"
+    )
+    expect(check).toBeLessThan(load)
+    expect(load).toBeLessThan(
+      all.findIndex((text) => text.startsWith("/bin/launchctl bootstrap"))
+    )
   })
 
   it("only creates or sets, so it can run again on a host it already ran on", () => {
@@ -559,6 +601,10 @@ describe("removeSteps", () => {
       "/bin/rm -f /Library/LaunchDaemons/com.eido.plane.core.plist",
     ])
     expect(all).toContain("/sbin/pfctl -a com.apple/eido.plane -F all")
+    expect(all).toContain("/sbin/pfctl -a com.apple/eido.egress -F all")
+    expect(all).toContain(
+      "/bin/rm -f /Library/LaunchDaemons/com.eido.plane.egress.plist"
+    )
     expect(all).toContain(
       "/bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit /Users/owner/Library/Application Support/eido-dev/run"
     )
