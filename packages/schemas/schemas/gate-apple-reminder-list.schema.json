@@ -91,6 +91,12 @@
         ],
         "additionalProperties": false
       }
+    },
+    "skipped": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000,
+      "description": "Items the Helper dropped because they failed its output checks. Absent from an older Helper; the gate's read routes always report it."
     }
   },
   "required": ["reminders"],

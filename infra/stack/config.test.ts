@@ -369,19 +369,16 @@ describe("buildStackConfig on Windows", () => {
 })
 
 describe("settings passed through", () => {
-  it("passes the EventKit executable path only to the gate", () => {
-    const config = buildStackConfig(
-      input({ env: { EIDO_EVENTKIT_HELPER: "/home/u/bin/eido-helper" } })
-    )
-    expect(byName(config, "gate").env["EIDO_EVENTKIT_HELPER"]).toBe(
-      "/home/u/bin/eido-helper"
-    )
-    expect(byName(config, "core").env).not.toHaveProperty(
-      "EIDO_EVENTKIT_HELPER"
-    )
-    expect(byName(config, "web").env).not.toHaveProperty("EIDO_EVENTKIT_HELPER")
+  it.each([
+    ["EIDO_EVENTKIT_HELPER", "/home/u/bin/eido-helper"],
+    ["EIDO_EVENTKIT_HELPER_SHA256", "ab".repeat(32)],
+  ])("passes the EventKit setting %s only to the gate", (key, value) => {
+    const config = buildStackConfig(input({ env: { [key]: value } }))
+    expect(byName(config, "gate").env[key]).toBe(value)
+    expect(byName(config, "core").env).not.toHaveProperty(key)
+    expect(byName(config, "web").env).not.toHaveProperty(key)
     const unset = buildStackConfig(input())
-    expect(byName(unset, "gate").env).not.toHaveProperty("EIDO_EVENTKIT_HELPER")
+    expect(byName(unset, "gate").env).not.toHaveProperty(key)
   })
 
   it("gives the gate the push, Gmail, Bridge and dev vault settings, and core the llama ones", () => {

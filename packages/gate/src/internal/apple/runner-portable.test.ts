@@ -1,15 +1,21 @@
 import { ChildProcess, spawn } from "node:child_process"
-import { lstatSync, realpathSync, statSync } from "node:fs"
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs"
 import type { Stats } from "node:fs"
 import type * as FileSystem from "node:fs"
 import type * as ChildProcesses from "node:child_process"
 import { PassThrough } from "node:stream"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
-import { APPLE_MAX_BYTES, APPLE_TIMEOUT_MS, createAppleRunner } from "./runner"
+import {
+  APPLE_MAX_BYTES,
+  APPLE_MAX_CONCURRENT,
+  APPLE_TIMEOUT_MS,
+  createAppleRunner,
+} from "./runner"
 
 vi.mock("node:fs", async (importOriginal) => ({
   ...(await importOriginal<typeof FileSystem>()),
   lstatSync: vi.fn(),
+  readFileSync: vi.fn(),
   realpathSync: vi.fn(),
   statSync: vi.fn(),
 }))
@@ -21,6 +27,9 @@ vi.mock("node:child_process", async (importOriginal) => ({
 const actualFs = await vi.importActual<typeof FileSystem>("node:fs")
 const UID = 501
 const canonical = "/gate/private/helper"
+// SHA-256 of the bytes readFileSync returns below, computed with `shasum -a 256`.
+const PIN = "3e285f58ed5340f25b63d1d2328d802c3e32fdd0ff0660a097eb3601ae83620e"
+const pinned = (path: string) => ({ path, sha256: PIN })
 const request = { operation: "list_calendars", args: {} } as const
 const options = { platform: "darwin" } as const
 const originalGetuid = Object.getOwnPropertyDescriptor(process, "getuid")
@@ -50,6 +59,7 @@ beforeEach(() => {
   vi.mocked(lstatSync).mockImplementation(safeEntry)
   vi.mocked(statSync).mockImplementation(safeEntry)
   vi.mocked(realpathSync).mockReturnValue(canonical)
+  vi.mocked(readFileSync).mockReturnValue(Buffer.from("synthetic helper bytes"))
   child = new ChildProcess()
   input = new PassThrough()
   output = new PassThrough()
@@ -62,6 +72,8 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.useRealTimers()
+  // Undo the process.kill spies even when a test fails before its own restore.
+  vi.restoreAllMocks()
   if (originalGetuid === undefined) Reflect.deleteProperty(process, "getuid")
   else Object.defineProperty(process, "getuid", originalGetuid)
   input.destroy()
@@ -72,7 +84,7 @@ function complete(value: unknown, code = 0): void {
   child.emit("close", code, null)
 }
 function run() {
-  return createAppleRunner(canonical, options)(request)
+  return createAppleRunner(pinned(canonical), options)(request)
 }
 
 describe("portable EventKit process and filesystem boundary", () => {
@@ -82,11 +94,13 @@ describe("portable EventKit process and filesystem boundary", () => {
       sent += data.toString("utf8")
     })
     const pending = createAppleRunner(
-      "/gate/build/release/helper",
+      pinned("/gate/build/release/helper"),
       options
     )(request)
+    expect(readFileSync).toHaveBeenCalledWith(canonical)
     expect(spawn).toHaveBeenCalledWith(canonical, [], {
       cwd: "/",
+      detached: true,
       env: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8" },
       stdio: ["pipe", "pipe", "ignore"],
     })
@@ -171,14 +185,20 @@ describe("portable EventKit process and filesystem boundary", () => {
       createAppleRunner(undefined, options)(request)
     ).rejects.toMatchObject({ code: "unavailable" })
     await expect(
-      createAppleRunner(canonical, { platform: "win32" })(request)
+      createAppleRunner(pinned(canonical), { platform: "win32" })(request)
     ).rejects.toMatchObject({ code: "unavailable" })
     await expect(
-      createAppleRunner("relative", options)(request)
+      createAppleRunner(pinned("relative"), options)(request)
     ).rejects.toMatchObject({ code: "unavailable" })
     await expect(
       createAppleRunner(
-        canonical,
+        { path: canonical, sha256: PIN.toUpperCase() },
+        options
+      )(request)
+    ).rejects.toMatchObject({ code: "unavailable" })
+    await expect(
+      createAppleRunner(
+        pinned(canonical),
         options
       )({
         operation: "list_events",
@@ -216,7 +236,7 @@ describe("portable EventKit process and filesystem boundary", () => {
           : safeEntry(path)
       )
       const pending = createAppleRunner(
-        "/gate/build/release/helper",
+        pinned("/gate/build/release/helper"),
         options
       )(request)
       complete({ ok: true, result: { calendars: [] } })
@@ -284,6 +304,102 @@ describe("portable EventKit process and filesystem boundary", () => {
     })
     await vi.advanceTimersByTimeAsync(APPLE_TIMEOUT_MS)
     await rejection
+    expect(kill).toHaveBeenCalledWith("SIGKILL")
+  })
+})
+
+describe("EventKit Helper pin, concurrency cap and process group", () => {
+  test("refuses a binary whose SHA-256 differs from the pin before launching", async () => {
+    vi.mocked(readFileSync).mockReturnValue(Buffer.from("rebuilt helper bytes"))
+    await expect(run()).rejects.toMatchObject({
+      code: "unavailable",
+      message: "Apple Helper refused: unavailable",
+    })
+    expect(spawn).not.toHaveBeenCalled()
+  })
+  test("refuses a binary it cannot read before launching", async () => {
+    vi.mocked(readFileSync).mockImplementation(() => {
+      throw new Error("private read error")
+    })
+    await expect(run()).rejects.toMatchObject({ code: "unavailable" })
+    expect(spawn).not.toHaveBeenCalled()
+  })
+  test("refuses a call beyond the cap until a running Helper exits", async () => {
+    // Started children have a pid; never signal a real process group from a test.
+    const groupKill = vi.spyOn(process, "kill").mockReturnValue(true)
+    const children: ChildProcess[] = []
+    const outputs: PassThrough[] = []
+    vi.mocked(spawn).mockImplementation(() => {
+      const next = new ChildProcess()
+      Object.defineProperty(next, "pid", { value: 4300 + children.length })
+      const stdout = new PassThrough()
+      outputs.push(stdout)
+      next.stdin = new PassThrough()
+      next.stdout = stdout
+      next.stderr = null
+      next.kill = vi.fn(() => true)
+      children.push(next)
+      return next
+    })
+    const runner = createAppleRunner(pinned(canonical), options)
+    const pending = Array.from({ length: APPLE_MAX_CONCURRENT }, () =>
+      runner(request)
+    )
+    await expect(runner(request)).rejects.toMatchObject({
+      code: "unavailable",
+    })
+    expect(spawn).toHaveBeenCalledTimes(APPLE_MAX_CONCURRENT)
+    // A failed call still holds its slot while its process is alive.
+    const [first] = children
+    if (first === undefined) throw new Error("no Helper was launched")
+    first.emit("error", new Error("private event content"))
+    await expect(pending[0]).rejects.toMatchObject({ code: "unavailable" })
+    await expect(runner(request)).rejects.toMatchObject({
+      code: "unavailable",
+    })
+    expect(spawn).toHaveBeenCalledTimes(APPLE_MAX_CONCURRENT)
+    first.emit("exit", null, "SIGKILL")
+    const after = runner(request)
+    expect(spawn).toHaveBeenCalledTimes(APPLE_MAX_CONCURRENT + 1)
+    for (const [index, each] of children.entries()) {
+      if (index === 0) continue
+      outputs[index]?.end('{"ok":true,"result":{"calendars":[]}}')
+      each.emit("exit", 0, null)
+      each.emit("close", 0, null)
+    }
+    await expect(Promise.all([...pending.slice(1), after])).resolves.toEqual(
+      Array.from({ length: APPLE_MAX_CONCURRENT }, () => ({ calendars: [] }))
+    )
+    expect(groupKill).toHaveBeenCalledWith(-4300, "SIGKILL")
+  })
+  test("a slot is released when the Helper cannot start", async () => {
+    const runner = createAppleRunner(pinned(canonical), options)
+    vi.mocked(spawn).mockImplementation(() => {
+      const failed = new ChildProcess()
+      failed.stdin = new PassThrough()
+      failed.stdout = new PassThrough()
+      failed.stderr = null
+      failed.kill = vi.fn(() => true)
+      queueMicrotask(() => failed.emit("error", new Error("ENOENT")))
+      return failed
+    })
+    for (let i = 0; i <= APPLE_MAX_CONCURRENT; i += 1) {
+      await expect(runner(request)).rejects.toMatchObject({
+        code: "unavailable",
+      })
+    }
+    expect(spawn).toHaveBeenCalledTimes(APPLE_MAX_CONCURRENT + 1)
+  })
+  test("kills the Helper's whole process group on timeout", async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(child, "pid", { value: 4242 })
+    const groupKill = vi.spyOn(process, "kill").mockReturnValue(true)
+    const rejection = expect(run()).rejects.toMatchObject({
+      code: "unavailable",
+    })
+    await vi.advanceTimersByTimeAsync(APPLE_TIMEOUT_MS)
+    await rejection
+    expect(groupKill).toHaveBeenCalledWith(-4242, "SIGKILL")
     expect(kill).toHaveBeenCalledWith("SIGKILL")
   })
 })
