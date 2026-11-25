@@ -148,6 +148,7 @@ describe("permissionsFor", () => {
     ["POST", "/obligations/o1/resolve", ["obligation:resolve"]],
     ["PUT", `/documents/${"a".repeat(64)}/type`, ["document:update"]],
     ["POST", "/extractions/12/confirm", ["document:update"]],
+    ["POST", "/extractions/confirm-card", ["document:update"]],
   ])("%s %s needs %j", (method, path, needed) => {
     expect(permissionsFor(method, path)).toEqual(needed)
   })

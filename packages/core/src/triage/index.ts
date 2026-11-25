@@ -16,6 +16,6 @@ export type {
   TriageEvent,
 } from "./store"
 export { scanLedgerEvents } from "./scan"
-export { createCardBuilders } from "./cards"
+export { confirmFieldProposal, createCardBuilders } from "./cards"
 export { triageTick } from "./tick"
 export type { CardBuilder, TriageDeps, TriageResult } from "./tick"

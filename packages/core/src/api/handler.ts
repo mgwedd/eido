@@ -20,6 +20,7 @@ import {
   validateCoreApiConfirmExtractionRequest,
   validateCoreApiDefaultEntityRequest,
   validateCoreApiReplyDraftRequest,
+  validateCoreApiConfirmCardRequest,
   validateGateIntentProposal,
   validateIntent,
 } from "@eido/schemas"
@@ -64,6 +65,8 @@ import {
   listSimpleFinAccountsRoute,
 } from "./simplefin-accounts-route"
 import type { SimpleFinAccountsDeps } from "./simplefin-accounts-route"
+import { CONFIRM_CARD_PATH } from "./confirm-card-route"
+import type { ConfirmCardResolver } from "./confirm-card-route"
 import { REPLY_DRAFT_PATH } from "./reply-draft-route"
 import type { ReplyDraftResult, ReplyDrafter } from "./reply-draft-route"
 import {
@@ -107,6 +110,11 @@ export interface ApiDeps {
    * configured), `/replies/draft` is not served.
    */
   draftReply?: ReplyDrafter
+  /**
+   * Opens the confirm card for a deferred extraction line (`createConfirmCardResolver`). When
+   * absent, `/extractions/confirm-card` is not served.
+   */
+  confirmCard?: ConfirmCardResolver
   /** Proposes a validated intent through the gate; absent when the gate client is unavailable. */
   propose?: IntentClient["propose"]
   /** The gate's intent status, read for `hasDraftIntent` on `/obligations`; absent, no row has a draft. */
@@ -144,6 +152,7 @@ const STATUS: Record<ErrorCode, number> = {
   misdirected_request: 421,
   busy: 503,
   gate_unavailable: 503,
+  gate_refused: 422,
   connector_paused: 409,
   no_draft: 422,
   unauthenticated: 401,
@@ -480,6 +489,21 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       if (result.ok) return json(result.body, result.status)
       const { code, message, fields } = result
       return failure(code, message, fields ? { fields } : {})
+    }
+
+    if (path === CONFIRM_CARD_PATH && deps.confirmCard !== undefined) {
+      if (method !== "POST") return notAllowed("POST")
+      const validation = validateCoreApiConfirmCardRequest(
+        await readJson(request)
+      )
+      if (!validation.ok) {
+        return failure("invalid", "invalid input", {
+          fields: toFieldErrors(validation.errors),
+        })
+      }
+      const result = await deps.confirmCard(validation.value.extractionId)
+      if (result.ok) return json(result.body, result.status)
+      return failure(result.code, result.message)
     }
 
     if (path === "/intents" && deps.propose !== undefined) {

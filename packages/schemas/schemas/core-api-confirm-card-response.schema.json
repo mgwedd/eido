@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiConfirmCardResponse",
+  "description": "Response of POST /extractions/confirm-card (#852). 200 with created false: a confirm.field intent for the field is already pending and is returned. 201 with created true: core proposed one through the gate. queueHref opens the pending intent in the approval queue.",
+  "type": "object",
+  "properties": {
+    "intentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "field": {
+      "type": "string",
+      "enum": ["action", "party", "reference_number", "amount", "due_date"],
+      "description": "The field the card confirms."
+    },
+    "created": {
+      "type": "boolean"
+    },
+    "queueHref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "^/queue\\?intent="
+    }
+  },
+  "required": ["intentId", "field", "created", "queueHref"],
+  "additionalProperties": false
+}

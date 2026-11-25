@@ -142,6 +142,8 @@ export {
   validateCoreApiSimpleFinAssignmentRequest,
   validateCoreApiConfirmExtractionRequest,
   validateCoreApiConfirmExtractionResponse,
+  validateCoreApiConfirmCardRequest,
+  validateCoreApiConfirmCardResponse,
   validateCoreApiObligationList,
   validateCoreApiTransactionList,
   validateCoreApiObligationState,
