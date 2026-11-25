@@ -10,6 +10,8 @@ import { parsePort } from "../tailscale/serve-routes.ts"
 import {
   buildStackConfig,
   stackDirOf,
+  SUPERVISOR_DIR_NAME,
+  SUPERVISOR_SOCKET_NAME,
   type Env,
   type ProcessSpec,
 } from "../stack/config.ts"
@@ -89,8 +91,10 @@ export type PlaneLayout = {
   logs: { root: string; gate: string; data: string; pf: string }
   gateSocket: string
   controlSocket: string
-  /** The owner's stack run dir, which holds the supervisor socket (#644, #659). */
+  /** The owner's stack run dir, below which the supervisor's socket directory sits (#644, #659). */
   ownerRunDir: string
+  /** The supervisor's own directory (#783): the only place the gate user's inherited ACL entry goes. */
+  supervisorDir: string
   supervisorSocket: string
   plists: { pf: string; egress: string; gate: string; core: string }
 }
@@ -123,6 +127,7 @@ export function planeLayout(input: {
   const keychainDir = `${gateHome}/Library/Keychains/eido`
   const policyDir = `${root}/policy`
   const ownerRunDir = `${stackDirOf("darwin", input.env, input.ownerHome)}/run`
+  const supervisorDir = `${ownerRunDir}/${SUPERVISOR_DIR_NAME}`
   if (!ownerRunDir.startsWith(`${input.ownerHome}/`))
     throw new Error(
       `the owner's stack dir must be inside ${input.ownerHome}: the supervisor socket ACL is granted from the home down`
@@ -163,7 +168,8 @@ export function planeLayout(input: {
     gateSocket: `${runDir}/gate-data-plane.sock`,
     controlSocket: `${runDir}/gate-control.sock`,
     ownerRunDir,
-    supervisorSocket: `${ownerRunDir}/supervisor.sock`,
+    supervisorDir,
+    supervisorSocket: `${supervisorDir}/${SUPERVISOR_SOCKET_NAME}`,
     plists: {
       pf: `${DAEMON_DIR}/${LABELS.pf}.plist`,
       egress: `${DAEMON_DIR}/${LABELS.egress}.plist`,
@@ -642,7 +648,7 @@ function user(
   ]
 }
 
-/** The directories from the owner's home down to the stack run dir that holds the supervisor socket. */
+/** The directories from the owner's home down to the stack dir, above the run dir. */
 export function supervisorAncestors(layout: PlaneLayout): string[] {
   const below = layout.ownerRunDir.slice(layout.ownerHome.length + 1).split("/")
   const dirs = [layout.ownerHome]
@@ -653,9 +659,10 @@ export function supervisorAncestors(layout: PlaneLayout): string[] {
 
 /**
  * The ACL entries that let the gate user, and nobody else, reach the supervisor socket. Mode
- * bits stay as the supervisor checks them (dir 0700, socket 0600). The run dir's second entry is
- * inherited by files created in it afterwards (the socket, when the supervisor next starts) and
- * gives no access to the dir itself.
+ * bits stay as the supervisor checks them (dirs 0700, socket 0600). The run dir and the
+ * supervisor dir get `search` only. The inherited entry sits on the supervisor dir alone, so the
+ * gate user's read and write reach files created in that dir afterwards (the socket, when the
+ * supervisor next starts) and no other file in the stack's run dir (#783).
  */
 export function supervisorAces(
   layout: PlaneLayout
@@ -664,11 +671,23 @@ export function supervisorAces(
   return [
     ...supervisorAncestors(layout).map((path) => ({ path, ace: search })),
     { path: layout.ownerRunDir, ace: search },
+    { path: layout.supervisorDir, ace: search },
     {
-      path: layout.ownerRunDir,
+      path: layout.supervisorDir,
       ace: `${NAMES.gate} allow read,write,file_inherit,only_inherit`,
     },
   ]
+}
+
+/**
+ * The entry an earlier generator put on the run dir itself, which every file created there
+ * inherited. Apply and remove drop it (`chmod -a` fails when it is absent, so they tolerate that).
+ */
+function legacyRunDirAce(layout: PlaneLayout): { path: string; ace: string } {
+  return {
+    path: layout.ownerRunDir,
+    ace: `${NAMES.gate} allow read,write,file_inherit,only_inherit`,
+  }
 }
 
 /** The daemons in start order: pf rules first, then the gate's egress table, then the services. */
@@ -771,6 +790,30 @@ export function applySteps(input: PlaneInput): Step[] {
     // Loads the new rules now; the egress job only loads them into an empty anchor. This empties
     // the table until the job, started below, adds the hosts again.
     { argv: [PFCTL, "-a", EGRESS_ANCHOR, "-f", layout.egressRules] },
+    // The supervisor's own directory, owned by the owner at 0700, as the supervisor checks it. The
+    // run dir must exist already (the stack creates it): `install -d` would otherwise create it
+    // here as root.
+    { argv: ["/bin/test", "-d", layout.ownerRunDir] },
+    {
+      argv: [
+        "/usr/bin/install",
+        "-d",
+        "-o",
+        layout.owner,
+        "-m",
+        "0700",
+        layout.supervisorDir,
+      ],
+    },
+    {
+      argv: [
+        CHMOD,
+        "-a",
+        legacyRunDirAce(layout).ace,
+        legacyRunDirAce(layout).path,
+      ],
+      mayFail: true,
+    },
     ...supervisorAces(layout).map(({ path, ace }) => ({
       argv: [CHMOD, "+a", ace, path],
     })),
@@ -802,10 +845,12 @@ export function removeSteps(layout: PlaneLayout, accounts: Accounts): Step[] {
     ]),
     { argv: [PFCTL, "-a", PF_ANCHOR, "-F", "all"], mayFail: true },
     { argv: [PFCTL, "-a", EGRESS_ANCHOR, "-F", "all"], mayFail: true },
-    ...supervisorAces(layout).map(({ path, ace }) => ({
-      argv: [CHMOD, "-a", ace, path],
-      mayFail: true,
-    })),
+    ...[...supervisorAces(layout), legacyRunDirAce(layout)].map(
+      ({ path, ace }) => ({
+        argv: [CHMOD, "-a", ace, path],
+        mayFail: true,
+      })
+    ),
     ...[gate, data]
       .filter((name) => accounts.users.has(name))
       .map((name) => ({ argv: [DSCL, ".", "-delete", `/Users/${name}`] })),

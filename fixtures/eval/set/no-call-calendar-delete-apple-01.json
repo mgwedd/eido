@@ -1,0 +1,27 @@
+{
+  "id": "no-call-calendar-delete-apple-01",
+  "request": "Cancel the dentist checkup appointment.",
+  "messages": [
+    {
+      "id": "no-call-calendar-delete-apple-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-27T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "events": [
+    {
+      "uid": "528320E5-A9DA-4C6D-9476-90372830537E:EV",
+      "title": "Dentist checkup",
+      "start": "2025-07-02T09:00:00.000Z",
+      "end": "2025-07-02T10:00:00.000Z",
+      "source": "apple-eventkit"
+    }
+  ],
+  "kind": "no_call",
+  "expected": {
+    "intents": []
+  }
+}

@@ -150,6 +150,15 @@ export type ProcessSpec = {
   readyTimeoutMs: number
 }
 
+/**
+ * The supervisor's socket sits in a directory of its own below the run dir (#783). The plane split
+ * (#70) grants the gate user an inherited ACL entry on that directory only, so it reaches the
+ * socket and no other file in the run dir. The stack, the supervisor, the gate's
+ * `EIDO_GATE_SUPERVISOR_SOCKET` and `infra/host/plane.ts` all name it through these.
+ */
+export const SUPERVISOR_DIR_NAME = "supervisor"
+export const SUPERVISOR_SOCKET_NAME = "supervisor.sock"
+
 export type StackConfig = {
   mode: Mode
   platform: Platform
@@ -347,8 +356,13 @@ export function buildStackConfig(input: ConfigInput): StackConfig {
       EIDO_GATE_DATA_DIR: gateDataDir,
       EIDO_GATE_SOCKET: gateSocket,
       EIDO_GATE_CONTROL_SOCKET: controlSocket,
-      // The supervisor's socket (#659), beside the gate's; the gate relays its admin routes there.
-      EIDO_GATE_SUPERVISOR_SOCKET: join(runDir, "supervisor.sock"),
+      // The supervisor's socket (#659), in its own directory (#783); the gate relays its admin
+      // routes there.
+      EIDO_GATE_SUPERVISOR_SOCKET: join(
+        runDir,
+        SUPERVISOR_DIR_NAME,
+        SUPERVISOR_SOCKET_NAME
+      ),
       ...(env["EIDO_PROFILE_AUDIT_EPOCH"] === undefined
         ? {}
         : { EIDO_PROFILE_AUDIT_EPOCH: env["EIDO_PROFILE_AUDIT_EPOCH"] }),

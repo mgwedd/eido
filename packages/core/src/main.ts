@@ -641,15 +641,33 @@ export function createAppleCalendarSyncRuntime(
               skipped: String(calendar.skipped),
               dropped: String(calendar.dropped),
             })
-          else
+          else if (calendar.status === "failed")
             log("apple_calendar_sync_failed", {
               calendar: calendar.calendarId,
-              reason:
-                calendar.status === "missing"
-                  ? "calendar_not_listed"
-                  : calendar.reason,
+              reason: calendar.reason,
             })
+          else {
+            log("apple_calendar_sync_failed", {
+              calendar: calendar.calendarId,
+              reason: "calendar_not_listed",
+              ...(calendar.missedRuns > 0
+                ? { missedRuns: String(calendar.missedRuns) }
+                : {}),
+            })
+            if (calendar.retired > 0)
+              log("apple_calendar_retired", {
+                calendar: calendar.calendarId,
+                reason: "calendar_not_listed",
+                retired: String(calendar.retired),
+              })
+          }
         }
+        for (const calendar of run.result.disabled)
+          log("apple_calendar_retired", {
+            calendar: calendar.calendarId,
+            reason: "calendar_disabled",
+            retired: String(calendar.retired),
+          })
         if (run.result.calendars.some((c) => c.status === "synced"))
           onBatchCommitted?.()
       } catch {

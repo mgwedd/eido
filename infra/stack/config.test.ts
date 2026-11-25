@@ -73,7 +73,7 @@ describe("buildStackConfig", () => {
       EIDO_GATE_DATA_DIR: `${stackDir}/gate`,
       EIDO_GATE_SOCKET: `${stackDir}/run/gate-data-plane.sock`,
       EIDO_GATE_CONTROL_SOCKET: `${stackDir}/run/gate-control.sock`,
-      EIDO_GATE_SUPERVISOR_SOCKET: `${stackDir}/run/supervisor.sock`,
+      EIDO_GATE_SUPERVISOR_SOCKET: `${stackDir}/run/supervisor/supervisor.sock`,
       EIDO_WEBAUTHN_RP_ID: HOST,
       EIDO_WEBAUTHN_ORIGIN: `https://${HOST}:8443`,
       EIDO_GOOGLE_REDIRECT_URI: `https://${HOST}:8443/api/gate/connect/google/callback`,

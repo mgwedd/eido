@@ -4,12 +4,14 @@
 //   sudo node scripts/check-isolation-live.ts --gate-user <gate user> --data-user <data user> \
 //     --intent-socket <path> --control-socket <path> --control-db <path> --gate-keychain <path> \
 //     --proxy-port <port> --llama-port <port> --parser-profile <path> \
-//     --public-host <hostname> --public-ip <IPv4 address> [--timeout-ms 3000]
+//     --public-host <hostname> --public-ip <IPv4 address> [--data-profile <path>] \
+//     [--timeout-ms 3000]
 //
 // It runs as root only to start its children through `sudo -u`: one long-lived child as the gate
 // user holds the synthetic canaries (a loopback TCP listener, a Keychain item, a copy of the
 // control DB's mode next to it), and each probe runs in a short-lived child, first as the
-// data-plane user and then, for every blocked probe, as the gate user with `--as-gate` (the
+// data-plane user (under `sandbox-exec -f <data profile>` when `--data-profile` is given, as the
+// data plane runs) and then, for every blocked probe, as the gate user with `--as-gate` (the
 // positive control, so a FAIL cannot come from a broken probe). It prints one `PASS name` or
 // `FAIL name: reason` line per probe and exits 1 on any FAIL. Canaries are random, never printed,
 // and removed on exit, on failure and on Ctrl-C. See docs/isolation-tests.md.
@@ -94,6 +96,8 @@ export type LiveConfig = {
   proxyPort: number
   llamaPort: number
   parserProfile: string
+  /** The core sandbox profile: when set, data-plane probes run under `sandbox-exec -f` it. */
+  dataProfile?: string
   publicHost: string
   publicIp: string
   timeoutMs: number
@@ -154,9 +158,13 @@ const STRING_FLAGS = {
   "--control-db": "controlDb",
   "--gate-keychain": "gateKeychain",
   "--parser-profile": "parserProfile",
+  "--data-profile": "dataProfile",
   "--public-host": "publicHost",
   "--public-ip": "publicIp",
 } as const
+
+/** Flags the run works without. */
+const OPTIONAL_STRING_KEYS: readonly string[] = ["dataProfile"]
 
 const PORT_FLAGS = {
   "--proxy-port": "proxyPort",
@@ -169,6 +177,7 @@ const PATH_KEYS = [
   "controlDb",
   "gateKeychain",
   "parserProfile",
+  "dataProfile",
 ] as const
 
 const USER_NAME = /^[a-z_][a-z0-9_.-]{0,31}$/
@@ -177,7 +186,7 @@ export const USAGE =
   "usage: sudo node scripts/check-isolation-live.ts --gate-user <user> --data-user <user> " +
   "--intent-socket <path> --control-socket <path> --control-db <path> --gate-keychain <path> " +
   "--proxy-port <port> --llama-port <port> --parser-profile <path> --public-host <hostname> " +
-  "--public-ip <IPv4> [--timeout-ms <ms>]"
+  "--public-ip <IPv4> [--data-profile <path>] [--timeout-ms <ms>]"
 
 function isKey<T extends object>(
   table: T,
@@ -219,7 +228,8 @@ export function parseArgs(
     } else errors.push(`unknown argument ${flag}`)
   }
   for (const [flag, key] of Object.entries(STRING_FLAGS))
-    if (strings[key] === undefined) errors.push(`${flag} is required`)
+    if (strings[key] === undefined && !OPTIONAL_STRING_KEYS.includes(key))
+      errors.push(`${flag} is required`)
   for (const [flag, key] of Object.entries(PORT_FLAGS))
     if (
       ports[key] === undefined &&
@@ -250,6 +260,7 @@ export function parseArgs(
     controlDb,
     gateKeychain,
     parserProfile,
+    dataProfile,
     publicHost,
     publicIp,
   } = strings
@@ -281,6 +292,7 @@ export function parseArgs(
       proxyPort,
       llamaPort,
       parserProfile,
+      ...(dataProfile === undefined ? {} : { dataProfile }),
       publicHost,
       publicIp,
       timeoutMs,
@@ -930,22 +942,58 @@ export function parseResult(line: string): ProbeResult {
 
 const SELF = fileURLToPath(import.meta.url)
 
-function sudoArgs(user: string, args: readonly string[]): string[] {
-  return ["-n", "-u", user, "--", process.execPath, SELF, ...args]
+const SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+
+function sudoArgs(user: string, command: readonly string[]): string[] {
+  return ["-n", "-u", user, "--", ...command]
+}
+
+/** The command for one script child: this script under Node, with `args`. */
+function selfCommand(args: readonly string[]): string[] {
+  return [process.execPath, SELF, ...args]
+}
+
+/**
+ * The `sudo` arguments that start one probe child. A data-plane probe starts under
+ * `sandbox-exec -f <data profile>` when one is configured, as the data plane itself runs: name
+ * resolution goes through mDNSResponder, which per-user pf cannot block, so only the sandbox
+ * denies it. Gate-user controls are never sandboxed. The `parser` probe is not either: it applies
+ * the parser profile itself, and under the core profile its result would no longer show the
+ * parser profile's own fence.
+ */
+export function probeSudoArgs(
+  role: Role,
+  spec: ProbeSpec,
+  config: LiveConfig
+): string[] {
+  const profile =
+    role === "data" && spec.name !== "parser" ? config.dataProfile : undefined
+  return sudoArgs(role === "gate" ? config.gateUser : config.dataUser, [
+    ...(profile === undefined ? [] : [SANDBOX_EXEC, "-f", profile]),
+    ...selfCommand([
+      "probe",
+      "--spec",
+      JSON.stringify(spec),
+      ...(role === "gate" ? ["--as-gate"] : []),
+    ]),
+  ])
 }
 
 function sudoRunner(config: LiveConfig): LiveRunner {
   const holder = spawn(
     "sudo",
-    sudoArgs(config.gateUser, [
-      "canaries",
-      "--gate-user",
+    sudoArgs(
       config.gateUser,
-      "--control-db",
-      config.controlDb,
-      "--gate-keychain",
-      config.gateKeychain,
-    ]),
+      selfCommand([
+        "canaries",
+        "--gate-user",
+        config.gateUser,
+        "--control-db",
+        config.controlDb,
+        "--gate-keychain",
+        config.gateKeychain,
+      ])
+    ),
     { cwd: "/", stdio: ["pipe", "pipe", "inherit"] }
   )
   const exited = new Promise<number | null>((resolve) =>
@@ -999,14 +1047,7 @@ function sudoRunner(config: LiveConfig): LiveRunner {
       return Number(field(await reply, "connections"))
     },
     probe: (role, spec) => {
-      const user = role === "gate" ? config.gateUser : config.dataUser
-      const args = [
-        "probe",
-        "--spec",
-        JSON.stringify(spec),
-        ...(role === "gate" ? ["--as-gate"] : []),
-      ]
-      const run = spawnSync("sudo", sudoArgs(user, args), {
+      const run = spawnSync("sudo", probeSudoArgs(role, spec, config), {
         cwd: "/",
         encoding: "utf8",
         stdio: ["ignore", "pipe", "inherit"],
