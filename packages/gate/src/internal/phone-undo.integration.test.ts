@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { validateGateAuditPage, validateGateLoginOptions } from "@eido/schemas"
 import type { Intent } from "@eido/schemas"
 import { createExecutor } from "./executor"
 import type { WriteRequest, WriteTransport } from "./executor"
@@ -10,23 +9,17 @@ import {
   gmailLabelWriter,
   gmailMarkReadWriter,
 } from "./gmail-writers"
-import type { Handler, Reply } from "./http"
 import { propose } from "./intents"
-import { phoneHandler } from "./phone-routes"
+import { call, projection, signIn, undoHandler } from "./phone-undo-harness"
 import {
-  assertion,
   auditRows,
   loggedText,
   MAIL_OPS,
   manifest,
   setup,
-  testAuthenticator,
-  WEBAUTHN,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
-const HOST = "eido.example.invalid"
-const NOW = new Date("2030-01-01T12:00:00Z")
 const WRITERS = [gmailArchiveWriter, gmailLabelWriter, gmailMarkReadWriter]
 let s: Setup | undefined
 afterEach(() => {
@@ -108,17 +101,7 @@ function pinnedMailbox() {
   })
   const executor = createExecutor(fixture.db, WRITERS, transport)
   const handler = (undo = (id: string) => executor.undo(id)) =>
-    phoneHandler({
-      gate: () => ({
-        db: fixture.db,
-        policy: fixture.policy,
-        webAuthn: WEBAUTHN,
-      }),
-      allowedHosts: [HOST],
-      basePath: "/api/gate",
-      now: () => NOW,
-      undo,
-    })
+    undoHandler(fixture, undo)
   const labels = () =>
     Object.fromEntries(
       [...mailbox].map(([id, values]) => [id, [...values].sort()])
@@ -134,71 +117,6 @@ function pinnedMailbox() {
     return proposed.intentId
   }
   return { ...fixture, mailbox, transport, executor, handler, labels, execute }
-}
-
-function call(
-  handler: Handler,
-  path: string,
-  cookie?: string,
-  method = "POST"
-): Promise<Reply> {
-  return Promise.resolve(
-    handler({
-      method,
-      path: `/api/gate${path}`,
-      query: new URLSearchParams(),
-      headers: {
-        host: HOST,
-        contentType: "application/json",
-        ...(cookie ? { cookie } : {}),
-      },
-      body: () => Promise.resolve({ ok: true, text: "{}" }),
-    })
-  )
-}
-
-async function signIn(
-  f: ReturnType<typeof pinnedMailbox>,
-  handler: Handler
-): Promise<string> {
-  const auth = testAuthenticator()
-  f.db
-    .prepare(
-      "INSERT INTO credentials (credential_id, public_key, sign_count, created_at) VALUES (?, ?, 0, ?)"
-    )
-    .run(auth.credentialId, auth.publicKey, NOW.toISOString())
-  const options = validateGateLoginOptions(
-    (await call(handler, "/auth/login/options")).body
-  )
-  if (!options.ok) throw new Error("invalid login options")
-  const response = await handler({
-    method: "POST",
-    path: "/api/gate/auth/login",
-    query: new URLSearchParams(),
-    headers: { host: HOST, contentType: "application/json" },
-    body: () =>
-      Promise.resolve({
-        ok: true,
-        text: JSON.stringify({
-          assertion: assertion(auth, options.value.challenge),
-        }),
-      }),
-  })
-  const rawCookie = response.headers?.["set-cookie"]
-  const first = typeof rawCookie === "string" ? rawCookie : rawCookie?.[0]
-  const cookie = first?.split(";")[0]
-  if (!cookie) throw new Error("login failed")
-  return cookie
-}
-
-async function projection(handler: Handler, cookie: string, id: string) {
-  const page = validateGateAuditPage(
-    (await call(handler, "/audit", cookie, "GET")).body
-  )
-  if (!page.ok) throw new Error("invalid audit page")
-  return page.value.entries.find(
-    (entry) => entry.action === "execute" && entry.target === id
-  )
 }
 
 const ids = ["private-message-1", "private-message-2"]

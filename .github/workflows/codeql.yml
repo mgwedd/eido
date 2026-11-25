@@ -1,7 +1,7 @@
 name: CodeQL
 
 # Advanced setup, in place of CodeQL default setup (#807). Default setup analysed Swift on a macOS runner
-# for every pull request; here Swift runs only when the Helper changes. The `code_scanning` rule on
+# for every pull request; here the Swift build and analysis run only when the Helper changes. The `code_scanning` rule on
 # `main` reads these results.
 on:
   pull_request:
@@ -70,12 +70,15 @@ jobs:
         with:
           category: /language:${{ matrix.language }}
 
+  # Always reports the `/language:swift` configuration. Code scanning blocks a pull request that lacks a
+  # configuration `main` has, so when the Helper is unchanged this job uploads an empty result from a
+  # Linux runner in place of the macOS build and analysis.
   analyze-swift:
     name: Analyze (swift)
     needs: changes
-    # Runs unless `changes` said no: a failed `changes` job leaves the output empty and the job runs.
-    if: ${{ !cancelled() && needs.changes.outputs.swift != 'false' }}
-    runs-on: macos-latest
+    # A failed `changes` job leaves the output empty and the full analysis runs.
+    if: ${{ !cancelled() }}
+    runs-on: ${{ needs.changes.outputs.swift == 'false' && 'ubuntu-latest' || 'macos-latest' }}
     timeout-minutes: 40
     permissions:
       contents: read
@@ -85,11 +88,23 @@ jobs:
         with:
           persist-credentials: false
       - uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        if: needs.changes.outputs.swift != 'false'
         with:
           languages: swift
           build-mode: manual
       - name: Build the Helper
+        if: needs.changes.outputs.swift != 'false'
         run: swift build --package-path apps/helper
       - uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        if: needs.changes.outputs.swift != 'false'
         with:
+          category: /language:swift
+      - name: Write an empty Swift result
+        if: needs.changes.outputs.swift == 'false'
+        run: |
+          printf '%s\n' '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"CodeQL","rules":[]}},"results":[]}]}' > "$RUNNER_TEMP/swift-unchanged.sarif"
+      - uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        if: needs.changes.outputs.swift == 'false'
+        with:
+          sarif_file: ${{ runner.temp }}/swift-unchanged.sarif
           category: /language:swift
