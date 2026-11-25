@@ -103,6 +103,8 @@ const MESSAGES = {
   network: "The gate could not be reached.",
   unavailable: "Push is not set up on the gate.",
   refused: "The gate refused the push registration.",
+  hostRefused:
+    "This browser's push service is not supported. Use Safari or the Home Screen app.",
   unreadable: "The gate sent an unreadable answer.",
   notAllowed: "Notifications were not allowed.",
   browser: "This browser could not create a push subscription.",
@@ -167,11 +169,15 @@ async function call(
   }
   if (response.ok) return { ok: true, value: json }
   const error = validateGateApiError(json)
-  return fail(
-    error.ok && error.value.code === "unavailable"
-      ? MESSAGES.unavailable
-      : MESSAGES.refused
-  )
+  if (!error.ok) return fail(MESSAGES.refused)
+  switch (error.value.code) {
+    case "unavailable":
+      return fail(MESSAGES.unavailable)
+    case "push_host_refused":
+      return fail(MESSAGES.hostRefused)
+    default:
+      return fail(MESSAGES.refused)
+  }
 }
 
 /** The subscription as the gate takes it, or undefined when the browser's is not usable. */

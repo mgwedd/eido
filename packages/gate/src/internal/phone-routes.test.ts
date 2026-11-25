@@ -282,7 +282,7 @@ describe("phoneHandler: push subscriptions", () => {
     const receiver = createECDH("prime256v1")
     receiver.generateKeys()
     const subscription = {
-      endpoint: "https://push.example.invalid/one",
+      endpoint: "https://web.push.apple.com/one",
       p256dh: receiver
         .getPublicKey(undefined, "uncompressed")
         .toString("base64url"),
@@ -294,13 +294,59 @@ describe("phoneHandler: push subscriptions", () => {
     )
     const changed = {
       ...subscription,
-      endpoint: "https://other.example.invalid/one",
+      endpoint: "https://web.push.apple.com/two",
     }
     const reply = await call("POST", "/push/subscriptions", {
       cookie,
       body: { subscription: changed, approval: authorization.request },
     })
     expect([reply.status, code(reply)]).toEqual([403, "verification_failed"])
+    expect((await call("GET", "/push/subscriptions", { cookie })).body).toEqual(
+      { subscriptions: [] }
+    )
+  })
+
+  it("answers push_host_refused for a subscription on another push host and stores nothing", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    state.push = {
+      publicKey: () => Promise.resolve("synthetic-public-key"),
+      notifyPending: () => undefined,
+      notifyRecovery: () => Promise.resolve(),
+    }
+    const receiver = createECDH("prime256v1")
+    receiver.generateKeys()
+    const allowed = {
+      endpoint: "https://web.push.apple.com/one",
+      p256dh: receiver
+        .getPublicKey(undefined, "uncompressed")
+        .toString("base64url"),
+      auth: randomBytes(16).toString("base64url"),
+    }
+    const elsewhere = {
+      ...allowed,
+      endpoint: "https://push.example.invalid/one",
+    }
+    const prepared = await call("POST", "/push/prepare", {
+      cookie,
+      body: elsewhere,
+    })
+    expect([prepared.status, code(prepared)]).toEqual([
+      422,
+      "push_host_refused",
+    ])
+    const authorization = controlAuthorization(
+      s.db,
+      preparePushRegistration(s.db, allowed)
+    )
+    const registered = await call("POST", "/push/subscriptions", {
+      cookie,
+      body: { subscription: elsewhere, approval: authorization.request },
+    })
+    expect([registered.status, code(registered)]).toEqual([
+      422,
+      "push_host_refused",
+    ])
     expect((await call("GET", "/push/subscriptions", { cookie })).body).toEqual(
       { subscriptions: [] }
     )
@@ -317,7 +363,7 @@ describe("phoneHandler: push subscriptions", () => {
     const receiver = createECDH("prime256v1")
     receiver.generateKeys()
     const subscription = {
-      endpoint: "https://push.example.invalid/one",
+      endpoint: "https://web.push.apple.com/one",
       p256dh: receiver
         .getPublicKey(undefined, "uncompressed")
         .toString("base64url"),
