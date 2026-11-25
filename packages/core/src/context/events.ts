@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { APPLE_CALENDAR_CONNECTOR } from "../connectors/apple-calendar/sync"
 import { fence, normalizeMaterial, toMaterial } from "../inference/fence"
 import type { PromptPart } from "../inference/fence"
+import { matchWords, stopWords } from "./match-words"
 
 // The Events block of a proposal pack: the indexed calendar events that share a word with the
 // owner's request, with their uids, so the model can name an existing event (#746). Titles come
@@ -24,85 +25,131 @@ export interface EventLine {
 }
 
 export interface MatchingEvents {
-  /** The shown events: best match first, soonest first on ties. At most `MAX_EVENT_LINES`. */
+  /**
+   * The shown events, upcoming or past (see `listMatchingEvents`): best match first, nearest to now
+   * first on ties. At most `MAX_EVENT_LINES`.
+   */
   events: EventLine[]
-  /** How many events shared a word with the request, shown or not. */
+  /** How many events of the shown kind (upcoming or past) shared a word with the request. */
   matched: number
+  /**
+   * The two best matches are equally good: they share as many words with the request and cover
+   * as large a share of their own title. The request does not say which one it means.
+   */
+  ambiguous: boolean
 }
 
-// Words that carry no match: articles and prepositions, plus the words every request about a
-// calendar event holds.
-const STOP_WORDS = new Set(
-  (
-    "a an and are as at be but by for from has have i if in into is it its me my of on or our so " +
-    "that the their then there these this those to up us was we were what when which who will with " +
-    "you your please can could would should do does did not no yes all any some " +
-    "calendar calendars event events meeting meetings appointment appointments invite invites " +
+// The words of a request about a calendar event that every such request holds.
+const STOP_WORDS = stopWords(
+  "calendar calendars event events meeting meetings appointment appointments invite invites " +
     "invitation invitations today tomorrow " +
     "cancel cancelled canceled cancelling delete deleted remove removed move moved reschedule " +
     "rescheduled postpone postponed update updated rename renamed edit edited change changed " +
     "add create new set put"
-  ).split(" ")
+)
+
+// Words that make a request clearly about events already over.
+const PAST_WORDS = new Set(
+  "yesterday ago last past earlier previous previously".split(" ")
 )
 
 function words(text: string): Set<string> {
-  const found = text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
-  return new Set(found.filter((w) => !STOP_WORDS.has(w)))
+  return matchWords(text, STOP_WORDS)
 }
 
+/** Whether the request is about events already over ("yesterday", "last week", "two days ago"). */
+function aboutThePast(request: string): boolean {
+  const found = request.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
+  return found.some((w) => PAST_WORDS.has(w))
+}
+
+// Live event heads whose uid an intent can carry. Matching titles against the request stays in
+// JavaScript: SQLite's lower() and LIKE fold ASCII only, so a word filter in SQL would miss
+// titles in other scripts.
 const LIVE_EVENTS = `SELECT f.event_id, f.source, f.start_at, f.end_at, f.all_day, t.title
   FROM document_heads h
-  JOIN calendar_event_facts f ON f.sha256 = h.sha256
+  JOIN calendar_event_facts f ON f.sha256 = h.sha256 AND f.source = h.source
   JOIN document_text t ON t.sha256 = h.sha256
-  WHERE h.source = f.source`
+  WHERE length(f.event_id) <= ${String(MAX_EVENT_UID_CHARS)}`
+
+interface Scored {
+  score: number
+  coverage: number
+  /** Start, as milliseconds. */
+  start: number
+  upcoming: boolean
+  line: EventLine
+}
 
 /**
  * The current calendar events of the document index whose title shares a word with the request
- * (lowercase, stop words removed), best match first, soonest first on ties, at most ten, titles
- * cut at 80 characters. A request that shares no word gets none, and an event whose uid would not
- * reach the model unchanged, or could not be named by an intent, is never listed.
+ * (lowercase, stop words removed), at most ten, titles cut at 80 characters. Upcoming events (not
+ * yet ended at `now`) are listed, soonest first on ties; past events instead, most recent first,
+ * only when the request is about the past or no upcoming event matches. Best match first: most
+ * shared words, then the largest share of the title covered. A request that shares no word gets
+ * none, and an event whose uid would not reach the model unchanged is never listed.
  */
 export function listMatchingEvents(
   db: DatabaseSync,
-  request: string
+  request: string,
+  now: Date
 ): MatchingEvents {
   const wanted = words(request)
   const scored = db
     .prepare(LIVE_EVENTS)
     .all()
-    .flatMap((row) => {
+    .flatMap((row): Scored[] => {
       const uid = String(row["event_id"])
-      if (normalizeMaterial(uid) !== uid || uid.length > MAX_EVENT_UID_CHARS)
-        return []
+      if (normalizeMaterial(uid) !== uid) return []
       const title = typeof row["title"] === "string" ? row["title"] : ""
-      const shared = [...words(title)].filter((w) => wanted.has(w)).length
+      const titleWords = words(title)
+      const shared = [...titleWords].filter((w) => wanted.has(w)).length
       if (shared === 0) return []
+      const start = String(row["start_at"])
+      const end = String(row["end_at"])
       return [
         {
           score: shared,
+          coverage: shared / titleWords.size,
+          start: Date.parse(start),
+          upcoming: Date.parse(end) >= now.getTime(),
           line: {
             uid,
             title: title
               .replace(/\s+/g, " ")
               .trim()
               .slice(0, MAX_EVENT_TITLE_CHARS),
-            start: String(row["start_at"]),
-            end: String(row["end_at"]),
+            start,
+            end,
             allDay: row["all_day"] === 1,
             source: String(row["source"]),
           },
         },
       ]
     })
-  scored.sort(
+  const upcoming = scored.filter((s) => s.upcoming)
+  const past = scored.filter((s) => !s.upcoming)
+  const preferPast =
+    past.length > 0 && (upcoming.length === 0 || aboutThePast(request))
+  const shown = preferPast ? past : upcoming
+  // Nearest to now first: soonest upcoming, or most recent past.
+  const direction = preferPast ? -1 : 1
+  shown.sort(
     (a, b) =>
       b.score - a.score ||
-      Date.parse(a.line.start) - Date.parse(b.line.start) ||
+      b.coverage - a.coverage ||
+      direction * (a.start - b.start) ||
       (a.line.uid < b.line.uid ? -1 : 1)
   )
+  const [first, second] = shown
   return {
-    events: scored.slice(0, MAX_EVENT_LINES).map((s) => s.line),
-    matched: scored.length,
+    events: shown.slice(0, MAX_EVENT_LINES).map((s) => s.line),
+    matched: shown.length,
+    ambiguous:
+      first !== undefined &&
+      second !== undefined &&
+      first.score === second.score &&
+      first.coverage === second.coverage,
   }
 }
 
@@ -111,7 +158,9 @@ export function listMatchingEvents(
  * fence. An Apple Calendar event is marked read-only: `calendar.edit` and `calendar.delete` are
  * Proton invitation operations and refuse its uid. No events render nothing.
  */
-export function renderEventsBlock(list: MatchingEvents): PromptPart[] {
+export function renderEventsBlock(
+  list: Pick<MatchingEvents, "events" | "matched">
+): PromptPart[] {
   if (list.events.length === 0) return []
   const lines = list.events.map(
     (e) =>

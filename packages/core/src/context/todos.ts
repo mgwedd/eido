@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { THINGS_CONNECTOR, THINGS_MIME } from "../connectors/things/sync"
 import { fence, normalizeMaterial, toMaterial } from "../inference/fence"
 import type { PromptPart } from "../inference/fence"
+import { matchWords, stopWords } from "./match-words"
 
 // The Todos block of a proposal pack: the open Things to-dos that share a word with the owner's
 // request, so the model can name an existing to-do by its id (#744). Titles come from Things, so
@@ -31,23 +32,16 @@ export interface OpenTodos {
   ambiguous: boolean
 }
 
-// Words that carry no match: articles and prepositions, plus the words of a request about a
-// to-do that every such request holds.
-const STOP_WORDS = new Set(
-  (
-    "a an and are as at be but by for from has have i if in into is it its me my of on or our so " +
-    "that the their then there these this those to up us was we were what when which who will with " +
-    "you your please can could would should do does did not no yes all any some " +
-    "todo todos to-do to-dos task tasks thing things item items list " +
+// The words of a request about a to-do that every such request holds.
+const STOP_WORDS = stopWords(
+  "todo todos to-do to-dos task tasks thing things item items list " +
     "cancel cancelled canceled cancelling complete completed completing finish finished done mark " +
     "schedule scheduled reschedule rescheduled postpone postponed defer deferred update updated " +
     "rename renamed edit edited change changed retitle drop add create new set put"
-  ).split(" ")
 )
 
 function words(text: string): Set<string> {
-  const found = text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
-  return new Set(found.filter((w) => !STOP_WORDS.has(w)))
+  return matchWords(text, STOP_WORDS)
 }
 
 const LIVE_OPEN_TODOS = `SELECT f.todo_id, t.title, f.due_date, t.occurred_at
