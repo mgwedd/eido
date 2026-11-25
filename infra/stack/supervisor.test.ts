@@ -77,9 +77,11 @@ function errorOf(reply: { body: unknown }) {
 }
 
 describe("supervisorSocketPath", () => {
-  it("sits in the stack's run directory", () => {
+  it("sits in a directory of its own below the stack's run directory", () => {
     const { w } = setup()
-    expect(supervisorSocketPath(w.deps)).toBe(`${STACK}/run/supervisor.sock`)
+    expect(supervisorSocketPath(w.deps)).toBe(
+      `${STACK}/run/supervisor/supervisor.sock`
+    )
   })
 })
 

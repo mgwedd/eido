@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto"
+import type { AppleCalendarSelection } from "./connectors/apple-calendar/config"
 import { execFile } from "node:child_process"
 import {
   existsSync,
@@ -1920,6 +1921,66 @@ describe("createAppleCalendarSyncRuntime", () => {
     ])
     expect(committed).toBe(1)
     expect(JSON.stringify(logged)).not.toContain("synthetic title")
+    db.close()
+  })
+
+  it("logs the retirement of a calendar that is no longer enabled or no longer listed, with counts only", async () => {
+    const db = dbWithEntity()
+    const logged: [string, Readonly<Record<string, string>> | undefined][] = []
+    const other = {
+      id: "cal-synthetic-b",
+      title: "Other title",
+      writable: true,
+    }
+    let listed = [...calendars.calendars, other]
+    const run = (selection: AppleCalendarSelection) =>
+      createAppleCalendarSyncRuntime({
+        db,
+        gate: { getConnectorHealth: () => Promise.resolve([]) },
+        client: {
+          listCalendars: () => Promise.resolve({ calendars: listed }),
+          listEvents: ({ calendarId }) =>
+            Promise.resolve({ events: [{ ...appleEvent, calendarId }] }),
+        },
+        entities,
+        selection,
+        now: () => new Date("2026-12-01T12:00:00Z"),
+        log: (event, fields) => logged.push([event, fields]),
+      })()
+    await run({ kind: "all" })
+    logged.length = 0
+    await run({ kind: "ids", ids: ["cal-synthetic-a"] })
+    expect(logged.at(-1)).toEqual([
+      "apple_calendar_retired",
+      {
+        calendar: "cal-synthetic-b",
+        reason: "calendar_disabled",
+        retired: "1",
+      },
+    ])
+
+    listed = []
+    for (let n = 0; n < 11; n++) await run({ kind: "all" })
+    logged.length = 0
+    await run({ kind: "all" })
+    expect(logged).toEqual([
+      [
+        "apple_calendar_sync_failed",
+        {
+          calendar: "cal-synthetic-a",
+          reason: "calendar_not_listed",
+          missedRuns: "12",
+        },
+      ],
+      [
+        "apple_calendar_retired",
+        {
+          calendar: "cal-synthetic-a",
+          reason: "calendar_not_listed",
+          retired: "1",
+        },
+      ],
+    ])
     db.close()
   })
 

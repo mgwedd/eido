@@ -18,7 +18,7 @@ import {
 } from "@eido/schemas"
 
 // The gate's client for the stack supervisor (#644, ADR 0009 Decision 6): HTTP over the owner-only
-// Unix socket `<stackDir>/run/supervisor.sock`. Every reply, refusals included, is checked by its
+// Unix socket `<stackDir>/run/supervisor/supervisor.sock`. Every reply, refusals included, is checked by its
 // schema in @eido/schemas; a reply that fails it is an error, never data. The client does nothing
 // else: no retries, no caching, no secrets.
 

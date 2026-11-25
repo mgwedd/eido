@@ -45,15 +45,17 @@ sudo node scripts/check-isolation-live.ts \
   --intent-socket <gate intent socket path> --control-socket <gate control socket path> \
   --control-db <path to eido-control.db> --gate-keychain <gate keychain path> \
   --proxy-port <gate proxy port> --llama-port <llama-server port> \
-  --parser-profile <parser sandbox profile path> \
+  --parser-profile <parser sandbox profile path> --data-profile <core sandbox profile path> \
   --public-host <a public hostname> --public-ip <a public IPv4 address>
 ```
 
 User names, paths, ports, the public hostname and the public IP come from the arguments; the script names none. `--timeout-ms` (default 3000) bounds each connect.
 
+`--data-profile` is the core sandbox profile (`core.sb`, written by the #70 runbook). Pass it on a split host: the data plane runs under that profile, and name resolution goes through mDNSResponder, a root daemon that per-user pf cannot block, so only the profile denies it. Without the flag the probes run as the data-plane user with no sandbox and `dns` reports `reached`. With it, every data-plane probe starts as `sudo -u <data user> /usr/bin/sandbox-exec -f <profile> node ...`, except `parser` (it applies `--parser-profile` itself, and under the core profile its result would no longer show the parser profile's own fence). The gate-user controls never run under a profile.
+
 ### What each probe proves
 
-Each probe runs as the data-plane user. Every probe marked blocked runs again as the gate user with `--as-gate` (the `.control` line): it must succeed there, so a blocked result cannot come from a broken probe, a wrong path or a stopped service.
+Each probe runs as the data-plane user, under the core sandbox profile when `--data-profile` is given. Every probe marked blocked runs again as the gate user with `--as-gate` (the `.control` line): it must succeed there, so a blocked result cannot come from a broken probe, a wrong path or a stopped service.
 
 | Probe             | As the data-plane user                                                                                                                                                                                         | Control as the gate user                   |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
@@ -67,6 +69,8 @@ Each probe runs as the data-plane user. Every probe marked blocked runs again as
 | `control-db`      | Reading a canary file created next to `eido-control.db` with the real file's mode, owned by the gate user, fails with permission denied (`EACCES` or `EPERM`).                                                 | Reads it, and its digest matches.          |
 | `control-socket`  | Connecting to the gate's control socket fails with permission denied.                                                                                                                                          | Connects.                                  |
 | `parser`          | The #43 hostile network fixture (`packages/core/src/parsers/hostile/network.test-support.ts`), run under `sandbox-exec -f <parser profile>`, cannot connect to the canary port, and the listener sees nothing. | Without the sandbox, the fixture connects. |
+
+Under `--data-profile`, `control-db` and `control-socket` pass when either the file or socket permissions or the profile deny the access, since the profile denies the gate's directories and every non-allowed socket. Step 6 of the #70 runbook checks the permissions on their own, as `_eidodata` without a profile.
 
 The parser probe leaves out the in-process no-network preload on purpose, so the result is the OS fence's alone. Parser tokens are covered by the `keychain` and `control-db` probes: the parser runs as the data-plane user and its environment is empty (portable test).
 
