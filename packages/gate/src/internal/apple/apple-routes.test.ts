@@ -40,11 +40,14 @@ function reads(): AppleReads {
         calendars: [
           { id: "cal", title: "Private calendar title", writable: true },
         ],
+        skipped: 2,
       })
     ),
-    listReminderLists: vi.fn(() => Promise.resolve({ calendars: [] })),
-    listEvents: vi.fn(() => Promise.resolve({ events: [] })),
-    listReminders: vi.fn(() => Promise.resolve({ reminders: [] })),
+    listReminderLists: vi.fn(() =>
+      Promise.resolve({ calendars: [], skipped: 0 })
+    ),
+    listEvents: vi.fn(() => Promise.resolve({ events: [], skipped: 0 })),
+    listReminders: vi.fn(() => Promise.resolve({ reminders: [], skipped: 0 })),
   }
 }
 
@@ -58,6 +61,7 @@ describe("Apple data-plane reads", () => {
         calendars: [
           { id: "cal", title: "Private calendar title", writable: true },
         ],
+        skipped: 2,
       },
     })
     expect(
@@ -74,7 +78,7 @@ describe("Apple data-plane reads", () => {
           apple
         )
       )?.body
-    ).toEqual({ events: [] })
+    ).toEqual({ events: [], skipped: 0 })
     expect(
       (
         await appleRoute(
@@ -86,7 +90,7 @@ describe("Apple data-plane reads", () => {
           apple
         )
       )?.body
-    ).toEqual({ reminders: [] })
+    ).toEqual({ reminders: [], skipped: 0 })
     expect(apple.listEvents).toHaveBeenCalledWith(
       "cal",
       "2026-11-14T00:00:00Z",
@@ -102,7 +106,7 @@ describe("Apple data-plane reads", () => {
           "SELECT detail_hash FROM audit_log WHERE action='apple.read.list_calendars'"
         )
         .get()?.["detail_hash"]
-    ).toBe(payloadHash({ items: 1 }))
+    ).toBe(payloadHash({ items: 1, skipped: 2 }))
     expect(loggedText(state.db)).not.toContain("Private calendar title")
   })
   test.each([
@@ -139,6 +143,25 @@ describe("Apple data-plane reads", () => {
       expect(apple.listReminders).not.toHaveBeenCalled()
     }
   )
+  test("bounds the completed-reminder lookback to 366 days before the request", async () => {
+    const state = fixture()
+    const apple = reads()
+    const now = () => Date.parse("2026-11-14T10:00:00Z")
+    const read = (since: string) =>
+      appleRoute(
+        req("/apple/reminders", `listId=list&completedSince=${since}`),
+        state.db,
+        apple,
+        now
+      )
+    expect((await read("2025-11-13T09:59:59Z"))?.status).toBe(400)
+    expect(apple.listReminders).not.toHaveBeenCalled()
+    expect((await read("2025-11-13T10:00:00Z"))?.status).toBe(200)
+    expect(apple.listReminders).toHaveBeenCalledWith(
+      "list",
+      "2025-11-13T10:00:00Z"
+    )
+  })
   test("has no write route and refuses a disabled connector", async () => {
     const state = fixture()
     const apple = reads()

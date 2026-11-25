@@ -322,17 +322,23 @@ public struct ReminderValue: Encodable, Equatable {
 }
 
 public enum ResultValue: Encodable {
-  case calendars([CalendarValue])
-  case events([EventValue])
-  case reminders([ReminderValue])
+  case calendars([CalendarValue], skipped: Int)
+  case events([EventValue], skipped: Int)
+  case reminders([ReminderValue], skipped: Int)
   case id(String)
-  private enum Keys: String, CodingKey { case calendars, events, reminders, id }
+  private enum Keys: String, CodingKey { case calendars, events, reminders, skipped, id }
   public func encode(to encoder: Encoder) throws {
     var c = encoder.container(keyedBy: Keys.self)
     switch self {
-    case .calendars(let items): try c.encode(items, forKey: .calendars)
-    case .events(let items): try c.encode(items, forKey: .events)
-    case .reminders(let items): try c.encode(items, forKey: .reminders)
+    case .calendars(let items, let skipped):
+      try c.encode(items, forKey: .calendars)
+      try c.encode(skipped, forKey: .skipped)
+    case .events(let items, let skipped):
+      try c.encode(items, forKey: .events)
+      try c.encode(skipped, forKey: .skipped)
+    case .reminders(let items, let skipped):
+      try c.encode(items, forKey: .reminders)
+      try c.encode(skipped, forKey: .skipped)
     case .id(let id): try c.encode(id, forKey: .id)
     }
   }

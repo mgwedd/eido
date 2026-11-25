@@ -20,14 +20,15 @@ describe("Apple read adapter", () => {
     const reads = createAppleReads(run)
     await expect(reads.listCalendars()).resolves.toEqual({
       calendars: [{ id: "cal", title: "Work", writable: true }],
+      skipped: 0,
     })
     await reads.listReminderLists()
     await expect(
       reads.listEvents("cal", "2026-11-14T00:00:00Z", "2026-11-15T00:00:00Z")
-    ).resolves.toEqual({ events: [] })
+    ).resolves.toEqual({ events: [], skipped: 0 })
     await expect(
       reads.listReminders("list", "2026-11-01T00:00:00Z")
-    ).resolves.toEqual({ reminders: [] })
+    ).resolves.toEqual({ reminders: [], skipped: 0 })
     expect(requests).toEqual([
       { operation: "list_calendars", args: {} },
       { operation: "list_reminder_lists", args: {} },
@@ -44,6 +45,23 @@ describe("Apple read adapter", () => {
         args: { listId: "list", completedSince: "2026-11-01T00:00:00Z" },
       },
     ])
+  })
+  test("passes the Helper's skipped count through and refuses an invalid one", async () => {
+    await expect(
+      createAppleReads(() =>
+        Promise.resolve({ events: [], skipped: 3 })
+      ).listEvents("cal", "2026-11-14T00:00:00Z", "2026-11-15T00:00:00Z")
+    ).resolves.toEqual({ events: [], skipped: 3 })
+    await expect(
+      createAppleReads(() =>
+        Promise.resolve({ reminders: [], skipped: -1 })
+      ).listReminders("list", "2026-11-01T00:00:00Z")
+    ).rejects.toMatchObject({ code: "unavailable" })
+    await expect(
+      createAppleReads(() =>
+        Promise.resolve({ calendars: [], skipped: 1.5 })
+      ).listCalendars()
+    ).rejects.toMatchObject({ code: "unavailable" })
   })
   test("refuses a valid envelope with the wrong operation's result", async () => {
     const reads = createAppleReads(() => Promise.resolve({ calendars: [] }))
