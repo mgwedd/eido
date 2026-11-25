@@ -85,7 +85,10 @@ import type {
   ControlStore,
 } from "./internal/control-checkpoint"
 import { KeychainControlStore } from "./internal/vault/keychain-checkpoint"
-import { unlockFromStdin } from "./internal/vault/keychain-unlock"
+import {
+  KeychainUnlockError,
+  unlockFromStdin,
+} from "./internal/vault/keychain-unlock"
 import type { WebAuthnConfig } from "./internal/webauthn"
 import { initializeProfileAudit } from "./internal/profile-audit"
 import type { ProfileAudit } from "./internal/profile-audit"
@@ -563,7 +566,9 @@ export async function runGate(
     try {
       await unlockKeychain(config.keychainUnlock.path)
     } catch (error) {
-      log("keychain_unlock_failed")
+      log("keychain_unlock_failed", {
+        reason: error instanceof KeychainUnlockError ? error.reason : "helper",
+      })
       throw error
     }
     log("keychain_unlocked")

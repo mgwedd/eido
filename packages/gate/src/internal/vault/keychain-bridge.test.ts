@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events"
 import { beforeEach, expect, test, vi } from "vitest"
 import {
   base64Bytes,
+  KEYCHAIN_SCRIPT,
   runKeychainCommand,
   unlockKeychain,
 } from "./keychain-bridge"
@@ -18,6 +19,13 @@ class Child extends EventEmitter {
   stderr = new Pipe()
   kill = vi.fn()
 }
+// The whole spawn call: fixed source in argv, a PATH-only environment. Any request byte or extra
+// environment key in it fails the comparison.
+const SPAWN_CALL = [
+  "/usr/bin/osascript",
+  ["-l", "JavaScript", "-e", KEYCHAIN_SCRIPT],
+  { stdio: "pipe", timeout: 10_000, env: { PATH: "/usr/bin:/bin" } },
+]
 let child: Child
 beforeEach(() => {
   child = new Child()
@@ -31,10 +39,7 @@ const command = {
 } as const
 test("keeps the secret out of argv and returns only a validated native reply", async () => {
   const result = runKeychainCommand(command)
-  expect(mocked.spawn.mock.calls[0]?.[0]).toBe("/usr/bin/osascript")
-  expect(JSON.stringify(mocked.spawn.mock.calls[0])).not.toContain(
-    "private-encoded-marker"
-  )
+  expect(mocked.spawn.mock.calls).toEqual([SPAWN_CALL])
   expect(child.stdin.end.mock.calls[0]?.[0]).toBe(JSON.stringify(command))
   expect(child.stderr.resume).toHaveBeenCalledOnce()
   child.stdout.emit("data", Buffer.from('{"status":0}'))
@@ -82,14 +87,7 @@ test("sends the unlock passphrase only on stdin, base64 in the request, and zero
     "/test.keychain-db",
     Buffer.from(PASSPHRASE, "utf8")
   )
-  const call: unknown[] = mocked.spawn.mock.calls[0] ?? []
-  expect(call[0]).toBe("/usr/bin/osascript")
-  const exposed = JSON.stringify(call)
-  expect(exposed).not.toContain("synthetic unlock")
-  expect(exposed).not.toContain(
-    Buffer.from(PASSPHRASE, "utf8").toString("base64")
-  )
-  expect(call[2]).toMatchObject({ env: { PATH: "/usr/bin:/bin" } })
+  expect(mocked.spawn.mock.calls).toEqual([SPAWN_CALL])
   const sent = child.stdin.end.mock.calls[0]?.[0]
   expect(JSON.parse(requestBytes().toString("utf8"))).toEqual({
     operation: "unlock",

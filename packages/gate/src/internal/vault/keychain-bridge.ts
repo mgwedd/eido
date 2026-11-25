@@ -2,11 +2,10 @@ import { spawn } from "node:child_process"
 import { validateGateKeychainResult } from "@eido/schemas"
 import type { GateKeychainResult } from "@eido/schemas"
 
+/** Item requests. The `unlock` request is internal to `unlockKeychain`, which builds it in zeroable bytes. */
 export type KeychainCommand =
   | { operation: "get" | "delete"; path: string; account: string }
   | { operation: "set"; path: string; account: string; data: string }
-  /** `data` is the base64 passphrase; the reply's `unlock` says whether it was accepted. */
-  | { operation: "unlock"; path: string; data: string }
 
 /**
  * Fixed source only in argv. Requests and secret bytes travel over private stdin/stdout pipes.
@@ -14,6 +13,8 @@ export type KeychainCommand =
  * sleep, no idle timeout. The settings calls are bound with untyped pointers because JXA cannot
  * pass the SecKeychainSettings struct; the 12 bytes are {version 1, lockOnSleep, useLockInterval,
  * padding, lockInterval INT32_MAX}, and the read-back must show lock-on-sleep off and no timeout.
+ * Once the unlock succeeded, any later failure locks the keychain again before it returns, so a
+ * gate that refuses to start does not leave it unlocked.
  */
 export const KEYCHAIN_SCRIPT = String.raw`
 ObjC.import('Foundation');
@@ -30,14 +31,22 @@ function unlock(keychain, base64) {
   secret.resetBytesInRange($.NSMakeRange(0, secret.length));
   if (status === -25293) return JSON.stringify({status: status, unlock: 'locked'});
   if (status !== 0) return JSON.stringify({status: status});
-  status = $.SecKeychainSetSettings(keychain, bytes('AQAAAAAAAAD///9/').mutableBytes);
-  if (status !== 0) return JSON.stringify({status: status});
-  var settings = bytes('AQAAAAEBAAAAAAAA');
-  status = $.SecKeychainCopySettings(keychain, settings.mutableBytes);
-  if (status !== 0) return JSON.stringify({status: status});
-  var read = ObjC.unwrap(settings.base64EncodedStringWithOptions(0));
-  if (read !== 'AQAAAAAAAAD///9/' && read !== 'AQAAAAABAAD///9/') return JSON.stringify({status: -1});
-  return JSON.stringify({status: 0, unlock: 'unlocked'});
+  try {
+    status = $.SecKeychainSetSettings(keychain, bytes('AQAAAAAAAAD///9/').mutableBytes);
+    if (status !== 0) return relock(keychain, status);
+    var settings = bytes('AQAAAAEBAAAAAAAA');
+    status = $.SecKeychainCopySettings(keychain, settings.mutableBytes);
+    if (status !== 0) return relock(keychain, status);
+    var read = ObjC.unwrap(settings.base64EncodedStringWithOptions(0));
+    if (read !== 'AQAAAAAAAAD///9/' && read !== 'AQAAAAABAAD///9/') return relock(keychain, -1);
+    return JSON.stringify({status: 0, unlock: 'unlocked'});
+  } catch (_) {
+    return relock(keychain, -1);
+  }
+}
+function relock(keychain, status) {
+  $.SecKeychainLock(keychain);
+  return JSON.stringify({status: status});
 }
 function run() {
   try {

@@ -4,7 +4,11 @@ import { chmod, mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, describe, expect, test } from "vitest"
-import { startKeychainWorker, unlockKeychain } from "./keychain-bridge"
+import {
+  KEYCHAIN_SCRIPT,
+  startKeychainWorker,
+  unlockKeychain,
+} from "./keychain-bridge"
 import { KeychainVault } from "./keychain-vault"
 import { vaultContract } from "./vault-contract"
 import { vaultKeyId } from "./vault"
@@ -24,6 +28,11 @@ function run() {
   if(r.operation==='lock')return String($.SecKeychainLock(keychain[0]));
   if(r.operation==='delete')return String($.SecKeychainDelete(keychain[0]));
   if(r.operation==='unlock')return String($.SecKeychainUnlock(keychain[0],password.length,password.bytes,true));
+  if(r.operation==='status'){
+    var s=Ref();
+    status=$.SecKeychainGetStatus(keychain[0],s);
+    return status+' '+s[0];
+  }
   if(r.operation==='settings'){
     var b=$.NSMutableData.alloc.initWithBase64EncodedStringOptions($.NSString.stringWithString('AQAAAAAAAAAAAAAA'),0);
     status=$.SecKeychainCopySettings(keychain[0],b.mutableBytes);
@@ -74,6 +83,35 @@ async function autoLock(f: { path: string; password: string }) {
   expect(status).toBe("0")
   const bytes = Buffer.from(base64 ?? "", "base64")
   return { lockOnSleep: bytes[4] === 1, interval: bytes.readUInt32LE(8) }
+}
+/** kSecUnlockStateStatus (bit 0) of SecKeychainGetStatus. */
+async function isUnlocked(f: { path: string; password: string }) {
+  const [status, flags] = (
+    await nativeFixture({ ...f, operation: "status" })
+  ).split(" ")
+  expect(status).toBe("0")
+  return (Number(flags) & 1) === 1
+}
+/** Runs the bridge script with one source edit, to make a step after the unlock fail. */
+function runEditedScript(
+  find: string,
+  replace: string,
+  request: object
+): Promise<unknown> {
+  const script = KEYCHAIN_SCRIPT.replace(find, replace)
+  expect(script).not.toBe(KEYCHAIN_SCRIPT)
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      "/usr/bin/osascript",
+      ["-l", "JavaScript", "-e", script],
+      { timeout: 10_000 },
+      (error, stdout) => {
+        if (error) reject(new Error("edited keychain script failed"))
+        else resolve(JSON.parse(stdout))
+      }
+    )
+    child.stdin?.end(JSON.stringify(request))
+  })
 }
 const KEY = { connector: "proton", kind: "password", client: "none" } as const
 const fixtures: { dir: string; path: string; password: string }[] = []
@@ -175,6 +213,47 @@ describe.skipIf(process.platform !== "darwin")(
       await f.vault.delete(KEY)
       expect(await f.vault.get(KEY)).toBeUndefined()
     })
+
+    test.each([
+      [
+        "setting auto-lock off",
+        "status = $.SecKeychainSetSettings(",
+        "status = -25291 || $.SecKeychainSetSettings(",
+        -25291,
+      ],
+      [
+        "reading the settings back",
+        "status = $.SecKeychainCopySettings(",
+        "status = -25291 || $.SecKeychainCopySettings(",
+        -25291,
+      ],
+      [
+        "checking the read-back",
+        "if (read !== 'AQAAAAAAAAD///9/'",
+        "if (true || read !== 'AQAAAAAAAAD///9/'",
+        -1,
+      ],
+    ])(
+      "when %s fails after the unlock, the keychain is locked again",
+      async (_step, find, replace, status) => {
+        const f = await fixture()
+        expect(await nativeFixture({ ...f, operation: "lock" })).toBe("0")
+        expect(await isUnlocked(f)).toBe(false)
+        expect(
+          await runEditedScript(find, replace, {
+            operation: "unlock",
+            path: f.path,
+            data: Buffer.from(f.password).toString("base64"),
+          })
+        ).toEqual({ status })
+        expect(await isUnlocked(f)).toBe(false)
+        // The unmodified script unlocks the same keychain, so the failure above came after a real unlock.
+        expect(await unlockKeychain(f.path, Buffer.from(f.password))).toBe(
+          "unlocked"
+        )
+        expect(await isUnlocked(f)).toBe(true)
+      }
+    )
 
     test("the real worker argv contains only fixed source, never the request or secret", async () => {
       const f = await fixture()

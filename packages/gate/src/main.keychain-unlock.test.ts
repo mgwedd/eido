@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Readable } from "node:stream"
+import { PassThrough, Readable } from "node:stream"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { MemoryControlStore } from "./internal/control-checkpoint"
 import { socketAddress, WEBAUTHN } from "./internal/test-fixtures"
@@ -69,6 +69,14 @@ describe("gateConfig with EIDO_GATE_KEYCHAIN_UNLOCK (#821)", () => {
   })
 })
 
+const AT: unknown = expect.any(String)
+function logLines(): unknown[] {
+  return readFileSync(join(dir, "gate", GATE_LOG_FILE), "utf8")
+    .trim()
+    .split("\n")
+    .map((line): unknown => JSON.parse(line))
+}
+
 describe("runGate keychain unlock (#821)", () => {
   async function start(
     config: GateConfig,
@@ -92,13 +100,20 @@ describe("runGate keychain unlock (#821)", () => {
     return { ...result, opened: f.opened }
   }
 
-  it("does not unlock, and so never reads stdin, without EIDO_GATE_KEYCHAIN_UNLOCK", async () => {
-    const unlock = vi.fn(() => Promise.resolve())
-    const { error, opened } = await start(gateConfig(env()), unlock)
-    expect(error).toBeUndefined()
-    expect(unlock).not.toHaveBeenCalled()
-    expect(opened[0]).toBe("checkpoint")
-    expect(opened).not.toContain("unlock")
+  it("never touches process.stdin without EIDO_GATE_KEYCHAIN_UNLOCK", async () => {
+    const stdin = vi.spyOn(process, "stdin", "get")
+    try {
+      const f = factories()
+      const gate = await runGate(gateConfig(env()), undefined, f.vault, f.store)
+      await gate.close()
+      expect(stdin).not.toHaveBeenCalled()
+      expect(f.opened[0]).toBe("checkpoint")
+      expect(logLines()).not.toContainEqual(
+        expect.objectContaining({ event: "keychain_unlocked" })
+      )
+    } finally {
+      stdin.mockRestore()
+    }
   })
 
   it("unlocks the configured keychain before opening the control checkpoint", async () => {
@@ -109,28 +124,69 @@ describe("runGate keychain unlock (#821)", () => {
     // The vault opens later, for the profile audit; the unlock must come first.
     expect(opened.slice(0, 2)).toEqual(["unlock", "checkpoint"])
     expect(opened.slice(2)).toContain("vault")
-    expect(readFileSync(join(dir, "gate", GATE_LOG_FILE), "utf8")).toContain(
-      '"event":"keychain_unlocked"'
+    expect(logLines()[0]).toEqual({
+      at: AT,
+      event: "keychain_unlocked",
+    })
+  })
+
+  // Use the real owner and mode check on the keychain file, which needs POSIX uids.
+  describe.skipIf(process.platform === "win32")("on a failed unlock", () => {
+    it.each([
+      [
+        "a rejected passphrase",
+        () => Readable.from([Buffer.from(`${PASSPHRASE}\n`)]),
+        "locked",
+        "Gate keychain is still locked: the passphrase was rejected",
+      ],
+      [
+        "a pipe that is never closed",
+        () => {
+          const stdin = new PassThrough()
+          stdin.write(Buffer.from(PASSPHRASE))
+          return stdin
+        },
+        "timeout",
+        "Keychain passphrase did not arrive on stdin in time",
+      ],
+      [
+        "a terminal",
+        () =>
+          Object.assign(Readable.from([Buffer.from(PASSPHRASE)]), {
+            isTTY: true,
+          }),
+        "tty",
+        "Keychain passphrase must come from a pipe, not a terminal",
+      ],
+    ])(
+      "with %s, opens neither the checkpoint nor the vault and logs only the fixed reason",
+      async (_name, stdin, reason, message) => {
+        const bridge = vi.fn(() => Promise.resolve("locked" as const))
+        const { error, opened } = await start(
+          gateConfig(env("stdin")),
+          (path) => unlockFromStdin(path, stdin(), bridge, 50)
+        )
+        expect(String(error)).toBe(`KeychainUnlockError: ${message}`)
+        expect(bridge).toHaveBeenCalledTimes(reason === "locked" ? 1 : 0)
+        expect(opened).toEqual(["unlock"])
+        expect(logLines()).toEqual([
+          { at: AT, event: "keychain_unlock_failed", reason },
+        ])
+      }
     )
   })
 
-  // Uses the real owner and mode check on the keychain file, which needs POSIX uids.
-  it.skipIf(process.platform === "win32")(
-    "with a rejected stdin passphrase, opens neither the checkpoint nor the vault and logs no secret",
-    async () => {
-      const stdin = Readable.from([Buffer.from(`${PASSPHRASE}\n`)])
-      const bridge = vi.fn(() => Promise.resolve("locked" as const))
-      const { error, opened } = await start(gateConfig(env("stdin")), (path) =>
-        unlockFromStdin(path, stdin, bridge)
-      )
-      expect(String(error)).toBe(
-        "Error: Gate keychain is still locked: the passphrase was rejected"
-      )
-      expect(bridge).toHaveBeenCalledOnce()
-      expect(opened).toEqual(["unlock"])
-      const log = readFileSync(join(dir, "gate", GATE_LOG_FILE), "utf8")
-      expect(log).toContain('"event":"keychain_unlock_failed"')
-      expect(log).not.toContain(PASSPHRASE)
-    }
-  )
+  it("logs a helper reason for an unlock step that fails some other way", async () => {
+    const { opened } = await start(gateConfig(env("stdin")), () =>
+      Promise.reject(new Error(PASSPHRASE))
+    )
+    expect(opened).toEqual(["unlock"])
+    expect(logLines()).toEqual([
+      {
+        at: AT,
+        event: "keychain_unlock_failed",
+        reason: "helper",
+      },
+    ])
+  })
 })
