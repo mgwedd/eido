@@ -6,7 +6,7 @@
 
 ## CI
 
-- `.github/workflows/ci.yml` has four jobs: `changes` (docs-only filter), `check` (`pnpm check:invariants`, then `pnpm verify --full`), `gate tests (windows|macos)` and `file helper (ubuntu|macos|windows)`. The last two are skipped on docs-only PRs.
+- `.github/workflows/ci.yml` has four jobs: `changes` (docs-only filter), `check` (`pnpm check:invariants`, then `pnpm verify --full`), `gate tests (windows|macos)` and `file helper (ubuntu|macos|windows)`. The last two are skipped on PRs that change only docs, or only `apps/web`, `packages/ui`, `packages/core` (outside `src/connectors/files`), `docs` or `services` (the `os_matrix` output of `changes`); pushes to `main` run everything.
 - Required status checks (ruleset on `main`): `check`, `title` (`commitlint.yml`, PR title lint) and GitGuardian. `check` must always run and report; do not make it skippable.
 - To add or remove a check, edit `TASKS` in `scripts/verify.ts` and `turbo.json`; CI and `pnpm verify` stay in sync. Locally, `pnpm verify` runs `--affected` when `origin/main` exists. Docs-only changes (.md and images) run only the `always` tasks.
 - `pnpm verify` and turbo never need cargo. Rust is in `packages/gate/native/file-helper` (toolchain pinned by `rust-toolchain.toml`, no crates); CI runs `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` there.
