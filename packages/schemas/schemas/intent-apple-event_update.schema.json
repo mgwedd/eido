@@ -34,16 +34,19 @@
           "type": "string",
           "minLength": 20,
           "maxLength": 40,
-          "format": "date-time"
+          "format": "date-time",
+          "description": "Timed event: the start instant. All-day event: midnight (T00:00:00) on the first day; only the date as written is used, in the host's timezone, and the offset is ignored."
         },
         "end": {
           "type": "string",
           "minLength": 20,
           "maxLength": 40,
-          "format": "date-time"
+          "format": "date-time",
+          "description": "Timed event: the end instant, later than start. All-day event: midnight (T00:00:00) on the day after the last day (exclusive); only the date as written is used, and it is later than start's date."
         },
         "allDay": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "true for an all-day event, whose start and end are read as calendar dates in the host's timezone."
         },
         "location": {
           "type": "string",

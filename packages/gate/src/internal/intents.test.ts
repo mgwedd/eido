@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { REVIEWED_MANIFESTS, validateConnectorManifest } from "@eido/schemas"
+import { APPLE_CONNECTOR } from "./apple/apple-routes"
 import { verifyChain } from "./audit"
 import { payloadHash } from "./canonical"
 import { checkDrift } from "./connectors"
@@ -105,6 +107,59 @@ describe("proposing", () => {
       expect(intentCount(s)).toBe(0)
     }
   )
+
+  it.each([
+    [
+      "2026-11-14T09:00:00Z",
+      "2026-11-15T00:00:00Z",
+      "$.args.start: an all-day start must be midnight (T00:00:00)",
+    ],
+    [
+      "2026-11-14T00:00:00-08:00",
+      "2026-11-14T00:00:00+09:00",
+      "$.args.end: an all-day end date must be later than start's date",
+    ],
+  ] as const)(
+    "an all-day event from %s to %s is refused before approval",
+    (start, end, error) => {
+      const s = fresh()
+      const result = proposeKind(s, {
+        kind: "apple.event_create",
+        args: {
+          ...sample("apple.event_create").args,
+          allDay: true,
+          start,
+          end,
+        },
+      })
+      expect(result).toEqual({
+        ok: false,
+        code: "invalid_payload",
+        errors: [error],
+      })
+      expect(intentCount(s)).toBe(0)
+    }
+  )
+
+  it("an all-day event whose end date follows its start date is accepted even when the end instant is earlier", () => {
+    const apple = validateConnectorManifest(
+      structuredClone(REVIEWED_MANIFESTS[APPLE_CONNECTOR])
+    )
+    if (!apple.ok) throw new Error(apple.errors.join("; "))
+    const s = fresh([apple.value])
+    ok(
+      proposeKind(s, {
+        kind: "apple.event_create",
+        args: {
+          ...sample("apple.event_create").args,
+          allDay: true,
+          start: "2026-11-14T00:00:00-12:00",
+          end: "2026-11-15T00:00:00+14:00",
+        },
+      })
+    )
+    expect(intentCount(s)).toBe(1)
+  })
 
   it("a payload that is not canonical JSON is invalid", () => {
     const s = fresh()

@@ -85,6 +85,66 @@ public enum Dates {
     return base.addingTimeInterval(fraction - Double(offsetSeconds))
   }
 
+  /// The `YYYY-MM-DD` an all-day bound names: the date as written in a midnight date-time,
+  /// its offset ignored. Nil when the bound is not exactly `T00:00:00` with an offset.
+  public static func allDayDate(_ text: String) -> String? {
+    guard
+      text.range(
+        of: #"^[0-9]{4}-[0-9]{2}-[0-9]{2}T00:00:00(Z|[+-][0-9]{2}:[0-9]{2})$"#,
+        options: .regularExpression) != nil, parse(text) != nil
+    else { return nil }
+    return String(text.prefix(10))
+  }
+
+  /// The instants EventKit takes for an all-day event in `zone`: midnight starting the first
+  /// day, and the last second of the day before `end`'s date, which is exclusive.
+  public static func allDayRange(start: String, end: String, in zone: TimeZone) -> (
+    start: Date, end: Date
+  )? {
+    guard let first = allDayDate(start).flatMap({ midnight($0, in: zone) }),
+      let after = allDayDate(end).flatMap({ midnight($0, in: zone) }), after > first
+    else { return nil }
+    return (first, after.addingTimeInterval(-1))
+  }
+
+  /// How an all-day bound is read back: midnight starting `date`'s day in `zone`, written
+  /// with that zone's offset, so its date as written is the local date.
+  public static func allDayText(_ date: Date, in zone: TimeZone) -> String {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = zone
+    let start = calendar.startOfDay(for: date)
+    let parts = calendar.dateComponents([.year, .month, .day], from: start)
+    let offset = zone.secondsFromGMT(for: start)
+    let sign = offset < 0 ? "-" : "+"
+    let zoneText =
+      offset == 0
+      ? "Z" : String(format: "%@%02d:%02d", sign, abs(offset) / 3600, abs(offset) % 3600 / 60)
+    return String(
+      format: "%04d-%02d-%02dT00:00:00%@", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0,
+      zoneText)
+  }
+
+  /// A reminder's due instant as wall-clock components in `zone`, so Reminders shows the
+  /// local date and time the instant has there.
+  public static func dueComponents(_ due: Date, in zone: TimeZone) -> DateComponents {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = zone
+    var components = calendar.dateComponents(
+      [.year, .month, .day, .hour, .minute, .second], from: due)
+    components.calendar = calendar
+    components.timeZone = zone
+    return components
+  }
+
+  private static func midnight(_ date: String, in zone: TimeZone) -> Date? {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = zone
+    let parts = date.split(separator: "-").compactMap { Int($0) }
+    guard parts.count == 3 else { return nil }
+    return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+      .map { calendar.startOfDay(for: $0) }
+  }
+
   public static func text(_ date: Date) -> String {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -157,7 +217,14 @@ public struct Request: Decodable {
     for date in [args.start, args.end, args.due, args.completedSince].compactMap({ $0 }) {
       guard Dates.parse(date) != nil else { throw HelperFailure.invalidRequest }
     }
-    if let start = args.start.flatMap(Dates.parse), let end = args.end.flatMap(Dates.parse) {
+    if args.allDay == true {
+      // All-day bounds are midnights read as dates; end's date is exclusive.
+      guard let start = args.start.flatMap(Dates.allDayDate),
+        let end = args.end.flatMap(Dates.allDayDate), end > start
+      else { throw HelperFailure.invalidRequest }
+    } else if let start = args.start.flatMap(Dates.parse),
+      let end = args.end.flatMap(Dates.parse)
+    {
       guard end > start else { throw HelperFailure.invalidRequest }
       if operation == .listEvents, end.timeIntervalSince(start) > 366 * 86400 {
         throw HelperFailure.invalidRequest
@@ -255,17 +322,23 @@ public struct ReminderValue: Encodable, Equatable {
 }
 
 public enum ResultValue: Encodable {
-  case calendars([CalendarValue])
-  case events([EventValue])
-  case reminders([ReminderValue])
+  case calendars([CalendarValue], skipped: Int)
+  case events([EventValue], skipped: Int)
+  case reminders([ReminderValue], skipped: Int)
   case id(String)
-  private enum Keys: String, CodingKey { case calendars, events, reminders, id }
+  private enum Keys: String, CodingKey { case calendars, events, reminders, skipped, id }
   public func encode(to encoder: Encoder) throws {
     var c = encoder.container(keyedBy: Keys.self)
     switch self {
-    case .calendars(let items): try c.encode(items, forKey: .calendars)
-    case .events(let items): try c.encode(items, forKey: .events)
-    case .reminders(let items): try c.encode(items, forKey: .reminders)
+    case .calendars(let items, let skipped):
+      try c.encode(items, forKey: .calendars)
+      try c.encode(skipped, forKey: .skipped)
+    case .events(let items, let skipped):
+      try c.encode(items, forKey: .events)
+      try c.encode(skipped, forKey: .skipped)
+    case .reminders(let items, let skipped):
+      try c.encode(items, forKey: .reminders)
+      try c.encode(skipped, forKey: .skipped)
     case .id(let id): try c.encode(id, forKey: .id)
     }
   }

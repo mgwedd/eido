@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
-import { validateGateIntentInjection, validateIntent } from "@eido/schemas"
+import {
+  appleEventDatesError,
+  validateGateIntentInjection,
+  validateIntent,
+} from "@eido/schemas"
 import type {
   ConfirmFieldIntent,
   FileDeleteIntent,
@@ -336,14 +340,15 @@ type Checked =
 function check(value: unknown): Checked {
   const result = validateIntent(value)
   if (!result.ok) return result
-  // The Helper refuses an event that does not end after it starts; refuse it before
-  // approval so no one signs an intent that cannot run.
+  // The Helper refuses event dates it cannot save; refuse them before approval so no
+  // one signs an intent that cannot run.
   if (
-    (result.value.kind === "apple.event_create" ||
-      result.value.kind === "apple.event_update") &&
-    !(Date.parse(result.value.args.end) > Date.parse(result.value.args.start))
-  )
-    return { ok: false, errors: ["$.args.end: must be later than start"] }
+    result.value.kind === "apple.event_create" ||
+    result.value.kind === "apple.event_update"
+  ) {
+    const error = appleEventDatesError(result.value.args)
+    if (error !== undefined) return { ok: false, errors: [error] }
+  }
   let canonical: string
   try {
     canonical = canonicalize(result.value)

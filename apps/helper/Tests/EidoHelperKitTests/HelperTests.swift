@@ -58,6 +58,12 @@ final class HelperTests: XCTestCase {
   private func object(_ response: Response) throws -> [String: Any] {
     try XCTUnwrap(JSONSerialization.jsonObject(with: response.data()) as? [String: Any])
   }
+  @MainActor private func read(
+    _ service: HelperService, _ operation: String, _ args: [String: Any] = [:]
+  ) async throws -> [String: Any] {
+    let response = try object(await service.handle(try request(operation, args)))
+    return try XCTUnwrap(response["result"] as? [String: Any])
+  }
   private func assertFailure(
     _ response: Response, _ code: String, file: StaticString = #filePath, line: UInt = #line
   ) throws {
@@ -147,6 +153,72 @@ final class HelperTests: XCTestCase {
         try Request.decode(
           request("create_reminder", ["listId": "calendar-1", "title": "Synthetic", "due": value])))
     }
+  }
+
+  private let losAngeles = TimeZone(identifier: "America/Los_Angeles")!  // in the tz database
+  private let tokyo = TimeZone(identifier: "Asia/Tokyo")!  // in the tz database
+
+  func testAllDayEventLandsOnItsDateInHostTimezonesBehindAndAheadOfUTC() throws {
+    for start in ["2026-01-15T00:00:00Z", "2026-01-15T00:00:00+09:00", "2026-01-15T00:00:00-08:00"]
+    {
+      let pacific = try XCTUnwrap(
+        Dates.allDayRange(start: start, end: "2026-01-16T00:00:00Z", in: losAngeles))
+      XCTAssertEqual(Dates.text(pacific.start), "2026-01-15T08:00:00.000Z")
+      XCTAssertEqual(Dates.text(pacific.end), "2026-01-16T07:59:59.000Z")
+      let japan = try XCTUnwrap(
+        Dates.allDayRange(start: start, end: "2026-01-16T00:00:00Z", in: tokyo))
+      XCTAssertEqual(Dates.text(japan.start), "2026-01-14T15:00:00.000Z")
+      XCTAssertEqual(Dates.text(japan.end), "2026-01-15T14:59:59.000Z")
+    }
+  }
+
+  func testAllDayBoundsReadBackAsTheLocalDate() throws {
+    let japan = try XCTUnwrap(
+      Dates.allDayRange(start: "2026-01-15T00:00:00Z", end: "2026-01-17T00:00:00Z", in: tokyo))
+    XCTAssertEqual(Dates.allDayText(japan.start, in: tokyo), "2026-01-15T00:00:00+09:00")
+    let pacific = try XCTUnwrap(
+      Dates.allDayRange(
+        start: "2026-01-15T00:00:00Z", end: "2026-01-16T00:00:00Z", in: losAngeles))
+    XCTAssertEqual(Dates.allDayText(pacific.end, in: losAngeles), "2026-01-15T00:00:00-08:00")
+    XCTAssertEqual(
+      Dates.allDayText(try XCTUnwrap(Dates.parse("2026-01-15T12:00:00Z")), in: .gmt),
+      "2026-01-15T00:00:00Z")
+  }
+
+  func testAllDayBoundsMustBeMidnightsWithALaterEndDate() throws {
+    var args = eventArgs()
+    args["allDay"] = true
+    for (from, to) in [
+      ("2026-01-15T00:00:00Z", "2026-01-15T00:00:00Z"),
+      ("2026-01-15T00:00:00+14:00", "2026-01-15T00:00:00-12:00"),
+      ("2026-01-15T08:00:00Z", "2026-01-16T00:00:00Z"),
+      ("2026-01-15T00:00:00Z", "2026-01-15T23:59:59Z"),
+      ("2026-01-15T00:00:00.000Z", "2026-01-16T00:00:00Z"),
+    ] {
+      args["start"] = from
+      args["end"] = to
+      XCTAssertThrowsError(try Request.decode(request("create_event", args)), "\(from) \(to)")
+      XCTAssertNil(Dates.allDayRange(start: from, end: to, in: tokyo), "\(from) \(to)")
+    }
+    args["start"] = "2026-01-15T00:00:00-12:00"
+    args["end"] = "2026-01-16T00:00:00+14:00"
+    XCTAssertNoThrow(try Request.decode(request("create_event", args)))
+  }
+
+  func testReminderDueKeepsItsLocalWallClockTimeAndDay() throws {
+    let due = try XCTUnwrap(Dates.parse("2026-01-15T23:30:00Z"))
+    let japan = Dates.dueComponents(due, in: tokyo)
+    XCTAssertEqual(
+      [japan.year, japan.month, japan.day, japan.hour, japan.minute], [2026, 1, 16, 8, 30])
+    XCTAssertEqual(japan.timeZone, tokyo)
+    let pacific = Dates.dueComponents(
+      try XCTUnwrap(Dates.parse("2026-01-15T09:00:00-08:00")), in: losAngeles)
+    XCTAssertEqual(
+      [pacific.year, pacific.month, pacific.day, pacific.hour, pacific.minute],
+      [2026, 1, 15, 9, 0])
+    XCTAssertEqual(pacific.timeZone, losAngeles)
+    XCTAssertEqual(
+      Dates.text(try XCTUnwrap(pacific.calendar?.date(from: pacific))), "2026-01-15T17:00:00.000Z")
   }
 
   @MainActor func testPermissionDenialHappensBeforeReadingOrWriting() async throws {
@@ -286,6 +358,60 @@ final class HelperTests: XCTestCase {
     XCTAssertTrue(items?.allSatisfy { $0["notes"] is NSNull } ?? false)
   }
 
+  @MainActor func testInvalidItemsAreSkippedAndCountedNotFatal() async throws {
+    let store = FakeStore()
+    let service = HelperService(store: store)
+    store.lists.append(
+      CalendarValue(id: "calendar-2", title: String(repeating: "x", count: 2001), writable: true))
+    store.lists.append(CalendarValue(id: "", title: "Synthetic", writable: true))
+    let calendars = try await read(service, "list_calendars")
+    XCTAssertEqual(
+      (calendars["calendars"] as? [[String: Any]])?.compactMap { $0["id"] as? String },
+      ["calendar-1"])
+    XCTAssertEqual(calendars["skipped"] as? Int, 2)
+
+    var nul = event("event-nul")
+    nul.title = "Synthetic\0title"
+    var badDate = event("event-date")
+    badDate.modifiedAt = "yesterday"
+    store.eventRows = [
+      "event-1": StoredEvent(value: event(), recurring: false),
+      "event-nul": StoredEvent(value: nul, recurring: false),
+      "event-date": StoredEvent(value: badDate, recurring: false),
+    ]
+    let events = try await read(
+      service, "list_events", ["calendarId": "calendar-1", "start": start, "end": end])
+    XCTAssertEqual(
+      (events["events"] as? [[String: Any]])?.compactMap { $0["id"] as? String }, ["event-1"])
+    XCTAssertEqual(events["skipped"] as? Int, 2)
+
+    var longNotes = reminder("long-notes")
+    longNotes.notes = String(repeating: "x", count: 20_001)
+    var badDue = reminder("bad-due")
+    badDue.due = "2026-02-30T00:00:00Z"
+    store.reminderRows = ["open": reminder("open"), "long-notes": longNotes, "bad-due": badDue]
+    let reminders = try await read(
+      service, "list_reminders", ["listId": "calendar-1", "completedSince": start])
+    XCTAssertEqual(
+      (reminders["reminders"] as? [[String: Any]])?.compactMap { $0["id"] as? String }, ["open"])
+    XCTAssertEqual(reminders["skipped"] as? Int, 2)
+  }
+
+  @MainActor func testCleanReadReportsZeroSkipped() async throws {
+    let result = try await read(HelperService(store: FakeStore()), "list_calendars")
+    XCTAssertEqual(result["skipped"] as? Int, 0)
+  }
+
+  @MainActor func testItemBoundCountsOnlyKeptItems() async throws {
+    let store = FakeStore()
+    store.lists =
+      (0..<2000).map { CalendarValue(id: "calendar-\($0)", title: "Synthetic", writable: false) }
+      + [CalendarValue(id: "", title: "Synthetic", writable: false)]
+    let result = try await read(HelperService(store: store), "list_calendars")
+    XCTAssertEqual((result["calendars"] as? [Any])?.count, 2000)
+    XCTAssertEqual(result["skipped"] as? Int, 1)
+  }
+
   @MainActor func testReminderReadRefusesCompletedSinceBeyondTheBound() async throws {
     let store = FakeStore()
     let now = try XCTUnwrap(Dates.parse("2026-11-14T10:00:00Z"))
@@ -336,8 +462,6 @@ final class HelperTests: XCTestCase {
     store.fail = true
     try assertFailure(await service.handle(try request("list_calendars")), "unavailable")
     store.fail = false
-    store.lists[0].title = String(repeating: "x", count: 2001)
-    try assertFailure(await service.handle(try request("list_calendars")), "unavailable")
     store.lists = (0..<2001).map {
       CalendarValue(id: "calendar-\($0)", title: "Synthetic", writable: false)
     }
@@ -346,7 +470,7 @@ final class HelperTests: XCTestCase {
       .calendars([
         CalendarValue(
           id: "x", title: String(repeating: "x", count: Request.byteLimit), writable: false)
-      ]))
+      ], skipped: 0))
     try assertFailure(tooLarge, "unavailable")
   }
 }
