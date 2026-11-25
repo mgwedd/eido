@@ -8,13 +8,16 @@ import {
 } from "@eido/schemas"
 import type { ExtractedFields } from "@eido/schemas"
 import type { DatabaseSync } from "node:sqlite"
-import { fixture, putDoc, unconfirmedAmount } from "../brief/brief.test-support"
+import {
+  fixture,
+  markRead,
+  putDoc,
+  unconfirmedAmount,
+} from "../brief/brief.test-support"
 import { confirmExtractionField } from "../ledger/confirm"
 import { insertExtraction } from "../ledger/store"
 import { emitEvent } from "../triage/store"
 import { CONFIG, NOW } from "../triage/triage.test-support"
-import { createProfileStore } from "../profile/index"
-import { openIndex } from "../index/schema"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
 import { createConfirmCardResolver } from "./confirm-card-route"
@@ -25,7 +28,7 @@ afterEach(() => {
   active = undefined
 })
 
-type StatusAnswer = Partial<IntentStatus> | GateRequestError
+type StatusAnswer = Partial<IntentStatus> | Error
 
 /** A gate fake: records proposals, stores each as pending, and answers `status` from a table. */
 function gateFake(
@@ -88,8 +91,7 @@ async function setup(gate = gateFake()) {
 function extraction(
   db: DatabaseSync,
   docId: string,
-  confidence: Record<string, number>,
-  over: { status?: "extracted" | "processed_empty" } = {}
+  confidence: Record<string, number> & { action: number }
 ): Promise<number> {
   const all: ExtractedFields = {
     action: { raw: "Renew the lease", span: { start: 0, end: 15 } },
@@ -102,14 +104,13 @@ function extraction(
     },
   }
   // A field is present exactly when it has a confidence.
-  const fields: ExtractedFields = {}
-  if (confidence["action"] !== undefined) fields.action = all.action
+  const fields: ExtractedFields = { action: all.action }
   if (confidence["party"] !== undefined) fields.party = all.party
   if (confidence["amount"] !== undefined) fields.amount = all.amount
   return insertExtraction(db, {
     docId,
     schema: "obligations",
-    status: over.status ?? "extracted",
+    status: "extracted",
     fields,
     confidence,
     model: "synthetic",
@@ -148,7 +149,11 @@ describe("confirm-card resolver", () => {
 
   test("breaks a confidence tie by field name", async () => {
     const { db, doc, resolver } = await setup()
-    const id = await extraction(db, doc, { party: 0.5, amount: 0.5 })
+    const id = await extraction(db, doc, {
+      action: 0.95,
+      party: 0.5,
+      amount: 0.5,
+    })
     expect(await resolver(id)).toMatchObject({
       ok: true,
       body: { field: "amount" },
@@ -157,7 +162,11 @@ describe("confirm-card resolver", () => {
 
   test("skips a confirmed field and picks the next lowest", async () => {
     const { db, doc, resolver } = await setup()
-    const id = await extraction(db, doc, { party: 0.6, amount: 0.3 })
+    const id = await extraction(db, doc, {
+      action: 0.95,
+      party: 0.6,
+      amount: 0.3,
+    })
     await confirmExtractionField(db, {
       extractionId: id,
       field: "amount",
@@ -279,7 +288,7 @@ describe("confirm-card resolver", () => {
 
   test("an extraction that extracted nothing is not found", async () => {
     const { db, doc, resolver, gate } = await setup()
-    const id = await extraction(db, doc, {}, { status: "processed_empty" })
+    const id = await markRead(db, doc)
     expect(await resolver(id)).toMatchObject({ ok: false, code: "not_found" })
     expect(gate.proposals).toEqual([])
   })
@@ -350,9 +359,8 @@ describe("confirm-card resolver", () => {
 describe("POST /extractions/confirm-card", () => {
   async function route(gate = gateFake()) {
     const s = await setup(gate)
-    const index = openIndex(":memory:")
     const handle: ApiHandler = createApiHandler({
-      profile: createProfileStore(index),
+      profile: s.profile,
       allowedHosts: ["core.test"],
       confirmCard: s.resolver,
     })
@@ -364,7 +372,7 @@ describe("POST /extractions/confirm-card", () => {
           body: typeof body === "string" ? body : JSON.stringify(body),
         })
       )
-    return { ...s, handle, post, close: () => index.close() }
+    return { ...s, handle, post }
   }
 
   async function errorOf(response: Response) {
@@ -386,7 +394,6 @@ describe("POST /extractions/confirm-card", () => {
       created: true,
       queueHref: "/queue?intent=int_1",
     })
-    r.close()
   })
 
   test("an existing pending card answers 200 created false", async () => {
@@ -399,7 +406,6 @@ describe("POST /extractions/confirm-card", () => {
       intentId: "int_1",
       created: false,
     })
-    r.close()
   })
 
   test("an unknown extraction answers 404 not_found", async () => {
@@ -408,7 +414,6 @@ describe("POST /extractions/confirm-card", () => {
     expect(response.status).toBe(404)
     expect((await errorOf(response)).code).toBe("not_found")
     expect(r.gate.proposals).toEqual([])
-    r.close()
   })
 
   test("a gate refusal answers 422 gate_refused", async () => {
@@ -421,7 +426,6 @@ describe("POST /extractions/confirm-card", () => {
     const response = await r.post({ extractionId: id })
     expect(response.status).toBe(422)
     expect((await errorOf(response)).code).toBe("gate_refused")
-    r.close()
   })
 
   test("an unreachable gate answers 503 gate_unavailable", async () => {
@@ -432,7 +436,6 @@ describe("POST /extractions/confirm-card", () => {
     const response = await r.post({ extractionId: id })
     expect(response.status).toBe(503)
     expect((await errorOf(response)).code).toBe("gate_unavailable")
-    r.close()
   })
 
   test.each([
@@ -446,7 +449,6 @@ describe("POST /extractions/confirm-card", () => {
     expect(response.status).toBe(422)
     expect((await errorOf(response)).code).toBe("invalid")
     expect(r.gate.proposals).toEqual([])
-    r.close()
   })
 
   test("other methods are not allowed", async () => {
@@ -457,13 +459,12 @@ describe("POST /extractions/confirm-card", () => {
       })
     )
     expect(response.status).toBe(405)
-    r.close()
   })
 
   test("without a resolver the route is not served", async () => {
-    const index = openIndex(":memory:")
+    const { profile } = await setup()
     const handle = createApiHandler({
-      profile: createProfileStore(index),
+      profile,
       allowedHosts: ["core.test"],
     })
     const response = await handle(
@@ -474,6 +475,5 @@ describe("POST /extractions/confirm-card", () => {
       })
     )
     expect(response.status).toBe(404)
-    index.close()
   })
 })

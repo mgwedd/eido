@@ -492,7 +492,9 @@ test("schemas package loads", () => {
 describe("core API confirm card schemas", () => {
   test("the request names one extraction by a positive integer id and nothing else", () => {
     expect(validateCoreApiConfirmCardRequest({ extractionId: 7 }).ok).toBe(true)
-    expect(validateCoreApiConfirmCardRequest({ extractionId: 0 }).ok).toBe(false)
+    expect(validateCoreApiConfirmCardRequest({ extractionId: 0 }).ok).toBe(
+      false
+    )
     expect(validateCoreApiConfirmCardRequest({ extractionId: "7" }).ok).toBe(
       false
     )
