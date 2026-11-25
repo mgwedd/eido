@@ -1,0 +1,41 @@
+{
+  "id": "call-calendar-delete-01",
+  "request": "Cancel the vendor lunch event.",
+  "messages": [
+    {
+      "id": "call-calendar-delete-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-24T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "events": [
+    {
+      "uid": "eido-cal-2fe5ff71-af9f-4681-8f0f-ef85c2d39e38",
+      "title": "Vendor lunch",
+      "start": "2025-07-08T12:00:00.000Z",
+      "end": "2025-07-08T13:00:00.000Z",
+      "source": "proton-calendar"
+    },
+    {
+      "uid": "eido-cal-a32d3a8f-e66a-41b5-8bb3-b08a90afde7e",
+      "title": "Vendor onboarding",
+      "start": "2025-07-09T10:00:00.000Z",
+      "end": "2025-07-09T11:00:00.000Z",
+      "source": "proton-calendar"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "calendar.delete",
+        "args": {
+          "eventUid": "eido-cal-2fe5ff71-af9f-4681-8f0f-ef85c2d39e38"
+        }
+      }
+    ]
+  }
+}
