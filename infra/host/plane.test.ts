@@ -426,6 +426,28 @@ describe("applySteps", () => {
     return index
   }
 
+  it("copies the checkout without secrets, env files, local eval output or databases", () => {
+    const rsync = steps.find((step) => step.argv[0] === "/usr/bin/rsync")
+    expect(rsync?.argv).toEqual([
+      "/usr/bin/rsync",
+      "-a",
+      "--delete",
+      "--exclude=/.git",
+      "--exclude=.turbo",
+      "--exclude=/apps/web/.next",
+      "--exclude=coverage",
+      "--exclude=/infra/secrets",
+      "--include=.env.example",
+      "--exclude=.env*",
+      "--exclude=/eval-local",
+      "--exclude=*.db",
+      "--exclude=*.db-wal",
+      "--exclude=*.db-shm",
+      "/Users/owner/dev/eido/",
+      "/Library/Application Support/Eido/app/",
+    ])
+  })
+
   it("creates the users with no password or shell and puts both in the socket group", () => {
     expect(all).toContain(
       "/usr/bin/dscl . -create /Users/_eidogate UniqueID 451"
