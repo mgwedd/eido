@@ -1,0 +1,95 @@
+name: CodeQL
+
+# Advanced setup, in place of CodeQL default setup (#807). Default setup analysed Swift on a macOS runner
+# for every pull request; here Swift runs only when the Helper changes. The `code_scanning` rule on
+# `main` reads these results.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 5 * * 1" # weekly, Monday 05:23 UTC
+
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Swift is analysed on a pull request only when it changes the Helper or this workflow. Pushes to main
+  # and the schedule analyse everything.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      swift: ${{ steps.filter.outputs.swift }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          fetch-depth: 2 # the PR merge commit and its base parent
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          swift=true
+          if [ "$EVENT" = pull_request ]; then
+            files=$(git diff --name-only HEAD^1 HEAD)
+            if ! printf '%s\n' "$files" | grep -qE '^apps/helper/|^\.github/workflows/codeql\.yml$'; then
+              swift=false
+            fi
+          fi
+          echo "swift=$swift"
+          echo "swift=$swift" >> "$GITHUB_OUTPUT"
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, rust]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          category: /language:${{ matrix.language }}
+
+  analyze-swift:
+    name: Analyze (swift)
+    needs: changes
+    # Runs unless `changes` said no: a failed `changes` job leaves the output empty and the job runs.
+    if: ${{ !cancelled() && needs.changes.outputs.swift != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          languages: swift
+          build-mode: manual
+      - name: Build the Helper
+        run: swift build --package-path apps/helper
+      - uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          category: /language:swift
