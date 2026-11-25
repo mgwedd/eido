@@ -1,6 +1,6 @@
 # 0004: Web transport through `tailscale serve`
 
-Status: accepted (#178). The serve measurements below are still to be taken on the Mac.
+Status: accepted (#178). The serve measurements below were taken on the Mac on 2026-11-04. The second-device check is still open (#622).
 
 ## Context
 
@@ -43,15 +43,24 @@ Serve proxies only to `http://127.0.0.1` targets, so each backend binds loopback
 - Next: `127.0.0.1:3000`.
 - Core: `EIDO_CORE_HOST=127.0.0.1`, `EIDO_CORE_PORT=8789` (core's default). 8787 belongs to another app on the host, which also serves it through `tailscale serve`, so it is not an Eido default (#372).
 - Gate phone listener: `EIDO_GATE_PHONE_HOST=127.0.0.1`, `EIDO_GATE_PHONE_PORT=8788`. The listener has no default port; 8788 is the script's default.
-- Core's `EIDO_CORE_BASE_PATH` and `EIDO_CORE_ALLOWED_HOSTS`, and the gate's `EIDO_GATE_PHONE_BASE_PATH` and `EIDO_GATE_PHONE_ALLOWED_HOSTS`, follow from the measurements below.
+- Core's `EIDO_CORE_BASE_PATH` and `EIDO_CORE_ALLOWED_HOSTS`, and the gate's `EIDO_GATE_PHONE_BASE_PATH` and `EIDO_GATE_PHONE_ALLOWED_HOSTS`, follow from the measurements below: serve strips the mount prefix, so both base paths are empty.
 
-## Serve behaviour (to be measured)
+## Serve behaviour (measured)
 
-The serve docs give the mount-path matching rule as Go `ServeMux` but do not say whether the prefix is stripped or which `Host` arrives. These are not yet measured; this section is filled in, and the results posted on #153 and #85, once `pnpm --filter @eido/infra serve-routes measure` has run on the Mac with the routes applied. It starts loopback echo servers on the three targets in place of the backends, requests each route through the origin, and prints a table with the node name replaced by `<host>`.
+The serve docs give the mount-path matching rule as Go `ServeMux` but do not say whether the prefix is stripped or which `Host` arrives. These were measured on 2026-11-04 on the Mac (macOS 26.6.2, `main` at 6a30141) with `pnpm --filter @eido/infra serve-routes measure`, with the routes applied on `:8443`. The command starts loopback echo servers on the three targets in place of the backends, requests each route through the origin, and prints a table with the node name replaced by `<host>`.
 
-- Whether serve strips the path prefix (does core see `/profile` or `/api/core/profile`?): not yet measured.
-- Which `Host` header each backend receives: not yet measured.
-- Whether `Tailscale-User-Login` reaches the backends: not yet measured.
+| Request                    | Reached | Path seen         | Host seen     | Tailscale-User-Login |
+| -------------------------- | ------- | ----------------- | ------------- | -------------------- |
+| `/eido-probe?q=1`          | web     | `/eido-probe?q=1` | `<host>:8443` | present              |
+| `/api/core/profile?q=1`    | core    | `/profile?q=1`    | `<host>:8443` | present              |
+| `/api/gate/passkey/status` | gate    | `/passkey/status` | `<host>:8443` | present              |
+
+- Serve strips the mount prefix and keeps the query. Core sees `/profile` and the gate sees `/passkey/status`, so both run with empty base paths.
+- Serve forwards the public `Host`, with the port, to every backend.
+- Serve adds `Tailscale-User-Login` on every route.
+- With the real backends, `POST /api/gate/enrolment-codes` through the origin returns 404, and plain HTTP on `:8443` returns 400.
+
+Not yet measured: the same routes from a second device, because both iPhones were offline on the tailnet. That check is in #622.
 
 ## Rejected
 
