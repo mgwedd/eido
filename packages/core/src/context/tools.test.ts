@@ -129,6 +129,33 @@ describe("selectTools", () => {
       ).toEqual(["things.add_project", "things.add_todo"])
   })
 
+  test("a request that only acts on an existing todo is not offered the creating Things kinds", () => {
+    const things = (text: string) =>
+      names(selectTools({ text, task: "propose" }, CATALOG)).filter((n) =>
+        n.startsWith("things.")
+      )
+    expect(
+      things(
+        "Change the todo to renew the library card: add the tag errands and set the deadline 2025-08-01."
+      )
+    ).toEqual(["things.update_todo"])
+    expect(things("mark the dentist task as done")).toEqual([
+      "things.complete_todo",
+    ])
+    expect(things("Reschedule the report task to Friday")).toEqual([
+      "things.schedule_todo",
+    ])
+    // A creation phrase keeps them, even beside an action on an existing todo.
+    expect(things("cancel the old todo and add a todo to call Ana")).toEqual([
+      "things.add_project",
+      "things.add_todo",
+      "things.cancel_todo",
+    ])
+    expect(
+      things("rename the garden todo and create a project called Shed")
+    ).toEqual(["things.add_project", "things.add_todo", "things.update_todo"])
+  })
+
   test("an email-only request is not offered Things kinds", () => {
     expect(
       names(
