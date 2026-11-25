@@ -644,7 +644,22 @@ export function applySteps(input: PlaneInput): Step[] {
   const { ids } = layout
   const services = planeServices(input)
   const { gate, data, ipc } = NAMES
-  const appExcludes = ["/.git", ".turbo", "/apps/web/.next", "coverage"]
+  // Build output, and local files the services must not read: secrets, env files (the committed
+  // examples are kept), local eval output and databases. rsync applies the first match, so the
+  // include comes before the exclude it overrides.
+  const appFilters = [
+    "--exclude=/.git",
+    "--exclude=.turbo",
+    "--exclude=/apps/web/.next",
+    "--exclude=coverage",
+    "--exclude=/infra/secrets",
+    "--include=.env.example",
+    "--exclude=.env*",
+    "--exclude=/eval-local",
+    "--exclude=*.db",
+    "--exclude=*.db-wal",
+    "--exclude=*.db-shm",
+  ]
   return [
     ...group(gate, ids.gateGid, "Eido gate"),
     ...group(data, ids.dataGid, "Eido data plane"),
@@ -684,7 +699,7 @@ export function applySteps(input: PlaneInput): Step[] {
         "/usr/bin/rsync",
         "-a",
         "--delete",
-        ...appExcludes.map((pattern) => `--exclude=${pattern}`),
+        ...appFilters,
         `${input.checkout}/`,
         `${layout.app}/`,
       ],

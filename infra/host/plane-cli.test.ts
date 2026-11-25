@@ -66,7 +66,7 @@ describe("host plane plan", () => {
     const script = h.out.join("\n")
     expect(script.startsWith("#!/bin/sh\n")).toBe(true)
     expect(script).toContain(
-      "/usr/bin/rsync -a --delete --exclude=/.git --exclude=.turbo --exclude=/apps/web/.next --exclude=coverage /Users/owner/dev/eido/ '/Library/Application Support/Eido/app/'"
+      "/usr/bin/rsync -a --delete --exclude=/.git --exclude=.turbo --exclude=/apps/web/.next --exclude=coverage --exclude=/infra/secrets --include=.env.example '--exclude=.env*' --exclude=/eval-local '--exclude=*.db' '--exclude=*.db-wal' '--exclude=*.db-shm' /Users/owner/dev/eido/ '/Library/Application Support/Eido/app/'"
     )
     expect(script).toContain("<string>https://mac.example.ts.net:8443</string>")
     expect(h.err).toEqual([])
