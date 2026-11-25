@@ -5,7 +5,11 @@
   "type": "object",
   "properties": {
     "status": { "type": "integer" },
-    "data": { "type": "string", "maxLength": 1048576 }
+    "data": { "type": "string", "maxLength": 1048576 },
+    "unlock": {
+      "description": "The outcome of an unlock request: unlocked with auto-lock off, or still locked because the passphrase was rejected. Absent on every other request and on any other failure.",
+      "enum": ["unlocked", "locked"]
+    }
   },
   "required": ["status"],
   "additionalProperties": false

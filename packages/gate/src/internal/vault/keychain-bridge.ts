@@ -2,17 +2,52 @@ import { spawn } from "node:child_process"
 import { validateGateKeychainResult } from "@eido/schemas"
 import type { GateKeychainResult } from "@eido/schemas"
 
-export type KeychainCommand = {
-  operation: "get" | "set" | "delete"
-  path: string
-  account: string
-  data?: string
-}
+/** Item requests. The `unlock` request is internal to `unlockKeychain`, which builds it in zeroable bytes. */
+export type KeychainCommand =
+  | { operation: "get" | "delete"; path: string; account: string }
+  | { operation: "set"; path: string; account: string; data: string }
 
-/** Fixed source only in argv. Requests and secret bytes travel over private stdin/stdout pipes. */
+/**
+ * Fixed source only in argv. Requests and secret bytes travel over private stdin/stdout pipes.
+ * `unlock` unlocks the keychain for every process of the user and turns auto-lock off: no lock on
+ * sleep, no idle timeout. The settings calls are bound with untyped pointers because JXA cannot
+ * pass the SecKeychainSettings struct; the 12 bytes are {version 1, lockOnSleep, useLockInterval,
+ * padding, lockInterval INT32_MAX}, and the read-back must show lock-on-sleep off and no timeout.
+ * Once the unlock succeeded, any later failure locks the keychain again before it returns, so a
+ * gate that refuses to start does not leave it unlocked.
+ */
 export const KEYCHAIN_SCRIPT = String.raw`
 ObjC.import('Foundation');
 ObjC.import('Security');
+ObjC.bindFunction('SecKeychainSetSettings', ['int', ['void *', 'void *']]);
+ObjC.bindFunction('SecKeychainCopySettings', ['int', ['void *', 'void *']]);
+function bytes(base64) {
+  return $.NSMutableData.alloc.initWithBase64EncodedStringOptions($.NSString.stringWithString(base64), 0);
+}
+function unlock(keychain, base64) {
+  var secret = bytes(base64);
+  if (secret.isNil()) return JSON.stringify({status: -50});
+  var status = $.SecKeychainUnlock(keychain, secret.length, secret.bytes, true);
+  secret.resetBytesInRange($.NSMakeRange(0, secret.length));
+  if (status === -25293) return JSON.stringify({status: status, unlock: 'locked'});
+  if (status !== 0) return JSON.stringify({status: status});
+  try {
+    status = $.SecKeychainSetSettings(keychain, bytes('AQAAAAAAAAD///9/').mutableBytes);
+    if (status !== 0) return relock(keychain, status);
+    var settings = bytes('AQAAAAEBAAAAAAAA');
+    status = $.SecKeychainCopySettings(keychain, settings.mutableBytes);
+    if (status !== 0) return relock(keychain, status);
+    var read = ObjC.unwrap(settings.base64EncodedStringWithOptions(0));
+    if (read !== 'AQAAAAAAAAD///9/' && read !== 'AQAAAAABAAD///9/') return relock(keychain, -1);
+    return JSON.stringify({status: 0, unlock: 'unlocked'});
+  } catch (_) {
+    return relock(keychain, -1);
+  }
+}
+function relock(keychain, status) {
+  $.SecKeychainLock(keychain);
+  return JSON.stringify({status: status});
+}
 function run() {
   try {
     var status = $.SecKeychainSetUserInteractionAllowed(false);
@@ -20,13 +55,17 @@ function run() {
     var bytes = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
     var input = JSON.parse(ObjC.unwrap($.NSString.alloc.initWithDataEncoding(bytes, $.NSUTF8StringEncoding)));
     if (typeof input.path !== 'string' || input.path.charAt(0) !== '/' ||
-        typeof input.account !== 'string' ||
-        ['get', 'set', 'delete'].indexOf(input.operation) < 0) {
+        (input.operation !== 'unlock' && typeof input.account !== 'string') ||
+        ['get', 'set', 'delete', 'unlock'].indexOf(input.operation) < 0) {
       return JSON.stringify({status: -50});
     }
     var keychain = Ref();
     status = $.SecKeychainOpen(input.path, keychain);
     if (status !== 0) return JSON.stringify({status: -1});
+    if (input.operation === 'unlock') {
+      if (typeof input.data !== 'string') return JSON.stringify({status: -50});
+      return unlock(keychain[0], input.data);
+    }
     var C = function(value) { return ObjC.castRefToObject(value); };
     var query = $.NSMutableDictionary.alloc.init;
     query.setObjectForKey(C($.kSecClassGenericPassword), C($.kSecClass));
@@ -84,6 +123,61 @@ export function startKeychainWorker() {
 export function runKeychainCommand(
   command: KeychainCommand
 ): Promise<GateKeychainResult> {
+  return runKeychainRequest(JSON.stringify(command))
+}
+
+const BASE64 =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+/** Base64 into a buffer the caller can zero; `Buffer#toString("base64")` would leave an immutable string. */
+export function base64Bytes(input: Uint8Array): Buffer {
+  const out = Buffer.alloc(Math.ceil(input.length / 3) * 4, "=")
+  for (let i = 0, o = 0; i < input.length; i += 3, o += 4) {
+    const a = input[i] ?? 0
+    const b = input[i + 1] ?? 0
+    const c = input[i + 2] ?? 0
+    out[o] = BASE64.charCodeAt(a >> 2)
+    out[o + 1] = BASE64.charCodeAt(((a & 3) << 4) | (b >> 4))
+    if (i + 1 < input.length)
+      out[o + 2] = BASE64.charCodeAt(((b & 15) << 2) | (c >> 6))
+    if (i + 2 < input.length) out[o + 3] = BASE64.charCodeAt(c & 63)
+  }
+  return out
+}
+
+/**
+ * Unlocks the keychain at `path` with the passphrase bytes and turns its auto-lock off.
+ * The passphrase reaches the helper only through its stdin pipe; the request buffer that carries
+ * it is zeroed once the helper has exited (a pipe write may still hold the buffer until then).
+ * The caller owns `passphrase` and zeroes it.
+ */
+export async function unlockKeychain(
+  path: string,
+  passphrase: Uint8Array
+): Promise<"unlocked" | "locked"> {
+  const encoded = base64Bytes(passphrase)
+  const request = Buffer.concat([
+    Buffer.from(
+      `{"operation":"unlock","path":${JSON.stringify(path)},"data":"`
+    ),
+    encoded,
+    Buffer.from('"}'),
+  ])
+  encoded.fill(0)
+  let result: GateKeychainResult
+  try {
+    result = await runKeychainRequest(request)
+  } finally {
+    request.fill(0)
+  }
+  if (result.status === 0 && result.unlock === "unlocked") return "unlocked"
+  if (result.unlock === "locked") return "locked"
+  throw new Error("Keychain could not be unlocked")
+}
+
+function runKeychainRequest(
+  request: string | Buffer
+): Promise<GateKeychainResult> {
   return new Promise((resolve, reject) => {
     const child = startKeychainWorker()
     const chunks: Buffer[] = []
@@ -125,6 +219,6 @@ export function runKeychainCommand(
         fail()
       }
     })
-    child.stdin.end(JSON.stringify(command))
+    child.stdin.end(request)
   })
 }

@@ -37,6 +37,16 @@ does not create a macOS user, install a launch agent, store an unlock password, 
 deploy to the host. After a FileVault reboot, the chosen session and keychain must
 be unlocked before credentials are available.
 
+With `EIDO_GATE_KEYCHAIN_UNLOCK=stdin` (#821) the gate unlocks this keychain itself
+at start, from a passphrase a root launch step writes to its stdin (#823), and
+turns auto-lock off (no lock on sleep, no idle timeout). The unlock applies to
+every process of the gate user. After the gate stops, or a later start fails, the
+keychain stays unlocked until a reboot or an explicit `security lock-keychain`;
+this was accepted in #780. A start that fails after the unlock but before auto-lock
+is confirmed off locks the keychain again. The gate refuses a keychain file placed
+directly in `~/Library/Keychains/` or `/Library/Keychains/`, so the login and
+System keychains never get auto-lock turned off.
+
 ## Storage and boundary
 
 Each credential is a generic-password item with service `com.eido.gate.vault` and
