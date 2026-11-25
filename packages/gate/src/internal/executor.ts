@@ -455,10 +455,13 @@ export function createExecutor(
         return refuse(id, direction, "no_inverse")
       const inverse = validateIntent(previous.inverse)
       if (!inverse.ok) return refuse(id, direction, "invalid_inverse")
+      // Undo runs with no new signature, so its inverse must be local, recoverable and scoped to
+      // what the execution changed (#416). Nothing that sends, trashes or deletes qualifies, and no
+      // calendar change does: it notifies attendees. The one Undo that trashes is a file create's,
+      // and it runs in runFile against the file that execution made, never through here.
       if (
-        /^(email\.(send|forward|reply|trash)|file\.delete)$/i.test(
-          inverse.value.kind
-        )
+        /\.(send|forward|reply|trash|delete)$/i.test(inverse.value.kind) ||
+        /^calendar\./i.test(inverse.value.kind)
       )
         return refuse(id, direction, "unsafe_inverse")
       if (
@@ -657,7 +660,7 @@ export function createExecutor(
     id: string,
     direction: Direction
   ): Promise<ExecutionResult> {
-    const prepared = atomically(db, () => {
+    const ready = atomically(db, () => {
       try {
         const existing = recorded(db, id, direction)
         if (existing !== undefined) {
@@ -742,13 +745,22 @@ export function createExecutor(
         )
           return refuse(id, direction, "invalid_inverse")
         const candidate = checked.value
+        // The one inverse that removes anything (#832): a create's own file, moved to the helper's
+        // trash under a fresh name. A trash of any other path, or after any other action, is refused.
+        if (
+          candidate.op === "trash" &&
+          !(
+            intent.kind === "file.create" &&
+            candidate.path === intent.args.path &&
+            /^[0-9a-f-]{36}$/.test(candidate.trashName)
+          )
+        )
+          return refuse(id, direction, "unsafe_inverse")
         // No caller-selected inverse: bind every field to the original action and authenticated receipt.
         const result = previous.value.result
         const matching =
           intent.kind === "file.create"
-            ? candidate.op === "trash" &&
-              candidate.path === intent.args.path &&
-              /^[0-9a-f-]{36}$/.test(candidate.trashName)
+            ? candidate.op === "trash"
             : intent.kind === "file.delete"
               ? candidate.op === "restore" &&
                 candidate.path === intent.args.path &&
@@ -770,6 +782,32 @@ export function createExecutor(
           return refuse(id, direction, "invalid_inverse")
         inverse = candidate
       }
+      return { stored, intent, root, inverse, helper: files }
+    })
+    if ("ok" in ready) return ready
+    // A create's Undo trashes only the file that create wrote (#832): the entry at its path must
+    // still be a regular file holding exactly the created bytes. Anything else, including a failed
+    // read, is refused before the attempt is claimed, so nothing is moved.
+    if (direction === "undo" && ready.intent.kind === "file.create") {
+      const created = Buffer.from(ready.intent.args.content, "utf8")
+      let unchanged = false
+      try {
+        const reply = await ready.helper({
+          op: "read",
+          root: ready.root,
+          path: ready.intent.args.path,
+          maxBytes: Math.max(1, created.length),
+        })
+        unchanged =
+          reply.ok &&
+          reply.op === "read" &&
+          Buffer.from(reply.contentBase64, "base64").equals(created)
+      } catch {
+        unchanged = false
+      }
+      if (!unchanged) return refuse(id, direction, "unsafe_inverse")
+    }
+    const prepared = atomically(db, () => {
       const claim = db
         .prepare(
           "INSERT OR IGNORE INTO execution_attempts(intent_id,direction,started_at) VALUES (?,?,?)"
@@ -778,9 +816,13 @@ export function createExecutor(
       if (Number(claim.changes) !== 1)
         return refuse(id, direction, "outcome_unresolved")
       auditEvent(db, id, `${direction}.started`, {
-        request_hash: payloadHash({ intent, inverse: inverse ?? null, root }),
+        request_hash: payloadHash({
+          intent: ready.intent,
+          inverse: ready.inverse ?? null,
+          root: ready.root,
+        }),
       })
-      return { stored, intent, root, inverse, helper: files }
+      return ready
     })
     if ("ok" in prepared) return prepared
     let response: UpstreamResult

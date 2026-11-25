@@ -544,6 +544,10 @@ describe("executor", () => {
     "email.reply",
     "email.trash",
     "file.delete",
+    // Calendar changes notify attendees: reversing one is a new signed proposal (#416).
+    "calendar.delete",
+    "calendar.edit",
+    "calendar.create",
   ] as const)("refuses dangerous inverse %s", async (kind) => {
     const f = fixture()
     f.writer.inverse = () => sample(kind)
