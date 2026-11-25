@@ -74,6 +74,8 @@ export interface PromptInput {
   kinds: string[]
   /** The rendered Todos block (`renderTodosBlock`); absent or empty when no to-do matched. */
   todos?: readonly PromptPart[]
+  /** The rendered Events block (`renderEventsBlock`); absent or empty when no event matched. */
+  events?: readonly PromptPart[]
 }
 
 /** The note a retry adds: each failure by code and field path, never a value. */
@@ -91,7 +93,7 @@ export function retryNote(failures: readonly ProposalFailure[]): string {
 
 /**
  * The stable prefix, then one user message: the ids the intents may use, the pack's material
- * blocks, the Todos block when there is one, then the offered kinds and the owner's request, after the last block. A retry passes
+ * blocks, the Todos and Events blocks when there are any, then the offered kinds and the owner's request, after the last block. A retry passes
  * the failures of the first reply, which adds the retry note at the end.
  */
 export function buildProposalRequest(
@@ -116,6 +118,7 @@ export function buildProposalRequest(
     `Messages you may refer to:\n${ids}\n\nMessages:`,
     ...input.pack.blocks.flatMap(blockParts),
     ...(input.todos ?? []),
+    ...(input.events ?? []),
     `\n\n${task.join("\n\n")}`,
   ]
   return {

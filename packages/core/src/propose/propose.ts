@@ -6,6 +6,7 @@ import type { GateIntentInjection, Intent } from "@eido/schemas"
 import { isAppleEventId } from "../connectors/apple-calendar/sync"
 import { assembleContext } from "../context/assemble"
 import { listOpenTodos, renderTodosBlock } from "../context/todos"
+import { listMatchingEvents, renderEventsBlock } from "../context/events"
 import { ID_DEPENDENT_THINGS_KINDS, selectTools } from "../context/tools"
 import { PromptTooLargeError } from "../inference/errors"
 import { INJECTION_REASONS } from "../inference/fence"
@@ -167,6 +168,11 @@ export async function proposeIntents(
     todos.todos.length === 0
       ? picked.filter((k) => !ID_DEPENDENT_THINGS_KINDS.has(k))
       : picked
+  // The Events block exists only when a calendar kind is offered, so the model can name an event
+  // by its uid.
+  const events = picked.some((k) => k.startsWith("calendar."))
+    ? listMatchingEvents(deps.db, request.text)
+    : { events: [], matched: 0 }
   const pin =
     request.connector === undefined ? {} : { connector: request.connector }
   const assembled = await assembleContext(
@@ -188,6 +194,7 @@ export async function proposeIntents(
     referable,
     kinds,
     todos: renderTodosBlock(todos),
+    events: renderEventsBlock(events),
   }
   const draft = request.replyDraft
     ? draftBounds(deps.db, referable, request.seed)

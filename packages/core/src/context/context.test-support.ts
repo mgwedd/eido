@@ -168,3 +168,53 @@ export function indexTodos(db: DatabaseSync, specs: TodoSpec[]): void {
       spec.due ?? null
     )
 }
+
+export interface EventSpec {
+  uid: string
+  title: string
+  start: string
+  end?: string
+  allDay?: boolean
+  /** The calendar source. Default: Apple Calendar. */
+  source?: string
+  /** Set to index the event as a past version with no current head. */
+  retired?: boolean
+}
+
+/** Index synthetic calendar events with their facts, as a calendar sync does. */
+export function indexEvents(db: DatabaseSync, specs: EventSpec[]): void {
+  for (const spec of specs) {
+    const source = spec.source ?? "apple-eventkit"
+    const digest = sha(`event:${source}:${spec.uid}:${spec.title}`)
+    const sourceRef = `${source}://calendar/cal-1/event/${encodeURIComponent(spec.uid)}`
+    ingestBatch(db, {
+      connector: source,
+      stream: "calendar:cal-1",
+      documents: [
+        {
+          sha256: digest,
+          source,
+          sourceRef,
+          mime: "application/x-eido-calendar-event",
+          title: spec.title,
+          body: spec.title,
+          occurredAt: spec.start,
+        },
+      ],
+      heads: [{ source, sourceRef, sha256: spec.retired ? null : digest }],
+      nextCursor: "c",
+    })
+    db.prepare(
+      `INSERT INTO calendar_event_facts
+         (sha256, source, calendar_id, event_id, start_at, end_at, all_day)
+       VALUES (?, ?, 'cal-1', ?, ?, ?, ?)`
+    ).run(
+      digest,
+      source,
+      spec.uid,
+      spec.start,
+      spec.end ?? spec.start,
+      spec.allDay ? 1 : 0
+    )
+  }
+}
