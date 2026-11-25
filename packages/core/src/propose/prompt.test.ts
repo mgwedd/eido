@@ -8,6 +8,7 @@ import {
   PROPOSE_SYSTEM_PROMPT,
   replySchemaFor,
   retryNote,
+  TODO_ARG_ORDER_NOTE,
 } from "./prompt"
 
 const pack: ContextPack = {
@@ -212,5 +213,35 @@ describe("replySchemaFor", () => {
       kinds: ["email.archive"],
     })
     expect(request.jsonSchema).toEqual(INTENT_RESULT_JSON_SCHEMA)
+  })
+
+  test("a request with a Todos block gets the args-order note right after the owner request", () => {
+    const request = buildProposalRequest({
+      request: "Update the dentist todo.",
+      pack,
+      referable: [],
+      kinds: ["things.update_todo"],
+      todos: ["## Todos (open, 1 of 1 match)\n- id=id-1 | Book dentist | open"],
+    })
+    const text = plainContent(request.messages[0]?.content ?? "", "B")
+    expect(text.slice(text.indexOf("Owner request:"))).toBe(
+      `Owner request:\nUpdate the dentist todo.\n\n${TODO_ARG_ORDER_NOTE}`
+    )
+    expect(TODO_ARG_ORDER_NOTE).toContain(
+      "the required args first, then the optional ones in alphabetical order"
+    )
+  })
+
+  test("a request without a Todos block gets no args-order note, and the stable prefix never carries it", () => {
+    const request = buildProposalRequest({
+      request: "Archive it.",
+      pack,
+      referable: [],
+      kinds: ["email.archive"],
+    })
+    expect(plainContent(request.messages[0]?.content ?? "", "B")).not.toContain(
+      TODO_ARG_ORDER_NOTE
+    )
+    expect(PROPOSE_SYSTEM_PROMPT).not.toContain(TODO_ARG_ORDER_NOTE)
   })
 })
