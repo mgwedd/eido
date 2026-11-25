@@ -4,7 +4,7 @@ import { chmod, mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, describe, expect, test } from "vitest"
-import { startKeychainWorker } from "./keychain-bridge"
+import { startKeychainWorker, unlockKeychain } from "./keychain-bridge"
 import { KeychainVault } from "./keychain-vault"
 import { vaultContract } from "./vault-contract"
 import { vaultKeyId } from "./vault"
@@ -12,6 +12,7 @@ import { vaultKeyId } from "./vault"
 // This file never opens the login/default keychain. Every native operation names a fresh path.
 const FIXTURE_SCRIPT = String.raw`
 ObjC.import('Foundation');ObjC.import('Security');
+ObjC.bindFunction('SecKeychainCopySettings',['int',['void *','void *']]);
 function run() {
   $.SecKeychainSetUserInteractionAllowed(false);
   var r=JSON.parse(ObjC.unwrap($.NSString.alloc.initWithDataEncoding($.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile,$.NSUTF8StringEncoding)));
@@ -23,6 +24,11 @@ function run() {
   if(r.operation==='lock')return String($.SecKeychainLock(keychain[0]));
   if(r.operation==='delete')return String($.SecKeychainDelete(keychain[0]));
   if(r.operation==='unlock')return String($.SecKeychainUnlock(keychain[0],password.length,password.bytes,true));
+  if(r.operation==='settings'){
+    var b=$.NSMutableData.alloc.initWithBase64EncodedStringOptions($.NSString.stringWithString('AQAAAAAAAAAAAAAA'),0);
+    status=$.SecKeychainCopySettings(keychain[0],b.mutableBytes);
+    return status+' '+ObjC.unwrap(b.base64EncodedStringWithOptions(0));
+  }
   if(r.operation==='inspect') {
     var C=function(v){return ObjC.castRefToObject(v)};
     var q=$.NSMutableDictionary.alloc.init;
@@ -59,6 +65,15 @@ function nativeFixture(input: {
     )
     child.stdin?.end(JSON.stringify(input))
   })
+}
+/** SecKeychainSettings as stored: {UInt32 version; Boolean lockOnSleep; Boolean useLockInterval; UInt32 lockInterval}. */
+async function autoLock(f: { path: string; password: string }) {
+  const [status, base64] = (
+    await nativeFixture({ ...f, operation: "settings" })
+  ).split(" ")
+  expect(status).toBe("0")
+  const bytes = Buffer.from(base64 ?? "", "base64")
+  return { lockOnSleep: bytes[4] === 1, interval: bytes.readUInt32LE(8) }
 }
 const KEY = { connector: "proton", kind: "password", client: "none" } as const
 const fixtures: { dir: string; path: string; password: string }[] = []
@@ -132,6 +147,33 @@ describe.skipIf(process.platform !== "darwin")(
       await expect(
         new KeychainVault({ path: join(f.dir, "missing.keychain-db") }).get(KEY)
       ).rejects.toThrow("Keychain file must exist")
+    })
+
+    test("a wrong passphrase leaves the keychain locked; the right one unlocks it with auto-lock off and the vault works", async () => {
+      const f = await fixture()
+      await f.vault.set(KEY, "synthetic-before-lock")
+      // A new file keychain locks on sleep and after 300 s of idle.
+      expect(await autoLock(f)).toEqual({ lockOnSleep: true, interval: 300 })
+      expect(await nativeFixture({ ...f, operation: "lock" })).toBe("0")
+      expect(
+        await unlockKeychain(f.path, Buffer.from("synthetic-wrong-passphrase"))
+      ).toBe("locked")
+      await expect(f.vault.get(KEY)).rejects.toThrow(
+        "Keychain credential could not be read"
+      )
+      expect(await unlockKeychain(f.path, Buffer.from(f.password))).toBe(
+        "unlocked"
+      )
+      // An INT32_MAX interval is what `security show-keychain-info` reports as no-timeout.
+      expect(await autoLock(f)).toEqual({
+        lockOnSleep: false,
+        interval: 0x7fffffff,
+      })
+      expect(await f.vault.get(KEY)).toBe("synthetic-before-lock")
+      await f.vault.set(KEY, "synthetic-after-unlock")
+      expect(await f.vault.get(KEY)).toBe("synthetic-after-unlock")
+      await f.vault.delete(KEY)
+      expect(await f.vault.get(KEY)).toBeUndefined()
     })
 
     test("the real worker argv contains only fixed source, never the request or secret", async () => {

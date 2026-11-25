@@ -85,6 +85,7 @@ import type {
   ControlStore,
 } from "./internal/control-checkpoint"
 import { KeychainControlStore } from "./internal/vault/keychain-checkpoint"
+import { unlockFromStdin } from "./internal/vault/keychain-unlock"
 import type { WebAuthnConfig } from "./internal/webauthn"
 import { initializeProfileAudit } from "./internal/profile-audit"
 import type { ProfileAudit } from "./internal/profile-audit"
@@ -219,11 +220,19 @@ export type GateConfig = {
    * gate off the same checkpoint. Absent with the file dev vault, where nothing is enforced.
    */
   controlCheckpoint?: { keychainPath: string; lockPath: string }
+  /**
+   * Unlock the vault keychain from a passphrase on stdin before anything opens it (#821), set by
+   * `EIDO_GATE_KEYCHAIN_UNLOCK=stdin`. Absent, the keychain is expected to be unlocked already.
+   */
+  keychainUnlock?: { path: string }
   /** The calendar connector's sent record tracker (#21, #290). */
   calendarTracker?: CalendarTracker
   /** Overrides the stored attendees reader for policy (#168, #290). */
   storedAttendees?: StoredAttendees
 }
+
+/** `stdin`: the gate reads its keychain passphrase from stdin at start (#821). */
+export const KEYCHAIN_UNLOCK_ENV = "EIDO_GATE_KEYCHAIN_UNLOCK"
 
 export type BridgeListenerConfig = {
   config: BridgeConfig
@@ -341,6 +350,11 @@ export function gateConfig(
     )
   if (env["EIDO_PROFILE_AUDIT_EPOCH"] !== undefined && vault === undefined)
     throw new Error("EIDO_PROFILE_AUDIT_EPOCH needs a configured gate vault")
+  const unlock = env[KEYCHAIN_UNLOCK_ENV] ?? ""
+  if (unlock !== "" && unlock !== "stdin")
+    throw new Error(`${KEYCHAIN_UNLOCK_ENV} must be stdin when set`)
+  if (unlock !== "" && vault?.kind !== "keychain")
+    throw new Error(`${KEYCHAIN_UNLOCK_ENV} needs EIDO_GATE_KEYCHAIN_PATH`)
   const pushSubject = env["EIDO_PUSH_VAPID_SUBJECT"] ?? ""
   const fileHelperPath = env["EIDO_FILE_HELPER_PATH"] ?? ""
   const fileHelperSha256 = env["EIDO_FILE_HELPER_SHA256"] ?? ""
@@ -408,6 +422,7 @@ export function gateConfig(
             keychainPath: vault.path,
             lockPath: join(config.dataDir, CONTROL_LOCK_FILE),
           },
+          ...(unlock === "" ? {} : { keychainUnlock: { path: vault.path } }),
         }
       : {}),
     ...(google === undefined ? {} : { google }),
@@ -536,10 +551,23 @@ export async function runGate(
   now: Clock = () => new Date(),
   vaultFactory: (config: VaultConfig) => Vault = createVault,
   controlStoreFactory: (keychainPath: string) => ControlStore = (path) =>
-    new KeychainControlStore({ path })
+    new KeychainControlStore({ path }),
+  unlockKeychain: (keychainPath: string) => Promise<void> = (path) =>
+    unlockFromStdin(path, process.stdin)
 ): Promise<RunningGate> {
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
   const log = fileLog(join(config.dataDir, GATE_LOG_FILE))
+  // Before anything opens the vault or the control checkpoint. A rejected passphrase stops the
+  // start; the error names no secret, and neither does the log line.
+  if (config.keychainUnlock !== undefined) {
+    try {
+      await unlockKeychain(config.keychainUnlock.path)
+    } catch (error) {
+      log("keychain_unlock_failed")
+      throw error
+    }
+    log("keychain_unlocked")
+  }
   const db: DatabaseSync = openControlDb(join(config.dataDir, CONTROL_DB_FILE))
   // The chain is otherwise verified only on demand; check it once at startup and say so loudly.
   // A broken chain does not stop the gate: the owner needs it up to see and repair it.
