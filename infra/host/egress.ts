@@ -6,6 +6,7 @@
 // accumulate until the anchor is next loaded (a reboot or a new plan), which covers the rotating
 // address pools behind Google's API hosts. Pure functions; plane.ts writes the files and the job.
 import {
+  WEB_PUSH_HOSTS,
   validateConnectorManifest,
   type ConnectorManifest,
 } from "@eido/schemas"
@@ -28,11 +29,12 @@ export const BASE_HOSTS: ReadonlyArray<{ host: string; reason: string }> = [
     reason:
       "Google token exchange and refresh (packages/gate/src/internal/oauth-refresh.ts, connect/oauth.ts)",
   },
-  {
-    host: "web.push.apple.com",
+  // The gate refuses a subscription on any other push host, from the same list (#789).
+  ...WEB_PUSH_HOSTS.map((host) => ({
+    host,
     reason:
-      "Web Push to the owner's iPhone home-screen app (packages/gate/src/internal/push-notify.ts)",
-  },
+      "Web Push to Safari and the iPhone home-screen app (packages/gate/src/internal/push-notify.ts)",
+  })),
   {
     host: "bridge.simplefin.org",
     reason:

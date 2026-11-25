@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { REVIEWED_MANIFESTS } from "@eido/schemas"
+import { REVIEWED_MANIFESTS, WEB_PUSH_HOSTS } from "@eido/schemas"
 import { describe, expect, it } from "vitest"
 
 import {
@@ -51,6 +51,14 @@ describe("egressTargets", () => {
         { host: "127.0.0.1", port: 1143 },
       ],
     })
+  })
+
+  it("allows every Web Push host the gate sends to, each a plain name pf can resolve", () => {
+    const { hosts } = egressTargets(REVIEWED_MANIFESTS)
+    for (const host of WEB_PUSH_HOSTS) {
+      expect(isHostName(host)).toBe(true)
+      expect(hosts).toContain(host)
+    }
   })
 
   it("lowercases names, drops a trailing dot and lists each host and endpoint once", () => {
