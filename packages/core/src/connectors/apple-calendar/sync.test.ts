@@ -2,17 +2,20 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { createServer as createHttpServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { DatabaseSync } from "node:sqlite"
+import { DatabaseSync } from "node:sqlite"
 import { describe, expect, test } from "vitest"
 import { createAppleClient } from "@eido/gate"
 import type { AppleClient } from "@eido/gate"
 import type { GateAppleCalendarList, GateAppleEventList } from "@eido/schemas"
 import { openDataDb } from "../../ledger/db"
 import { LIVE_DOCUMENT_PREDICATE } from "../../index/heads"
+import { ingestBatch } from "../../index/index"
+import { MIGRATIONS } from "../../index/schema"
 import type { IngestEntities } from "../ingest-entity"
 import {
   APPLE_CALENDAR_CONNECTOR,
   CALENDAR_EVENT_MIME,
+  appleEventDetails,
   appleEventSourceRef,
   isAppleEventId,
   syncAppleCalendars,
@@ -1012,5 +1015,232 @@ describe("syncAppleCalendars", () => {
     await expect(syncAppleCalendars(options(db, client))).rejects.toThrow(
       "helper unavailable"
     )
+  })
+})
+
+describe("Apple event location and notes", () => {
+  const CAL = "cal-synthetic-a"
+
+  test("a synced event's location and notes are read back separately, keeping empty and absent apart", async () => {
+    const db = setupDb()
+    const client = fakeClient({
+      [CAL]: [
+        event({ id: "both", location: "Room ipsum", notes: "Dolor sit amet" }),
+        event({ id: "empty", location: "", notes: "" }),
+        event({ id: "absent", location: null, notes: null }),
+        event({ id: "mixed", location: null, notes: "Only notes" }),
+      ],
+    })
+
+    await syncAppleCalendars(options(db, client))
+
+    expect(appleEventDetails(db, CAL, "both")).toEqual({
+      known: true,
+      location: "Room ipsum",
+      notes: "Dolor sit amet",
+    })
+    expect(appleEventDetails(db, CAL, "empty")).toEqual({
+      known: true,
+      location: "",
+      notes: "",
+    })
+    expect(appleEventDetails(db, CAL, "absent")).toEqual({
+      known: true,
+      location: null,
+      notes: null,
+    })
+    expect(appleEventDetails(db, CAL, "mixed")).toEqual({
+      known: true,
+      location: null,
+      notes: "Only notes",
+    })
+  })
+
+  test("an event that is not indexed, or was retired, has no details", async () => {
+    const db = setupDb()
+    const events: Record<string, AppleEvent[]> = { [CAL]: [event()] }
+    const client = fakeClient(events)
+    await syncAppleCalendars(options(db, client))
+    expect(appleEventDetails(db, CAL, "never-seen")).toBeNull()
+
+    events[CAL] = []
+    await syncAppleCalendars(options(db, client))
+    expect(appleEventDetails(db, CAL, "evt-1")).toBeNull()
+  })
+
+  test("an edit to the notes indexes a new version and the head reads the new value", async () => {
+    const db = setupDb()
+    const events: Record<string, AppleEvent[]> = {
+      [CAL]: [event({ location: "Room ipsum", notes: "first" })],
+    }
+    const client = fakeClient(events)
+    await syncAppleCalendars(options(db, client))
+
+    events[CAL] = [
+      event({
+        location: "Room ipsum",
+        notes: "second",
+        modifiedAt: "2026-11-30T11:00:00Z",
+      }),
+    ]
+    await syncAppleCalendars(options(db, client))
+
+    expect(appleEventDetails(db, CAL, "evt-1")).toEqual({
+      known: true,
+      location: "Room ipsum",
+      notes: "second",
+    })
+  })
+
+  test("a known fact row cannot be rewritten, and an unknown one can change nothing but its details", async () => {
+    const db = setupDb()
+    await syncAppleCalendars(
+      options(db, fakeClient({ [CAL]: [event({ location: "Room ipsum" })] }))
+    )
+    expect(() =>
+      db.prepare("UPDATE calendar_event_facts SET location = 'Elsewhere'").run()
+    ).toThrow("immutable")
+    expect(() =>
+      db
+        .prepare("UPDATE calendar_event_facts SET start_at = '2030-01-01'")
+        .run()
+    ).toThrow("immutable")
+    expect(() => db.prepare("DELETE FROM calendar_event_facts").run()).toThrow(
+      "immutable"
+    )
+    expect(appleEventDetails(db, CAL, "evt-1")).toMatchObject({
+      location: "Room ipsum",
+    })
+  })
+
+  describe("an event indexed before the migration", () => {
+    function tempDir(): string {
+      return mkdtempSync(join(tmpdir(), "eido-apple-fields-"))
+    }
+
+    /**
+     * A database at index schema v15 (no location or notes columns) holding `events` as the sync
+     * of that version wrote them: a document, a live head and a fact row each. `digests` are the
+     * content digests of the same events, taken from a current sync, so a later sync matches them.
+     */
+    function databaseAtV15(
+      path: string,
+      events: readonly AppleEvent[],
+      digests: ReadonlyMap<string, string>
+    ): void {
+      const old = new DatabaseSync(path)
+      old.exec("PRAGMA foreign_keys = ON")
+      for (const migration of MIGRATIONS.slice(0, 15)) old.exec(migration)
+      old.exec("PRAGMA user_version = 15")
+      old
+        .prepare(
+          `INSERT INTO entities (id, kind, name, tag, created_at)
+         VALUES ('entity-default', 'personal', 'Ipsum', 'default', datetime('now'))`
+        )
+        .run()
+      for (const e of events) {
+        const sha256 = digests.get(e.id) ?? ""
+        const sourceRef = appleEventSourceRef(e.calendarId, e.id)
+        ingestBatch(old, {
+          connector: APPLE_CALENDAR_CONNECTOR,
+          stream: `calendar:${e.calendarId}`,
+          documents: [
+            {
+              sha256,
+              source: APPLE_CALENDAR_CONNECTOR,
+              sourceRef,
+              mime: CALENDAR_EVENT_MIME,
+              entityId: "entity-default",
+              title: e.title,
+              body: e.title,
+              occurredAt: e.start,
+            },
+          ],
+          heads: [{ source: APPLE_CALENDAR_CONNECTOR, sourceRef, sha256 }],
+          nextCursor: "c",
+        })
+        old
+          .prepare(
+            `INSERT INTO calendar_event_facts
+               (sha256, source, calendar_id, event_id, start_at, end_at, all_day)
+             VALUES (?, ?, ?, ?, ?, ?, 0)`
+          )
+          .run(
+            sha256,
+            APPLE_CALENDAR_CONNECTOR,
+            e.calendarId,
+            e.id,
+            e.start,
+            e.end
+          )
+      }
+      old.close()
+    }
+
+    async function digestsOf(
+      events: readonly AppleEvent[]
+    ): Promise<Map<string, string>> {
+      const db = setupDb()
+      await syncAppleCalendars(options(db, fakeClient({ [CAL]: [...events] })))
+      const rows = db
+        .prepare(
+          `SELECT f.event_id, f.sha256 FROM calendar_event_facts f ORDER BY f.event_id`
+        )
+        .all()
+      db.close()
+      return new Map(
+        rows.map((row) => [String(row["event_id"]), String(row["sha256"])])
+      )
+    }
+
+    test("is reported as unknown after the migration, not as having no location or notes", async () => {
+      const events = [event({ id: "old-1" })]
+      const dir = tempDir()
+      try {
+        const path = join(dir, "data.db")
+        databaseAtV15(path, events, await digestsOf(events))
+
+        const db = openDataDb(path)
+
+        expect(appleEventDetails(db, CAL, "old-1")).toEqual({ known: false })
+        db.close()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    test("is filled in by the next sync that reads it, and one the read does not reach stays unknown", async () => {
+      const inRead = event({ id: "old-in", location: "Room ipsum", notes: "" })
+      const outOfRead = event({ id: "old-out", location: "Hall dolor" })
+      const events = [inRead, outOfRead]
+      const dir = tempDir()
+      try {
+        const path = join(dir, "data.db")
+        databaseAtV15(path, events, await digestsOf(events))
+        const db = openDataDb(path)
+
+        // The Helper returns only `old-in` this time, with its content unchanged, and reports
+        // one item it skipped, so the read is partial and retires nothing.
+        const result = await syncAppleCalendars(
+          options(db, fakeClient({ [CAL]: { events: [inRead], skipped: 1 } }), {
+            selection: { kind: "ids", ids: [CAL] },
+          })
+        )
+
+        expect(result.calendars[0]).toMatchObject({
+          status: "synced",
+          ingested: 0,
+        })
+        expect(appleEventDetails(db, CAL, "old-in")).toEqual({
+          known: true,
+          location: "Room ipsum",
+          notes: "",
+        })
+        expect(appleEventDetails(db, CAL, "old-out")).toEqual({ known: false })
+        db.close()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
   })
 })

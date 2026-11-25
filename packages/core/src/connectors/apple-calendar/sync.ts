@@ -143,10 +143,17 @@ function recordEventFacts(
   db: DatabaseSync,
   events: readonly AppleEvent[]
 ): void {
+  // A fact row is immutable. The one exception is a row written before its location and notes
+  // were stored (`details_known = 0`): the digest covers both, so the event read now is that
+  // version, and the conflict clause fills the row in. A known row is left as it is.
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO calendar_event_facts
-       (sha256, source, calendar_id, event_id, start_at, end_at, all_day)
-     SELECT ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM documents WHERE sha256 = ?)`
+    `INSERT INTO calendar_event_facts
+       (sha256, source, calendar_id, event_id, start_at, end_at, all_day,
+        details_known, location, notes)
+     SELECT ?, ?, ?, ?, ?, ?, ?, 1, ?, ? WHERE EXISTS (SELECT 1 FROM documents WHERE sha256 = ?)
+     ON CONFLICT (sha256) DO UPDATE SET
+       details_known = 1, location = excluded.location, notes = excluded.notes
+     WHERE details_known = 0`
   )
   for (const event of events) {
     const digest = eventDigest(event)
@@ -158,6 +165,8 @@ function recordEventFacts(
       event.start,
       event.end,
       event.allDay ? 1 : 0,
+      event.location,
+      event.notes,
       digest
     )
   }
@@ -363,4 +372,42 @@ export function isAppleEventId(db: DatabaseSync, eventId: string): boolean {
       )
       .get(APPLE_CALENDAR_CONNECTOR, eventId) !== undefined
   )
+}
+
+/**
+ * The location and notes of an indexed Apple event, as the calendar holds them. `null` is a field
+ * the calendar has none of; an empty string is a field set to nothing. They differ because
+ * `apple.event_update` replaces the whole event: an omitted field is cleared by the Helper.
+ */
+export type AppleEventDetails =
+  | { known: true; location: string | null; notes: string | null }
+  /**
+   * The event was indexed before location and notes were stored separately and no sync has read it
+   * since. A caller must not treat either field as absent: offer no update for the event.
+   */
+  | { known: false }
+
+/** The details of the live Apple event `eventId` in `calendarId`, or `null` when it is not indexed. */
+export function appleEventDetails(
+  db: DatabaseSync,
+  calendarId: string,
+  eventId: string
+): AppleEventDetails | null {
+  const row = db
+    .prepare(
+      `SELECT f.details_known, f.location, f.notes
+       FROM document_heads h
+       JOIN calendar_event_facts f ON f.sha256 = h.sha256 AND f.source = h.source
+       WHERE h.source = ? AND h.source_ref = ?`
+    )
+    .get(APPLE_CALENDAR_CONNECTOR, appleEventSourceRef(calendarId, eventId))
+  if (row === undefined) return null
+  if (row["details_known"] !== 1) return { known: false }
+  const text = (value: unknown): string | null =>
+    typeof value === "string" ? value : null
+  return {
+    known: true,
+    location: text(row["location"]),
+    notes: text(row["notes"]),
+  }
 }
