@@ -148,7 +148,38 @@ export function removePushSubscription(
     })
 }
 
+/** True when the endpoint's host is one the gate sends Web Push to; an unparseable one is not. */
+function hostAllowed(endpoint: string): boolean {
+  try {
+    return WEB_PUSH_HOSTS.includes(new URL(endpoint).hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Revokes each active subscription stored on a host outside `WEB_PUSH_HOSTS` (#805), with the
+ * audited `system` removal. Registration refuses such hosts (#789), so these are rows from before
+ * that check, or from before the list shrank. The row stays (revoked, never deleted) and its
+ * `push.removed` entry is written once, because only active rows are revoked.
+ */
+export function retireUnsupportedPushSubscriptions(db: DatabaseSync): void {
+  const active = db
+    .prepare(
+      "SELECT id, endpoint FROM push_subscriptions WHERE revoked_at IS NULL"
+    )
+    .all()
+  for (const row of active)
+    if (!hostAllowed(String(row["endpoint"])))
+      removePushSubscription(db, String(row["id"]), "system")
+}
+
+/**
+ * The active subscriptions the gate can send to. A subscription on a host the gate no longer sends
+ * to is retired first, so the list, each flush and each recovery alert never see it.
+ */
 export function pushSubscriptions(db: DatabaseSync): PushSubscription[] {
+  retireUnsupportedPushSubscriptions(db)
   return db
     .prepare(
       "SELECT * FROM push_subscriptions WHERE revoked_at IS NULL ORDER BY id"

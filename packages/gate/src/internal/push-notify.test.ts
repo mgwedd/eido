@@ -18,6 +18,7 @@ import {
   pushSubscriptions,
   registerPushSubscription,
   removePushSubscription,
+  retireUnsupportedPushSubscriptions,
 } from "./push-subscriptions"
 import { auditRows, controlAuthorization, sample, setup } from "./test-fixtures"
 
@@ -209,11 +210,86 @@ describe("count-only Web Push", () => {
         "https://web.push.apple.com/send/stored",
         "https://web.push.apple.com/send/stored",
       ])
+      // Retired, not refused again: the one audit row is the system removal, and no flush or
+      // recovery alert adds a refused-egress row for it.
       expect(
         auditRows(s.db)
           .filter((row) => row.target === id)
-          .map((row) => row.action)
-      ).toEqual(["push.refused_egress", "push.recovery_refused_egress"])
+          .map((row) => [row.actor, row.action])
+      ).toEqual([["system", "push.removed"]])
+    } finally {
+      notifier.close()
+      s.cleanup()
+    }
+  })
+
+  it("retires a stored subscription on another push host once, keeping the row and the allowed one", () => {
+    const s = setup()
+    const elsewhere = storeUncheckedSubscription(s.db, {
+      endpoint: "https://fcm.example.invalid/send/chrome",
+      ...keys(),
+    })
+    const apple = storeUncheckedSubscription(s.db, {
+      endpoint: "https://web.push.apple.com/send/kept",
+      ...keys(),
+    })
+    try {
+      expect(pushSubscriptions(s.db).map(({ id }) => id)).toEqual([apple])
+      // Listing again, and each of the sender's own reads, adds nothing.
+      pushSubscriptions(s.db)
+      retireUnsupportedPushSubscriptions(s.db)
+      const removed = auditRows(s.db).filter(
+        (row) => row.action === "push.removed"
+      )
+      expect(removed.map((row) => [row.actor, row.target])).toEqual([
+        ["system", elsewhere],
+      ])
+      // Revoked, not deleted: the row is still there for the owner's records.
+      expect(
+        s.db
+          .prepare("SELECT revoked_at FROM push_subscriptions WHERE id = ?")
+          .get(elsewhere)?.["revoked_at"]
+      ).toEqual(expect.any(String))
+      expect(
+        s.db
+          .prepare("SELECT revoked_at FROM push_subscriptions WHERE id = ?")
+          .get(apple)?.["revoked_at"]
+      ).toBeNull()
+    } finally {
+      s.cleanup()
+    }
+  })
+
+  it("writes no refused-egress audit row on any flush for a subscription on another push host", async () => {
+    const s = setup()
+    let time = 1_000
+    storeUncheckedSubscription(s.db, {
+      endpoint: "https://fcm.example.invalid/send/chrome",
+      ...keys(),
+    })
+    const notifier = createPushNotifier({
+      db: s.db,
+      now: () => time,
+      subject: "mailto:ops@example.invalid",
+      privateKey: () => Promise.resolve(privateKey()),
+      fetch: () => Promise.reject(new Error("nothing may be sent")),
+    })
+    try {
+      expect(
+        propose(s.db, s.policy, {
+          intent: sample("email.send"),
+          origin: "reactive",
+        }).ok
+      ).toBe(true)
+      for (let flush = 0; flush < 3; flush += 1) {
+        notifier.notifyPending()
+        time += 61_000
+        expect(await notifier.flushDue()).toBe(true)
+        await notifier.notifyRecovery()
+      }
+      expect(
+        auditRows(s.db).filter((row) => row.action.includes("refused_egress"))
+      ).toEqual([])
     } finally {
       notifier.close()
       s.cleanup()
@@ -459,7 +535,7 @@ describe("count-only Web Push", () => {
     const id = registerPushSubscription(s.db, subscription, auth)
     s.db
       .prepare("UPDATE push_subscriptions SET endpoint = ? WHERE id = ?")
-      .run("https://attacker.example.invalid/send", id)
+      .run("https://web.push.apple.com/send/attacker", id)
     const sent: string[] = []
     const notifier = createPushNotifier({
       db: s.db,
@@ -735,7 +811,7 @@ describe("recovery alert push (issue 682)", () => {
       throw new Error("no subscriptions")
     s.db
       .prepare("UPDATE push_subscriptions SET endpoint = ? WHERE id = ?")
-      .run("https://attacker.example.invalid/send", second.id)
+      .run("https://web.push.apple.com/send/attacker", second.id)
     const noKey = createPushNotifier({
       db: s.db,
       subject: "mailto:ops@example.invalid",

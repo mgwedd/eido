@@ -352,6 +352,56 @@ describe("phoneHandler: push subscriptions", () => {
     )
   })
 
+  it("no longer lists a subscription stored on a host the gate stopped sending to", async () => {
+    enrol(auth)
+    const cookie = await signIn()
+    state.push = {
+      publicKey: () => Promise.resolve("synthetic-public-key"),
+      notifyPending: () => undefined,
+      notifyRecovery: () => Promise.resolve(),
+    }
+    const receiver = createECDH("prime256v1")
+    receiver.generateKeys()
+    const subscribe = async (endpoint: string) => {
+      const subscription = {
+        endpoint,
+        p256dh: receiver
+          .getPublicKey(undefined, "uncompressed")
+          .toString("base64url"),
+        auth: randomBytes(16).toString("base64url"),
+      }
+      const authorization = controlAuthorization(
+        s.db,
+        preparePushRegistration(s.db, subscription)
+      )
+      const registered = await call("POST", "/push/subscriptions", {
+        cookie,
+        body: { subscription, approval: authorization.request },
+      })
+      expect(registered.status).toBe(201)
+      if (
+        typeof registered.body !== "object" ||
+        registered.body === null ||
+        !("id" in registered.body) ||
+        typeof registered.body.id !== "string"
+      )
+        throw new Error("registration did not return an id")
+      return registered.body.id
+    }
+    const kept = await subscribe("https://web.push.apple.com/kept")
+    await subscribe("https://web.push.apple.com/stale")
+    // The stand-in for a row stored before the host check: same signed row, other host.
+    s.db
+      .prepare("UPDATE push_subscriptions SET endpoint = ? WHERE endpoint = ?")
+      .run(
+        "https://fcm.example.invalid/stale",
+        "https://web.push.apple.com/stale"
+      )
+    expect((await call("GET", "/push/subscriptions", { cookie })).body).toEqual(
+      { subscriptions: [{ id: kept }] }
+    )
+  })
+
   it("requires a session and a signed binding, then lists and removes the subscription", async () => {
     enrol(auth)
     const cookie = await signIn()
