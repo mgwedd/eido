@@ -53,12 +53,12 @@ export async function appleRoute(
   if (parsed === undefined)
     return apiError(400, "invalid_request", "Invalid Apple read parameters")
   const action = `apple.read.${parsed.operation}`
-  const audit = (suffix: string, count = 0) =>
+  const audit = (suffix: string, count = 0, skipped = 0) =>
     append(db, {
       actor: "data-plane",
       action: action + suffix,
       target: APPLE_CONNECTOR,
-      detailHash: payloadHash({ items: count }),
+      detailHash: payloadHash({ items: count, skipped }),
     })
   const attempt = beginConnectorRead(db, APPLE_CONNECTOR)
   if (!attempt.allowed) {
@@ -70,7 +70,7 @@ export async function appleRoute(
     )
   }
   try {
-    let body: unknown
+    let body: { skipped: number }
     let count: number
     switch (parsed.operation) {
       case "list_calendars": {
@@ -112,7 +112,7 @@ export async function appleRoute(
         )
     }
     recordConnectorReadSuccess(db, APPLE_CONNECTOR, attempt)
-    audit("", count)
+    audit("", count, body.skipped)
     return { status: 200, body }
   } catch (error) {
     const code = error instanceof AppleError ? error.code : "unavailable"

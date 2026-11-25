@@ -51,32 +51,28 @@ public struct StoredEvent {
     let a = request.args
     switch request.operation {
     case .listCalendars, .listReminderLists:
-      let values = try store.calendars(reminders: request.operation.usesReminders)
-      try bounded(values.count)
-      guard values.allSatisfy({ validId($0.id) && validText($0.title, 2000) }) else {
-        throw HelperFailure.unavailable
-      }
-      return .calendars(values)
+      let (values, skipped) = try kept(
+        store.calendars(reminders: request.operation.usesReminders)
+      ) { validId($0.id) && validText($0.title, 2000) }
+      return .calendars(values, skipped: skipped)
     case .listEvents:
       guard let id = a.calendarId, let start = a.start.flatMap(Dates.parse),
         let end = a.end.flatMap(Dates.parse)
       else { throw HelperFailure.invalidRequest }
       _ = try calendar(id, reminders: false)
-      let values = try store.events(calendarId: id, start: start, end: end)
-      try bounded(values.count)
-      guard values.allSatisfy(validEvent) else { throw HelperFailure.unavailable }
-      return .events(values)
+      let (values, skipped) = try kept(
+        store.events(calendarId: id, start: start, end: end), validEvent)
+      return .events(values, skipped: skipped)
     case .listReminders:
       guard let id = a.listId, let since = a.completedSince.flatMap(Dates.parse) else {
         throw HelperFailure.invalidRequest
       }
       _ = try calendar(id, reminders: true)
-      let values = try await store.reminders(listId: id).filter {
-        !$0.completed || ($0.completedAt.flatMap(Dates.parse).map { $0 >= since } ?? false)
-      }
-      try bounded(values.count)
-      guard values.allSatisfy(validReminder) else { throw HelperFailure.unavailable }
-      return .reminders(values)
+      let (values, skipped) = try kept(
+        await store.reminders(listId: id).filter {
+          !$0.completed || ($0.completedAt.flatMap(Dates.parse).map { $0 >= since } ?? false)
+        }, validReminder)
+      return .reminders(values, skipped: skipped)
     case .createEvent, .updateEvent:
       guard let calendarId = a.calendarId, let title = a.title, let start = a.start,
         let end = a.end, let allDay = a.allDay
@@ -119,8 +115,12 @@ public struct StoredEvent {
   }
 }
 
-private func bounded(_ count: Int) throws {
-  guard count <= 2000 else { throw HelperFailure.unavailable }
+/// Drops items that fail the output checks and counts them, so one malformed upstream item
+/// does not fail the whole read and none disappears unreported. The bound applies to what is kept.
+private func kept<T>(_ values: [T], _ valid: (T) -> Bool) throws -> ([T], Int) {
+  let valid = values.filter(valid)
+  guard valid.count <= 2000 else { throw HelperFailure.unavailable }
+  return (valid, values.count - valid.count)
 }
 private func validText(_ value: String, _ max: Int) -> Bool {
   value.unicodeScalars.count <= max && !value.contains("\0")

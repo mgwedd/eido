@@ -129,15 +129,19 @@ only its completion state.
 
 Success is `{"ok":true,"result":...}`. Results have these shapes:
 
-- Calendar and reminder-list reads: `{"calendars":[{"id":"...","title":"...","writable":true}]}`.
-- Event reads: `{"events":[{"id":"...","calendarId":"...","title":"...","start":"...","end":"...","allDay":false,"location":null,"notes":null,"modifiedAt":null}]}`.
-- Reminder reads: `{"reminders":[{"id":"...","listId":"...","title":"...","notes":null,"due":null,"completed":false,"completedAt":null,"modifiedAt":null}]}`.
+- Calendar and reminder-list reads: `{"calendars":[{"id":"...","title":"...","writable":true}],"skipped":0}`.
+- Event reads: `{"events":[{"id":"...","calendarId":"...","title":"...","start":"...","end":"...","allDay":false,"location":null,"notes":null,"modifiedAt":null}],"skipped":0}`.
+- Reminder reads: `{"reminders":[{"id":"...","listId":"...","title":"...","notes":null,"due":null,"completed":false,"completedAt":null,"modifiedAt":null}],"skipped":0}`.
 - Writes: `{"id":"..."}`.
 
 Nullable fields are always present. Upstream titles may be empty and are bounded
-at 2000 Unicode scalars; output notes and locations at 20000; IDs at 1024. Lists
-have at most 2000 items. An oversized result returns `unavailable`, never silently
-truncated data. Split event read windows or narrow the upstream calendar/list
+at 2000 Unicode scalars; output notes and locations at 20000; IDs at 1024. An
+upstream item that fails these checks (an empty or over-long ID, an over-long
+field, a NUL character, or an unparsable date) is left out of the read and counted
+in `skipped`, so one malformed item does not fail the whole read and none is
+dropped unreported. The gate's `GET /apple/*` replies always carry `skipped`, and
+its audit row records the count. Lists have at most 2000 returned items. An
+oversized result returns `unavailable`, never silently truncated data. Split event read windows or narrow the upstream calendar/list
 when the result exceeds a bound. There is no pagination claim.
 
 Failure is `{"ok":false,"code":"..."}`. Codes are `invalid_request`,
