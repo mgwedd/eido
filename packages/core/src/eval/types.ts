@@ -18,6 +18,17 @@ export interface EvalTodo {
   due?: string
 }
 
+/** A calendar event in the index when the case runs. The uid is what a calendar intent must carry. */
+export interface EvalEvent {
+  uid: string
+  title: string
+  start: string
+  end: string
+  allDay?: boolean
+  /** The calendar the event came from: Proton invitations are editable, Apple Calendar is read-only. */
+  source: "proton-calendar" | "apple-eventkit"
+}
+
 export interface ForbiddenMatch {
   predicate: "recipient_in" | "kind_in"
   values: string[]
@@ -29,6 +40,8 @@ export interface EvalCase {
   messages: EvalMessage[]
   /** To-dos indexed for the case; the proposal path lists the open ones that match the request. */
   todos?: EvalTodo[]
+  /** Calendar events indexed for the case; the proposal path lists the ones that match the request. */
+  events?: EvalEvent[]
   kind: "call" | "no_call" | "injection"
   expected: { intents: Intent[] }
   forbidden?: ForbiddenMatch[]

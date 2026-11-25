@@ -343,14 +343,14 @@ The gate is the only process that holds credentials and talks to outside service
 
 ### Hosts
 
-| Host                      | Why                                                                                                         |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `oauth2.googleapis.com`   | Google token exchange and refresh (gate `oauth-refresh.ts`, `connect/oauth.ts`; also in the Gmail manifest) |
-| `gmail.googleapis.com`    | Gmail connector manifest                                                                                    |
-| `www.googleapis.com`      | Drive connector manifest                                                                                    |
-| `web.push.apple.com`      | Web Push to the home-screen app on iPhone (gate `push-notify.ts`)                                           |
-| `bridge.simplefin.org`    | SimpleFIN setup-token claim (gate `connect/simplefin-claim.ts`)                                             |
-| `127.0.0.1:1025`, `:1143` | Proton Bridge SMTP and IMAP (Proton Mail manifest `egress.local`)                                           |
+| Host                      | Why                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `oauth2.googleapis.com`   | Google token exchange and refresh (gate `oauth-refresh.ts`, `connect/oauth.ts`; also in the Gmail manifest)  |
+| `gmail.googleapis.com`    | Gmail connector manifest                                                                                     |
+| `www.googleapis.com`      | Drive connector manifest                                                                                     |
+| `web.push.apple.com`      | Web Push to Safari and the iPhone home-screen app (`WEB_PUSH_HOSTS`, `@eido/schemas`; gate `push-notify.ts`) |
+| `bridge.simplefin.org`    | SimpleFIN setup-token claim (gate `connect/simplefin-claim.ts`)                                              |
+| `127.0.0.1:1025`, `:1143` | Proton Bridge SMTP and IMAP (Proton Mail manifest `egress.local`)                                            |
 
 The list is the output of `egressTargets` for the manifests on `main`; the infra tests pin it. A new connector manifest adds its hosts the next time you run the plan.
 
@@ -379,5 +379,5 @@ If the allowlisted host fails too, check `sudo pfctl -s info | head -1` says `St
 ### Limits
 
 - pf matches addresses. A listed host on a shared CDN or Google front end makes every other name behind the same addresses reachable on 443. The gate's own egress check (host, method and path prefix from the manifest) still applies on top.
-- Web Push only reaches Apple's push service. A subscription from another browser (FCM, Mozilla) is refused until its host is added: #789.
+- Web Push: Apple's push service only, which Safari and the iPhone home-screen app use (decision in #789; the owner can reverse it). Chrome, Firefox and Edge subscriptions are not supported. `WEB_PUSH_HOSTS` in `packages/schemas/src/web-push.ts` is the one list: the plan allows each host in it, and the gate refuses a subscription on any other host when it is registered (`push_host_refused`, 422) and never posts to one already stored. Apple documents its endpoints as any subdomain of push.apple.com; pf cannot take a wildcard, so the list names `web.push.apple.com`, and a subscription on another subdomain is refused at registration. Supporting another service means adding its exact hosts to `WEB_PUSH_HOSTS`.
 - Removing the allowlist alone is not supported; `host plane remove` removes it with the rest of the plane.

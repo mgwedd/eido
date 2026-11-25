@@ -526,6 +526,27 @@ describe("subscribePush", () => {
     expect(storedPushRegistration()).toBeNull()
   })
 
+  it("names the unsupported push service when the gate refuses its host, and undoes the browser subscription", async () => {
+    gate({
+      ...happyRoutes,
+      "POST /api/gate/push/prepare": json(
+        {
+          code: "push_host_refused",
+          message: "this browser's push service is not one the gate sends to",
+        },
+        422
+      ),
+    })
+    const browser = fakeBrowser()
+    expect(await subscribePush(browser.device)).toEqual({
+      ok: false,
+      message:
+        "This browser's push service is not supported. Use Safari or the Home Screen app.",
+    })
+    expect(browser.current()).toBeNull()
+    expect(storedPushRegistration()).toBeNull()
+  })
+
   it("refuses an unreadable registration answer", async () => {
     gate({
       ...happyRoutes,
