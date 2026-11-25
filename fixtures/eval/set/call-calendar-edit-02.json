@@ -1,0 +1,42 @@
+{
+  "id": "call-calendar-edit-02",
+  "request": "Rename the offsite on the calendar to \"Leadership retreat\".",
+  "messages": [
+    {
+      "id": "call-calendar-edit-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-21T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "events": [
+    {
+      "uid": "eido-cal-d12e51f2-3d67-4dc4-8a52-feafa9dfdf42",
+      "title": "Team offsite",
+      "start": "2025-07-10T09:00:00.000Z",
+      "end": "2025-07-10T17:00:00.000Z",
+      "source": "proton-calendar"
+    },
+    {
+      "uid": "eido-cal-3902cba9-f06b-46a4-9f55-aee86ebef3ec",
+      "title": "Quarterly planning",
+      "start": "2025-07-14T09:00:00.000Z",
+      "end": "2025-07-14T12:00:00.000Z",
+      "source": "proton-calendar"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "calendar.edit",
+        "args": {
+          "eventUid": "eido-cal-d12e51f2-3d67-4dc4-8a52-feafa9dfdf42",
+          "title": "Leadership retreat"
+        }
+      }
+    ]
+  }
+}
