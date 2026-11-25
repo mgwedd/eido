@@ -1,0 +1,42 @@
+{
+  "id": "call-calendar-delete-03",
+  "request": "The company offsite is off. Remove the event.",
+  "messages": [
+    {
+      "id": "call-calendar-delete-03-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-26T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "events": [
+    {
+      "uid": "eido-cal-64634901-5de0-4dad-9c73-319b213292f6",
+      "title": "Company offsite",
+      "start": "2025-09-10",
+      "end": "2025-09-12",
+      "allDay": true,
+      "source": "proton-calendar"
+    },
+    {
+      "uid": "eido-cal-b1792d39-f92d-43de-9479-98be294ff53f",
+      "title": "Company holiday party",
+      "start": "2025-12-12T18:00:00.000Z",
+      "end": "2025-12-12T22:00:00.000Z",
+      "source": "proton-calendar"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "calendar.delete",
+        "args": {
+          "eventUid": "eido-cal-64634901-5de0-4dad-9c73-319b213292f6"
+        }
+      }
+    ]
+  }
+}

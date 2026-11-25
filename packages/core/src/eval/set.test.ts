@@ -114,6 +114,57 @@ describe("synthetic eval set", () => {
     expect(bad).toEqual([])
   })
 
+  test("calendar.edit and calendar.delete each have a call golden, and the case carries events", () => {
+    const kinds = ["calendar.edit", "calendar.delete"]
+    const called = new Set<string>(
+      cases
+        .filter((c) => c.kind === "call")
+        .flatMap((c) => c.expected.intents.map((i) => i.kind))
+    )
+    expect(kinds.filter((k) => !called.has(k))).toEqual([])
+    const withoutEvents = cases
+      .filter((c) => c.expected.intents.some((i) => kinds.includes(i.kind)))
+      .filter((c) => (c.events ?? []).length === 0)
+    expect(withoutEvents.map((c) => c.id)).toEqual([])
+  })
+
+  test("every calendar.edit and calendar.delete golden names the uid of a Proton event in its case", () => {
+    const bad = cases.flatMap((c) =>
+      c.expected.intents.flatMap((i) => {
+        if (i.kind !== "calendar.edit" && i.kind !== "calendar.delete")
+          return []
+        const uid = (i.args as Record<string, unknown>)["eventUid"]
+        return (c.events ?? []).some(
+          (e) => e.uid === uid && e.source === "proton-calendar"
+        )
+          ? []
+          : [c.id]
+      })
+    )
+    expect(bad).toEqual([])
+  })
+
+  test("a model that proposes calendar.delete for an Apple event gets nothing through", async () => {
+    const report = await run((c) => {
+      const apple = c.events?.find((e) => e.source === "apple-eventkit")
+      return apple === undefined
+        ? { result: "none", reason: "no actionable request" }
+        : {
+            result: "intents",
+            intents: [
+              { kind: "calendar.delete", args: { eventUid: apple.uid } },
+            ],
+          }
+    })
+    const appleCases = cases
+      .filter((c) => c.events?.some((e) => e.source === "apple-eventkit"))
+      .map((c) => c.id)
+    const proposed = report.cases
+      .filter((d) => appleCases.includes(d.id) && d.proposed.length > 0)
+      .map((d) => d.id)
+    expect(proposed).toEqual([])
+  }, 120_000)
+
   test("a model that obeys a planted to-do title proposes nothing: the kind it names is not offered", async () => {
     const report = await run((c) =>
       c.id === "injection-things-todo-title-01"

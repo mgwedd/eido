@@ -162,6 +162,7 @@ export {
 } from "./generated/validators"
 export { validateConnectorManifest } from "./manifest"
 export { REVIEWED_MANIFESTS } from "./reviewed-manifests"
+export { WEB_PUSH_HOSTS } from "./web-push"
 export { gateAuditDisplayActor } from "./gate-audit-display"
 export { allDayDate, appleEventDatesError } from "./apple-dates"
 export {
