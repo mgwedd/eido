@@ -25,6 +25,7 @@ import { MailSignals } from "@/components/mail-signals"
 import { useReachability } from "@/components/reachability"
 import { ShortcutKeys } from "@/components/shortcuts-provider"
 import { useKeydown } from "@/hooks/use-keydown"
+import { useReducedMotion } from "@/hooks/use-reduced-motion"
 import { shortHash } from "@/lib/approval/challenge"
 import { prepareApproval, signApproval } from "@/lib/approval/sign"
 import { expiredUnlockUrl, loadCredentialStatus } from "@/lib/auth/unlock"
@@ -43,6 +44,7 @@ import {
   mailMessageSha256,
   parseConfirmField,
   swipeOutcome,
+  swipeStyle,
   waitingSince,
   type ConfirmFieldCardData,
 } from "@/lib/queue/card"
@@ -84,6 +86,7 @@ type HistoryState =
 type Action =
   | { status: "idle" }
   | { status: "signing" }
+  | { status: "cancelled" }
   | { status: "error"; message: string }
 
 const localTime = (iso: string) =>
@@ -167,9 +170,12 @@ function useQueue() {
 
 function HistoryList({
   state,
+  editedFrom,
   onRetry,
 }: {
   state: HistoryState
+  /** The id of the intent this one replaced, when it was created by an edit. */
+  editedFrom?: string
   onRetry: () => void
 }) {
   if (state.status === "loading")
@@ -189,7 +195,7 @@ function HistoryList({
         </Button>
       </div>
     )
-  const rows = historyRows(state.history, localTime)
+  const rows = historyRows(state.history, localTime, editedFrom)
   if (rows.length === 0)
     return <p className="text-sm text-muted-foreground">No history recorded</p>
   return (
@@ -296,6 +302,7 @@ function ApprovalCard({
   const [dx, setDx] = React.useState(0)
   const dragStart = React.useRef<number | null>(null)
   const [dragging, setDragging] = React.useState(false)
+  const reducedMotion = useReducedMotion()
   const heading = React.useRef<HTMLHeadingElement>(null)
 
   const isConfirm = intent.kind === "confirm.field"
@@ -387,14 +394,14 @@ function ApprovalCard({
       setAction({ status: "idle" })
       return setCard({ status: "mismatch" })
     }
+    if (result.error.code === "cancelled")
+      return setAction({ status: "cancelled" })
     setAction({
       status: "error",
       message:
-        result.error.code === "cancelled"
-          ? `${copy.subject} did not complete. Nothing was approved.`
-          : result.error.code === "verification_failed"
-            ? "What you saw and what is stored differ. The intent was rejected and an alert was logged."
-            : result.error.message,
+        result.error.code === "verification_failed"
+          ? "What you saw and what is stored differ. The intent was rejected and an alert was logged."
+          : result.error.message,
     })
   }
 
@@ -546,10 +553,7 @@ function ApprovalCard({
     <article
       aria-labelledby={`card-${intent.id}`}
       className="flex touch-pan-y flex-col gap-4"
-      style={{
-        transform: dx ? `translateX(${dx}px) rotate(${dx / 24}deg)` : undefined,
-        transition: dragging ? undefined : "transform 200ms",
-      }}
+      style={swipeStyle(dx, dragging, reducedMotion)}
       onPointerDown={(event) => {
         dragStart.current = event.clientX
         setDragging(true)
@@ -784,6 +788,7 @@ function ApprovalCard({
             </h3>
             <HistoryList
               state={history}
+              editedFrom={intent.editedFrom}
               onRetry={() => {
                 setHistory({ status: "loading" })
                 setHistoryReloads((n) => n + 1)
@@ -795,6 +800,11 @@ function ApprovalCard({
       {action.status === "signing" ? (
         <p role="status" className="text-sm">
           {isConfirm ? "Confirming…" : `Waiting for ${copy.waitingFor}`}
+        </p>
+      ) : null}
+      {action.status === "cancelled" ? (
+        <p role="status" className="text-sm">
+          Signing cancelled · nothing was sent
         </p>
       ) : null}
       {action.status === "error" ? (
