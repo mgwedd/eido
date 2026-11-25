@@ -22,6 +22,8 @@ import {
   validateCoreApiAskResponse,
   validateCoreApiObligationList,
   validateCoreApiTransactionList,
+  validateCoreApiConfirmCardRequest,
+  validateCoreApiConfirmCardResponse,
   validateCoreApiReplyDraftRequest,
   validateCoreApiReplyDraftResponse,
   validateCoreApiSimpleFinSync,
@@ -485,6 +487,51 @@ function errorsOf(value: unknown): string[] {
 
 test("schemas package loads", () => {
   expect(SCHEMA_VERSION).toBe(0)
+})
+
+describe("core API confirm card schemas", () => {
+  test("the request names one extraction by a positive integer id and nothing else", () => {
+    expect(validateCoreApiConfirmCardRequest({ extractionId: 7 }).ok).toBe(true)
+    expect(validateCoreApiConfirmCardRequest({ extractionId: 0 }).ok).toBe(
+      false
+    )
+    expect(validateCoreApiConfirmCardRequest({ extractionId: "7" }).ok).toBe(
+      false
+    )
+    expect(validateCoreApiConfirmCardRequest({}).ok).toBe(false)
+    expect(
+      validateCoreApiConfirmCardRequest({ extractionId: 7, field: "amount" }).ok
+    ).toBe(false)
+  })
+
+  const response = {
+    intentId: "int_1",
+    field: "amount",
+    created: false,
+    queueHref: "/queue?intent=int_1",
+  }
+
+  test("the response carries the intent id, the field and a relative queue link", () => {
+    expect(validateCoreApiConfirmCardResponse(response).ok).toBe(true)
+    expect(
+      validateCoreApiConfirmCardResponse({ ...response, field: "colour" }).ok
+    ).toBe(false)
+    expect(
+      validateCoreApiConfirmCardResponse({ ...response, created: undefined }).ok
+    ).toBe(false)
+    expect(
+      validateCoreApiConfirmCardResponse({
+        ...response,
+        queueHref: "https://example.invalid/queue?intent=int_1",
+      }).ok
+    ).toBe(false)
+  })
+
+  test("the error codes include a gate refusal", () => {
+    expect(
+      validateCoreApiError({ error: { code: "gate_refused", message: "x" } }).ok
+    ).toBe(true)
+  })
 })
 
 describe("core API reply draft schemas", () => {
