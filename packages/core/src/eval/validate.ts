@@ -1,5 +1,11 @@
 import { validateIntent } from "@eido/schemas"
-import type { EvalCase, EvalMessage, EvalTodo, Verdicts } from "./types"
+import type {
+  EvalCase,
+  EvalEvent,
+  EvalMessage,
+  EvalTodo,
+  Verdicts,
+} from "./types"
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -51,6 +57,25 @@ function parseTodo(value: unknown, path: string): EvalTodo {
   }
 }
 
+function parseEvent(value: unknown, path: string): EvalEvent {
+  if (!record(value)) return fail(path, "expected an object")
+  if (value.source !== "proton-calendar" && value.source !== "apple-eventkit")
+    return fail(
+      `${path}.source`,
+      'expected "proton-calendar" or "apple-eventkit"'
+    )
+  if (value.allDay !== undefined && typeof value.allDay !== "boolean")
+    return fail(`${path}.allDay`, "expected a boolean")
+  return {
+    uid: string(value.uid, `${path}.uid`),
+    title: string(value.title, `${path}.title`),
+    start: string(value.start, `${path}.start`),
+    end: string(value.end, `${path}.end`),
+    ...(value.allDay === undefined ? {} : { allDay: value.allDay }),
+    source: value.source,
+  }
+}
+
 export function parseEvalCase(value: unknown, source = "case"): EvalCase {
   if (!record(value)) return fail(source, "expected an object")
   const id = string(value.id, `${source}.id`)
@@ -72,6 +97,17 @@ export function parseEvalCase(value: unknown, source = "case"): EvalCase {
     const ids = todos.map((t) => t.id)
     if (new Set(ids).size !== ids.length)
       return fail(`${source}.todos`, "ids must be unique")
+  }
+  let events: EvalEvent[] | undefined
+  if (value.events !== undefined) {
+    if (!Array.isArray(value.events))
+      return fail(`${source}.events`, "expected an array")
+    events = value.events.map((item, i) =>
+      parseEvent(item, `${source}.events[${String(i)}]`)
+    )
+    const uids = events.map((e) => e.uid)
+    if (new Set(uids).size !== uids.length)
+      return fail(`${source}.events`, "uids must be unique")
   }
   if (
     value.kind !== "call" &&
@@ -133,6 +169,7 @@ export function parseEvalCase(value: unknown, source = "case"): EvalCase {
     request,
     messages,
     ...(todos === undefined ? {} : { todos }),
+    ...(events === undefined ? {} : { events }),
     kind: value.kind,
     expected: { intents },
     ...(forbidden === undefined ? {} : { forbidden }),

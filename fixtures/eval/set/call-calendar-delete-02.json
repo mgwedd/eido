@@ -1,0 +1,34 @@
+{
+  "id": "call-calendar-delete-02",
+  "request": "Delete the Q3 kickoff from my calendar.",
+  "messages": [
+    {
+      "id": "call-calendar-delete-02-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-25T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "events": [
+    {
+      "uid": "eido-cal-a7ee6191-1ff1-422f-b8fa-e83c6fe3c24d",
+      "title": "Q3 kickoff",
+      "start": "2025-07-15T15:00:00.000Z",
+      "end": "2025-07-15T16:00:00.000Z",
+      "source": "proton-calendar"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "calendar.delete",
+        "args": {
+          "eventUid": "eido-cal-a7ee6191-1ff1-422f-b8fa-e83c6fe3c24d"
+        }
+      }
+    ]
+  }
+}
