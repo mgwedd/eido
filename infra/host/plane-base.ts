@@ -37,6 +37,13 @@ export type DaemonSpec = {
   runAtLoad?: boolean
 }
 
+/** A path or label as an SBPL string literal; quotes and backslashes are refused, not escaped. */
+export function sbplString(value: string): string {
+  if (/["\\\n]/.test(value))
+    throw new Error(`${JSON.stringify(value)} cannot go in a sandbox profile`)
+  return `"${value}"`
+}
+
 const str = (value: string) => `<string>${escapeXml(value)}</string>`
 
 function lifecycleKeys(spec: DaemonSpec): string[] {
