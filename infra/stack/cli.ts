@@ -624,7 +624,12 @@ async function supervise(
 
 async function stop(deps: Deps): Promise<number> {
   const config = configFor(deps, "dev", "localhost")
-  const names = config.processes.map((spec) => spec.name)
+  // A gate or core the owner's stack started before the switch to split mode still has a pid file
+  // and holds the loopback ports the plane's daemons need, so split mode stops those too.
+  const names: ProcessName[] =
+    config.plane === "split"
+      ? ["gate", "core", "web"]
+      : config.processes.map((spec) => spec.name)
   if (!names.some((name) => deps.files.exists(pidFile(config, name))))
     deps.out("No stack pid files; nothing to stop.")
   await stopAll(deps, config, names)

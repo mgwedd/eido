@@ -277,6 +277,22 @@ describe("stack commands in split mode", () => {
     )
   })
 
+  it("stop also ends a gate and core left running from single mode, which would hold the plane's ports", async () => {
+    const w = world({ plane: { gate: "running", core: "running" } })
+    await main(["prod", "--background", "--no-serve"], w.deps)
+    expect(w.procs.map((p) => p.spec.name)).toEqual(["gate", "core", "web"])
+    w.out.length = 0
+    const split = { ...w.deps, env: { ...w.deps.env, ...SPLIT } }
+    expect(await main(["stop"], split)).toBe(0)
+    expect(w.out.slice(0, 3)).toEqual([
+      "web: stopped (pid 1002)",
+      "core: stopped (pid 1001)",
+      "gate: stopped (pid 1000)",
+    ])
+    expect(w.procs.every((p) => !p.alive)).toBe(true)
+    expect([...w.files.keys()].filter((k) => k.endsWith(".pid"))).toEqual([])
+  })
+
   it("refuses the commands that act on the owner's own gate", async () => {
     const w = world({ env: SPLIT })
     expect(await main(["gate", "connect", "gmail"], w.deps)).toBe(1)
