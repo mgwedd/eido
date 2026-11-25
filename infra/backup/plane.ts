@@ -9,7 +9,7 @@
 // Pure, like `infra/host/plane.ts`: `planeBackup` says what to create and `renderPlaneBackup`
 // prints it as a /bin/sh script for the owner to review and run with `sudo sh`. Nothing here
 // touches the system.
-import { dirname } from "node:path"
+import { posix } from "node:path"
 
 import {
   DAEMON_DIR,
@@ -107,7 +107,7 @@ export function planeBackup(input: PlaneBackupInput): PlaneBackup {
   const steps: Step[] = [
     // The script stops here on a host where the plane was never applied.
     ...config.databases.map((db) => ({
-      argv: ["/bin/test", "-d", dirname(db.path)],
+      argv: ["/bin/test", "-d", posix.dirname(db.path)],
     })),
     { argv: ["/bin/test", "-f", BIN] },
     ...dir(PLANE_BACKUP_DIR, "root", "wheel", "0700"),

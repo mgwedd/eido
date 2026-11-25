@@ -78,15 +78,19 @@ test("a source that is not a database fails instead of producing a copy", () => 
   ).toThrow()
 })
 
-test("the copy has the source's permission bits, not the writer's default", () => {
-  const dir = tempDir()
-  const live = openWal(join(dir, "live.db"))
-  live.exec("CREATE TABLE t (x); INSERT INTO t VALUES (1)")
-  chmodSync(join(dir, "live.db"), 0o640)
-  copyDatabase(join(dir, "live.db"), join(dir, "copy.db"))
-  expect(statSync(join(dir, "copy.db")).mode & 0o777).toBe(0o640)
-  live.close()
-})
+// Windows has no POSIX permission bits to carry.
+test.skipIf(process.platform === "win32")(
+  "the copy has the source's permission bits, not the writer's default",
+  () => {
+    const dir = tempDir()
+    const live = openWal(join(dir, "live.db"))
+    live.exec("CREATE TABLE t (x); INSERT INTO t VALUES (1)")
+    chmodSync(join(dir, "live.db"), 0o640)
+    copyDatabase(join(dir, "live.db"), join(dir, "copy.db"))
+    expect(statSync(join(dir, "copy.db")).mode & 0o777).toBe(0o640)
+    live.close()
+  }
+)
 
 test("applyOwnership hands the copy to the source's owner and group, with the permission bits only", () => {
   const calls: string[] = []
