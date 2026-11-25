@@ -185,9 +185,7 @@ const fieldValue = (label: string) => {
   )
   return (
     document.getElementById(field?.getAttribute("for") ?? "") as
-      | HTMLInputElement
-      | HTMLTextAreaElement
-      | null
+      HTMLInputElement | HTMLTextAreaElement | null
   )?.value
 }
 
@@ -383,9 +381,9 @@ describe("Edit before approving", () => {
     await submit()
     expect(signApproval).not.toHaveBeenCalled()
     const alert = dialog()?.querySelector('[role="alert"]')
-    expect(
-      alert?.querySelector('[data-slot="alert-title"]')?.textContent
-    ).toBe("The gate could not accept these changes.")
+    expect(alert?.querySelector('[data-slot="alert-title"]')?.textContent).toBe(
+      "The gate could not accept these changes."
+    )
     expect(
       alert?.querySelector('[data-slot="alert-description"]')?.textContent
     ).toBe("args.to: must be an address")

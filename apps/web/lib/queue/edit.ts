@@ -30,7 +30,11 @@ const CALENDAR_EVENT: readonly FieldSpec[] = [
  * kind has no form, so its card has no Edit.
  */
 const FORMS: Readonly<Record<string, readonly FieldSpec[]>> = {
-  "email.send": [TO, { key: "subject", label: "Subject", type: "text" }, MESSAGE],
+  "email.send": [
+    TO,
+    { key: "subject", label: "Subject", type: "text" },
+    MESSAGE,
+  ],
   "email.reply": [TO, MESSAGE],
   "calendar.create": CALENDAR_EVENT,
   "calendar.edit": CALENDAR_EVENT,
@@ -91,7 +95,8 @@ export function fromLocalInput(local: string): string {
 }
 
 function initialValue(spec: FieldSpec, value: unknown): string | undefined {
-  if (spec.type === "list") return isStringList(value) ? value.join(", ") : undefined
+  if (spec.type === "list")
+    return isStringList(value) ? value.join(", ") : undefined
   if (typeof value !== "string") return undefined
   return spec.type === "datetime" ? toLocalInput(value) : value
 }

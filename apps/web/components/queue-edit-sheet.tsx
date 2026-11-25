@@ -154,8 +154,8 @@ export function QueueEditForm({
         </FieldGroup>
         <Alert role="note">
           <AlertDescription>
-            Saving creates a new request that replaces the original. You sign
-            it once with {copy.signWith}.
+            Saving creates a new request that replaces the original. You sign it
+            once with {copy.signWith}.
           </AlertDescription>
         </Alert>
         {refusal ? (

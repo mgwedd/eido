@@ -290,9 +290,7 @@ function ApprovalCard({
   const [action, setAction] = React.useState<Action>({ status: "idle" })
   const [rejectOpen, setRejectOpen] = React.useState(false)
   const [editOpen, setEditOpen] = React.useState(false)
-  const [editError, setEditError] = React.useState<EditRefusal | null>(
-    null
-  )
+  const [editError, setEditError] = React.useState<EditRefusal | null>(null)
   const [reloads, setReloads] = React.useState(0)
   const [historyReloads, setHistoryReloads] = React.useState(0)
   const [dx, setDx] = React.useState(0)
