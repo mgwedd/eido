@@ -1,0 +1,42 @@
+{
+  "id": "call-calendar-edit-03",
+  "request": "Set the location of the vendor lunch event to Harbor Cafe.",
+  "messages": [
+    {
+      "id": "call-calendar-edit-03-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-22T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "events": [
+    {
+      "uid": "eido-cal-334e3832-48cd-4680-be32-ef57cca4cb1a",
+      "title": "Vendor lunch",
+      "start": "2025-07-08T12:00:00.000Z",
+      "end": "2025-07-08T13:00:00.000Z",
+      "source": "proton-calendar"
+    },
+    {
+      "uid": "eido-cal-dbe0eb73-e5b2-45a0-aa53-ff4cd3a7d6e3",
+      "title": "Vendor onboarding",
+      "start": "2025-07-09T10:00:00.000Z",
+      "end": "2025-07-09T11:00:00.000Z",
+      "source": "proton-calendar"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "calendar.edit",
+        "args": {
+          "eventUid": "eido-cal-334e3832-48cd-4680-be32-ef57cca4cb1a",
+          "location": "Harbor Cafe"
+        }
+      }
+    ]
+  }
+}
