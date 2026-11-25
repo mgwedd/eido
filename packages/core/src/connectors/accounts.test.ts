@@ -1,5 +1,10 @@
+import { validateCoreApiAccountList } from "@eido/schemas"
 import { describe, expect, test } from "vitest"
-import { assignableAccounts, createAccountRegistry } from "./accounts"
+import {
+  MAX_ACCOUNTS,
+  assignableAccounts,
+  createAccountRegistry,
+} from "./accounts"
 import type { KnownAccount } from "./accounts"
 
 const gmail: KnownAccount = {
@@ -59,5 +64,43 @@ describe("createAccountRegistry", () => {
       ["gmail", "Gmail"],
       ["other", "Gmail"],
     ])
+  })
+
+  test("refuses a new account once full, keeps the listed ones, and still updates a known one", () => {
+    const registry = createAccountRegistry()
+    const calendar = (n: number): KnownAccount => ({
+      connector: "calendar",
+      healthName: "calendar",
+      accountRef: `calendar-${n}`,
+      label: "Calendar",
+    })
+    for (let n = 0; n < MAX_ACCOUNTS; n++) {
+      expect(registry.add(calendar(n))).toBe(true)
+    }
+    expect(registry.add(calendar(MAX_ACCOUNTS))).toBe(false)
+    expect(registry.add({ ...calendar(0), label: "Renamed" })).toBe(true)
+    const listed = registry.list()
+    expect(listed).toHaveLength(MAX_ACCOUNTS)
+    expect(listed[0]?.label).toBe("Renamed")
+    expect(
+      listed.some((a) => a.accountRef === `calendar-${MAX_ACCOUNTS}`)
+    ).toBe(false)
+  })
+})
+
+describe("MAX_ACCOUNTS", () => {
+  const accountsOf = (count: number) => ({
+    accounts: Array.from({ length: count }, (_, n) => ({
+      connector: "calendar",
+      accountRef: `calendar-${n}`,
+      label: "Calendar",
+    })),
+  })
+
+  test("is the bound CoreApiAccountList states: that many validate, one more does not", () => {
+    expect(validateCoreApiAccountList(accountsOf(MAX_ACCOUNTS)).ok).toBe(true)
+    expect(validateCoreApiAccountList(accountsOf(MAX_ACCOUNTS + 1)).ok).toBe(
+      false
+    )
   })
 })

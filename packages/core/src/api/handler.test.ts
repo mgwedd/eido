@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { GateUnavailableError } from "@eido/gate"
+import { validateCoreApiAccountList } from "@eido/schemas"
 import type {
   CoreApiAssignmentList,
   CoreApiEntity,
@@ -14,6 +15,7 @@ import type {
 } from "@eido/schemas"
 import type { ProfileAuditEntry } from "../profile/index"
 import { openIndex } from "../index/schema"
+import { MAX_ACCOUNTS, createAccountRegistry } from "../connectors/accounts"
 import { activateDataLedger } from "../ledger/db"
 import { createProfileStore } from "../profile/index"
 import { createApiHandler, routePath, toFieldErrors } from "./handler"
@@ -663,6 +665,26 @@ describe("connector accounts", () => {
         ],
       },
     ])
+  })
+
+  test("answers within its schema when more accounts than the schema allows were reported", async () => {
+    const registry = createAccountRegistry()
+    for (let n = 0; n < MAX_ACCOUNTS + 10; n++) {
+      registry.add({
+        connector: "apple-calendar",
+        healthName: "apple-calendar",
+        accountRef: `calendar-${n}`,
+        label: "Apple Calendar",
+      })
+    }
+    const response = await handlerWith({
+      connectorAccounts: registry.list,
+      connectorHealth: () => Promise.resolve([]),
+    })(new Request("http://core.test/connectors/accounts"))
+    const body: unknown = await response.json()
+    const parsed = validateCoreApiAccountList(body)
+    expect([response.status, parsed.ok]).toEqual([200, true])
+    expect(parsed.ok ? parsed.value.accounts : []).toHaveLength(MAX_ACCOUNTS)
   })
 
   test("lists nothing for a disconnected connector", async () => {

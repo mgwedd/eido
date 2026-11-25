@@ -6,7 +6,7 @@
   "properties": {
     "accounts": {
       "type": "array",
-      "maxItems": 50,
+      "maxItems": 500,
       "items": {
         "title": "CoreApiAccount",
         "description": "One assignable account. connector and accountRef are the values a ProfileAccountAssignment takes.",
