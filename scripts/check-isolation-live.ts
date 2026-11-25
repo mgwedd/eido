@@ -8,7 +8,7 @@
 //     [--stack-dir <owner's stack dir>] [--timeout-ms 3000]
 //
 // It runs as root only to start its children through `sudo -u`: one long-lived child as the gate
-// user holds the synthetic canaries (a loopback TCP listener, a Keychain item, a copy of the
+// user holds the synthetic canaries (a loopback TCP listener, Keychain items, a copy of the
 // control DB's mode next to it), and each probe runs in a short-lived child, first as the
 // data-plane user (under `sandbox-exec -f <data profile>` when `--data-profile` is given, as the
 // data plane runs) and then, for every blocked probe, as the gate user with `--as-gate` (the
@@ -16,7 +16,9 @@
 // `FAIL name: reason` line per probe and exits 1 on any FAIL. Canaries are random, never printed,
 // and removed on exit, on failure and on Ctrl-C. With `--stack-dir`, two more probes run as the gate
 // user alone (#70): it connects to the supervisor socket and reads no other file in the stack's run
-// dir. See docs/isolation-tests.md.
+// dir. The Keychain is probed three ways: the data-plane user reads a canary item, adds a new item
+// and modifies a second canary item in the gate Keychain; all three must fail, and the gate user
+// does each as the control (#724). See docs/isolation-tests.md.
 import { spawn, spawnSync } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
 import dns from "node:dns"
@@ -52,6 +54,8 @@ export type ProbeName =
   | "proxy"
   | "llama"
   | "keychain"
+  | "keychain-add"
+  | "keychain-modify"
   | "control-db"
   | "control-socket"
   | "parser"
@@ -80,6 +84,8 @@ export const PROBES: readonly ProbeDef[] = [
   probeDef("proxy", "allowed"),
   probeDef("llama", "allowed"),
   probeDef("keychain", "blocked"),
+  probeDef("keychain-add", "blocked"),
+  probeDef("keychain-modify", "blocked"),
   { ...probeDef("control-db", "blocked"), permission: true },
   { ...probeDef("control-socket", "blocked"), permission: true },
   { ...probeDef("parser", "blocked"), canaryListener: true },
@@ -132,6 +138,10 @@ export type Canaries = {
   port: number
   keychainService: string
   keychainDigest: string
+  /** A service name no item has: the add probe tries to create an item under it. */
+  keychainAddService: string
+  /** A canary item the gate user created: the modify probe tries to overwrite it. */
+  keychainModifyService: string
   canaryDb: string
   dbDigest: string
 }
@@ -404,6 +414,18 @@ export function probeSpec(
         service: canaries.keychainService,
         digest: canaries.keychainDigest,
       }
+    case "keychain-add":
+      return {
+        ...base,
+        keychain: config.gateKeychain,
+        service: canaries.keychainAddService,
+      }
+    case "keychain-modify":
+      return {
+        ...base,
+        keychain: config.gateKeychain,
+        service: canaries.keychainModifyService,
+      }
     case "control-db":
       return { ...base, path: canaries.canaryDb, digest: canaries.dbDigest }
     case "control-socket":
@@ -619,9 +641,14 @@ export type CanarySet = {
 const sha256 = (value: string | Buffer): string =>
   createHash("sha256").update(value).digest("hex")
 
+/** What `security` exits with when an item is not there (errSecItemNotFound). */
+const SECURITY_ITEM_NOT_FOUND = "SECURITY_EXIT_44"
+
 /**
- * Creates the listener, the Keychain item and the control DB canary, in that order. If a step
- * fails, the steps already done are undone before the error is rethrown.
+ * Creates the listener, the Keychain read canary, the control DB canary and the Keychain modify
+ * canary, in that order. If a step fails, the steps already done are undone before the error is
+ * rethrown. The add probe has no item to create, but its service name is cleaned up all the same:
+ * a probe that wrongly succeeded, or the gate control, leaves an item under it.
  */
 export async function createCanaries(
   spec: { controlDb: string; gateKeychain: string },
@@ -658,11 +685,34 @@ export async function createCanaries(
     const bytes = host.random(64)
     host.writeFile(canaryDb, bytes, host.modeOf(spec.controlDb) & 0o777)
     undo.push(["control-db", () => host.removeFile(canaryDb)])
+    const addService = `${service}-add`
+    undo.push([
+      "keychain-add",
+      () => {
+        try {
+          host.deleteKeychainItem(spec.gateKeychain, addService)
+        } catch (error) {
+          if (safeCode(error) !== SECURITY_ITEM_NOT_FOUND) throw error
+        }
+      },
+    ])
+    const modifyService = `${service}-modify`
+    host.addKeychainItem(
+      spec.gateKeychain,
+      modifyService,
+      host.random(32).toString("hex")
+    )
+    undo.push([
+      "keychain-modify",
+      () => host.deleteKeychainItem(spec.gateKeychain, modifyService),
+    ])
     return {
       canaries: {
         port: listener.port,
         keychainService: service,
         keychainDigest: sha256(secret),
+        keychainAddService: addService,
+        keychainModifyService: modifyService,
         canaryDb,
         dbDigest: sha256(bytes),
       },
@@ -914,6 +964,44 @@ function readKeychain(keychain: string, service: string): string {
   return run.stdout.replace(/\n$/, "")
 }
 
+const WRITE_SERVICE = {
+  add: /^eido-isolation-canary-[0-9a-f]{16}-add$/,
+  modify: /^eido-isolation-canary-[0-9a-f]{16}-modify$/,
+} as const
+
+/**
+ * Tries to write one Keychain item: `add` creates an item under a service name no item has,
+ * `modify` overwrites (`-U`) the canary item the gate user made. Reached means `security` exited 0.
+ * It only ever touches a service name this script generated, so a bad spec cannot reach a real
+ * item. The value written is random and never printed; it is on this child's argv for the call.
+ */
+export function attemptKeychainWrite(
+  mode: keyof typeof WRITE_SERVICE,
+  keychain: string,
+  service: string,
+  run: (args: readonly string[]) => void = security,
+  random: (bytes: number) => Buffer = randomBytes
+): ProbeResult {
+  if (!WRITE_SERVICE[mode].test(service))
+    return { ran: false, code: "BAD_SERVICE" }
+  try {
+    run([
+      "add-generic-password",
+      ...(mode === "modify" ? ["-U"] : []),
+      "-a",
+      service,
+      "-s",
+      service,
+      "-w",
+      random(32).toString("hex"),
+      keychain,
+    ])
+  } catch (error) {
+    return { ran: true, reached: false, code: safeCode(error) }
+  }
+  return { ran: true, reached: true, code: "OK" }
+}
+
 /**
  * Runs the #43 hostile network fixture against the canary port: under the parser sandbox profile
  * as the data-plane user, and without it as the gate user (the control). The no-network preload
@@ -1018,6 +1106,17 @@ export async function runProbe(
         digest === undefined
         ? missing
         : readMatches(() => readKeychain(keychain, service), digest)
+    }
+    case "keychain-add":
+    case "keychain-modify": {
+      const { keychain, service } = spec
+      return keychain === undefined || service === undefined
+        ? missing
+        : attemptKeychainWrite(
+            spec.name === "keychain-add" ? "add" : "modify",
+            keychain,
+            service
+          )
     }
     case "control-db": {
       const { path, digest } = spec
@@ -1214,6 +1313,8 @@ function sudoRunner(config: LiveConfig): LiveRunner {
       const port = field(ready, "port")
       const keychainService = field(ready, "keychainService")
       const keychainDigest = field(ready, "keychainDigest")
+      const keychainAddService = field(ready, "keychainAddService")
+      const keychainModifyService = field(ready, "keychainModifyService")
       const canaryDb = field(ready, "canaryDb")
       const dbDigest = field(ready, "dbDigest")
       if (
@@ -1221,13 +1322,23 @@ function sudoRunner(config: LiveConfig): LiveRunner {
         typeof port !== "number" ||
         typeof keychainService !== "string" ||
         typeof keychainDigest !== "string" ||
+        typeof keychainAddService !== "string" ||
+        typeof keychainModifyService !== "string" ||
         typeof canaryDb !== "string" ||
         typeof dbDigest !== "string"
       )
         throw Object.assign(new Error("no canaries"), {
           code: safeCode(field(ready, "code")),
         })
-      return { port, keychainService, keychainDigest, canaryDb, dbDigest }
+      return {
+        port,
+        keychainService,
+        keychainDigest,
+        keychainAddService,
+        keychainModifyService,
+        canaryDb,
+        dbDigest,
+      }
     },
     stackFiles: (stackDir) => {
       const files = listRunDirFiles(stackDir)
