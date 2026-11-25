@@ -1,7 +1,8 @@
 // The plane split on macOS (#70): a gate user and a data-plane user, their directories and modes,
 // the data plane's sandbox profile, the pf rules for the data-plane user, the LaunchDaemons that
 // start each process under its own user, and the ACL that lets the gate user reach the owner's
-// supervisor socket. The gate user's outbound allowlist (#471) is egress.ts, wired in here.
+// supervisor socket. The gate user's outbound allowlist (#471) is egress.ts, and the parser
+// broker's user, sandbox and pf rules (#818) are parser-plane.ts, both wired in here.
 // Pure functions: what to create and which commands create it. `plane-cli.ts` reads the host's
 // state and prints the commands as a script the owner runs with sudo; nothing here touches the
 // system.
@@ -28,10 +29,22 @@ import {
   PLANE_LOGS,
   PLANE_ROOT,
   renderStep,
+  sbplString,
   shellQuote,
   type DaemonSpec,
   type Step,
 } from "./plane-base.ts"
+import {
+  PARSER_LABEL,
+  PARSER_NAME,
+  parserDirs,
+  parserPaths,
+  parserPfRules,
+  parserProfile,
+  parserRemovePaths,
+  parserService,
+  type ParserPaths,
+} from "./parser-plane.ts"
 
 export {
   DAEMON_DIR,
@@ -53,8 +66,10 @@ export const PF_ANCHOR = "com.apple/eido.plane"
 export const NAMES = {
   gate: "_eidogate",
   data: "_eidodata",
-  /** Both users are members; the gate's data-plane socket (0660) inherits it from the run dir. */
+  /** The gate and data users are members; the gate's data-plane socket (0660) inherits it from the run dir. */
   ipc: "_eidoipc",
+  /** The parser broker's user (#818): not in `_eidoipc`, no network. */
+  parse: PARSER_NAME,
 } as const
 
 export const LABELS = {
@@ -62,9 +77,10 @@ export const LABELS = {
   egress: "com.eido.plane.egress",
   gate: "com.eido.plane.gate",
   core: "com.eido.plane.core",
+  parser: PARSER_LABEL,
 } as const
 
-/** The first of three ids (gate uid/gid, data uid/gid, ipc gid): below 500, so the users stay hidden. */
+/** The first of four ids (gate uid/gid, data uid/gid, ipc gid, parse uid/gid): below 500, so the users stay hidden. */
 export const DEFAULT_FIRST_ID = 451
 
 /** How often the pf job reloads the anchor, in case something flushed it. */
@@ -80,6 +96,8 @@ export type PlaneLayout = {
     gateGid: number
     dataGid: number
     ipcGid: number
+    parseUid: number
+    parseGid: number
   }
   root: string
   app: string
@@ -106,7 +124,15 @@ export type PlaneLayout = {
   /** The supervisor's own directory (#783): the only place the gate user's inherited ACL entry goes. */
   supervisorDir: string
   supervisorSocket: string
-  plists: { pf: string; egress: string; gate: string; core: string }
+  /** The parser broker's home, scratch, socket and logs (#818). */
+  parser: ParserPaths
+  plists: {
+    pf: string
+    egress: string
+    gate: string
+    parser: string
+    core: string
+  }
 }
 
 const USER_NAME = /^[a-z_][a-z0-9_.-]{0,31}$/
@@ -127,9 +153,9 @@ export function planeLayout(input: {
   if (
     !Number.isInteger(input.firstId) ||
     input.firstId < 401 ||
-    input.firstId > 497
+    input.firstId > 496
   )
-    throw new Error("--first-id must be between 401 and 497")
+    throw new Error("--first-id must be between 401 and 496")
   const root = PLANE_ROOT
   const runDir = `${root}/run`
   const homeRoot = `${root}/home`
@@ -152,6 +178,8 @@ export function planeLayout(input: {
       dataUid: id + 1,
       dataGid: id + 1,
       ipcGid: id + 2,
+      parseUid: id + 3,
+      parseGid: id + 3,
     },
     root,
     app: `${root}/app`,
@@ -180,10 +208,12 @@ export function planeLayout(input: {
     ownerRunDir,
     supervisorDir,
     supervisorSocket: `${supervisorDir}/${SUPERVISOR_SOCKET_NAME}`,
+    parser: parserPaths(root, homeRoot),
     plists: {
       pf: `${DAEMON_DIR}/${LABELS.pf}.plist`,
       egress: `${DAEMON_DIR}/${LABELS.egress}.plist`,
       gate: `${DAEMON_DIR}/${LABELS.gate}.plist`,
+      parser: `${DAEMON_DIR}/${LABELS.parser}.plist`,
       core: `${DAEMON_DIR}/${LABELS.core}.plist`,
     },
   }
@@ -251,23 +281,18 @@ export function accountProblems(
   check("user", accounts.users, [
     [NAMES.gate, ids.gateUid],
     [NAMES.data, ids.dataUid],
+    [NAMES.parse, ids.parseUid],
   ])
   check("group", accounts.groups, [
     [NAMES.gate, ids.gateGid],
     [NAMES.data, ids.dataGid],
     [NAMES.ipc, ids.ipcGid],
+    [NAMES.parse, ids.parseGid],
   ])
   return problems
 }
 
 // ---- policy files ----------------------------------------------------------------------------
-
-/** A path or label as an SBPL string literal; quotes and backslashes are refused, not escaped. */
-function sbplString(value: string): string {
-  if (/["\\\n]/.test(value))
-    throw new Error(`${JSON.stringify(value)} cannot go in a sandbox profile`)
-  return `"${value}"`
-}
 
 export type PlanePorts = {
   core: number
@@ -279,8 +304,8 @@ export type PlanePorts = {
 
 /**
  * The data plane's sandbox: core and every child it starts. No network but the gate's data-plane
- * socket, the egress proxy and llama-server on loopback, and core's own loopback listener (which
- * `tailscale serve` reaches). DNS goes through mDNSResponder's socket, so it is denied too. The
+ * socket, the parser broker's socket (#818), the egress proxy and llama-server on loopback, and
+ * core's own loopback listener (which `tailscale serve` reaches). DNS goes through mDNSResponder's socket, so it is denied too. The
  * gate's directories are denied outright, on top of their modes.
  */
 export function coreProfile(layout: PlaneLayout, ports: PlanePorts): string {
@@ -296,6 +321,7 @@ export function coreProfile(layout: PlaneLayout, ports: PlanePorts): string {
     "(allow default)",
     "(deny network*)",
     `(allow network-outbound (remote unix-socket (path-literal ${sbplString(layout.gateSocket)})))`,
+    `(allow network-outbound (remote unix-socket (path-literal ${sbplString(layout.parser.socket)})))`,
     ...outbound,
     `(allow network-bind network-inbound (local ip ${sbplString(`localhost:${String(ports.core)}`)}))`,
     `(deny file-read* file-write* (subpath ${sbplString(layout.gateDir)}) (subpath ${sbplString(layout.gateHome)}))`,
@@ -303,23 +329,15 @@ export function coreProfile(layout: PlaneLayout, ports: PlanePorts): string {
   ].join("\n")
 }
 
-/** The parser's sandbox: no network at all. The live isolation script's `--parser-profile`. */
-export function parserProfile(): string {
-  return [
-    "(version 1)",
-    "; Eido document parsers (#43, #70): generated by `host plane`; no network at all.",
-    "(allow default)",
-    "(deny network*)",
-    "",
-  ].join("\n")
-}
+export { parserProfile }
 
 /**
  * The pf anchor: the data-plane user may open TCP to the egress proxy and llama-server on
  * 127.0.0.1 and nothing else, and may send no UDP. Rules match the numeric uid, so the file
  * parses before the user exists. The TCP block matches only a connection's first packet (SYN
  * without ACK): core's replies on connections others open to it (tailscale serve) carry ACK and
- * pass, since macOS's default ruleset keeps no state for them.
+ * pass, since macOS's default ruleset keeps no state for them. The parser user's rules follow:
+ * it may send or receive nothing (#818).
  */
 export function pfAnchor(layout: PlaneLayout, ports: PlanePorts): string {
   const uid = String(layout.ids.dataUid)
@@ -338,6 +356,7 @@ export function pfAnchor(layout: PlaneLayout, ports: PlanePorts): string {
     ...pass,
     `block return out quick proto tcp from any to any user ${uid} flags S/SA`,
     `block return out quick proto udp from any to any user ${uid}`,
+    ...parserPfRules(layout.ids.parseUid),
     "",
   ].join("\n")
 }
@@ -393,10 +412,11 @@ export type PlaneServices = {
   core: DaemonSpec
   pf: DaemonSpec
   egress: DaemonSpec
+  parser: DaemonSpec
 }
 
 /**
- * The four LaunchDaemons. The gate and core get the stack's own settings (#374) with the plane's
+ * The five LaunchDaemons. The gate and core get the stack's own settings (#374) with the plane's
  * directories and sockets over them, so one config decides both modes.
  */
 export function planeServices(input: PlaneInput): PlaneServices {
@@ -473,6 +493,7 @@ export function planeServices(input: PlaneInput): PlaneServices {
         ...(egress === undefined
           ? {}
           : { EIDO_GMAIL_PROXY_URL: `http://127.0.0.1:${egress}` }),
+        EIDO_PARSER_SOCKET: layout.parser.socket,
         HOME: layout.dataHome,
         PATH: SERVICE_PATH,
       },
@@ -514,6 +535,13 @@ export function planeServices(input: PlaneInput): PlaneServices {
       keepAlive: false,
       interval: EGRESS_REFRESH_SECONDS,
     },
+    parser: parserService({
+      paths: layout.parser,
+      profile: layout.parserProfile,
+      app: layout.app,
+      node: input.node,
+      path: SERVICE_PATH,
+    }),
   }
 }
 
@@ -619,15 +647,18 @@ function legacyRunDirAce(layout: PlaneLayout): { path: string; ace: string } {
   }
 }
 
-/** The daemons in start order: pf rules first, then the gate's egress table, then the services. */
-const DAEMONS = ["pf", "egress", "gate", "core"] as const
+/**
+ * The daemons in start order: pf rules first, then the gate's egress table, then the services,
+ * the parser broker before core, which connects to it.
+ */
+const DAEMONS = ["pf", "egress", "gate", "parser", "core"] as const
 
 /** Every command that creates or updates the plane. Running it twice gives the same host. */
 export function applySteps(input: PlaneInput): Step[] {
   const { layout } = input
   const { ids } = layout
   const services = planeServices(input)
-  const { gate, data, ipc } = NAMES
+  const { gate, data, ipc, parse } = NAMES
   // Build output, and local files the services must not read: secrets, env files (the committed
   // examples are kept), local eval output and databases. rsync applies the first match, so the
   // include comes before the exclude it overrides.
@@ -648,9 +679,17 @@ export function applySteps(input: PlaneInput): Step[] {
     ...group(gate, ids.gateGid, "Eido gate"),
     ...group(data, ids.dataGid, "Eido data plane"),
     ...group(ipc, ids.ipcGid, "Eido gate data-plane socket"),
+    ...group(parse, ids.parseGid, "Eido document parsers"),
     ...user(gate, ids.gateUid, ids.gateGid, layout.gateHome, "Eido gate"),
     ...user(data, ids.dataUid, ids.dataGid, layout.dataHome, "Eido data plane"),
-    // Sets the member list outright, so a second run leaves exactly these two.
+    ...user(
+      parse,
+      ids.parseUid,
+      ids.parseGid,
+      layout.parser.home,
+      "Eido document parsers"
+    ),
+    // Sets the member list outright, so a second run leaves exactly these two: never the parser.
     {
       argv: [
         DSCL,
@@ -678,6 +717,9 @@ export function applySteps(input: PlaneInput): Step[] {
     ...dir(layout.logs.gate, gate, "admin", 0o750),
     ...dir(layout.logs.data, data, "admin", 0o750),
     ...dir(layout.logs.pf, "root", "wheel", 0o755),
+    ...parserDirs(layout.parser, data).flatMap((d) =>
+      dir(d.path, d.owner, d.group, d.mode)
+    ),
     {
       argv: [
         "/usr/bin/rsync",
@@ -691,7 +733,7 @@ export function applySteps(input: PlaneInput): Step[] {
     { argv: [CHOWN, "-R", "root:wheel", layout.app] },
     { argv: [CHMOD, "-R", "go-w", layout.app] },
     ...file(layout.coreProfile, coreProfile(layout, services.ports)),
-    ...file(layout.parserProfile, parserProfile()),
+    ...file(layout.parserProfile, parserProfile(layout.parser)),
     ...file(layout.pfRules, pfAnchor(layout, services.ports)),
     {
       argv: [
@@ -760,10 +802,11 @@ export function applySteps(input: PlaneInput): Step[] {
 /**
  * Every command that takes the plane down: the daemons, the pf anchor, the ACL entries, the
  * users and groups, the policy files and the app copy. The gate's and data plane's directories
- * and the logs are kept; `removeNotes` says where they are.
+ * and their logs are kept; `removeNotes` says where they are. The parser holds nothing to keep
+ * (documents in flight only), so its directories and logs go with its user.
  */
 export function removeSteps(layout: PlaneLayout, accounts: Accounts): Step[] {
-  const { gate, data, ipc } = NAMES
+  const { gate, data, ipc, parse } = NAMES
   return [
     ...[...DAEMONS].reverse().flatMap((name) => [
       {
@@ -780,13 +823,14 @@ export function removeSteps(layout: PlaneLayout, accounts: Accounts): Step[] {
         mayFail: true,
       })
     ),
-    ...[gate, data]
+    ...[gate, data, parse]
       .filter((name) => accounts.users.has(name))
       .map((name) => ({ argv: [DSCL, ".", "-delete", `/Users/${name}`] })),
-    ...[ipc, gate, data]
+    ...[ipc, gate, data, parse]
       .filter((name) => accounts.groups.has(name))
       .map((name) => ({ argv: [DSCL, ".", "-delete", `/Groups/${name}`] })),
     { argv: ["/bin/rm", "-rf", layout.policyDir, layout.app, layout.runDir] },
+    { argv: ["/bin/rm", "-rf", ...parserRemovePaths(layout.parser)] },
   ]
 }
 
