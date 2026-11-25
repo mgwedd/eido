@@ -149,6 +149,72 @@ final class HelperTests: XCTestCase {
     }
   }
 
+  private let losAngeles = TimeZone(identifier: "America/Los_Angeles")!  // in the tz database
+  private let tokyo = TimeZone(identifier: "Asia/Tokyo")!  // in the tz database
+
+  func testAllDayEventLandsOnItsDateInHostTimezonesBehindAndAheadOfUTC() throws {
+    for start in ["2026-01-15T00:00:00Z", "2026-01-15T00:00:00+09:00", "2026-01-15T00:00:00-08:00"]
+    {
+      let pacific = try XCTUnwrap(
+        Dates.allDayRange(start: start, end: "2026-01-16T00:00:00Z", in: losAngeles))
+      XCTAssertEqual(Dates.text(pacific.start), "2026-01-15T08:00:00.000Z")
+      XCTAssertEqual(Dates.text(pacific.end), "2026-01-16T07:59:59.000Z")
+      let japan = try XCTUnwrap(
+        Dates.allDayRange(start: start, end: "2026-01-16T00:00:00Z", in: tokyo))
+      XCTAssertEqual(Dates.text(japan.start), "2026-01-14T15:00:00.000Z")
+      XCTAssertEqual(Dates.text(japan.end), "2026-01-15T14:59:59.000Z")
+    }
+  }
+
+  func testAllDayBoundsReadBackAsTheLocalDate() throws {
+    let japan = try XCTUnwrap(
+      Dates.allDayRange(start: "2026-01-15T00:00:00Z", end: "2026-01-17T00:00:00Z", in: tokyo))
+    XCTAssertEqual(Dates.allDayText(japan.start, in: tokyo), "2026-01-15T00:00:00+09:00")
+    let pacific = try XCTUnwrap(
+      Dates.allDayRange(
+        start: "2026-01-15T00:00:00Z", end: "2026-01-16T00:00:00Z", in: losAngeles))
+    XCTAssertEqual(Dates.allDayText(pacific.end, in: losAngeles), "2026-01-15T00:00:00-08:00")
+    XCTAssertEqual(
+      Dates.allDayText(try XCTUnwrap(Dates.parse("2026-01-15T12:00:00Z")), in: .gmt),
+      "2026-01-15T00:00:00Z")
+  }
+
+  func testAllDayBoundsMustBeMidnightsWithALaterEndDate() throws {
+    var args = eventArgs()
+    args["allDay"] = true
+    for (from, to) in [
+      ("2026-01-15T00:00:00Z", "2026-01-15T00:00:00Z"),
+      ("2026-01-15T00:00:00+14:00", "2026-01-15T00:00:00-12:00"),
+      ("2026-01-15T08:00:00Z", "2026-01-16T00:00:00Z"),
+      ("2026-01-15T00:00:00Z", "2026-01-15T23:59:59Z"),
+      ("2026-01-15T00:00:00.000Z", "2026-01-16T00:00:00Z"),
+    ] {
+      args["start"] = from
+      args["end"] = to
+      XCTAssertThrowsError(try Request.decode(request("create_event", args)), "\(from) \(to)")
+      XCTAssertNil(Dates.allDayRange(start: from, end: to, in: tokyo), "\(from) \(to)")
+    }
+    args["start"] = "2026-01-15T00:00:00-12:00"
+    args["end"] = "2026-01-16T00:00:00+14:00"
+    XCTAssertNoThrow(try Request.decode(request("create_event", args)))
+  }
+
+  func testReminderDueKeepsItsLocalWallClockTimeAndDay() throws {
+    let due = try XCTUnwrap(Dates.parse("2026-01-15T23:30:00Z"))
+    let japan = Dates.dueComponents(due, in: tokyo)
+    XCTAssertEqual(
+      [japan.year, japan.month, japan.day, japan.hour, japan.minute], [2026, 1, 16, 8, 30])
+    XCTAssertEqual(japan.timeZone, tokyo)
+    let pacific = Dates.dueComponents(
+      try XCTUnwrap(Dates.parse("2026-01-15T09:00:00-08:00")), in: losAngeles)
+    XCTAssertEqual(
+      [pacific.year, pacific.month, pacific.day, pacific.hour, pacific.minute],
+      [2026, 1, 15, 9, 0])
+    XCTAssertEqual(pacific.timeZone, losAngeles)
+    XCTAssertEqual(
+      Dates.text(try XCTUnwrap(pacific.calendar?.date(from: pacific))), "2026-01-15T17:00:00.000Z")
+  }
+
   @MainActor func testPermissionDenialHappensBeforeReadingOrWriting() async throws {
     let store = FakeStore()
     store.allowed = false

@@ -108,8 +108,24 @@ Every request is `{"operation":"<operation>","args":{...}}`:
 | `complete_reminder`   | `id`                                                  | none                |
 
 Dates are full ISO 8601 timestamps with an explicit timezone; fractional seconds
-are accepted. Responses emit UTC timestamps with milliseconds. Event intervals
-must have a strictly later end, and read intervals may span at most 366 days.
+are accepted. Responses emit UTC timestamps with milliseconds, except all-day event
+bounds (below). Timed event intervals must have a strictly later end, and read
+intervals may span at most 366 days.
+
+All-day events (`allDay: true`) are dates in the host's timezone. Their `start`
+and `end` are midnights written exactly as `YYYY-MM-DDT00:00:00` plus an offset;
+only the date as written is used, and the offset is ignored. `start` is the first
+day and `end` the day after the last day, so a one-day event on 15 January is
+`"start":"2026-01-15T00:00:00Z","end":"2026-01-16T00:00:00Z"`, and it lands on
+15 January whether the host is behind or ahead of UTC. Any other time, or an end
+date not after the start date, is `invalid_request`; the gate refuses the same
+intents before approval. Event reads return all-day bounds the same way: local
+midnight with the host's offset, so the date as written is the local date and the
+value can be sent back unchanged in an update.
+
+A reminder `due` is an instant. The Helper stores it as the wall-clock date and
+time that instant has in the host's timezone, so `2026-01-15T09:00:00-08:00` on a
+Pacific host is due at 09:00 on 15 January.
 Reminder reads return all incomplete items and completed items whose completion
 timestamp is at or after `completedSince`. Items with unknown completion timestamps
 are not represented as recently completed. Date-only Reminder due dates are
