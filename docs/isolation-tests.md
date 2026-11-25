@@ -31,7 +31,7 @@ The portable tests use the no-network preload in the parse child; that is defens
 
 ### Prerequisites
 
-- The gate and data-plane users, file ownership and modes, the data-plane and parser sandbox profiles and the pf rules from the #70 runbook in `infra/`.
+- The gate and data-plane users, file ownership and modes, the data-plane and parser sandbox profiles and the pf rules from the #70 runbook, `infra/plane-split.md`. Its Verify section has this command with the paths it creates.
 - The gate running, so its intent socket, control socket and proxy listen, and llama-server running on its loopback port.
 - A gate keychain file the gate user can write while the check runs (see the Keychain question on #70).
 - A checkout of this repo, and Node, readable by both users (the probes run `scripts/check-isolation-live.ts` and `packages/core/src` as each user).
@@ -121,4 +121,4 @@ The codes in brackets depend on how the OS refuses (a pf drop times out, a sandb
 
 ### Recording a run
 
-Paste the output of one passing run into the PR that lands the #70 enforcement and into a comment on #70, with the date and macOS version (`sw_vers -productVersion`). Paste only the probe lines: no hostnames, paths, user names or IP addresses.
+Paste the output of one passing run into a comment on #70, with the date and macOS version (`sw_vers -productVersion`). Paste only the probe lines: no hostnames, paths, user names or IP addresses.

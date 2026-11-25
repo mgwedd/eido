@@ -16,6 +16,10 @@ function harness(results: Record<string, RunResult>) {
     },
     out: (l: string) => out.push(l),
     err: (l: string) => err.push(l),
+    env: {},
+    files: { read: () => undefined, stat: () => undefined },
+    repoRoot: "/repo",
+    execPath: "/opt/node",
   }
   return { out, err, calls, deps }
 }
@@ -58,10 +62,19 @@ describe("host check", () => {
     expect(h.err).toEqual(["FAIL: tailscale status --json failed: exit 1"])
   })
 
-  it("prints usage for anything but check", async () => {
+  it("prints usage for anything but check and plane", async () => {
     const h = harness({})
     expect(await main(["fix"], h.deps)).toBe(2)
     expect(await main(["check", "--x"], h.deps)).toBe(2)
     expect(h.calls).toEqual([])
+    expect(h.err[0]).toBe("usage: host check")
+  })
+
+  it("hands plane to the plane command", async () => {
+    const h = harness({})
+    expect(await main(["plane"], h.deps)).toBe(2)
+    expect(h.err).toEqual([
+      "usage: host plane <plan|remove> [--owner <user>] [--node <path>] [--checkout <dir>] [--first-id <n>] [--egress-port <port>]",
+    ])
   })
 })

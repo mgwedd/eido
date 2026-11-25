@@ -1,15 +1,13 @@
 // `pnpm --filter @eido/infra host check`: the Mac's baseline, read only. FileVault must be on
 // (`fdesetup status`) and Tailscale connected (`tailscale status --json`). Funnel and the serve
 // routes are checked by `serve-routes check`. Nothing here changes a setting or needs sudo.
+// `host plane` prints the plane split script (#70); see plane-cli.ts.
 import { fileVaultFinding, tailscaleFinding, type Finding } from "./checks.ts"
+import { PLANE_USAGE, plane, type PlaneDeps } from "./plane-cli.ts"
 
 export type RunResult = { code: number; stdout: string; stderr: string }
 
-export type Deps = {
-  run: (command: string, args: readonly string[]) => Promise<RunResult>
-  out: (line: string) => void
-  err: (line: string) => void
-}
+export type Deps = PlaneDeps
 
 async function finding(
   deps: Deps,
@@ -30,8 +28,10 @@ export async function main(
   argv: readonly string[],
   deps: Deps
 ): Promise<number> {
+  if (argv[0] === "plane") return plane(argv.slice(1), deps)
   if (argv[0] !== "check" || argv.length !== 1) {
     deps.err("usage: host check")
+    deps.err(PLANE_USAGE)
     return 2
   }
   const findings = [
