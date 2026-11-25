@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AppleReminderCompleteIntent",
+  "description": "Mark an existing Apple reminder complete through EventKit. Requires signed approval.",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "apple.reminder_complete"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["sensitive"],
+      "maxLength": 20
+    },
+    "args": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["kind", "args"],
+  "additionalProperties": false
+}

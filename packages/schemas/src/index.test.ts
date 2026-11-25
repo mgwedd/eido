@@ -424,6 +424,23 @@ const VALID: Record<string, unknown> = {
   },
   "calendar.edit": { eventUid: "uid-1", title: "Dentist (moved)", start: ISO },
   "calendar.delete": { eventUid: "uid-1" },
+  "apple.event_create": {
+    calendarId: "cal-1",
+    title: "Planning",
+    start: ISO,
+    end: ISO_END,
+    allDay: false,
+  },
+  "apple.event_update": {
+    id: "event-1",
+    calendarId: "cal-1",
+    title: "Planning",
+    start: ISO,
+    end: ISO_END,
+    allDay: false,
+  },
+  "apple.reminder_create": { listId: "list-1", title: "Call back", due: ISO },
+  "apple.reminder_complete": { id: "reminder-1" },
   "reminder.create": { list: "Home", title: "Call back", due: ISO, notes: "n" },
   "things.add_todo": { title: "Buy milk" },
   "things.update_todo": { id: "todo-1", title: "Buy oat milk" },
@@ -731,6 +748,26 @@ describe("rejections", () => {
       "$.args.start: needs at least 20 characters",
       "$.args.start: not an RFC 3339 date-time",
     ])
+  })
+
+  test.each([
+    ["2026-02-31T10:00:00Z", false],
+    ["2026-04-31T10:00:00Z", false],
+    ["2026-02-29T10:00:00Z", false],
+    ["2100-02-29T10:00:00Z", false],
+    ["2026-11-14T23:59:60Z", false],
+    ["2028-02-29T10:00:00Z", true],
+    ["2000-02-29T10:00:00Z", true],
+    ["2026-12-31T23:59:59.999+05:30", true],
+  ])("date-time %s on a real calendar day: %s", (start, ok) => {
+    expect(
+      validateIntent(
+        intent("calendar.create", {
+          ...(VALID["calendar.create"] as object),
+          start,
+        })
+      ).ok
+    ).toBe(ok)
   })
 
   test("an intent must not be a non-object", () => {

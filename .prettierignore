@@ -8,3 +8,5 @@ pnpm-lock.yaml
 CHANGELOG.md
 packages/schemas/src/generated/
 .claude/settings.local.json
+apps/helper/.build/
+apps/helper/.swiftpm/

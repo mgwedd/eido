@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateAppleRequest",
+  "description": "One request on the gate-owned inherited pipe to the EventKit Helper. There is no delete operation.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "list_calendars"
+        },
+        "args": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": ["operation", "args"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "list_reminder_lists"
+        },
+        "args": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": ["operation", "args"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "list_events"
+        },
+        "args": {
+          "type": "object",
+          "properties": {
+            "calendarId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "start": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 40,
+              "format": "date-time"
+            },
+            "end": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 40,
+              "format": "date-time"
+            }
+          },
+          "required": ["calendarId", "start", "end"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["operation", "args"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "list_reminders"
+        },
+        "args": {
+          "type": "object",
+          "properties": {
+            "listId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "completedSince": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 40,
+              "format": "date-time"
+            }
+          },
+          "required": ["listId", "completedSince"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["operation", "args"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "create_event"
+        },
+        "args": {
+          "type": "object",
+          "properties": {
+            "calendarId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "start": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 40,
+              "format": "date-time"
+            },
+            "end": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 40,
+              "format": "date-time"
+            },
+            "allDay": {
+              "type": "boolean"
+            },
+            "location": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 500
+            },
+            "notes": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 20000
+            }
+          },
+          "required": ["calendarId", "title", "start", "end", "allDay"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["operation", "args"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "update_event"
+        },
+        "args": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "calendarId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "start": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 40,
+              "format": "date-time"
+            },
+            "end": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 40,
+              "format": "date-time"
+            },
+            "allDay": {
+              "type": "boolean"
+            },
+            "location": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 500
+            },
+            "notes": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 20000
+            }
+          },
+          "required": ["id", "calendarId", "title", "start", "end", "allDay"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["operation", "args"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "create_reminder"
+        },
+        "args": {
+          "type": "object",
+          "properties": {
+            "listId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "notes": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 20000
+            },
+            "due": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 40,
+              "format": "date-time"
+            }
+          },
+          "required": ["listId", "title"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["operation", "args"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "complete_reminder"
+        },
+        "args": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "required": ["id"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["operation", "args"],
+      "additionalProperties": false
+    }
+  ]
+}

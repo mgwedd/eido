@@ -195,6 +195,10 @@
         "EIDO_LLAMA_MODEL": {
           "type": "string",
           "maxLength": 4096
+        },
+        "EIDO_EVENTKIT_HELPER": {
+          "type": "string",
+          "maxLength": 4096
         }
       },
       "additionalProperties": false

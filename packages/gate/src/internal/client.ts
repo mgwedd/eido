@@ -6,6 +6,9 @@ import type {
 import { request as httpRequest } from "node:http"
 import {
   validateGateApiError,
+  validateGateAppleCalendarList,
+  validateGateAppleEventList,
+  validateGateAppleReminderList,
   validateGateFileRoots,
   validateGateFileHelperResponse,
   validateGateAuditRecordResult,
@@ -30,6 +33,9 @@ import {
   validateGateThingsTodoList,
 } from "@eido/schemas"
 import type {
+  GateAppleCalendarList,
+  GateAppleEventList,
+  GateAppleReminderList,
   GateAuditRecordRequest,
   GateAuditRecordResult,
   GateConnectorHealth,
@@ -580,6 +586,66 @@ export function createFileClient(options: IntentClientOptions): FileClient {
         [200],
         validateGateFileHelperResponse,
         "GateFileHelperResponse"
+      ),
+  }
+}
+
+/** Read-only access to Apple data over the gate socket. Writes are normal signed intents. */
+export interface AppleClient {
+  listCalendars(): Promise<GateAppleCalendarList>
+  listReminderLists(): Promise<GateAppleCalendarList>
+  listEvents(args: {
+    calendarId: string
+    start: string
+    end: string
+  }): Promise<GateAppleEventList>
+  listReminders(args: {
+    listId: string
+    completedSince: string
+  }): Promise<GateAppleReminderList>
+}
+
+export function createAppleClient(options: IntentClientOptions): AppleClient {
+  const config = {
+    socketPath: options.socketPath,
+    timeoutMs: options.timeoutMs ?? 35_000,
+  }
+  return {
+    listCalendars: async () =>
+      expect(
+        await call(config, "GET", "/apple/calendars"),
+        [200],
+        validateGateAppleCalendarList,
+        "GateAppleCalendarList"
+      ),
+    listReminderLists: async () =>
+      expect(
+        await call(config, "GET", "/apple/reminder-lists"),
+        [200],
+        validateGateAppleCalendarList,
+        "GateAppleCalendarList"
+      ),
+    listEvents: async (args) =>
+      expect(
+        await call(
+          config,
+          "GET",
+          `/apple/events?${new URLSearchParams(args).toString()}`
+        ),
+        [200],
+        validateGateAppleEventList,
+        "GateAppleEventList"
+      ),
+    listReminders: async (args) =>
+      expect(
+        await call(
+          config,
+          "GET",
+          `/apple/reminders?${new URLSearchParams(args).toString()}`
+        ),
+        [200],
+        validateGateAppleReminderList,
+        "GateAppleReminderList"
       ),
   }
 }

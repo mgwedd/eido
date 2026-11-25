@@ -17,6 +17,7 @@
             "api_key",
             "basic-url",
             "macos-automation",
+            "macos-eventkit",
             "none"
           ]
         },

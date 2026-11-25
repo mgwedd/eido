@@ -63,6 +63,8 @@ export const OVERRIDES = [
  */
 export const PASS_THROUGH = {
   gate: [
+    // Native code runs in the gate only; local setup selects the installed binary.
+    "EIDO_EVENTKIT_HELPER",
     // Web Push turns on in the gate when a subject is set; it also needs the Keychain vault.
     "EIDO_PUSH_VAPID_SUBJECT",
     "EIDO_PUSH_WINDOW_MS",

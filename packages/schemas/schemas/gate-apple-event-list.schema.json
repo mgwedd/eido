@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateAppleEventList",
+  "type": "object",
+  "properties": {
+    "events": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "calendarId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "title": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 2000
+          },
+          "start": {
+            "type": "string",
+            "minLength": 20,
+            "maxLength": 40,
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "minLength": 20,
+            "maxLength": 40,
+            "format": "date-time"
+          },
+          "allDay": {
+            "type": "boolean"
+          },
+          "location": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 20000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notes": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 20000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "modifiedAt": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 20,
+                "maxLength": 40,
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "calendarId",
+          "title",
+          "start",
+          "end",
+          "allDay",
+          "location",
+          "notes",
+          "modifiedAt"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["events"],
+  "additionalProperties": false
+}

@@ -85,6 +85,27 @@ describe("proposing", () => {
     })
   })
 
+  it.each([
+    ["apple.event_create", "2026-11-14T10:00:00Z"],
+    ["apple.event_create", "2026-11-14T09:59:59.999Z"],
+    ["apple.event_update", "2026-11-14T11:00:00+01:00"],
+  ] as const)(
+    "%s ending at %s, not after its 10:00Z start, is refused before approval",
+    (kind, end) => {
+      const s = fresh()
+      const result = proposeKind(s, {
+        kind,
+        args: { ...sample(kind).args, start: "2026-11-14T10:00:00Z", end },
+      })
+      expect(result).toEqual({
+        ok: false,
+        code: "invalid_payload",
+        errors: ["$.args.end: must be later than start"],
+      })
+      expect(intentCount(s)).toBe(0)
+    }
+  )
+
   it("a payload that is not canonical JSON is invalid", () => {
     const s = fresh()
     const result = proposeKind(s, sample("email.draft", { body: "\ud800" }))

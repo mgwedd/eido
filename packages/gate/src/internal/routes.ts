@@ -28,6 +28,8 @@ import { issueEnrolmentCode } from "./enrolment"
 import { mailRoute } from "./bridge/mail-routes"
 import type { MailReads } from "./bridge/mail-routes"
 import { thingsRoute } from "./things/things-routes"
+import { appleRoute } from "./apple/apple-routes"
+import type { AppleReads } from "./apple/apple-adapter"
 import type { ThingsReads } from "./things/things-adapter"
 import { payloadHash } from "./canonical"
 import { apiError, NOT_FOUND } from "./http"
@@ -432,7 +434,8 @@ export function dataPlaneHandler(
   gate: () => GateState,
   mail?: MailReads,
   execute?: (id: string) => Promise<ExecutionResult>,
-  things?: ThingsReads
+  things?: ThingsReads,
+  apple?: AppleReads
 ): Handler {
   return async (request) => {
     const state = gate()
@@ -446,6 +449,11 @@ export function dataPlaneHandler(
     if (request.method === "POST" && request.path === "/audit") {
       return auditRoute(request, state)
     }
+    const appleReply =
+      apple === undefined
+        ? undefined
+        : await appleRoute(request, state.db, apple)
+    if (appleReply !== undefined) return appleReply
     const thingsReply =
       things === undefined
         ? undefined

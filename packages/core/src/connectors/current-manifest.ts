@@ -11,6 +11,7 @@ import { protonCalendarManifest } from "./proton-calendar/manifest"
 import { simplefinManifestConfig } from "./simplefin/config"
 import { simplefinManifest } from "./simplefin/manifest"
 import { thingsManifest } from "./things/manifest"
+import { appleManifest } from "./apple/manifest"
 
 // The manifest each connector declares today, for the owner's re-pin flow (#497). The gate
 // cannot import this package, so `pnpm --filter @eido/core connector-manifest <connector>` prints
@@ -31,6 +32,7 @@ const BUILDERS: Readonly<
 > = {
   files: () => filesManifest(),
   things: () => thingsManifest(),
+  "apple-eventkit": () => appleManifest(),
   drive: () => driveManifest(),
   gmail: () => gmailManifest(GMAIL_DEFAULTS),
   simplefin: (env) => {

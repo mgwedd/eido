@@ -29,7 +29,19 @@ export type ValidationResult<T> =
   { ok: true; value: T } | { ok: false; errors: string[] }
 
 const RFC_3339 =
-  /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])[Tt]([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d+)?([Zz]|[+-]([01]\d|2[0-3]):[0-5]\d)$/
+  /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])[Tt]([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d+)?([Zz]|[+-]([01]\d|2[0-3]):[0-5]\d)$/
+
+/** RFC 3339 syntax on a real calendar day. Leap seconds and impossible days such as
+ * February 31 are refused, as the EventKit Helper refuses them, instead of rolling over. */
+function isDateTime(value: string): boolean {
+  if (!RFC_3339.test(value)) return false
+  const year = Number(value.slice(0, 4))
+  const month = Number(value.slice(5, 7))
+  const day = Number(value.slice(8, 10))
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  return day <= (days[month - 1] ?? 0)
+}
 
 function typeName(value: unknown): string {
   if (value === null) return "null"
@@ -162,7 +174,7 @@ function validateString(
   ) {
     errors.push(`${path}: does not match pattern ${schema.pattern}`)
   }
-  if (schema.format === "date-time" && !RFC_3339.test(value)) {
+  if (schema.format === "date-time" && !isDateTime(value)) {
     errors.push(`${path}: not an RFC 3339 date-time`)
   }
   return errors

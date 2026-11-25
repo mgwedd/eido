@@ -369,6 +369,21 @@ describe("buildStackConfig on Windows", () => {
 })
 
 describe("settings passed through", () => {
+  it("passes the EventKit executable path only to the gate", () => {
+    const config = buildStackConfig(
+      input({ env: { EIDO_EVENTKIT_HELPER: "/home/u/bin/eido-helper" } })
+    )
+    expect(byName(config, "gate").env["EIDO_EVENTKIT_HELPER"]).toBe(
+      "/home/u/bin/eido-helper"
+    )
+    expect(byName(config, "core").env).not.toHaveProperty(
+      "EIDO_EVENTKIT_HELPER"
+    )
+    expect(byName(config, "web").env).not.toHaveProperty("EIDO_EVENTKIT_HELPER")
+    const unset = buildStackConfig(input())
+    expect(byName(unset, "gate").env).not.toHaveProperty("EIDO_EVENTKIT_HELPER")
+  })
+
   it("gives the gate the push, Gmail, Bridge and dev vault settings, and core the llama ones", () => {
     const config = buildStackConfig(
       input({

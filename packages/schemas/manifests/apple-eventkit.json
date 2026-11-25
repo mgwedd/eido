@@ -1,0 +1,106 @@
+{
+  "name": "apple-eventkit",
+  "version": 1,
+  "description": "Apple Calendar and Reminders through the gate-owned local EventKit Helper. Every write needs signed approval.",
+  "auth": {
+    "type": "macos-eventkit",
+    "scopes": ["Calendars", "Reminders"]
+  },
+  "egress": {
+    "hosts": []
+  },
+  "operations": [
+    {
+      "name": "list_calendars",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Calendars", "Reminders"]
+    },
+    {
+      "name": "list_reminder_lists",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Calendars", "Reminders"]
+    },
+    {
+      "name": "list_events",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Calendars", "Reminders"]
+    },
+    {
+      "name": "list_reminders",
+      "effect": "read",
+      "reversibility": "reversible",
+      "defaultTier": "auto",
+      "sensitivity": "sensitive",
+      "untrustedOutput": true,
+      "authScopes": ["Calendars", "Reminders"]
+    },
+    {
+      "name": "create_event",
+      "effect": "write",
+      "reversibility": "irreversible",
+      "defaultTier": "approval",
+      "intentKind": "apple.event_create",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["Calendars", "Reminders"]
+    },
+    {
+      "name": "update_event",
+      "effect": "write",
+      "reversibility": "irreversible",
+      "defaultTier": "approval",
+      "intentKind": "apple.event_update",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["Calendars", "Reminders"]
+    },
+    {
+      "name": "create_reminder",
+      "effect": "write",
+      "reversibility": "irreversible",
+      "defaultTier": "approval",
+      "intentKind": "apple.reminder_create",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["Calendars", "Reminders"]
+    },
+    {
+      "name": "complete_reminder",
+      "effect": "write",
+      "reversibility": "irreversible",
+      "defaultTier": "approval",
+      "intentKind": "apple.reminder_complete",
+      "sensitivity": "sensitive",
+      "untrustedOutput": false,
+      "authScopes": ["Calendars", "Reminders"]
+    }
+  ],
+  "triggers": [],
+  "ledgerMapping": {
+    "source": "apple-eventkit",
+    "refField": "id"
+  },
+  "health": {
+    "backoff": {
+      "baseMs": 1000,
+      "maxMs": 300000,
+      "jitter": true
+    },
+    "breaker": {
+      "failureThreshold": 3,
+      "halfOpenProbeAfterMs": 60000
+    }
+  }
+}

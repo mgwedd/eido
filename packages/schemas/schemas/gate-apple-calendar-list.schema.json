@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateAppleCalendarList",
+  "type": "object",
+  "properties": {
+    "calendars": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "title": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 2000
+          },
+          "writable": {
+            "type": "boolean"
+          }
+        },
+        "required": ["id", "title", "writable"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["calendars"],
+  "additionalProperties": false
+}

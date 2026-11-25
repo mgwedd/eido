@@ -118,12 +118,14 @@ describe("settingProblem", () => {
     ["EIDO_GATE_VAULT_FILE", "vault.json"],
     ["EIDO_BRIDGE_CERT_PATH", "../cert.pem"],
     ["EIDO_GATE_SOCKET", "gate.sock"],
+    ["EIDO_EVENTKIT_HELPER", "helper"],
   ])("refuses the relative path %s=%s", (key, value) => {
     expect(settingProblem(key, value)).toBe(`${key} must be an absolute path`)
   })
 
   it.each([
     ["EIDO_GATE_VAULT_FILE", "/home/u/vault.json"],
+    ["EIDO_EVENTKIT_HELPER", "/home/u/bin/eido-helper"],
     ["EIDO_GATE_VAULT_FILE", "C:\\Users\\u\\vault.json"],
   ])("accepts the absolute path %s=%s", (key, value) => {
     expect(settingProblem(key, value)).toBeUndefined()
@@ -154,6 +156,15 @@ describe("settingProblem", () => {
       expect(settingProblem(key, value)).toBeUndefined()
     }
   )
+
+  it("only local setup can select the executable run by the gate", () => {
+    expect(
+      apiSettingProblem("EIDO_EVENTKIT_HELPER", "/home/u/bin/eido-helper")
+    ).toMatch(/cannot be changed through/)
+    expect(
+      parseStackSettings("EIDO_EVENTKIT_HELPER=/home/u/bin/eido-helper\n")
+    ).toEqual({ EIDO_EVENTKIT_HELPER: "/home/u/bin/eido-helper" })
+  })
 
   it("lets the settings endpoint write an ordinary key", () => {
     expect(apiSettingProblem("EIDO_WEB_PORT", "3001")).toBeUndefined()

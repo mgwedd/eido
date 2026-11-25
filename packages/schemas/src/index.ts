@@ -15,6 +15,12 @@ export {
 export {
   INTENT_JSON_SCHEMA,
   validateGateAdminStack,
+  validateGateAppleRequest,
+  validateGateAppleResponse,
+  validateGateAppleCalendarList,
+  validateGateAppleEventList,
+  validateGateAppleReminderList,
+  validateGateAppleItemRef,
   validateGateApiError,
   validateGateAuditChainStatus,
   validateGateAuditPage,

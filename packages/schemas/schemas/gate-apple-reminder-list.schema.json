@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateAppleReminderList",
+  "type": "object",
+  "properties": {
+    "reminders": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "listId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "title": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 2000
+          },
+          "notes": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 20000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "due": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 20,
+                "maxLength": 40,
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "completedAt": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 20,
+                "maxLength": 40,
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "modifiedAt": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 20,
+                "maxLength": 40,
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "listId",
+          "title",
+          "notes",
+          "due",
+          "completed",
+          "completedAt",
+          "modifiedAt"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["reminders"],
+  "additionalProperties": false
+}

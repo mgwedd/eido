@@ -58,6 +58,7 @@ describe("listReviewedManifests", () => {
       writeFileSync(join(dir, REVIEWED_MANIFEST_DIR, file), "{}")
     writeFileSync(join(dir, REVIEWED_MANIFEST_DIR, "gmail.json.1.tmp"), "{}")
     expect(listReviewedManifests(dir)).toEqual([
+      "apple-eventkit",
       "drive",
       "files",
       "gmail",
@@ -72,6 +73,7 @@ describe("listReviewedManifests", () => {
   it("lists the committed manifests when none has been placed", () => {
     rmSync(join(dir, REVIEWED_MANIFEST_DIR), { recursive: true })
     expect(listReviewedManifests(dir)).toEqual([
+      "apple-eventkit",
       "drive",
       "files",
       "gmail",
