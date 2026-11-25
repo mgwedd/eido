@@ -3,6 +3,7 @@ import Foundation
 
 @main struct HelperMain {
   @MainActor static func main() async {
+    exitWhenParentExits()
     let store = EventKitStore()
     let options = Array(CommandLine.arguments.dropFirst())
     if options == ["--authorize"] {
