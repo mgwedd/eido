@@ -2,6 +2,7 @@ import {
   INTENT_KINDS,
   gateAuditDisplayActor,
   validateGateAuditPageRequest,
+  validateIntent,
 } from "@eido/schemas"
 import type {
   GateAuditActor,
@@ -15,6 +16,7 @@ import { kindTier } from "../policy"
 import { listPasskeys } from "../credentials"
 import { readBackupStatus } from "../backup-status"
 import { describeIntent } from "../audit-description"
+import { isUnsafeInverse } from "../executor"
 import { sessionCredential, sessionToken } from "../sessions"
 import type { Clock } from "../sessions"
 import type { PhoneState } from "./types"
@@ -32,6 +34,19 @@ function auditActor(value: string): GateAuditActor {
     default:
       throw new Error("stored audit actor is not recognized")
   }
+}
+
+/**
+ * Whether the executor refuses the stored inverse of this execution on every attempt (#851), by the
+ * executor's own rule. An execution whose recorded intent no longer checks out is refused too
+ * (`hash_mismatch`), so neither is offered.
+ */
+function undoAlwaysRefused(row: Record<string, unknown>): boolean {
+  const payload = row["payload_json"]
+  const inverse = row["inverse_op"]
+  if (typeof payload !== "string" || typeof inverse !== "string") return true
+  const original = validateIntent(JSON.parse(payload))
+  return !original.ok || isUnsafeInverse(original.value, JSON.parse(inverse))
 }
 
 export function auditPage(state: PhoneState, request: GateRequest): Reply {
@@ -78,7 +93,8 @@ export function auditPage(state: PhoneState, request: GateRequest): Reply {
              WHEN e.inverse_op IS NOT NULL AND (i.tier = 'auto' OR (i.kind = 'file.delete' AND i.tier = 'approval')) THEN 'available'
              ELSE 'none' END
       ELSE 'none' END AS undo,
-      CASE WHEN e.audit_seq = a.seq AND i.tier = 'auto' THEN i.payload_json END AS intent_json
+      CASE WHEN e.audit_seq = a.seq AND i.tier = 'auto' THEN i.payload_json END AS intent_json,
+      e.inverse_op AS inverse_op, i.payload_json AS payload_json
     FROM audit_log a
     LEFT JOIN executions e ON e.audit_seq = a.seq
     LEFT JOIN execution_undos u ON u.intent_id = e.intent_id
@@ -97,10 +113,12 @@ export function auditPage(state: PhoneState, request: GateRequest): Reply {
   const entries: GateAuditPage["entries"] = pageRows.map((row) => {
     const actor = auditActor(String(row["actor"]))
     const approved = Number(row["approved"]) === 1
-    const undo = row["undo"]
-    if (undo !== "available" && undo !== "done" && undo !== "none") {
+    const state = row["undo"]
+    if (state !== "available" && state !== "done" && state !== "none") {
       throw new Error("stored undo state is not recognized")
     }
+    const undo =
+      state === "available" && undoAlwaysRefused(row) ? "none" : state
     const intentJson = row["intent_json"]
     const description =
       typeof intentJson === "string" ? describeIntent(intentJson) : undefined

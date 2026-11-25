@@ -392,6 +392,7 @@ describe("phone Undo through the real executor and file operations", () => {
         trashName: "0b6c51c6-3f3e-4b7e-9d1a-5f0c2b7a8e41",
       })
     )
+    expect((await projection(f.handler, f.cookie, id))?.undo).toBe("none")
     const response = await call(f.handler, `/executions/${id}/undo`, f.cookie)
     expect(response.status).toBe(409)
     expect(f.actions().at(-1)).toBe("undo.refused.unsafe_inverse")
@@ -415,6 +416,7 @@ describe("phone Undo through the real executor and file operations", () => {
         path: SOURCE,
         trashName: "0b6c51c6-3f3e-4b7e-9d1a-5f0c2b7a8e41",
       }))
+      expect((await projection(f.handler, f.cookie, id))?.undo).toBe("none")
       const response = await call(f.handler, `/executions/${id}/undo`, f.cookie)
       expect(response.status).toBe(409)
       expect(f.actions().at(-1)).toBe("undo.refused.unsafe_inverse")
