@@ -1,6 +1,6 @@
 // Synthetic fixtures for the Today page. Imported by tests only; never by app code
 // (enforced by the `web-test-fixtures-are-test-only` rule in .dependency-cruiser.mts).
-import type { CoreApiBrief } from "@eido/schemas"
+import type { CoreApiBrief, CoreApiConfirmCardResponse } from "@eido/schemas"
 import type { PendingIntent } from "../../lib/today"
 
 const NOW = new Date("2026-10-18T12:00:00.000Z")
@@ -57,4 +57,12 @@ function briefWith(extra: CoreApiBrief["lines"]): CoreApiBrief {
   }
 }
 
-export { NOW, pendingIntents, briefWith }
+/** Core's answer when it opens the confirm card behind a deferred extraction line. */
+const confirmCardResponse = {
+  intentId: "intent-extraction-fixture",
+  field: "amount",
+  created: true,
+  queueHref: "/queue?intent=intent-extraction-fixture",
+} as const satisfies CoreApiConfirmCardResponse
+
+export { NOW, pendingIntents, briefWith, confirmCardResponse }
