@@ -1,8 +1,10 @@
 # Infra
 
-Host setup for the Mac: the local stack, `tailscale serve` routes, Proton Bridge supervision, nightly backups, host checks and the pinned llama-server; pf later (#70). Never commit secrets here; `infra/secrets` is denied to agents.
+Host setup for the Mac: the local stack, `tailscale serve` routes, Proton Bridge supervision, nightly backups, host checks and the pinned llama-server. Never commit secrets here; `infra/secrets` is denied to agents.
 
 End-to-end check on an iPhone: `infra/device-smoke.md`.
+
+Gate and data plane under two macOS users, with sandbox profiles and pf egress rules: `infra/plane-split.md` (#70).
 
 Connecting and reconnecting Gmail and the Proton connectors on the Mac: `infra/connectors.md` (#98).
 
