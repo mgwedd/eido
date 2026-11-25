@@ -1,6 +1,10 @@
 import type { DatabaseSync } from "node:sqlite"
 import { validateGateAuditPage, validateGateLoginOptions } from "@eido/schemas"
+import type { Intent } from "@eido/schemas"
+import { append } from "./audit"
+import { canonicalize, payloadHash } from "./canonical"
 import type { ExecutionResult } from "./executor"
+import { propose } from "./intents"
 import type { Handler, Reply } from "./http"
 import { phoneHandler } from "./phone-routes"
 import { assertion, testAuthenticator, WEBAUTHN } from "./test-fixtures"
@@ -96,4 +100,34 @@ export async function projection(handler: Handler, cookie: string, id: string) {
   return page.value.entries.find(
     (entry) => entry.action === "execute" && entry.target === id
   )
+}
+
+/**
+ * Records an auto-tier `intent` as executed with `inverse` as its stored Undo, bound to its own
+ * audit row the way the executor binds one, without running it: the shape a writer that recorded
+ * the wrong inverse, or one recorded before #832, left behind. Returns the intent id.
+ */
+export function recordExecuted(
+  f: Pick<Setup, "db" | "policy">,
+  intent: Intent,
+  inverse: unknown,
+  result: unknown = null
+): string {
+  const proposed = propose(f.db, f.policy, { intent, origin: "reactive" })
+  if (!proposed.ok) throw new Error(proposed.code)
+  const { seq } = append(f.db, {
+    actor: "executor",
+    action: "execute",
+    target: proposed.intentId,
+    detailHash: payloadHash({ upstream_ref: null, result, inverse }),
+  })
+  f.db
+    .prepare(
+      "INSERT INTO executions(intent_id,upstream_ref,result,inverse_op,audit_seq) VALUES (?,NULL,?,?,?)"
+    )
+    .run(proposed.intentId, canonicalize(result), canonicalize(inverse), seq)
+  f.db
+    .prepare("UPDATE intents SET state='executed' WHERE id=?")
+    .run(proposed.intentId)
+  return proposed.intentId
 }

@@ -8,6 +8,7 @@ import {
   loggedText,
   manifest,
   OWNER,
+  sample,
   setup,
 } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
@@ -18,7 +19,13 @@ import { PROTON_CALENDAR_CONNECTOR } from "./bridge/config"
 import { startFakeBridge } from "./bridge/fake-bridge"
 import type { FakeBridge } from "./bridge/fake-bridge"
 import { BRIDGE_WRITERS, bridgeTransport } from "./bridge/writers"
-import { call, projection, signIn, undoHandler } from "./phone-undo-harness"
+import {
+  call,
+  projection,
+  recordExecuted,
+  signIn,
+  undoHandler,
+} from "./phone-undo-harness"
 
 // Issue #416, calendar half: the phone Undo route over the real executor and the real Bridge
 // calendar writers, against the fake Bridge's SMTP double. Every expected value below is written
@@ -182,5 +189,21 @@ describe("phone Undo through the real executor and Bridge calendar writers", () 
       sequence: 1,
       lastMethod: "CANCEL",
     })
+  })
+
+  it("offers no Undo for a calendar create recorded with a stored inverse before #832, and sends no cancel", async () => {
+    const f = await world()
+    const id = recordExecuted(
+      f,
+      CREATE,
+      sample("calendar.delete", { eventUid: EVENT_UID })
+    )
+    expect((await projection(f.handler, f.cookie, id))?.undo).toBe("none")
+    const before = f.actions().length
+    const response = await call(f.handler, `/executions/${id}/undo`, f.cookie)
+    expect(response.status).toBe(409)
+    expect(f.actions().slice(before)).toEqual(["undo.refused.unsafe_inverse"])
+    expect(mails(f)).toEqual([])
+    expect((await projection(f.handler, f.cookie, id))?.undo).toBe("none")
   })
 })

@@ -125,6 +125,38 @@ function parse(text: string): unknown {
   return JSON.parse(text)
 }
 
+/**
+ * Whether Undo of `original` refuses `storedInverse` as `unsafe_inverse` on every attempt (#416,
+ * #832, #851). Undo runs with no new signature, so its inverse must be local, recoverable and
+ * scoped to what the execution changed. Nothing that sends, trashes or deletes qualifies, and no
+ * calendar change does: it notifies attendees. The one inverse that removes anything is a file
+ * create's own file, moved to the helper's trash under a fresh name; a trash of any other path, or
+ * after any other action, is refused. The executor decides with this function and Activity hides
+ * Undo with it, so the two cannot disagree. An inverse that is neither an intent nor a file helper
+ * request is not unsafe here: the executor refuses it as `invalid_inverse`.
+ */
+export function isUnsafeInverse(
+  original: Intent,
+  storedInverse: unknown
+): boolean {
+  const asIntent = validateIntent(storedInverse)
+  if (asIntent.ok)
+    return (
+      /\.(send|forward|reply|trash|delete)$/i.test(asIntent.value.kind) ||
+      /^calendar\./i.test(asIntent.value.kind)
+    )
+  const asFile = validateGateFileHelperRequest(storedInverse)
+  return (
+    asFile.ok &&
+    asFile.value.op === "trash" &&
+    !(
+      original.kind === "file.create" &&
+      asFile.value.path === original.args.path &&
+      /^[0-9a-f-]{36}$/.test(asFile.value.trashName)
+    )
+  )
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -455,14 +487,7 @@ export function createExecutor(
         return refuse(id, direction, "no_inverse")
       const inverse = validateIntent(previous.inverse)
       if (!inverse.ok) return refuse(id, direction, "invalid_inverse")
-      // Undo runs with no new signature, so its inverse must be local, recoverable and scoped to
-      // what the execution changed (#416). Nothing that sends, trashes or deletes qualifies, and no
-      // calendar change does: it notifies attendees. The one Undo that trashes is a file create's,
-      // and it runs in runFile against the file that execution made, never through here.
-      if (
-        /\.(send|forward|reply|trash|delete)$/i.test(inverse.value.kind) ||
-        /^calendar\./i.test(inverse.value.kind)
-      )
+      if (isUnsafeInverse(intent, previous.inverse))
         return refuse(id, direction, "unsafe_inverse")
       if (
         "connector" in intent &&
@@ -745,16 +770,7 @@ export function createExecutor(
         )
           return refuse(id, direction, "invalid_inverse")
         const candidate = checked.value
-        // The one inverse that removes anything (#832): a create's own file, moved to the helper's
-        // trash under a fresh name. A trash of any other path, or after any other action, is refused.
-        if (
-          candidate.op === "trash" &&
-          !(
-            intent.kind === "file.create" &&
-            candidate.path === intent.args.path &&
-            /^[0-9a-f-]{36}$/.test(candidate.trashName)
-          )
-        )
+        if (isUnsafeInverse(intent, previous.inverse))
           return refuse(id, direction, "unsafe_inverse")
         // No caller-selected inverse: bind every field to the original action and authenticated receipt.
         const result = previous.value.result
