@@ -8,6 +8,7 @@ import {
   createIntentClient,
   createFileClient,
   createProtonMailClient,
+  createAppleClient,
 } from "@eido/gate"
 import type { IntentClient } from "@eido/gate"
 import { createFilesFacade } from "./connectors/files/reads"
@@ -79,8 +80,16 @@ import {
 } from "./connectors/gmail/index"
 import type { GmailClient } from "./connectors/gmail/client"
 import type { GmailConfig } from "./connectors/gmail/config"
+import { healthAwareSyncRunner } from "./connectors/health-aware-sync"
 import type { ConnectorHealthReader } from "./connectors/health-aware-sync"
 import { createAccountRegistry } from "./connectors/accounts"
+import { parseAppleCalendarSelection } from "./connectors/apple-calendar/config"
+import type { AppleCalendarSelection } from "./connectors/apple-calendar/config"
+import {
+  APPLE_CALENDAR_CONNECTOR,
+  syncAppleCalendars,
+} from "./connectors/apple-calendar/sync"
+import type { AppleCalendarSyncOptions } from "./connectors/apple-calendar/sync"
 import type { KnownAccount } from "./connectors/accounts"
 import { GMAIL_CONNECTOR } from "./connectors/gmail/routes"
 import { CONNECTOR_NAME as PROTON_HEALTH_NAME } from "./connectors/proton/manifest"
@@ -134,6 +143,7 @@ export const DATA_PLANE_ENV = [
   "EIDO_SIMPLEFIN_PROXY_URL",
   "EIDO_SIMPLEFIN_MAX_RANGE_DAYS",
   "EIDO_SIMPLEFIN_SYNC_TIME",
+  "EIDO_APPLE_CALENDARS",
 ] as const
 
 /**
@@ -158,6 +168,7 @@ export const ASK_REPLY_TOKENS = 512
 export const DRAFT_PROPOSALS_PER_HOUR = 30
 export const GMAIL_SYNC_INTERVAL_MS = 5 * 60_000
 export const PROTON_SYNC_INTERVAL_MS = 5 * 60_000
+export const APPLE_CALENDAR_SYNC_INTERVAL_MS = 5 * 60_000
 export const CONVERSATION_DIGEST_SWEEP_INTERVAL_MS = 60_000
 /** How often triage looks at the ledger, so a date that passes raises its due event. */
 export const TRIAGE_TICK_INTERVAL_MS = 15 * 60_000
@@ -237,6 +248,8 @@ export type DataPlaneConfig = {
   filesSync?: boolean
   /** SimpleFIN sync settings (#51); sync is off when `EIDO_SIMPLEFIN_PROXY_URL` is unset. */
   simplefin?: SimpleFinPlaneConfig
+  /** Apple calendars core reads through the gate (#751); sync is off when `EIDO_APPLE_CALENDARS` is unset. */
+  appleCalendars?: AppleCalendarSelection
 }
 
 function portOf(value: string, name = "EIDO_CORE_PORT"): number {
@@ -433,6 +446,9 @@ export function dataPlaneConfig(env: Env): DataPlaneConfig {
   )
     throw new Error("EIDO_FILES_SYNC must be 0 or 1")
   const simplefin = simplefinPlaneConfig(env)
+  const appleCalendars = parseAppleCalendarSelection(
+    env["EIDO_APPLE_CALENDARS"]
+  )
   return {
     dataDir,
     dbPath: join(dataDir, DATA_DB_FILE),
@@ -441,6 +457,7 @@ export function dataPlaneConfig(env: Env): DataPlaneConfig {
     api: coreApiConfig(env),
     ...(filesSync === "1" ? { filesSync: true } : {}),
     ...(simplefin === undefined ? {} : { simplefin }),
+    ...(appleCalendars === undefined ? {} : { appleCalendars }),
   }
 }
 
@@ -573,6 +590,70 @@ export function createProtonSyncRuntime(
         input.log("proton_sync_failed", {
           reason: error instanceof Error ? error.message : "unknown error",
         })
+      } finally {
+        running = undefined
+      }
+    })()
+    return running
+  }
+}
+
+/** The Profile page's label for an Apple calendar account: the connector and the calendar's title. */
+export function appleCalendarLabel(title: string): string {
+  return title.trim() === ""
+    ? "Apple Calendar"
+    : `Apple Calendar: ${title.trim()}`.slice(0, 100)
+}
+
+type AppleCalendarSyncRuntime = Omit<AppleCalendarSyncOptions, "onCalendar"> & {
+  gate: ConnectorHealthReader
+  /** Called with each enabled calendar the Helper lists, so the Profile page can assign it. */
+  onCalendar?: AppleCalendarSyncOptions["onCalendar"]
+  onBatchCommitted?: () => void
+  log: DataPlane["log"]
+}
+
+/**
+ * One Apple calendar sync run at a time over the enabled calendars. The gate's connector health
+ * decides whether a run may read the Helper. Only ids and counts are logged, never titles.
+ */
+export function createAppleCalendarSyncRuntime(
+  input: AppleCalendarSyncRuntime
+): () => Promise<void> {
+  const { gate, log, onBatchCommitted, ...options } = input
+  let running: Promise<void> | undefined
+  return async () => {
+    if (running !== undefined) return running
+    running = (async () => {
+      try {
+        const run = await healthAwareSyncRunner(gate)(
+          APPLE_CALENDAR_CONNECTOR,
+          () => syncAppleCalendars(options)
+        )
+        if (run.status === "skipped") return
+        for (const calendar of run.result.calendars) {
+          if (calendar.status === "synced")
+            log("apple_calendar_synced", {
+              calendar: calendar.calendarId,
+              fetched: String(calendar.fetched),
+              ingested: String(calendar.ingested),
+              retired: String(calendar.retired),
+              skipped: String(calendar.skipped),
+              dropped: String(calendar.dropped),
+            })
+          else
+            log("apple_calendar_sync_failed", {
+              calendar: calendar.calendarId,
+              reason:
+                calendar.status === "missing"
+                  ? "calendar_not_listed"
+                  : calendar.reason,
+            })
+        }
+        if (run.result.calendars.some((c) => c.status === "synced"))
+          onBatchCommitted?.()
+      } catch {
+        log("apple_calendar_sync_failed", { reason: "run_failed" })
       } finally {
         running = undefined
       }
@@ -895,6 +976,28 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     })
     protonTimer = startSyncTimer(sync, PROTON_SYNC_INTERVAL_MS)
   }
+  let appleCalendarTimer: ReturnType<typeof startSyncTimer> | undefined
+  if (config.appleCalendars !== undefined) {
+    const sync = createAppleCalendarSyncRuntime({
+      db,
+      gate,
+      client: createAppleClient({ socketPath: config.gateSocket }),
+      entities: profile,
+      selection: config.appleCalendars,
+      onCalendar: ({ id, title }) => {
+        if (id.length > 320) return
+        accounts.add({
+          connector: APPLE_CALENDAR_CONNECTOR,
+          healthName: APPLE_CALENDAR_CONNECTOR,
+          accountRef: id,
+          label: appleCalendarLabel(title),
+        })
+      },
+      onBatchCommitted,
+      log,
+    })
+    appleCalendarTimer = startSyncTimer(sync, APPLE_CALENDAR_SYNC_INTERVAL_MS)
+  }
   const simplefin =
     config.simplefin === undefined
       ? undefined
@@ -991,12 +1094,14 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
       await fileTimer?.inFlight()
       stopGmailSync()
       stopProtonSync()
+      appleCalendarTimer?.stop()
       simplefinTimer?.stop()
       clearInterval(triageTimer)
       brief.stop()
       await brief.whenIdle()
       await gmailTimer?.inFlight()
       await protonTimer?.inFlight()
+      await appleCalendarTimer?.inFlight()
       await simplefinTimer?.inFlight()
       await simplefin?.idle()
       await digestScheduling

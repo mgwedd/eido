@@ -180,6 +180,10 @@
           "type": "string",
           "maxLength": 4096
         },
+        "EIDO_APPLE_CALENDARS": {
+          "type": "string",
+          "maxLength": 4096
+        },
         "EIDO_MODEL_LOCK": {
           "type": "string",
           "maxLength": 4096

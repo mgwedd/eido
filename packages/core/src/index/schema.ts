@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 14
+export const SCHEMA_VERSION = 15
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -238,6 +238,26 @@ CREATE TRIGGER things_todo_facts_no_update BEFORE UPDATE ON things_todo_facts
 BEGIN SELECT RAISE(ABORT, 'things to-do facts are immutable'); END;
 CREATE TRIGGER things_todo_facts_no_delete BEFORE DELETE ON things_todo_facts
 BEGIN SELECT RAISE(ABORT, 'things to-do facts are immutable'); END;
+`,
+  // v15: the calendar identity and times of each indexed calendar event version (#746, #751), so
+  // a snapshot can retire only the events of its own calendar and read interval. Event ids are
+  // opaque and scoped by source and calendar: an Apple id is never a Proton invitation UID.
+  `
+CREATE TABLE calendar_event_facts (
+  sha256 TEXT PRIMARY KEY REFERENCES documents(sha256),
+  source TEXT NOT NULL CHECK (length(source) > 0),
+  calendar_id TEXT NOT NULL CHECK (length(calendar_id) > 0),
+  event_id TEXT NOT NULL CHECK (length(event_id) > 0),
+  start_at TEXT NOT NULL,
+  end_at TEXT NOT NULL,
+  all_day INTEGER NOT NULL CHECK (all_day IN (0, 1))
+);
+CREATE INDEX calendar_event_facts_calendar ON calendar_event_facts(source, calendar_id);
+CREATE INDEX calendar_event_facts_event ON calendar_event_facts(source, event_id);
+CREATE TRIGGER calendar_event_facts_no_update BEFORE UPDATE ON calendar_event_facts
+BEGIN SELECT RAISE(ABORT, 'calendar event facts are immutable'); END;
+CREATE TRIGGER calendar_event_facts_no_delete BEFORE DELETE ON calendar_event_facts
+BEGIN SELECT RAISE(ABORT, 'calendar event facts are immutable'); END;
 `,
 ]
 

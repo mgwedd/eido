@@ -90,6 +90,8 @@ export const PASS_THROUGH = {
     "EIDO_LLAMA_HOST",
     "EIDO_LLAMA_PORT",
     "EIDO_LLAMA_CHAT_TEMPLATE_KWARGS",
+    // Which Apple calendars core reads through the gate (#751): `*` or a comma-separated id list.
+    "EIDO_APPLE_CALENDARS",
   ],
 } as const
 
