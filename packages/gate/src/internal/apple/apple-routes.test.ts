@@ -40,11 +40,14 @@ function reads(): AppleReads {
         calendars: [
           { id: "cal", title: "Private calendar title", writable: true },
         ],
+        skipped: 2,
       })
     ),
-    listReminderLists: vi.fn(() => Promise.resolve({ calendars: [] })),
-    listEvents: vi.fn(() => Promise.resolve({ events: [] })),
-    listReminders: vi.fn(() => Promise.resolve({ reminders: [] })),
+    listReminderLists: vi.fn(() =>
+      Promise.resolve({ calendars: [], skipped: 0 })
+    ),
+    listEvents: vi.fn(() => Promise.resolve({ events: [], skipped: 0 })),
+    listReminders: vi.fn(() => Promise.resolve({ reminders: [], skipped: 0 })),
   }
 }
 
@@ -58,6 +61,7 @@ describe("Apple data-plane reads", () => {
         calendars: [
           { id: "cal", title: "Private calendar title", writable: true },
         ],
+        skipped: 2,
       },
     })
     expect(
@@ -74,7 +78,7 @@ describe("Apple data-plane reads", () => {
           apple
         )
       )?.body
-    ).toEqual({ events: [] })
+    ).toEqual({ events: [], skipped: 0 })
     expect(
       (
         await appleRoute(
@@ -86,7 +90,7 @@ describe("Apple data-plane reads", () => {
           apple
         )
       )?.body
-    ).toEqual({ reminders: [] })
+    ).toEqual({ reminders: [], skipped: 0 })
     expect(apple.listEvents).toHaveBeenCalledWith(
       "cal",
       "2026-11-14T00:00:00Z",
@@ -102,7 +106,7 @@ describe("Apple data-plane reads", () => {
           "SELECT detail_hash FROM audit_log WHERE action='apple.read.list_calendars'"
         )
         .get()?.["detail_hash"]
-    ).toBe(payloadHash({ items: 1 }))
+    ).toBe(payloadHash({ items: 1, skipped: 2 }))
     expect(loggedText(state.db)).not.toContain("Private calendar title")
   })
   test.each([

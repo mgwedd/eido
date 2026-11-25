@@ -21,6 +21,7 @@ import { GMAIL_CONNECTOR, GMAIL_WRITERS } from "./internal/gmail-writers"
 import { THINGS_CONNECTOR } from "./internal/things/things-routes"
 import { APPLE_CONNECTOR } from "./internal/apple/apple-routes"
 import { createAppleRunner } from "./internal/apple/runner"
+import type { AppleHelperConfig } from "./internal/apple/runner"
 import { appleProbe, createAppleReads } from "./internal/apple/apple-adapter"
 import {
   APPLE_WRITERS,
@@ -200,8 +201,8 @@ export type GateConfig = {
   }
   /** Native helper binary and its pinned SHA-256, both required for file execution. */
   fileHelper?: FileHelperConfig
-  /** Optional gate-owned EventKit executable; no Helper code or path reaches the data plane. */
-  appleHelperPath?: string
+  /** Optional gate-owned EventKit executable and its pinned SHA-256; no Helper code or path reaches the data plane. */
+  appleHelper?: AppleHelperConfig
   backupStampPath?: string
   /** The stack supervisor's socket (#659); absent outside the stack, so the admin routes answer 503. */
   supervisorSocketPath?: string
@@ -300,10 +301,23 @@ export function gateConfig(
     throw new Error(`${SUPERVISOR_SOCKET_ENV} must be an absolute path`)
   }
   const appleHelperPath = read("EIDO_EVENTKIT_HELPER")
+  const appleHelperSha256 = read("EIDO_EVENTKIT_HELPER_SHA256")
+  if ((appleHelperPath === "") !== (appleHelperSha256 === ""))
+    throw new Error(
+      "EIDO_EVENTKIT_HELPER and EIDO_EVENTKIT_HELPER_SHA256 must be set together"
+    )
+  if (appleHelperSha256 !== "" && !/^[a-f0-9]{64}$/.test(appleHelperSha256))
+    throw new Error(
+      "EIDO_EVENTKIT_HELPER_SHA256 must be a lowercase SHA-256 pin"
+    )
   if (appleHelperPath !== "" && !isAbsolute(appleHelperPath))
     throw new Error("EIDO_EVENTKIT_HELPER must be an absolute path")
   const config: GateConfig = {
-    ...(appleHelperPath === "" ? {} : { appleHelperPath }),
+    ...(appleHelperPath === ""
+      ? {}
+      : {
+          appleHelper: { path: appleHelperPath, sha256: appleHelperSha256 },
+        }),
     dataDir: read(REQUIRED.dataDir),
     socketPath: read(REQUIRED.socketPath),
     controlSocketPath: read(REQUIRED.controlSocketPath),
@@ -680,11 +694,11 @@ export async function runGate(
     // The checks the control socket runs after the owner connects a connector (#98). Both Proton
     // connectors sign in to Bridge with the one stored password. Gmail is healthy only when each
     // of its configured clients (compose and read) can make its read.
-    const appleRunner = createAppleRunner(config.appleHelperPath)
+    const appleRunner = createAppleRunner(config.appleHelper)
     const apple = createAppleReads(appleRunner)
     const probes: ConnectorProbes = {
       ...readProbes,
-      ...(config.appleHelperPath === undefined
+      ...(config.appleHelper === undefined
         ? {}
         : { [APPLE_CONNECTOR]: appleProbe(apple) }),
       ...(gmailProbes.length === 0
