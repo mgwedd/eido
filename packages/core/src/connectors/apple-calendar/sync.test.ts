@@ -17,7 +17,7 @@ import {
   isAppleEventId,
   syncAppleCalendars,
 } from "./sync"
-import type { AppleCalendarSyncOptions } from "./sync"
+import type { AppleCalendarRun, AppleCalendarSyncOptions } from "./sync"
 
 // Synthetic calendars and events only: ids, titles and times are invented.
 
@@ -260,13 +260,13 @@ describe("syncAppleCalendars", () => {
     expect(live).toEqual([{ title: "Lorem standup moved" }])
   })
 
-  test("a successful snapshot retires only its own calendar's missing events inside the window", async () => {
+  test("a successful snapshot retires only its own calendar's events that overlap the window and are missing", async () => {
     const db = setupDb()
-    const events: Record<string, AppleEvent[]> = {
+    const events: Record<string, AppleEvent[] | Error> = {
       "cal-synthetic-a": [
         event({ id: "gone" }),
         event({ id: "kept" }),
-        // Starts before the window the next run reads: not provably gone from that snapshot.
+        // Ended before the window the next run reads: past, kept as history.
         event({
           id: "before-window",
           start: "2026-11-01T09:00:00Z",
@@ -283,24 +283,19 @@ describe("syncAppleCalendars", () => {
     )
 
     events["cal-synthetic-a"] = [event({ id: "kept" })]
-    events["cal-synthetic-b"] = []
-    const result = await syncAppleCalendars(
-      options(db, client, {
-        selection: { kind: "ids", ids: ["cal-synthetic-a"] },
-      })
-    )
+    // The other calendar's read fails, so only calendar A's snapshot reconciles anything.
+    events["cal-synthetic-b"] = new Error("gate unavailable")
+    const result = await syncAppleCalendars(options(db, client))
 
-    expect(result.calendars).toEqual([
-      {
-        calendarId: "cal-synthetic-a",
-        status: "synced",
-        fetched: 1,
-        ingested: 0,
-        retired: 1,
-        skipped: 0,
-        dropped: 0,
-      },
-    ])
+    expect(result.calendars[0]).toEqual({
+      calendarId: "cal-synthetic-a",
+      status: "synced",
+      fetched: 1,
+      ingested: 0,
+      retired: 1,
+      skipped: 0,
+      dropped: 0,
+    })
     expect(liveRefs(db)).toEqual([
       appleEventSourceRef("cal-synthetic-a", "before-window"),
       appleEventSourceRef("cal-synthetic-a", "kept"),
@@ -594,7 +589,12 @@ describe("syncAppleCalendars", () => {
         skipped: 0,
         dropped: 0,
       },
-      { calendarId: "cal-not-listed", status: "missing" },
+      {
+        calendarId: "cal-not-listed",
+        status: "missing",
+        missedRuns: 0,
+        retired: 0,
+      },
     ])
     expect(client.reads.map((read) => read.calendarId)).toEqual([
       "cal-synthetic-b",
@@ -638,6 +638,368 @@ describe("syncAppleCalendars", () => {
     expect(isAppleEventId(db, "recurrence:series-1:2026-12-21T09:00:00Z")).toBe(
       false
     )
+  })
+
+  describe("events that overlap the window edges", () => {
+    // The window of a run at NOW is 2026-11-17T12:00Z to 2027-05-30T12:00Z.
+    const straddlesStart = {
+      start: "2026-11-16T09:00:00Z",
+      end: "2026-11-18T09:00:00Z",
+    }
+    const straddlesEnd = {
+      start: "2027-05-29T09:00:00Z",
+      end: "2027-05-31T09:00:00Z",
+    }
+    const selectA = { kind: "ids", ids: ["cal-synthetic-a"] } as const
+
+    test("an event straddling the window start is retired when a whole read lacks it, and kept while the read returns it", async () => {
+      const db = setupDb()
+      const events: Record<string, AppleEvent[]> = {
+        "cal-synthetic-a": [
+          event({ id: "deleted", ...straddlesStart }),
+          event({ id: "present", ...straddlesStart }),
+        ],
+      }
+      const client = fakeClient(events)
+      await syncAppleCalendars(
+        options(db, client, {
+          selection: selectA,
+          now: () => new Date("2026-11-10T12:00:00Z"),
+        })
+      )
+
+      events["cal-synthetic-a"] = [event({ id: "present", ...straddlesStart })]
+      const result = await syncAppleCalendars(
+        options(db, client, { selection: selectA })
+      )
+
+      expect(result.calendars[0]).toMatchObject({
+        status: "synced",
+        ingested: 0,
+        retired: 1,
+      })
+      expect(liveRefs(db)).toEqual([
+        appleEventSourceRef("cal-synthetic-a", "present"),
+      ])
+    })
+
+    test("an event straddling the window end is retired when a whole read lacks it", async () => {
+      const db = setupDb()
+      const events: Record<string, AppleEvent[]> = {
+        "cal-synthetic-a": [event({ id: "long", ...straddlesEnd })],
+      }
+      const client = fakeClient(events)
+      await syncAppleCalendars(options(db, client, { selection: selectA }))
+
+      events["cal-synthetic-a"] = []
+      const result = await syncAppleCalendars(
+        options(db, client, { selection: selectA })
+      )
+
+      expect(result.calendars[0]).toMatchObject({ retired: 1 })
+      expect(liveRefs(db)).toEqual([])
+    })
+
+    test("an event that ended before the window start is kept as history, however old", async () => {
+      const db = setupDb()
+      const events: Record<string, AppleEvent[]> = {
+        "cal-synthetic-a": [
+          event({
+            id: "old",
+            start: "2026-11-10T09:00:00Z",
+            end: "2026-11-10T10:00:00Z",
+          }),
+          // Ends exactly at the window start: a read of that window need not return it.
+          event({
+            id: "edge",
+            start: "2026-11-17T11:00:00Z",
+            end: "2026-11-17T12:00:00Z",
+          }),
+        ],
+      }
+      const client = fakeClient(events)
+      await syncAppleCalendars(
+        options(db, client, {
+          selection: selectA,
+          now: () => new Date("2026-11-10T12:00:00Z"),
+        })
+      )
+
+      events["cal-synthetic-a"] = []
+      const result = await syncAppleCalendars(
+        options(db, client, { selection: selectA })
+      )
+
+      expect(result.calendars[0]).toMatchObject({ retired: 0 })
+      expect(liveRefs(db)).toEqual([
+        appleEventSourceRef("cal-synthetic-a", "edge"),
+        appleEventSourceRef("cal-synthetic-a", "old"),
+      ])
+    })
+
+    test("a read that reports skipped items retires no straddling event", async () => {
+      const db = setupDb()
+      const events: Record<string, AppleEvent[] | GateAppleEventList> = {
+        "cal-synthetic-a": [
+          event({ id: "start-edge", ...straddlesStart }),
+          event({ id: "end-edge", ...straddlesEnd }),
+        ],
+      }
+      const client = fakeClient(events)
+      await syncAppleCalendars(
+        options(db, client, {
+          selection: selectA,
+          now: () => new Date("2026-11-10T12:00:00Z"),
+        })
+      )
+
+      events["cal-synthetic-a"] = { events: [], skipped: 1 }
+      const result = await syncAppleCalendars(
+        options(db, client, { selection: selectA })
+      )
+
+      expect(result.calendars[0]).toMatchObject({ retired: 0, skipped: 1 })
+      expect(liveRefs(db)).toEqual([
+        appleEventSourceRef("cal-synthetic-a", "end-edge"),
+        appleEventSourceRef("cal-synthetic-a", "start-edge"),
+      ])
+    })
+
+    test("a read that fails retires no straddling event", async () => {
+      const db = setupDb()
+      const events: Record<string, AppleEvent[] | Error> = {
+        "cal-synthetic-a": [event({ id: "edge", ...straddlesStart })],
+      }
+      const client = fakeClient(events)
+      await syncAppleCalendars(
+        options(db, client, {
+          selection: selectA,
+          now: () => new Date("2026-11-10T12:00:00Z"),
+        })
+      )
+
+      events["cal-synthetic-a"] = new Error("gate unavailable")
+      await syncAppleCalendars(options(db, client, { selection: selectA }))
+
+      expect(liveRefs(db)).toEqual([
+        appleEventSourceRef("cal-synthetic-a", "edge"),
+      ])
+    })
+  })
+
+  describe("calendars that are no longer read", () => {
+    const onlyA: GateAppleCalendarList = {
+      calendars: [CALENDARS.calendars[0]!],
+    }
+    const bothCalendars = (): Record<string, AppleEvent[]> => ({
+      "cal-synthetic-a": [event({ id: "a-1" })],
+      "cal-synthetic-b": [
+        event({ id: "b-1", calendarId: "cal-synthetic-b" }),
+        // Past, outside the window: still retired with its calendar.
+        event({
+          id: "b-old",
+          calendarId: "cal-synthetic-b",
+          start: "2026-10-01T09:00:00Z",
+          end: "2026-10-01T10:00:00Z",
+        }),
+      ],
+    })
+    const liveFor = (calendarId: string, ids: string[]) =>
+      ids.map((id) => appleEventSourceRef(calendarId, id))
+
+    test("a calendar EIDO_APPLE_CALENDARS no longer names is retired at once, with all its events", async () => {
+      const db = setupDb()
+      const client = fakeClient(bothCalendars())
+      await syncAppleCalendars(
+        options(db, client, { now: () => new Date("2026-10-02T12:00:00Z") })
+      )
+      expect(liveRefs(db)).toHaveLength(3)
+
+      const result = await syncAppleCalendars(
+        options(db, client, {
+          selection: { kind: "ids", ids: ["cal-synthetic-a"] },
+        })
+      )
+
+      expect(result.disabled).toEqual([
+        { calendarId: "cal-synthetic-b", retired: 2 },
+      ])
+      expect(liveRefs(db)).toEqual(liveFor("cal-synthetic-a", ["a-1"]))
+      // The calendar is no longer read at all.
+      expect(client.reads.map((read) => read.calendarId).slice(-1)).toEqual([
+        "cal-synthetic-a",
+      ])
+    })
+
+    test("a calendar with nothing indexed is not reported as disabled, and retiring twice does nothing", async () => {
+      const db = setupDb()
+      const client = fakeClient(bothCalendars())
+      await syncAppleCalendars(
+        options(db, client, { now: () => new Date("2026-10-02T12:00:00Z") })
+      )
+      const narrowed = options(db, client, {
+        selection: { kind: "ids", ids: ["cal-synthetic-a"] },
+      })
+      await syncAppleCalendars(narrowed)
+
+      const again = await syncAppleCalendars(narrowed)
+
+      expect(again.disabled).toEqual([])
+    })
+
+    test("a calendar the Helper stops listing is kept for eleven runs and retired on the twelfth", async () => {
+      const db = setupDb()
+      const events = bothCalendars()
+      let calendars = CALENDARS
+      const client: FakeClient = {
+        ...fakeClient(events),
+        listCalendars: () => Promise.resolve(calendars),
+      }
+      await syncAppleCalendars(
+        options(db, client, { now: () => new Date("2026-10-02T12:00:00Z") })
+      )
+
+      calendars = onlyA
+      const runs = []
+      for (let run = 1; run <= 12; run++) {
+        const result = await syncAppleCalendars(options(db, client))
+        runs.push(result.calendars.find((c) => c.status === "missing"))
+        if (run === 11)
+          expect(liveRefs(db)).toEqual([
+            ...liveFor("cal-synthetic-a", ["a-1"]),
+            ...liveFor("cal-synthetic-b", ["b-1", "b-old"]),
+          ])
+      }
+
+      expect(runs[10]).toEqual({
+        calendarId: "cal-synthetic-b",
+        status: "missing",
+        missedRuns: 11,
+        retired: 0,
+      })
+      expect(runs[11]).toEqual({
+        calendarId: "cal-synthetic-b",
+        status: "missing",
+        missedRuns: 12,
+        retired: 2,
+      })
+      expect(liveRefs(db)).toEqual(liveFor("cal-synthetic-a", ["a-1"]))
+    })
+
+    test("a calendar listed again starts the count over", async () => {
+      const db = setupDb()
+      const events = bothCalendars()
+      let calendars = CALENDARS
+      const client: FakeClient = {
+        ...fakeClient(events),
+        listCalendars: () => Promise.resolve(calendars),
+      }
+      await syncAppleCalendars(
+        options(db, client, { now: () => new Date("2026-10-02T12:00:00Z") })
+      )
+
+      for (let cycle = 0; cycle < 2; cycle++) {
+        calendars = onlyA
+        for (let run = 0; run < 11; run++)
+          await syncAppleCalendars(options(db, client))
+        calendars = CALENDARS
+        await syncAppleCalendars(options(db, client))
+      }
+      calendars = onlyA
+      const next = await syncAppleCalendars(options(db, client))
+
+      expect(next.calendars.find((c) => c.status === "missing")).toMatchObject({
+        missedRuns: 1,
+        retired: 0,
+      })
+      expect(liveRefs(db)).toHaveLength(3)
+    })
+
+    test("an enabled id the Helper stops listing is retired after the same twelve runs", async () => {
+      const db = setupDb()
+      const events = bothCalendars()
+      let calendars = CALENDARS
+      const client: FakeClient = {
+        ...fakeClient(events),
+        listCalendars: () => Promise.resolve(calendars),
+      }
+      const both = {
+        selection: {
+          kind: "ids",
+          ids: ["cal-synthetic-a", "cal-synthetic-b"],
+        },
+      } as const
+      await syncAppleCalendars(
+        options(db, client, {
+          ...both,
+          now: () => new Date("2026-10-02T12:00:00Z"),
+        })
+      )
+
+      calendars = onlyA
+      let last: AppleCalendarRun | undefined
+      for (let run = 0; run < 12; run++) {
+        const result = await syncAppleCalendars(options(db, client, both))
+        last = result.calendars.find((c) => c.status === "missing")
+      }
+
+      expect(last).toMatchObject({ missedRuns: 12, retired: 2 })
+      expect(liveRefs(db)).toEqual(liveFor("cal-synthetic-a", ["a-1"]))
+    })
+
+    test("a failed calendar listing, as a revoked Calendar permission gives, retires nothing and does not count", async () => {
+      const db = setupDb()
+      const events = bothCalendars()
+      let calendars: GateAppleCalendarList | Error = CALENDARS
+      const client: FakeClient = {
+        ...fakeClient(events),
+        listCalendars: () =>
+          calendars instanceof Error
+            ? Promise.reject(calendars)
+            : Promise.resolve(calendars),
+      }
+      await syncAppleCalendars(
+        options(db, client, { now: () => new Date("2026-10-02T12:00:00Z") })
+      )
+      calendars = onlyA
+      for (let run = 0; run < 11; run++)
+        await syncAppleCalendars(options(db, client))
+
+      calendars = new Error("calendar permission denied")
+      for (let run = 0; run < 3; run++)
+        await expect(syncAppleCalendars(options(db, client))).rejects.toThrow(
+          "calendar permission denied"
+        )
+      expect(liveRefs(db)).toHaveLength(3)
+
+      // The failed runs were not missing runs: the twelfth listing run is the one that retires.
+      calendars = onlyA
+      const next = await syncAppleCalendars(options(db, client))
+      expect(next.calendars.find((c) => c.status === "missing")).toMatchObject({
+        missedRuns: 12,
+        retired: 2,
+      })
+    })
+
+    test("a failed read of a listed calendar leaves its events and does not count it missing", async () => {
+      const db = setupDb()
+      const events: Record<string, AppleEvent[] | Error> = bothCalendars()
+      const client = fakeClient(events)
+      await syncAppleCalendars(
+        options(db, client, { now: () => new Date("2026-10-02T12:00:00Z") })
+      )
+
+      events["cal-synthetic-b"] = new Error("gate unavailable")
+      const result = await syncAppleCalendars(options(db, client))
+
+      expect(result.calendars[1]).toEqual({
+        calendarId: "cal-synthetic-b",
+        status: "failed",
+        reason: "read_failed",
+      })
+      expect(result.disabled).toEqual([])
+      expect(liveRefs(db)).toHaveLength(3)
+    })
   })
 
   test("a calendar list failure propagates", async () => {

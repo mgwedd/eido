@@ -54,7 +54,13 @@ import {
   writeAgentPlist,
   type Deps as StackDeps,
 } from "./cli.ts"
-import { pathsFor, stackDirOf, type StackConfig } from "./config.ts"
+import {
+  pathsFor,
+  stackDirOf,
+  SUPERVISOR_DIR_NAME,
+  SUPERVISOR_SOCKET_NAME,
+  type StackConfig,
+} from "./config.ts"
 import { runDoctor } from "./doctor.ts"
 import {
   applyStackSettings,
@@ -93,14 +99,15 @@ type Task = Omit<TaskRow, "receivedBytes"> & {
   partialPath: string
 }
 
-/** Where the supervisor listens: beside the gate's sockets, in the stack's private run directory. */
+/** Where the supervisor listens: in a directory of its own in the stack's private run directory (#783). */
 export const supervisorSocketPath = (
   stack: Pick<StackDeps, "platform" | "env" | "home">
 ): string => {
   return pathsFor(stack.platform).join(
     stackDirOf(stack.platform, stack.env, stack.home),
     "run",
-    "supervisor.sock"
+    SUPERVISOR_DIR_NAME,
+    SUPERVISOR_SOCKET_NAME
   )
 }
 
