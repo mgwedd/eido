@@ -31,27 +31,27 @@ vi.mock(
 const PAYLOAD = JSON.stringify({
   args: {
     body: "Hello there",
-    subject: "Re: quote",
+    subject: "Quote",
     to: ["x@example.invalid"],
   },
-  kind: "email.reply",
+  kind: "email.send",
 })
 const HASH = createHash("sha256").update(PAYLOAD).digest("hex")
 const intent = {
   id: "intent-a",
-  kind: "email.reply",
+  kind: "email.send",
   tier: "approval",
   state: "pending",
   origin: "reactive",
   createdAt: "2026-10-17T10:00:00.000Z",
 }
 const EDITED_PAYLOAD = JSON.stringify({
-  args: { body: "Hello there", subject: "Re: new", to: ["x@example.invalid"] },
-  kind: "email.reply",
+  args: { body: "Hello there", subject: "Quote 2", to: ["x@example.invalid"] },
+  kind: "email.send",
 })
 const editedPrepared = {
   intentId: "intent-b",
-  kind: "email.reply",
+  kind: "email.send",
   origin: "reactive",
   state: "pending",
   payload: EDITED_PAYLOAD,
@@ -60,7 +60,7 @@ const editedPrepared = {
   documentIds: [],
 }
 
-type Edit = { status: number; body: unknown }
+type Edit = { status: number; body: unknown } | "unreachable"
 const requests: { url: string; body: unknown }[] = []
 const roots: Root[] = []
 
@@ -85,7 +85,7 @@ function stubGate(edit: Edit) {
         return Promise.resolve(
           Response.json({
             intentId: url.split("/").at(-2),
-            kind: "email.reply",
+            kind: "email.send",
             origin: "reactive",
             state: "pending",
             payload: url.includes("intent-b") ? EDITED_PAYLOAD : PAYLOAD,
@@ -99,9 +99,9 @@ function stubGate(edit: Edit) {
       if (url.endsWith("/history"))
         return Promise.resolve(Response.json({ intentId: "x", entries: [] }))
       if (url.endsWith("/edit"))
-        return Promise.resolve(
-          Response.json(edit.body, { status: edit.status })
-        )
+        return edit === "unreachable"
+          ? Promise.reject(new TypeError("network"))
+          : Promise.resolve(Response.json(edit.body, { status: edit.status }))
       return Promise.resolve(new Response(null, { status: 500 }))
     })
   )
@@ -139,6 +139,10 @@ const button = (label: string) =>
   [...document.querySelectorAll("button")].find((b) =>
     b.textContent?.startsWith(label)
   )
+const editButton = () =>
+  document.querySelector<HTMLButtonElement>(
+    'button[aria-label="Edit before approving"]'
+  )
 const dialog = () => document.querySelector('[role="dialog"]')
 
 async function type(label: string, value: string) {
@@ -175,27 +179,95 @@ afterEach(() => {
   document.body.innerHTML = ""
 })
 
-describe("Edit and approve", () => {
-  test("the button shows the e key and opens the editor with the card's values", async () => {
+const fieldValue = (label: string) => {
+  const field = [...document.querySelectorAll("label")].find((l) =>
+    l.textContent?.startsWith(label)
+  )
+  return (
+    document.getElementById(field?.getAttribute("for") ?? "") as
+      HTMLInputElement | HTMLTextAreaElement | null
+  )?.value
+}
+
+describe("Edit before approving", () => {
+  test("the Edit button shows the e key and opens the editor with the card's values", async () => {
     await render(OK)
-    expect(button("Edit and approve")?.querySelector("kbd")?.textContent).toBe(
-      "e"
-    )
+    expect(editButton()?.textContent).toBe("Edite")
+    expect(editButton()?.getAttribute("aria-expanded")).toBe("false")
     act(() => {
-      button("Edit and approve")?.click()
+      editButton()?.click()
     })
     await settle()
-    expect(dialog()?.textContent).toContain("Edit and approve")
-    const to = [...document.querySelectorAll("label")].find((l) =>
-      l.textContent?.startsWith("To")
+    expect(editButton()?.getAttribute("aria-expanded")).toBe("true")
+    expect(dialog()?.querySelector("h2")?.textContent).toBe(
+      "Edit before approving"
+    )
+    expect(fieldValue("To")).toBe("x@example.invalid")
+    expect(fieldValue("Subject")).toBe("Quote")
+    expect(fieldValue("Message")).toBe("Hello there")
+  })
+
+  test("a kind with no designed form has no Edit button", async () => {
+    const trash = JSON.stringify({
+      args: { messageIds: ["m-1"] },
+      kind: "email.trash",
+    })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.endsWith("/approvals"))
+          return Promise.resolve(
+            Response.json({ intents: [{ ...intent, kind: "email.trash" }] })
+          )
+        if (url.endsWith("/nonce"))
+          return Promise.resolve(
+            Response.json({
+              ...editedPrepared,
+              intentId: "intent-a",
+              kind: "email.trash",
+              payload: trash,
+              payloadHash: createHash("sha256").update(trash).digest("hex"),
+            })
+          )
+        if (url.endsWith("/history"))
+          return Promise.resolve(Response.json({ intentId: "x", entries: [] }))
+        return Promise.resolve(new Response(null, { status: 500 }))
+      })
+    )
+    const container = document.createElement("div")
+    document.body.append(container)
+    const root = createRoot(container)
+    roots.push(root)
+    act(() => {
+      root.render(<QueueView />)
+    })
+    await settle()
+    expect(button("Approve")?.hasAttribute("disabled")).toBe(false)
+    expect(editButton()).toBeNull()
+    await press("e")
+    expect(dialog()).toBeNull()
+  })
+
+  test("a changed field is marked and Cancel discards the change", async () => {
+    await render(OK)
+    await press("e")
+    await type("Subject", "Quote 2")
+    const subject = [...document.querySelectorAll("label")].find((l) =>
+      l.textContent?.startsWith("Subject")
     )
     expect(
-      (
-        document.getElementById(
-          to?.getAttribute("for") ?? ""
-        ) as HTMLInputElement
-      ).value
-    ).toBe("x@example.invalid")
+      document
+        .getElementById(subject?.getAttribute("for") ?? "")
+        ?.getAttribute("data-changed")
+    ).toBe("true")
+    act(() => {
+      button("Cancel")?.click()
+    })
+    await settle()
+    expect(dialog()).toBeNull()
+    expect(requests.some((r) => r.url.endsWith("/edit"))).toBe(false)
+    await press("e")
+    expect(fieldValue("Subject")).toBe("Quote")
   })
 
   test("e opens the editor", async () => {
@@ -224,7 +296,7 @@ describe("Edit and approve", () => {
     await render(OK)
     await press("e")
     expect(button("Sign and approve")?.hasAttribute("disabled")).toBe(true)
-    await type("Subject", "Re: new")
+    await type("Subject", "Quote 2")
     expect(button("Sign and approve")?.hasAttribute("disabled")).toBe(false)
   })
 
@@ -235,16 +307,16 @@ describe("Edit and approve", () => {
     })
     await render(OK)
     await press("e")
-    await type("Subject", "Re: new")
+    await type("Subject", "Quote 2")
     await submit()
     const edit = requests.find((r) => r.url.endsWith("/edit"))
     expect(edit?.url).toBe("POST /api/gate/approvals/intent-a/edit")
     expect(edit?.body).toEqual({
       intent: {
-        kind: "email.reply",
+        kind: "email.send",
         args: {
           body: "Hello there",
-          subject: "Re: new",
+          subject: "Quote 2",
           to: ["x@example.invalid"],
         },
       },
@@ -270,37 +342,73 @@ describe("Edit and approve", () => {
     await submit()
     expect(signApproval).not.toHaveBeenCalled()
     expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
-      "Edit refused. This change moves the intent to a different tier. Reject it and ask again instead."
+      "This change moves the request to a different approval tier, so it was not saved. Reject it and ask again instead."
     )
+    expect(fieldValue("To")).toBe("someone@other.invalid")
+    expect(button("Sign and approve")?.hasAttribute("disabled")).toBe(false)
   })
 
-  test("a policy refusal says so", async () => {
+  test("a forbidden edit says so and locks the form", async () => {
     await render({
       status: 403,
       body: { code: "forbidden", message: "policy forbids the edited intent" },
     })
     await press("e")
-    await type("Subject", "Re: new")
+    await type("Subject", "Quote 2")
     await submit()
+    expect(signApproval).not.toHaveBeenCalled()
     expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
-      "Edit refused. Policy forbids the edited intent."
+      "You cannot edit this request."
     )
+    expect(button("Sign and approve")?.hasAttribute("disabled")).toBe(true)
+    expect(
+      [...(dialog()?.querySelectorAll("input, textarea") ?? [])].every((f) =>
+        f.hasAttribute("disabled")
+      )
+    ).toBe(true)
   })
 
-  test("an edit the schemas refuse says the values are not valid", async () => {
+  test("an edit the gate cannot accept shows its reason under the message", async () => {
     await render({
       status: 422,
       body: {
         code: "invalid_request",
-        message: "the edited intent is not valid",
+        message: "args.to: must be an address",
       },
     })
     await press("e")
-    await type("Subject", "Re: new")
+    await type("To", "nobody")
     await submit()
-    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
-      "Edit refused. The edited values are not a valid intent."
+    expect(signApproval).not.toHaveBeenCalled()
+    const alert = dialog()?.querySelector('[role="alert"]')
+    expect(alert?.querySelector('[data-slot="alert-title"]')?.textContent).toBe(
+      "The gate could not accept these changes."
     )
+    expect(
+      alert?.querySelector('[data-slot="alert-description"]')?.textContent
+    ).toBe("args.to: must be an address")
+  })
+
+  test("an unreachable gate keeps the changes, and Retry sends the same values again", async () => {
+    await render("unreachable")
+    await press("e")
+    await type("Subject", "Quote 2")
+    await submit()
+    expect(signApproval).not.toHaveBeenCalled()
+    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
+      "The gate is not reachable. Your changes are kept."
+    )
+    expect(fieldValue("Subject")).toBe("Quote 2")
+    act(() => {
+      button("Retry")?.click()
+    })
+    await settle()
+    const edits = requests.filter((r) => r.url.endsWith("/edit"))
+    expect(edits).toHaveLength(2)
+    expect(edits[1]?.body).toEqual(edits[0]?.body)
+    expect(edits[1]?.body).toMatchObject({
+      intent: { args: { subject: "Quote 2" } },
+    })
   })
 
   test("a cancelled passkey prompt moves to the saved edit instead of the stale card", async () => {
@@ -310,7 +418,7 @@ describe("Edit and approve", () => {
     })
     await render(OK)
     await press("e")
-    await type("Subject", "Re: new")
+    await type("Subject", "Quote 2")
     await submit()
     expect(document.querySelector('[role="status"]')?.textContent).toBe(
       "Edit saved. The passkey prompt did not complete, so the edited intent is waiting in the queue."
@@ -328,7 +436,7 @@ describe("Edit and approve", () => {
       },
     })
     await press("e")
-    await type("Subject", "Re: new")
+    await type("Subject", "Quote 2")
     await submit()
     expect(signApproval).not.toHaveBeenCalled()
     expect(dialog()).toBeNull()
@@ -344,7 +452,7 @@ describe("Edit and approve", () => {
     })
     await render(OK)
     await press("e")
-    await type("Subject", "Re: new")
+    await type("Subject", "Quote 2")
     await submit()
     expect(document.querySelector('[role="status"]')?.textContent).toBe(
       "The gate could not be reached."
@@ -380,7 +488,7 @@ describe("Edit and approve", () => {
           return Promise.resolve(
             Response.json({
               intentId: url.split("/").at(-2),
-              kind: url.includes("intent-c") ? "calendar.event" : "email.reply",
+              kind: url.includes("intent-c") ? "calendar.event" : "email.send",
               origin: "reactive",
               state: "pending",
               payload: PAYLOAD,
@@ -392,7 +500,7 @@ describe("Edit and approve", () => {
         if (url.endsWith("/history"))
           return Promise.resolve(Response.json({ intentId: "x", entries: [] }))
         if (url.endsWith("/edit"))
-          return Promise.resolve(Response.json(OK.body, { status: OK.status }))
+          return Promise.resolve(Response.json(editedPrepared))
         return Promise.resolve(new Response(null, { status: 500 }))
       })
     )
@@ -406,7 +514,7 @@ describe("Edit and approve", () => {
     await settle()
 
     await press("e")
-    await type("Subject", "Re: new")
+    await type("Subject", "Quote 2")
     await submit()
 
     expect(document.querySelector('[role="status"]')?.textContent).toBe(

@@ -2,12 +2,20 @@ import { validateGatePushRegistration } from "@eido/schemas"
 import { apiError } from "../http"
 import type { GateRequest, Reply } from "../http"
 import {
+  PushHostRefused,
   checkedSubscription,
   preparePushRegistration,
   registerPushSubscription,
 } from "../push-subscriptions"
 import { jsonBody, invalid } from "./shared"
 import type { PhoneState } from "./types"
+
+const hostRefused = () =>
+  apiError(
+    422,
+    "push_host_refused",
+    "this browser's push service is not one the gate sends to"
+  )
 
 export async function preparePush(
   state: PhoneState,
@@ -20,7 +28,8 @@ export async function preparePush(
   try {
     checkedSubscription(body.value)
     return { status: 200, body: preparePushRegistration(state.db, body.value) }
-  } catch {
+  } catch (error) {
+    if (error instanceof PushHostRefused) return hostRefused()
     return apiError(400, "invalid_request", "invalid push subscription")
   }
 }
@@ -41,7 +50,8 @@ export async function registerPush(
       request: checked.value.approval,
     })
     return { status: 201, body: { id } }
-  } catch {
+  } catch (error) {
+    if (error instanceof PushHostRefused) return hostRefused()
     return apiError(403, "verification_failed", "push registration refused")
   }
 }

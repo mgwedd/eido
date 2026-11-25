@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process"
 import {
   chmodSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs"
 import { createServer } from "node:net"
@@ -14,7 +18,10 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import {
   PROBES,
   createCanaries,
+  createRunDirCanary,
   judge,
+  listRunDirFiles,
+  openFiles,
   parseArgs,
   parseResult,
   parseSpec,
@@ -26,7 +33,9 @@ import {
   readMatches,
   refusal,
   runLive,
+  runProbe,
   safeCode,
+  stackPaths,
 } from "./check-isolation-live.ts"
 import type {
   CanaryHost,
@@ -37,6 +46,7 @@ import type {
   ProbeResult,
   ProbeSpec,
   Role,
+  StackFiles,
 } from "./check-isolation-live.ts"
 
 // The live script's own logic, with a stubbed probe runner: no sudo, no users, no Keychain, no
@@ -65,6 +75,12 @@ const CANARIES: Canaries = {
   dbDigest: "b".repeat(64),
 }
 
+const STACK_CONFIG: LiveConfig = { ...CONFIG, stackDir: "/var/empty/eido-dev" }
+const RUN_DIR_FILES: StackFiles = [
+  "/var/empty/eido-dev/run/stack.pid",
+  "/var/empty/eido-dev/run/.eido-isolation-canary-0011223344556677",
+]
+
 const BLOCKED: ProbeResult = { ran: true, reached: false, code: "EACCES" }
 const REACHED: ProbeResult = { ran: true, reached: true, code: "OK" }
 
@@ -78,9 +94,11 @@ function stubRunner(
     setupFails?: boolean
     teardownFails?: boolean
     dataTouchesCanary?: ProbeName
+    stackFilesFail?: boolean
   } = {}
 ) {
   const calls: Call[] = []
+  const stackDirs: string[] = []
   let connections = 0
   let tornDown = 0
   const runner: LiveRunner = {
@@ -102,8 +120,17 @@ function stubRunner(
       const forced = override(role, spec.name)
       if (forced !== undefined) return Promise.resolve(forced)
       return Promise.resolve(
-        role === "gate" || def.data === "allowed" ? REACHED : BLOCKED
+        (def.subject === "gate" ? def.data === "allowed" : role === "gate") ||
+          def.data === "allowed"
+          ? REACHED
+          : BLOCKED
       )
+    },
+    stackFiles: (stackDir) => {
+      stackDirs.push(stackDir)
+      return options.stackFilesFail
+        ? Promise.reject(Object.assign(new Error("x"), { code: "EACCES" }))
+        : Promise.resolve(RUN_DIR_FILES)
     },
     connections: () => Promise.resolve(connections),
     teardown: () => {
@@ -115,12 +142,15 @@ function stubRunner(
         : Promise.resolve()
     },
   }
-  return { runner, calls, tornDown: () => tornDown }
+  return { runner, calls, stackDirs, tornDown: () => tornDown }
 }
 
-async function run(stub: ReturnType<typeof stubRunner>) {
+async function run(
+  stub: ReturnType<typeof stubRunner>,
+  config: LiveConfig = CONFIG
+) {
   const lines: string[] = []
-  const code = await runLive(CONFIG, stub.runner, (line) => lines.push(line))
+  const code = await runLive(config, stub.runner, (line) => lines.push(line))
   return { code, lines }
 }
 
@@ -147,9 +177,115 @@ describe("runLive", () => {
         "PASS control-socket.control",
         "PASS parser (EACCES)",
         "PASS parser.control",
+        "SKIP supervisor-socket: no --stack-dir given",
+        "SKIP run-dir-files: no --stack-dir given",
       ],
     })
     expect(stub.tornDown()).toBe(1)
+    expect(stub.stackDirs).toEqual([])
+  })
+
+  describe("with --stack-dir", () => {
+    test("passes when the gate user reaches the supervisor socket and is refused every other run dir file", async () => {
+      const stub = stubRunner()
+      const outcome = await run(stub, STACK_CONFIG)
+      expect(outcome.code).toBe(0)
+      expect(outcome.lines.slice(-2)).toEqual([
+        "PASS supervisor-socket",
+        "PASS run-dir-files (EACCES)",
+      ])
+      expect(stub.stackDirs).toEqual(["/var/empty/eido-dev"])
+    })
+
+    test("probes the supervisor socket and the run dir files as the gate user alone, on the right targets", async () => {
+      const stub = stubRunner()
+      await run(stub, STACK_CONFIG)
+      const stackCalls = stub.calls.filter(
+        (c) =>
+          c.spec.name === "supervisor-socket" || c.spec.name === "run-dir-files"
+      )
+      expect(stackCalls.map((c) => [c.role, c.spec.name])).toEqual([
+        ["gate", "supervisor-socket"],
+        ["gate", "run-dir-files"],
+      ])
+      expect(stackCalls[0]?.spec.path).toBe(
+        "/var/empty/eido-dev/run/supervisor/supervisor.sock"
+      )
+      expect(stackCalls[1]?.spec.paths).toEqual(RUN_DIR_FILES)
+    })
+
+    test.each([
+      [
+        { ran: true, reached: false, code: "ENOENT" },
+        "FAIL supervisor-socket: the gate user cannot reach it (ENOENT)",
+      ],
+      [
+        { ran: true, reached: false, code: "EACCES" },
+        "FAIL supervisor-socket: the gate user cannot reach it (EACCES)",
+      ],
+      [
+        { ran: false, code: "EXIT_2" },
+        "FAIL supervisor-socket: the probe did not run (EXIT_2)",
+      ],
+    ] satisfies [ProbeResult, string][])(
+      "exits 1 when the supervisor socket probe gives %j",
+      async (result, line) => {
+        const outcome = await run(
+          stubRunner((_role, n) =>
+            n === "supervisor-socket" ? result : undefined
+          ),
+          STACK_CONFIG
+        )
+        expect(outcome.code).toBe(1)
+        expect(outcome.lines.filter((l) => l.startsWith("FAIL"))).toEqual([
+          line,
+        ])
+      }
+    )
+
+    test.each([
+      [REACHED, "FAIL run-dir-files: reached as the gate user"],
+      [
+        { ran: true, reached: false, code: "ENOENT" },
+        "FAIL run-dir-files: refused with ENOENT, not permission denied",
+      ],
+      [
+        { ran: false, code: "NO_FILES" },
+        "FAIL run-dir-files: the probe did not run (NO_FILES)",
+      ],
+    ] satisfies [ProbeResult, string][])(
+      "exits 1 when the run dir files probe gives %j",
+      async (result, line) => {
+        const outcome = await run(
+          stubRunner((_role, n) =>
+            n === "run-dir-files" ? result : undefined
+          ),
+          STACK_CONFIG
+        )
+        expect(outcome.code).toBe(1)
+        expect(outcome.lines.filter((l) => l.startsWith("FAIL"))).toEqual([
+          line,
+        ])
+      }
+    )
+
+    test("fails the run dir files probe when the run dir cannot be listed, still runs the rest, and tears down", async () => {
+      const stub = stubRunner(undefined, { stackFilesFail: true })
+      const outcome = await run(stub, STACK_CONFIG)
+      expect(outcome.code).toBe(1)
+      expect(outcome.lines.filter((l) => l.startsWith("FAIL"))).toEqual([
+        "FAIL run-dir-files: the run dir could not be read or given a canary (EACCES)",
+      ])
+      expect(outcome.lines).toContain("PASS supervisor-socket")
+      expect(stub.calls.map((c) => c.spec.name)).not.toContain("run-dir-files")
+      expect(stub.tornDown()).toBe(1)
+    })
+
+    test("creates no run dir canary when the canaries failed", async () => {
+      const stub = stubRunner(undefined, { setupFails: true })
+      await run(stub, STACK_CONFIG)
+      expect(stub.stackDirs).toEqual([])
+    })
   })
 
   test("runs the data probes as the data user and the controls as the gate user, on the right targets", async () => {
@@ -480,6 +616,14 @@ describe("parseArgs", () => {
       ok: false,
       errors: ["the dataProfile path must be absolute"],
     })
+    expect(parseArgs([...full, "--stack-dir", "/var/empty/eido-dev"])).toEqual({
+      ok: true,
+      config: STACK_CONFIG,
+    })
+    expect(parseArgs([...full, "--stack-dir", "eido-dev"])).toEqual({
+      ok: false,
+      errors: ["the stackDir path must be absolute"],
+    })
     expect(parseArgs([...full, "--timeout-ms", "500"])).toEqual({
       ok: true,
       config: { ...CONFIG, timeoutMs: 500 },
@@ -562,7 +706,7 @@ describe("probeSudoArgs", () => {
     ])
   })
   test("sandboxes every data-plane probe except the parser, which applies its own profile", () => {
-    for (const def of PROBES) {
+    for (const def of PROBES.filter((probe) => probe.subject === "data")) {
       const started = child(probeSudoArgs("data", specOf(def.name), profiled))
       expect(started[0] === "/usr/bin/sandbox-exec", def.name).toBe(
         def.name !== "parser"
@@ -571,6 +715,19 @@ describe("probeSudoArgs", () => {
   })
   test("never sandboxes a gate-user control and marks it --as-gate", () => {
     for (const def of PROBES.filter((probe) => probe.control)) {
+      const args = probeSudoArgs("gate", specOf(def.name), profiled)
+      expect(args.slice(0, 4), def.name).toEqual([
+        "-n",
+        "-u",
+        "eido-gate-test",
+        "--",
+      ])
+      expect(child(args)[0], def.name).toBe(process.execPath)
+      expect(args.at(-1), def.name).toBe("--as-gate")
+    }
+  })
+  test("starts the gate-user probes as the gate user, unsandboxed and marked --as-gate", () => {
+    for (const def of PROBES.filter((probe) => probe.subject === "gate")) {
       const args = probeSudoArgs("gate", specOf(def.name), profiled)
       expect(args.slice(0, 4), def.name).toEqual([
         "-n",
@@ -603,6 +760,22 @@ describe("parseSpec and parseResult", () => {
     expect(parseSpec(JSON.stringify({ ...spec, name: "rm" }))).toBeUndefined()
     expect(parseSpec(JSON.stringify({ ...spec, port: "1" }))).toBeUndefined()
     expect(parseSpec("not json")).toBeUndefined()
+  })
+  test("round-trips the run dir file list and refuses one that is not a list of strings", () => {
+    const spec: ProbeSpec = {
+      name: "run-dir-files",
+      gateUser: "g",
+      dataUser: "d",
+      timeoutMs: 10,
+      paths: ["/a/run/x.pid", "/a/run/y"],
+    }
+    expect(parseSpec(JSON.stringify(spec))).toEqual(spec)
+    expect(
+      parseSpec(JSON.stringify({ ...spec, paths: ["/a", 1] }))
+    ).toBeUndefined()
+    expect(
+      parseSpec(JSON.stringify({ ...spec, paths: "/a/run/x.pid" }))
+    ).toBeUndefined()
   })
   test("reads a probe child's line and refuses anything else", () => {
     expect(parseResult('{"ran":true,"reached":false,"code":"EPERM"}')).toEqual({
@@ -677,6 +850,136 @@ function fakeHost(failAt?: "listen" | "keychain" | "file") {
   }
   return { host, log }
 }
+
+describe("the stack run dir", () => {
+  test("puts the supervisor socket in its own directory below the run dir", () => {
+    expect(
+      stackPaths("/Users/owner/Library/Application Support/eido-dev")
+    ).toEqual({
+      runDir: "/Users/owner/Library/Application Support/eido-dev/run",
+      supervisorDir:
+        "/Users/owner/Library/Application Support/eido-dev/run/supervisor",
+      socket:
+        "/Users/owner/Library/Application Support/eido-dev/run/supervisor/supervisor.sock",
+    })
+  })
+
+  describe("on disk", () => {
+    let stackDir: string
+    beforeAll(() => {
+      stackDir = mkdtempSync(join(tmpdir(), "eido-isolation-stack-"))
+      const run = join(stackDir, "run")
+      mkdirSync(join(run, "supervisor"), { recursive: true })
+      mkdirSync(join(run, "nested"))
+      writeFileSync(join(run, "stack.pid"), "1")
+      writeFileSync(join(run, "nested", "web.pid"), "2")
+      writeFileSync(join(run, "supervisor", "supervisor.pid"), "3")
+      symlinkSync(join(run, "stack.pid"), join(run, "link.pid"))
+    })
+    afterAll(() => rmSync(stackDir, { recursive: true, force: true }))
+
+    test("lists the regular files outside the supervisor dir, links and all", () => {
+      expect(listRunDirFiles(stackDir).sort()).toEqual([
+        join(stackDir, "run", "nested", "web.pid"),
+        join(stackDir, "run", "stack.pid"),
+      ])
+    })
+
+    test("creates a 0600 canary file in the run dir from random bytes, and removes it", () => {
+      let n = 0
+      const canary = createRunDirCanary(stackDir, (bytes) =>
+        Buffer.alloc(bytes, ++n)
+      )
+      const path = join(
+        stackDir,
+        "run",
+        ".eido-isolation-canary-0101010101010101"
+      )
+      expect(canary.path).toBe(path)
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+      expect(readFileSync(path)).toEqual(Buffer.alloc(64, 2))
+      expect(listRunDirFiles(stackDir)).toContain(path)
+      canary.remove()
+      expect(existsSync(path)).toBe(false)
+    })
+
+    test("refuses to overwrite a file already named like the canary", () => {
+      const random = (bytes: number) => Buffer.alloc(bytes, 7)
+      const first = createRunDirCanary(stackDir, random)
+      try {
+        expect(() => createRunDirCanary(stackDir, random)).toThrow()
+        expect(existsSync(first.path)).toBe(true)
+      } finally {
+        first.remove()
+      }
+    })
+
+    test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+      "opens a readable file and is refused one it may not open, as permission denied",
+      () => {
+        const readable = join(stackDir, "run", "stack.pid")
+        const locked = join(stackDir, "run", "locked.pid")
+        writeFileSync(locked, "synthetic")
+        chmodSync(locked, 0o000)
+        expect(openFiles([readable])).toEqual(REACHED)
+        expect(openFiles([locked])).toEqual({
+          ran: true,
+          reached: false,
+          code: "EACCES",
+        })
+        // runProbe is what the gate-user child runs: the same answer through the spec.
+        return runProbe(
+          {
+            name: "run-dir-files",
+            gateUser: "g",
+            dataUser: "d",
+            timeoutMs: 100,
+            paths: [locked],
+          },
+          true
+        ).then((result) =>
+          expect(result).toEqual({ ran: true, reached: false, code: "EACCES" })
+        )
+      }
+    )
+  })
+
+  describe("openFiles", () => {
+    const deny = (code: string) => () => {
+      throw Object.assign(new Error(), { code })
+    }
+    test("reaches when any file opens, even after refusals", () => {
+      const opened: string[] = []
+      expect(
+        openFiles(["/a", "/b", "/c"], (path) => {
+          opened.push(path)
+          if (path !== "/b") deny("EACCES")()
+        })
+      ).toEqual(REACHED)
+      expect(opened).toEqual(["/a", "/b"])
+    })
+    test("is permission denied only when every file was", () => {
+      expect(openFiles(["/a", "/b"], deny("EPERM"))).toEqual({
+        ran: true,
+        reached: false,
+        code: "EPERM",
+      })
+    })
+    test("reports a missing file instead of a denial, so a wrong path cannot pass", () => {
+      expect(
+        openFiles(["/a", "/b"], (path) =>
+          deny(path === "/a" ? "EACCES" : "ENOENT")()
+        )
+      ).toEqual({ ran: true, reached: false, code: "ENOENT" })
+    })
+    test("does not run with no files to try, since nothing was tested", () => {
+      expect(openFiles([], deny("EACCES"))).toEqual({
+        ran: false,
+        code: "NO_FILES",
+      })
+    })
+  })
+})
 
 describe("createCanaries", () => {
   const spec = {

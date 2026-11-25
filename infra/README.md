@@ -2,7 +2,7 @@
 
 Host setup for the Mac: the local stack, `tailscale serve` routes, Proton Bridge supervision, nightly backups, host checks and the pinned llama-server. Never commit secrets here; `infra/secrets` is denied to agents.
 
-End-to-end check on an iPhone: `infra/device-smoke.md`.
+End-to-end check on an iPhone and the Mac, over the tailnet: [`infra/device-smoke.md`](device-smoke.md).
 
 Gate and data plane under two macOS users, with sandbox profiles and pf egress rules: `infra/plane-split.md` (#70).
 
@@ -82,7 +82,7 @@ Secrets never go in it: tokens and passwords live in the gate's vault. `infra/st
 
 ### Windows and Linux
 
-Setup, doctor, settings and `stack:gate` run on Windows and Linux too. The stack dir is `%LOCALAPPDATA%\eido-dev` (logs in `logs\`) on Windows and the XDG data dir on Linux; the gate's sockets are named pipes on Windows. There is no keychain off macOS: setup sets the development file vault (`EIDO_DEV_VAULT=1` and `EIDO_GATE_VAULT_FILE`), and doctor warns that a production vault there is #455. Windows has no mode bits, so the 0600 check on `stack.env` is skipped there, with a doctor note pointing at #455. Starting and stopping the stack on Windows, and starting it at login, are not supported yet.
+Setup, doctor, settings and `stack:gate` run on Windows and Linux too. The stack dir is `%LOCALAPPDATA%\eido-dev` (logs in `logs\`) on Windows and the XDG data dir on Linux; the gate's sockets are named pipes on Windows. There is no keychain off macOS: setup sets the development file vault (`EIDO_DEV_VAULT=1` and `EIDO_GATE_VAULT_FILE`), and doctor warns that a production vault there is #455. Windows has no mode bits, so the 0600 check on `stack.env` is skipped there, with a doctor note pointing at #455. Starting, checking and stopping the stack on Windows (`pnpm stack:prod --background`, `pnpm stack:status`, `pnpm stack:stop`) is implemented and unit-tested: the process-control adapter stops with `taskkill`, `stack:stop` confirms through `netstat`, and the `@eido/infra` tests run on `windows-latest`. It has not been run on a real Windows machine yet. That run needs Tailscale installed (`tailscale.exe` on `PATH`), `pnpm stack:setup` run, and the pinned llama-server build installed, so that `pnpm stack:doctor` exits 0; without them the stack refuses to start and leaves nothing running. The run is tracked in #813, and this paragraph is updated when it passes. Starting the stack at login on Windows is not supported yet (#455).
 
 The WebAuthn origin is `https://<host>:8443`. The gate accepts an origin with a port once #375 lands; until then set `EIDO_WEBAUTHN_ORIGIN=https://<host>` to start it.
 
@@ -193,6 +193,38 @@ pnpm --filter @eido/infra bridge uninstall  # bootout, then remove the plist
 ### Certificate pin
 
 Bridge's certificate is self-signed. Export it from Bridge's settings ("Export TLS certificates") or with `cert export` in `bridge --cli`. Keep only the public certificate in a gate-owned file, never Bridge's exported private key. Compute the digest with `openssl x509 -in bridge-cert.pem -outform DER | shasum -a 256` and set `EIDO_BRIDGE_CERT_PATH` and `EIDO_BRIDGE_CERT_SHA256` (ADR 0003). Bridge regenerates the certificate when it is within 31 days of expiry and may after an upgrade: re-export, recompute and restart the gate each time. The gate refuses a certificate that does not match the pin.
+
+### Capture the Authentication-Results header (#468)
+
+Core trusts a sender-authentication verdict only from the topmost `Authentication-Results` header, and only when its authserv-id matches `TRUSTED_AUTHSERV_IDS` in `packages/core/src/connectors/mail/auth-results.ts`. That list is a guess until it is checked against mail served by a real Bridge (#197). This is the owner's check, on the Mac, with the Bridge job loaded and logged in. Record the findings in #812 (Proton Bridge section); #468 moved there.
+
+1. Pick one message in INBOX that came from outside Proton and that you do not mind reading in your terminal. If you can, pick a second one that failed or lacked SPF or DKIM.
+2. Open a STARTTLS session to Bridge's IMAP port (`EIDO_BRIDGE_IMAP_PORT`, from `info`). `-quiet` keeps the session readable; it does not check the certificate, which is acceptable only because the host is `127.0.0.1`:
+
+   ```bash
+   openssl s_client -starttls imap -connect 127.0.0.1:<EIDO_BRIDGE_IMAP_PORT> -quiet
+   ```
+
+3. Type these lines, one at a time. The Bridge username and password come from `info` in `bridge --cli`. They are typed into the session, so they are not in the process list or shell history, but they stay in the terminal's scrollback: clear it when you are done. `<n>` is the message's sequence number in INBOX.
+
+   ```text
+   a1 LOGIN <bridge username> <bridge password>
+   a2 SELECT INBOX
+   a3 FETCH <n> (BODY.PEEK[HEADER.FIELDS (AUTHENTICATION-RESULTS)])
+   a4 LOGOUT
+   ```
+
+   `BODY.PEEK` leaves the message unread. The fetch asks for the `Authentication-Results` lines only, in message order, so the first one printed is the topmost.
+
+4. From the output, write down only:
+   - how many `Authentication-Results` headers there are, and which one is first;
+   - the authserv-id, the first token of the first header's value, and whether it ends in `protonmail.ch` or `proton.me`;
+   - the method results, for example `spf=pass`, `dkim=pass`, `dmarc=pass`, without the properties after them.
+
+   If Bridge serves no `Authentication-Results` header at all, that is the finding.
+
+5. Before pasting anything, redact every email address and every `header.*` or `smtp.*` property (`header.from=`, `header.d=`, `smtp.mailfrom=` and the like). Paste no message content, subject, or recipient. Never paste the Bridge username or password.
+6. Open one pull request that updates `TRUSTED_AUTHSERV_IDS` and its comment to what the capture showed, and adds a test with a header of that shape, with the authserv-id's hostname replaced by a synthetic one such as `mx.example.invalid`.
 
 ### Upgrades
 

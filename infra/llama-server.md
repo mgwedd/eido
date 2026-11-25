@@ -269,13 +269,14 @@ These runs used the launcher on port 18091, outside launchd.
   - `ok: JSON-schema request`
   - `ok: template check passed on b11149 with meta-llama-3.1-8b-instruct-q4_0.gguf`
 
-Not yet recorded, still to do on the host by the owner (#472):
+Not yet recorded, still to do by the owner (#472, closed: the code is on `main` and these checks moved to #811 and #622). The results are recorded in #811 and #622, not here:
 
-1. **Under launchd:** run `llama install`, then `llama status` (expect `state running`). Then `kill` the `llama-server` pid shown by `lsof -nP -iTCP:8080 -sTCP:LISTEN`. After about 10 s `llama status` should show a new pid and `runs` one higher.
-2. **Reachability from another host:**
+1. **Under launchd (#811):** run `llama install`, then `llama status` (expect `state running`). Then `kill` the `llama-server` pid shown by `lsof -nP -iTCP:8080 -sTCP:LISTEN`. After about 10 s `llama status` should show a new pid and `runs` one higher.
+2. **Reachability from another host (#811):**
    - From another tailnet device, `curl -m 5 http://<host>.ts.net:8080/health` and `curl -m 5 http://<tailnet IP>:8080/health` must both fail to connect.
    - From a LAN device, `curl -m 5 http://<LAN IP>:8080/health` must fail too.
    - On the host, `llama status` must show only `127.0.0.1`.
+3. **From the phone, over `*.ts.net` (#622):** the web app loads on the iPhone at `https://<host>.ts.net:8443/` through `tailscale serve`, as in `infra/device-smoke.md`.
 
 ## Chat template check
 
@@ -343,14 +344,14 @@ The gate is the only process that holds credentials and talks to outside service
 
 ### Hosts
 
-| Host                      | Why                                                                                                         |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `oauth2.googleapis.com`   | Google token exchange and refresh (gate `oauth-refresh.ts`, `connect/oauth.ts`; also in the Gmail manifest) |
-| `gmail.googleapis.com`    | Gmail connector manifest                                                                                    |
-| `www.googleapis.com`      | Drive connector manifest                                                                                    |
-| `web.push.apple.com`      | Web Push to the home-screen app on iPhone (gate `push-notify.ts`)                                           |
-| `bridge.simplefin.org`    | SimpleFIN setup-token claim (gate `connect/simplefin-claim.ts`)                                             |
-| `127.0.0.1:1025`, `:1143` | Proton Bridge SMTP and IMAP (Proton Mail manifest `egress.local`)                                           |
+| Host                      | Why                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `oauth2.googleapis.com`   | Google token exchange and refresh (gate `oauth-refresh.ts`, `connect/oauth.ts`; also in the Gmail manifest)  |
+| `gmail.googleapis.com`    | Gmail connector manifest                                                                                     |
+| `www.googleapis.com`      | Drive connector manifest                                                                                     |
+| `web.push.apple.com`      | Web Push to Safari and the iPhone home-screen app (`WEB_PUSH_HOSTS`, `@eido/schemas`; gate `push-notify.ts`) |
+| `bridge.simplefin.org`    | SimpleFIN setup-token claim (gate `connect/simplefin-claim.ts`)                                              |
+| `127.0.0.1:1025`, `:1143` | Proton Bridge SMTP and IMAP (Proton Mail manifest `egress.local`)                                            |
 
 The list is the output of `egressTargets` for the manifests on `main`; the infra tests pin it. A new connector manifest adds its hosts the next time you run the plan.
 
@@ -376,8 +377,21 @@ sudo -u _eidogate /usr/bin/curl -sS -o /dev/null -w '%{http_code}\n' --max-time 
 
 If the allowlisted host fails too, check `sudo pfctl -s info | head -1` says `Status: Enabled` and that the table is not empty.
 
+### Against real traffic
+
+The list is derived from the manifests, so confirm it once against what the gate really does (#471):
+
+1. Use the gate for a day: Gmail, Drive, a push to the phone, and a SimpleFIN refresh if SimpleFIN is set up.
+2. Read `sudo cat /Library/Logs/Eido/pf/egress.err.log` and the gate log for refused connections.
+3. Anything refused that should have passed is a missing host. Add it through the manifest or `BASE_HOSTS` in `infra/host/egress.ts`, run `host plane plan` again, and open an issue naming the host.
+4. After a reboot, repeat the commands under "Check".
+
+### Recorded results
+
+None are recorded yet. Every check under "Check" needs root on the owner's Mac, so no agent has run them. The owner's output for them (rules loaded, allowlisted host reachable, unlisted host refused, a day of real traffic, and the same after a reboot) is recorded in #811. When it is in, the date and the output go here, in the same shape as "Recorded results" above. #471 stays open until then.
+
 ### Limits
 
 - pf matches addresses. A listed host on a shared CDN or Google front end makes every other name behind the same addresses reachable on 443. The gate's own egress check (host, method and path prefix from the manifest) still applies on top.
-- Web Push only reaches Apple's push service. A subscription from another browser (FCM, Mozilla) is refused until its host is added: #789.
+- Web Push: Apple's push service only, which Safari and the iPhone home-screen app use (decision in #789; the owner can reverse it). Chrome, Firefox and Edge subscriptions are not supported. `WEB_PUSH_HOSTS` in `packages/schemas/src/web-push.ts` is the one list: the plan allows each host in it, and the gate refuses a subscription on any other host when it is registered (`push_host_refused`, 422) and never posts to one already stored. Apple documents its endpoints as any subdomain of push.apple.com; pf cannot take a wildcard, so the list names `web.push.apple.com`, and a subscription on another subdomain is refused at registration. Supporting another service means adding its exact hosts to `WEB_PUSH_HOSTS`.
 - Removing the allowlist alone is not supported; `host plane remove` removes it with the rest of the plane.

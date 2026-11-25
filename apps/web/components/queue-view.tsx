@@ -48,8 +48,10 @@ import {
 } from "@/lib/queue/card"
 import {
   buildEditedIntent,
-  editRefusalMessage,
+  type EditRefusal,
+  editRefusal,
   editableFields,
+  hasEditForm,
 } from "@/lib/queue/edit"
 import { isInteractiveTarget, isShortcutEvent } from "@/lib/shortcuts"
 import { formatWaiting } from "@/lib/relative-time"
@@ -288,7 +290,7 @@ function ApprovalCard({
   const [action, setAction] = React.useState<Action>({ status: "idle" })
   const [rejectOpen, setRejectOpen] = React.useState(false)
   const [editOpen, setEditOpen] = React.useState(false)
-  const [editError, setEditError] = React.useState<string | null>(null)
+  const [editError, setEditError] = React.useState<EditRefusal | null>(null)
   const [reloads, setReloads] = React.useState(0)
   const [historyReloads, setHistoryReloads] = React.useState(0)
   const [dx, setDx] = React.useState(0)
@@ -420,7 +422,7 @@ function ApprovalCard({
         setEditOpen(false)
         return onDecided("Already decided")
       }
-      return setEditError(editRefusalMessage(result.error))
+      return setEditError(editRefusal(result.error))
     }
     const signed = await signApproval(result.value)
     if (!signed.ok && signed.error.code === "unauthenticated")
@@ -855,20 +857,24 @@ function ApprovalCard({
             Reject
             <ShortcutKeys keys={["r"]} />
           </Button>
-          <Button
-            variant="outline"
-            size="lg"
-            className="min-h-11"
-            disabled={!canEdit}
-            aria-keyshortcuts="e"
-            onClick={() => {
-              setEditError(null)
-              setEditOpen(true)
-            }}
-          >
-            Edit and approve
-            <ShortcutKeys keys={["e"]} />
-          </Button>
+          {hasEditForm(intent.kind) ? (
+            <Button
+              variant="outline"
+              size="lg"
+              className="min-h-11"
+              disabled={!canEdit}
+              aria-label="Edit before approving"
+              aria-expanded={editOpen}
+              aria-keyshortcuts="e"
+              onClick={() => {
+                setEditError(null)
+                setEditOpen(true)
+              }}
+            >
+              Edit
+              <ShortcutKeys keys={["e"]} />
+            </Button>
+          ) : null}
           {passkeyEnrolled ? (
             <Button
               size="lg"
@@ -899,9 +905,10 @@ function ApprovalCard({
         <QueueEditSheet
           open={editOpen}
           intentId={intent.id}
+          kind={intent.kind}
           payload={card.prepared.payload}
           busy={busy}
-          error={editError}
+          refusal={editError}
           onSubmit={(values) => void submitEdit(values)}
           onOpenChange={setEditOpen}
         />
