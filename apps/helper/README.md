@@ -80,9 +80,10 @@ drifted signed manifest cannot be recovered this way; review and pin it first.
 
 The automated tests use an in-memory fake store. They do not request TCC access,
 read real calendars, or write real reminders. A successful native build proves
-linkage, not a live permission grant or successful upstream operation. A live
-verification for #79 still needs a synthetic calendar and reminder list on the
-intended Mac host; do not capture personal content in issue comments or logs.
+linkage, not a live permission grant or successful upstream operation. Live
+verification runs on the intended Mac host against a dedicated synthetic calendar
+and reminder list only, deleted afterwards; do not capture personal content in
+issue comments or logs.
 
 ## One-request process protocol
 

@@ -1,6 +1,12 @@
 import EventKit
 import Foundation
 
+/// EventKit reports `occurrenceDate` as the start date for every event, recurring or not,
+/// so only recurrence rules and detachment mark an occurrence of a series.
+func isRecurring(_ event: EKEvent) -> Bool {
+  event.hasRecurrenceRules || event.isDetached
+}
+
 @MainActor public final class EventKitStore: CalendarStore {
   private let store = EKEventStore()
   public init() {}
@@ -47,7 +53,7 @@ import Foundation
   public func event(id: String) throws -> StoredEvent? {
     guard let event = store.calendarItem(withIdentifier: id) as? EKEvent else { return nil }
     return StoredEvent(
-      value: eventValue(event), recurring: event.hasRecurrenceRules || event.isDetached || event.occurrenceDate != nil)
+      value: eventValue(event), recurring: isRecurring(event))
   }
 
   public func reminder(id: String) throws -> ReminderValue? {
@@ -64,7 +70,7 @@ import Foundation
       guard let stored = store.calendarItem(withIdentifier: id) as? EKEvent else {
         throw HelperFailure.notFound
       }
-      guard !stored.hasRecurrenceRules, !stored.isDetached, stored.occurrenceDate == nil else {
+      guard !isRecurring(stored) else {
         throw HelperFailure.unsupportedEvent
       }
       guard stored.calendar.allowsContentModifications else { throw HelperFailure.readOnly }
@@ -119,9 +125,8 @@ import Foundation
   }
 
   private func eventValue(_ event: EKEvent) -> EventValue {
-    let recurring = event.hasRecurrenceRules || event.isDetached || event.occurrenceDate != nil
     let id =
-      recurring
+      isRecurring(event)
       ? "recurrence:\(event.calendarItemIdentifier):\(Dates.text(event.occurrenceDate ?? event.startDate))"
       : event.calendarItemIdentifier
     return EventValue(

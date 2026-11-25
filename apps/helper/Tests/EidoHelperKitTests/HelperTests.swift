@@ -1,3 +1,4 @@
+import EventKit
 import XCTest
 
 @testable import EidoHelperKit
@@ -209,6 +210,17 @@ final class HelperTests: XCTestCase {
     args["id"] = "event-1"
     try assertFailure(await service.handle(try request("update_event", args)), "read_only")
     XCTAssertEqual(store.writes, 0)
+  }
+
+  func testSingleEventWithOccurrenceDateIsNotRecurring() {
+    // Needs no EventKit grant: an unsaved event in a fresh store.
+    let event = EKEvent(eventStore: EKEventStore())
+    event.startDate = Date(timeIntervalSince1970: 1_796_205_600)
+    event.endDate = event.startDate.addingTimeInterval(3600)
+    XCTAssertEqual(event.occurrenceDate, event.startDate)
+    XCTAssertFalse(isRecurring(event))
+    event.addRecurrenceRule(EKRecurrenceRule(recurrenceWith: .daily, interval: 1, end: nil))
+    XCTAssertTrue(isRecurring(event))
   }
 
   @MainActor func testCreateAndCompleteReminder() async throws {
