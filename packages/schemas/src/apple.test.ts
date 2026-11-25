@@ -133,6 +133,17 @@ describe("EventKit wire contract", () => {
     ])
       expect(validateGateAppleResponse(value).ok).toBe(false)
   })
+  test("read lists carry an optional non-negative integer skipped count", () => {
+    expect(validateGateAppleEventList({ events: [], skipped: 2 }).ok).toBe(true)
+    expect(validateGateAppleEventList({ events: [] }).ok).toBe(true)
+    for (const skipped of [-1, 1.5, "2", null])
+      expect(validateGateAppleReminderList({ reminders: [], skipped }).ok).toBe(
+        false
+      )
+    expect(
+      validateGateAppleCalendarList({ calendars: [], skipped: 1_000_001 }).ok
+    ).toBe(false)
+  })
   test("refuses malformed upstream records", () => {
     expect(
       validateGateAppleCalendarList({

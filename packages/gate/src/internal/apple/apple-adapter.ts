@@ -13,29 +13,33 @@ import { AppleError } from "./runner"
 import type { AppleRunner } from "./runner"
 import type { ConnectorProbe } from "../connector-connect"
 
+/** Every read reports how many items the Helper dropped for failing its output checks. */
+type Counted<T> = T & { skipped: number }
+
 export interface AppleReads {
-  listCalendars(this: void): Promise<GateAppleCalendarList>
-  listReminderLists(this: void): Promise<GateAppleCalendarList>
+  listCalendars(this: void): Promise<Counted<GateAppleCalendarList>>
+  listReminderLists(this: void): Promise<Counted<GateAppleCalendarList>>
   listEvents(
     this: void,
     calendarId: string,
     start: string,
     end: string
-  ): Promise<GateAppleEventList>
+  ): Promise<Counted<GateAppleEventList>>
   listReminders(
     this: void,
     listId: string,
     completedSince: string
-  ): Promise<GateAppleReminderList>
+  ): Promise<Counted<GateAppleReminderList>>
 }
 
-function checked<T>(
+/** A Helper that predates the skipped count dropped nothing silently: it failed the read instead. */
+function checked<T extends { skipped?: number }>(
   result: unknown,
   validate: (value: unknown) => ValidationResult<T>
-): T {
+): T & { skipped: number } {
   const value = validate(result)
   if (!value.ok) throw new AppleError("unavailable")
-  return value.value
+  return { ...value.value, skipped: value.value.skipped ?? 0 }
 }
 
 export function createAppleReads(run: AppleRunner): AppleReads {
