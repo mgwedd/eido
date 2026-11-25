@@ -117,6 +117,32 @@ function confirmation(
   })
 }
 
+/**
+ * The `confirm.field` proposal for one field of one extraction, built by the same builder triage
+ * uses. Undefined when the field has no card to show: the extraction or field is gone, already
+ * confirmed, or not low-confidence.
+ */
+export function confirmFieldProposal(
+  db: DatabaseSync,
+  extractionId: number,
+  field: string,
+  cfg: TriageConfig
+): Proposal | undefined {
+  return confirmation(
+    db,
+    {
+      id: `confirm-card:${String(extractionId)}:${field}`,
+      source: "extraction",
+      kind: "confirm-field",
+      triggerKey: `extraction:${String(extractionId)}:confirm`,
+      fireId: field,
+      ref: `ext:${String(extractionId)}`,
+      score: 0,
+    },
+    cfg
+  )
+}
+
 function dueCard(
   db: DatabaseSync,
   event: TriageEvent,

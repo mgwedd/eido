@@ -11,6 +11,7 @@ import type { KeyObject } from "node:crypto"
 import { createRoleGuard } from "./caller-role"
 import { createApiHandler } from "./handler"
 import type { ApiHandler } from "./handler"
+import type { ConfirmCardResolver } from "./confirm-card-route"
 import type { ReplyDrafter } from "./reply-draft-route"
 import { createApiServer } from "./server"
 
@@ -73,6 +74,8 @@ export type CoreApiOptions = {
   ask?: (question: string) => Promise<AskResult>
   /** The drafter behind `POST /replies/draft`; unset without a local model. */
   draftReply?: ReplyDrafter
+  /** The resolver behind `POST /extractions/confirm-card`. */
+  confirmCard?: ConfirmCardResolver
   propose?: IntentClient["propose"]
   intentStatus?: IntentClient["status"]
   obligations?: ObligationStateStore
@@ -113,6 +116,7 @@ export async function listenCoreApi(options: CoreApiOptions): Promise<CoreApi> {
       sendFrom: options.sendFrom,
       ask: options.ask,
       draftReply: options.draftReply,
+      confirmCard: options.confirmCard,
       propose: options.propose,
       intentStatus: options.intentStatus,
       obligations: options.obligations,

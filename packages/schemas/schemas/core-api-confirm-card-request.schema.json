@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiConfirmCardRequest",
+  "description": "Request body for POST /extractions/confirm-card (#852): open the confirm card for a deferred extraction line of the morning brief (a deferred line whose ledger.type is extraction; its ledger.id is the extraction id). Core picks the field: the extraction's lowest-confidence field that is not yet confirmed.",
+  "type": "object",
+  "properties": {
+    "extractionId": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": ["extractionId"],
+  "additionalProperties": false
+}

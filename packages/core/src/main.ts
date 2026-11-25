@@ -33,6 +33,8 @@ import { basePath, listenCoreApi, loopbackHost } from "./api/listen"
 import type { CoreApi, LoopbackHost } from "./api/listen"
 import type { SimpleFinSyncer } from "./api/simplefin-sync-route"
 import type { SimpleFinAccountsDeps } from "./api/simplefin-accounts-route"
+import { createConfirmCardResolver } from "./api/confirm-card-route"
+import type { ConfirmCardResolver } from "./api/confirm-card-route"
 import { createReplyDrafter } from "./api/reply-draft-route"
 import { DEFAULT_CHARS_PER_TOKEN } from "./inference/budget"
 import { createProposalLimiter } from "./propose/limiter"
@@ -480,6 +482,8 @@ export type DataPlane = {
   close: () => Promise<void>
   stopGmailSync: () => void
   stopProtonSync: () => void
+  /** Opens the confirm card for a deferred extraction line (#852), proposing it through the gate. */
+  confirmCard: ConfirmCardResolver
   /** The gate's connector health, with core's SimpleFIN messages (accounts needing an entity) and next sync. */
   connectorHealth: IntentClient["getConnectorHealth"]
   /** A SimpleFIN sync on request (#546); absent when SimpleFIN sync is off. */
@@ -1090,6 +1094,15 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     : undefined
   const stopGmailSync = (): void => gmailTimer?.stop()
   const stopProtonSync = (): void => protonTimer?.stop()
+  const confirmCard = createConfirmCardResolver({
+    db,
+    gate,
+    config: async () =>
+      triageConfigFrom(
+        config.api.triage ?? {},
+        (await profile.getProfile())?.timezone ?? "Etc/UTC"
+      ),
+  })
   scheduleReplies()
   scheduleTriage()
   const triageTimer = setInterval(scheduleTriage, TRIAGE_TICK_INTERVAL_MS)
@@ -1122,6 +1135,7 @@ export function runDataPlane(config: DataPlaneConfig, env: Env): DataPlane {
     files,
     obligations,
     accessAudit,
+    confirmCard,
     log,
     stopGmailSync,
     stopProtonSync,
@@ -1303,6 +1317,7 @@ export async function serveDataPlane(
     sendFrom: config.protonUsername,
     ...(ask === undefined ? {} : { ask }),
     ...(draftReply === undefined ? {} : { draftReply }),
+    confirmCard: plane.confirmCard,
     propose: plane.gate.propose,
     intentStatus: plane.gate.status,
     documents: { db: plane.db, accessAudit: plane.accessAudit },

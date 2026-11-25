@@ -130,6 +130,10 @@ function useMorningBrief(): {
   return { state, retry }
 }
 
+function openQueue(href: string) {
+  window.location.assign(href)
+}
+
 function signedOut() {
   window.location.replace(
     expiredUnlockUrl(window.location.pathname + window.location.search)
@@ -452,6 +456,8 @@ function TodayView() {
             state={briefState}
             now={loadedAt}
             onRetry={retryBrief}
+            onOpenQueue={openQueue}
+            onSignedOut={signedOut}
           />
           <DueSoonCard
             state={dueSoonState}

@@ -125,6 +125,8 @@ test("MorningBriefCard renders paragraph with citations and coverage line", () =
         state={{ status: "ready", brief: sampleBrief }}
         now={NOW}
         onRetry={() => undefined}
+        onOpenQueue={() => undefined}
+        onSignedOut={() => undefined}
       />
     )
   })
@@ -166,6 +168,8 @@ test("MorningBriefCard does not render a line lacking a source link", () => {
         state={{ status: "ready", brief: briefWithBadLine }}
         now={NOW}
         onRetry={() => undefined}
+        onOpenQueue={() => undefined}
+        onSignedOut={() => undefined}
       />
     )
   })
@@ -183,6 +187,8 @@ test("MorningBriefCard renders empty state when no brief exists", () => {
         state={{ status: "empty" }}
         now={NOW}
         onRetry={() => undefined}
+        onOpenQueue={() => undefined}
+        onSignedOut={() => undefined}
       />
     )
   })
@@ -202,6 +208,8 @@ test("MorningBriefCard renders earlier day header when brief is from a prior dat
         state={{ status: "ready", brief: earlierBrief }}
         now={NOW}
         onRetry={() => undefined}
+        onOpenQueue={() => undefined}
+        onSignedOut={() => undefined}
       />
     )
   })

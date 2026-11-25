@@ -148,6 +148,12 @@ const ROUTE_PERMISSIONS: readonly {
     path: /^\/extractions\/\d+\/confirm$/,
     anyOf: ["document:update"],
   },
+  // Proposes a confirm card through the gate; the owner still approves it in the queue.
+  {
+    methods: ["POST"],
+    path: /^\/extractions\/confirm-card$/,
+    anyOf: ["document:update"],
+  },
 ]
 
 /**

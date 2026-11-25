@@ -9,25 +9,35 @@ import { Skeleton } from "@eido/ui/components/skeleton"
 import {
   filterRenderableBriefLines,
   formatBriefHeaderMeta,
-  isDeferredObligationLine,
+  deferredExtractionId,
   ledgerObligationUrl,
   type BriefDeferredLine,
   type BriefLine,
   type BriefState,
 } from "@/lib/today-brief"
+import { requestConfirmCard } from "@/lib/deferred-confirm-card"
 import { documentSpanUrl } from "@/lib/today-due-soon"
 
 interface MorningBriefCardProps {
   state: BriefState
   now: Date
   onRetry: () => void
+  /** Opens the queue at a pending confirm card (a deferred extraction line). */
+  onOpenQueue: (href: string) => void
+  /** The session expired while opening a confirm card. */
+  onSignedOut: () => void
 }
 
 export function MorningBriefCard({
   state,
   now,
   onRetry,
+  onOpenQueue,
+  onSignedOut,
 }: MorningBriefCardProps) {
+  const [openingId, setOpeningId] = React.useState<number | null>(null)
+  // State lags a second click made before React re-renders; the ref closes that window.
+  const opening = React.useRef(false)
   const readyBrief: CoreApiBrief | null =
     state.status === "ready" ? state.brief : null
   const renderableLines = readyBrief
@@ -38,7 +48,20 @@ export function MorningBriefCard({
     (line): line is Exclude<BriefLine, BriefDeferredLine> =>
       line.kind !== "deferred"
   )
-  const deferredLines = renderableLines.filter(isDeferredObligationLine)
+  const deferredLines = renderableLines.filter(
+    (line): line is BriefDeferredLine => line.kind === "deferred"
+  )
+
+  const openConfirmCard = async (extractionId: number) => {
+    if (opening.current) return
+    opening.current = true
+    setOpeningId(extractionId)
+    const outcome = await requestConfirmCard(extractionId)
+    opening.current = false
+    setOpeningId(null)
+    if (outcome.status === "opened") onOpenQueue(outcome.queueHref)
+    else if (outcome.status === "unauthenticated") onSignedOut()
+  }
 
   const headerMeta = readyBrief ? formatBriefHeaderMeta(readyBrief, now) : null
 
@@ -140,24 +163,45 @@ export function MorningBriefCard({
                   Deferred
                 </h3>
                 <ul className="flex flex-col">
-                  {deferredLines.map((line) => (
-                    <li
-                      key={line.ledger.id}
-                      className="border-b border-border/60 last:border-b-0"
-                    >
-                      <a
-                        href={ledgerObligationUrl(line.ledger.id)}
-                        aria-label={`Open in Ledger: ${line.text}`}
-                        className="flex items-center gap-3 py-2 text-xs text-foreground hover:text-primary"
+                  {deferredLines.map((line) => {
+                    const rowClass =
+                      "flex w-full items-center gap-3 py-2 text-left text-xs text-foreground hover:text-primary"
+                    const extractionId = deferredExtractionId(line)
+                    return (
+                      <li
+                        key={`${line.ledger.type}-${line.ledger.id}`}
+                        className="border-b border-border/60 last:border-b-0"
                       >
-                        <span className="min-w-0 flex-1">{line.text}</span>
-                        <ChevronRight
-                          aria-hidden="true"
-                          className="size-3.5 shrink-0 text-muted-foreground"
-                        />
-                      </a>
-                    </li>
-                  ))}
+                        {extractionId !== null ? (
+                          <button
+                            type="button"
+                            disabled={openingId === extractionId}
+                            onClick={() => void openConfirmCard(extractionId)}
+                            aria-label={`Open confirm card: ${line.text}`}
+                            className={`${rowClass} disabled:opacity-60`}
+                          >
+                            <span className="min-w-0 flex-1">{line.text}</span>
+                            <ChevronRight
+                              aria-hidden="true"
+                              className="size-3.5 shrink-0 text-muted-foreground"
+                            />
+                          </button>
+                        ) : (
+                          <a
+                            href={ledgerObligationUrl(line.ledger.id)}
+                            aria-label={`Open in Ledger: ${line.text}`}
+                            className={rowClass}
+                          >
+                            <span className="min-w-0 flex-1">{line.text}</span>
+                            <ChevronRight
+                              aria-hidden="true"
+                              className="size-3.5 shrink-0 text-muted-foreground"
+                            />
+                          </a>
+                        )}
+                      </li>
+                    )
+                  })}
                 </ul>
               </section>
             ) : null}
