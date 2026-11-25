@@ -8,28 +8,50 @@ what you saw and the matching log lines from `~/Library/Logs/eido-dev`.
 
 ## Mac setup (once)
 
-1. Run `pnpm stack:setup`. It creates the gate Keychain, asks for the VAPID
-   subject and the Gmail client ids, writes `stack.env` and runs
-   `pnpm stack:doctor`. Fix each failure with the command it prints, for
-   example starting llama-server (`infra/llama-server.md`).
-2. Start the stack: `pnpm stack:prod --background`. It runs doctor's blocking
-   checks first and prints `https://<host>.ts.net:8443/`.
+1. Check the prerequisites: `node infra/prereq/bin.ts`. It needs Node 24 or
+   newer and makes `pnpm` runnable; when it fails it prints the one command to
+   run.
+2. Run `pnpm stack:bootstrap`. It installs dependencies and the pinned
+   llama-server build, runs setup (gate Keychain, `stack.env`), starts the prod
+   stack, registers the login agent and ends by printing a single-use
+   enrolment code with the first-run page,
+   `https://<host>.ts.net:8443/enroll`. The code expires after ten minutes, so
+   run the iPhone steps next. Fix a failure with the command it prints. The
+   stack starts without a model; inference stays off until one is downloaded
+   under Admin, Model (`infra/llama-server.md`).
 3. Run `pnpm stack:status` until gate, core and web answer and the serve
    routes are listed.
-4. Connect one test mail account and one test calendar:
-   `pnpm stack:gate connect <connector>` (`infra/connectors.md`).
+4. After step 6 (it needs the passkey), connect one test mail account and one
+   test calendar from the app: Settings, then Admin, then Connectors
+   (`infra/connectors.md`). On a Not pinned card choose Review and pin and sign
+   with the passkey, then Connect. `pnpm stack:gate connect <connector>` on
+   the Mac connects without the page.
 
 ## iPhone setup (once)
 
 5. Turn Tailscale on and open `https://<host>.ts.net:8443/` in Safari. Share →
    Add to Home Screen, then launch Eido from the Home Screen icon.
-6. Sign in with Auth0. On the Mac, print an enrolment code:
+   Pass: the app loads over the `*.ts.net` HTTPS address and opens from the
+   icon without Safari's address bar. With Tailscale off, or on the Mac's LAN
+   address, the page does not load. `http://<host>.ts.net:8443/` does not
+   serve the app.
+6. Enrol the passkey. Open `https://<host>.ts.net:8443/enroll` and enter the
+   code step 2 printed. Create the passkey with Face ID. When the code has
+   expired or step 2 printed none, print one on the Mac:
 
    ```bash
    pnpm stack:gate enrol-code
    ```
 
-   Enter it on the enrol page and create the passkey with Face ID.
+   If Auth0 is set up (`docs/auth0-setup.md`), sign in with the emailed code
+   first; without it the stack is passkey-only.
+
+   Pass: enrolling completes (past the recovery key card, if one appears) and
+   takes you into the app. Open `/unlock` and
+   unlock with Face ID: it returns to the page you came from.
+   Cancelling the Face ID prompt shows a message that names Face ID and leaves
+   Eido locked, and Try again works. The code works once: entering it a second
+   time fails.
 
 ## The loop
 
@@ -51,6 +73,10 @@ what you saw and the matching log lines from `~/Library/Logs/eido-dev`.
 ## Teardown
 
 13. Revoke the test passkey: `pnpm stack:gate passkeys` lists them, then
-    `pnpm stack:gate passkeys revoke <fingerprint>`.
-14. Sign out at `https://<host>.ts.net:8443/auth/logout`, and
+    `pnpm stack:gate passkeys revoke <fingerprint>`. Reload the app on the
+    phone: it shows "This passkey was revoked. Re-enrol this device from the
+    Mac." with no unlock button.
+14. Sign out with Sign out in the sidebar. It ends the session at the gate
+    (`POST /api/gate/auth/logout`) and returns to `/unlock`; with Auth0 on, it
+    goes on to `/auth/logout`. Open the Queue: it sends you to `/unlock`. Then
     `pnpm stack:stop` if the stack is not needed.
