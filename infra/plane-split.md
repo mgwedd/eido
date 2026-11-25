@@ -114,10 +114,11 @@ Unlocking that keychain while the gate runs under launchd without a login sessio
      --gate-keychain "/Library/Application Support/Eido/home/gate/Library/Keychains/eido/eido.keychain-db" \
      --proxy-port <gate egress proxy port> --llama-port <llama-server port> \
      --parser-profile "/Library/Application Support/Eido/policy/parser.sb" \
+     --data-profile "/Library/Application Support/Eido/policy/core.sb" \
      --public-host <a public hostname> --public-ip <a public IPv4 address>
    ```
 
-   The script's probes run as `_eidodata` without the core sandbox, and DNS goes through mDNSResponder, which per-user pf cannot see. So `dns` reports reached until the script runs its probes under `core.sb`. That fix is #777. Every other probe must pass.
+   With `--data-profile` the script runs every data-plane probe (except `parser`, which has its own profile) as `_eidodata` under `sandbox-exec -f core.sb`, as the data plane runs. DNS goes through mDNSResponder, which per-user pf cannot see, so only `core.sb` denies it: without the flag the `dns` probe reports reached. Every probe must pass.
 
 8. Reboot, then repeat steps 4, 5 and 7.
 
