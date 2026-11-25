@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import type { DatabaseSync } from "node:sqlite"
 import type { GatePushSubscription } from "@eido/schemas"
-import { validateGatePushSubscription } from "@eido/schemas"
+import { WEB_PUSH_HOSTS, validateGatePushSubscription } from "@eido/schemas"
 import { append } from "./audit"
 import { payloadHash } from "./canonical"
 import {
@@ -18,7 +18,21 @@ export type PushSubscription = GatePushSubscription & {
   approvalId: string
 }
 
-/** An HTTPS subscription is an exact destination, never a wildcard or a connector grant. */
+/**
+ * A well-formed subscription on a push service the gate does not send to (#789). The routes answer
+ * `push_host_refused`, and the sender skips it, so the gate never opens a connection the egress
+ * allowlist would drop.
+ */
+export class PushHostRefused extends Error {
+  constructor() {
+    super("push host not allowed")
+  }
+}
+
+/**
+ * An HTTPS subscription is an exact destination, never a wildcard or a connector grant, and its
+ * host is one of `WEB_PUSH_HOSTS` (throws `PushHostRefused` otherwise).
+ */
 export function checkedSubscription(value: unknown): GatePushSubscription {
   const checked = validateGatePushSubscription(value)
   if (
@@ -44,6 +58,7 @@ export function checkedSubscription(value: unknown): GatePushSubscription {
     subscription.endpoint !== url.href
   )
     throw new Error("invalid push subscription")
+  if (!WEB_PUSH_HOSTS.includes(url.hostname)) throw new PushHostRefused()
   return subscription
 }
 
