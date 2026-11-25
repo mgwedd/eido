@@ -118,7 +118,7 @@ describe("Queue offline", () => {
     reachability.value = "unreachable"
     await render()
     expect(button("Approve")?.disabled).toBe(true)
-    expect(button("Edit and approve")?.disabled).toBe(true)
+    expect(button("Edit")?.disabled).toBe(true)
     expect(button("Reject")?.disabled).toBe(true)
     expect(document.body.textContent).toContain(
       "Offline. Approvals need a connection."
