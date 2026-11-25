@@ -328,6 +328,73 @@ describe("syncAppleCalendars", () => {
     ])
   })
 
+  test("a read that reports skipped items indexes what it returned and retires nothing", async () => {
+    const db = setupDb()
+    await syncAppleCalendars(
+      options(
+        db,
+        fakeClient({
+          "cal-synthetic-a": [event({ id: "dropped" }), event({ id: "kept" })],
+        })
+      )
+    )
+
+    // Built apart from the literal below so the reply can carry `skipped` before the gate's
+    // event-list type declares it (#765).
+    const partial = {
+      events: [event({ id: "kept" }), event({ id: "new" })],
+      skipped: 1,
+    }
+    const client: FakeClient = {
+      reads: [],
+      listCalendars: () =>
+        Promise.resolve({ calendars: CALENDARS.calendars.slice(0, 1) }),
+      listEvents: () => Promise.resolve(partial),
+    }
+    const result = await syncAppleCalendars(options(db, client))
+
+    expect(result.calendars).toEqual([
+      {
+        calendarId: "cal-synthetic-a",
+        status: "synced",
+        fetched: 2,
+        ingested: 1,
+        retired: 0,
+      },
+    ])
+    expect(liveRefs(db)).toEqual([
+      appleEventSourceRef("cal-synthetic-a", "dropped"),
+      appleEventSourceRef("cal-synthetic-a", "kept"),
+      appleEventSourceRef("cal-synthetic-a", "new"),
+    ])
+  })
+
+  test("a read that reports zero skipped items is a whole snapshot", async () => {
+    const db = setupDb()
+    await syncAppleCalendars(
+      options(
+        db,
+        fakeClient({
+          "cal-synthetic-a": [event({ id: "gone" }), event({ id: "kept" })],
+        })
+      )
+    )
+
+    const whole = { events: [event({ id: "kept" })], skipped: 0 }
+    const client: FakeClient = {
+      reads: [],
+      listCalendars: () =>
+        Promise.resolve({ calendars: CALENDARS.calendars.slice(0, 1) }),
+      listEvents: () => Promise.resolve(whole),
+    }
+    const result = await syncAppleCalendars(options(db, client))
+
+    expect(result.calendars[0]).toMatchObject({ retired: 1 })
+    expect(liveRefs(db)).toEqual([
+      appleEventSourceRef("cal-synthetic-a", "kept"),
+    ])
+  })
+
   test("a rejection that is not an Error is reported as unknown", async () => {
     const db = setupDb()
     const client: FakeClient = {
