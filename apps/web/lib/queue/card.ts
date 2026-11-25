@@ -213,13 +213,21 @@ const ACTORS: Readonly<Record<string, string>> = {
   system: "System",
 }
 
-/** Oldest first, as the gate sends it. An undo is an executed to executed entry. */
+/**
+ * Oldest first, as the gate sends it. An undo is an executed to executed entry. The entry that
+ * created an edited intent carries the reason `edited`; `editedFrom` (the original's id, from
+ * the pending list) names which intent it replaced.
+ */
 export function historyRows(
   history: GateIntentHistory,
-  formatTime: (iso: string) => string
+  formatTime: (iso: string) => string,
+  editedFrom?: string
 ): HistoryRow[] {
   return history.entries.map((entry, index) => {
     const undo = entry.from === "executed" && entry.to === "executed"
+    const creation = entry.from === null && entry.reason === "edited"
+    const reason =
+      creation && editedFrom ? `edited from ${editedFrom}` : entry.reason
     return {
       key: `${entry.at}-${index}`,
       time: formatTime(entry.at),
@@ -230,7 +238,7 @@ export function historyRows(
           ? entry.to
           : `${entry.from} to ${entry.to}`,
       actor: ACTORS[entry.actor] ?? entry.actor,
-      ...(entry.reason ? { reason: entry.reason } : {}),
+      ...(reason ? { reason } : {}),
     }
   })
 }
@@ -250,6 +258,28 @@ export const REJECT_REASONS: readonly {
 /** The swipe commits past this many pixels, and labels show past the lower one. */
 export const SWIPE_COMMIT_PX = 110
 export const SWIPE_LABEL_PX = 40
+
+/**
+ * The card's transform while a finger drags it. It follows the finger and tilts dx/24 degrees,
+ * then springs back over 200ms. With reduced motion it only follows the finger: no tilt and
+ * no spring, so releasing snaps it back at once.
+ */
+export function swipeStyle(
+  dx: number,
+  dragging: boolean,
+  reducedMotion: boolean
+): { transform?: string; transition?: string } {
+  const transform = dx
+    ? reducedMotion
+      ? `translateX(${dx}px)`
+      : `translateX(${dx}px) rotate(${dx / 24}deg)`
+    : undefined
+  const transition = dragging || reducedMotion ? undefined : "transform 200ms"
+  return {
+    ...(transform ? { transform } : {}),
+    ...(transition ? { transition } : {}),
+  }
+}
 
 export type SwipeOutcome = "approve" | "reject" | "none"
 

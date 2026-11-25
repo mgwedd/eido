@@ -5,6 +5,7 @@ import {
   historyRows,
   swipeLabel,
   swipeOutcome,
+  swipeStyle,
   waitingSince,
 } from "../lib/queue/card"
 
@@ -126,6 +127,82 @@ describe("historyRows", () => {
     ])
     expect(rows[1]?.reason).toBe("undone")
   })
+})
+
+describe("historyRows edited from", () => {
+  const entries = [
+    {
+      at: "2026-10-01T10:00:00.000Z",
+      from: null,
+      to: "proposed",
+      actor: "approver",
+      reason: "edited",
+    },
+    {
+      at: "2026-10-01T10:00:01.000Z",
+      from: "proposed",
+      to: "pending",
+      actor: "policy",
+    },
+  ] as const
+  const history = { intentId: "new", entries: [...entries] }
+  const format = (iso: string) => iso
+
+  test("the creating entry names the original intent", () => {
+    const rows = historyRows(history, format, "orig-1")
+    expect(rows.map((r) => r.reason)).toEqual(["edited from orig-1", undefined])
+  })
+
+  test("without an original id the gate's reason shows unchanged", () => {
+    expect(historyRows(history, format)[0]?.reason).toBe("edited")
+  })
+
+  test("the original's own rejected-as-edited entry keeps its reason", () => {
+    const original = {
+      intentId: "orig-1",
+      entries: [
+        {
+          at: "2026-10-01T09:00:00.000Z",
+          from: "pending",
+          to: "rejected",
+          actor: "approver",
+          reason: "edited",
+        },
+      ],
+    } as const
+    expect(
+      historyRows(
+        { ...original, entries: [...original.entries] },
+        format,
+        "x"
+      )[0]?.reason
+    ).toBe("edited")
+  })
+})
+
+describe("swipeStyle", () => {
+  test.each([
+    [0, false, false, { transition: "transform 200ms" }],
+    [0, true, false, {}],
+    [48, true, false, { transform: "translateX(48px) rotate(2deg)" }],
+    [
+      -72,
+      false,
+      false,
+      {
+        transform: "translateX(-72px) rotate(-3deg)",
+        transition: "transform 200ms",
+      },
+    ],
+    [48, true, true, { transform: "translateX(48px)" }],
+    [-72, false, true, { transform: "translateX(-72px)" }],
+    [0, false, true, {}],
+  ] as const)(
+    "dx %i, dragging %s, reduced motion %s",
+    (dx, dragging, reduced, style) => {
+      expect(swipeStyle(dx, dragging, reduced)).toEqual(style)
+    }
+  )
 })
 
 describe("swipe", () => {
