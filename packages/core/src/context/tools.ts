@@ -63,6 +63,22 @@ export const ID_DEPENDENT_THINGS_KINDS: ReadonlySet<string> = new Set(
   Object.keys(ID_DEPENDENT_THINGS_VERBS)
 )
 
+// `things.add_todo` and `things.add_project` create something new. When a request names an action on
+// an existing todo and nothing in it asks for a creation, offering them lets the model add a todo
+// beside the update (#759). "Add the tag ..." adds a field to a todo, so it is not a creation.
+const CREATION =
+  /\b(add|create|make|capture)\b|\b(start|new)\s+(an?\s+|the\s+)?(to-?dos?|tasks?|projects?)\b/i
+const FIELD_ADD =
+  /\badd\s+(?:an?\s+|the\s+|some\s+)?(?:tags?|notes?|deadline|due\s+dates?|labels?)\b/gi
+const CREATING_THINGS_KINDS = new Set(["things.add_todo", "things.add_project"])
+
+function actsOnExistingTodoOnly(text: string): boolean {
+  const names = Object.values(ID_DEPENDENT_THINGS_VERBS).some((v) =>
+    v.test(text)
+  )
+  return names && !CREATION.test(text.replace(FIELD_ADD, ""))
+}
+
 /** Money movement and permanent deletes are never offered, whatever the catalog holds. */
 const FORBIDDEN_SEGMENT =
   /^(pay|payment|payments|transfer|wire|refund|purchase|buy|charge|withdraw|deposit|expunge|purge|destroy|wipe|erase|shred)$|permanent/i
@@ -119,6 +135,11 @@ export function selectTools(
         )
       if (isRead(tool)) return true
       if (request.task !== "propose") return false
+      if (
+        CREATING_THINGS_KINDS.has(tool.function.name.toLowerCase()) &&
+        actsOnExistingTodoOnly(request.text)
+      )
+        return false
       const area = areaOf(tool)
       return area !== undefined && areas.has(area)
     })

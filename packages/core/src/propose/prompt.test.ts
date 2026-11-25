@@ -1,3 +1,4 @@
+import { INTENT_RESULT_JSON_SCHEMA } from "@eido/schemas"
 import { describe, expect, test } from "vitest"
 import { COMPACTION_LEGEND } from "../context/compact"
 import type { ContextPack } from "../context/pack-store"
@@ -5,6 +6,7 @@ import { fence, plainContent, toMaterial } from "../inference/fence"
 import {
   buildProposalRequest,
   PROPOSE_SYSTEM_PROMPT,
+  replySchemaFor,
   retryNote,
 } from "./prompt"
 
@@ -150,5 +152,65 @@ describe("retryNote", () => {
     expect(note).toContain("- schema_mismatch at $.intents[9]")
     expect(note).not.toContain("$.intents[10]")
     expect(note.endsWith("- and 2 more")).toBe(true)
+  })
+})
+
+describe("replySchemaFor", () => {
+  const intentKinds = (kinds: string[]): unknown[] => {
+    const branches = replySchemaFor(kinds).oneOf ?? []
+    return (
+      branches[0]?.properties?.["intents"]?.items?.oneOf?.map(
+        (b) => b.properties?.["kind"]?.const
+      ) ?? []
+    )
+  }
+
+  test("keeps only the offered intent kinds, in catalog order", () => {
+    expect(intentKinds(["things.update_todo", "email.archive"])).toEqual([
+      "email.archive",
+      "things.update_todo",
+    ])
+  })
+
+  test("an unknown kind adds nothing", () => {
+    expect(intentKinds(["things.update_todo", "crm.delete"])).toEqual([
+      "things.update_todo",
+    ])
+  })
+
+  test("still allows a none reply beside the narrowed intents", () => {
+    const branches = replySchemaFor(["email.archive"]).oneOf ?? []
+    expect(branches.map((b) => b.properties?.["result"]?.const)).toEqual([
+      "intents",
+      "none",
+    ])
+  })
+
+  test("with no kind offered only a none reply remains", () => {
+    const branches = replySchemaFor([]).oneOf ?? []
+    expect(branches.map((b) => b.properties?.["result"]?.const)).toEqual([
+      "none",
+    ])
+  })
+
+  test("a request with a Todos block carries the narrowed schema", () => {
+    const request = buildProposalRequest({
+      request: "Update the dentist todo.",
+      pack,
+      referable: [],
+      kinds: ["things.update_todo"],
+      todos: ["## Todos (open, 1 of 1 match)\n- id=id-1 | Book dentist | open"],
+    })
+    expect(request.jsonSchema).toEqual(replySchemaFor(["things.update_todo"]))
+  })
+
+  test("a request without a Todos block carries the full schema", () => {
+    const request = buildProposalRequest({
+      request: "Archive it.",
+      pack,
+      referable: [],
+      kinds: ["email.archive"],
+    })
+    expect(request.jsonSchema).toEqual(INTENT_RESULT_JSON_SCHEMA)
   })
 })
