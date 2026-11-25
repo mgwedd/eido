@@ -2,9 +2,11 @@
 // staging copies live, and how long snapshots are kept. Data paths are not restated here: they
 // come from the stack config (`../stack/config.ts`), so a changed EIDO_DATA_DIR or
 // EIDO_GATE_DATA_DIR moves the backup with it. Nothing here is a secret; the repository
-// passphrase is never part of the config (see `resticEnv`).
-import { isAbsolute, join } from "node:path"
+// passphrase is never part of the config (see `resticEnv`). `EIDO_BACKUP_PLANE=split` selects the
+// plane's directories instead (#782).
+import { isAbsolute, join, posix } from "node:path"
 
+import { PLANE_LOGS, PLANE_ROOT } from "../host/plane-base.ts"
 import { buildStackConfig, type Env } from "../stack/config.ts"
 import { BackupError } from "./errors.ts"
 
@@ -13,7 +15,20 @@ import { BackupError } from "./errors.ts"
 export const DATA_DB_FILE = "eido-data.db"
 export const CONTROL_DB_FILE = "eido-control.db"
 
-export const OVERRIDES = ["EIDO_BACKUP_REPO", "EIDO_BACKUP_LOG_DIR"] as const
+export const OVERRIDES = [
+  "EIDO_BACKUP_REPO",
+  "EIDO_BACKUP_LOG_DIR",
+  "EIDO_BACKUP_PLANE",
+] as const
+
+// The plane's directories (#70, infra/host/plane.ts `planeLayout`). They are fixed paths outside
+// every home, so the backup does not need the owner's name to find them; a test holds them equal
+// to the layout's. `backup` is the root daemon's own directory: root-owned, 0700, so neither
+// service user can read the staged copies or the passphrase file.
+export const PLANE_GATE_DIR = `${PLANE_ROOT}/gate`
+export const PLANE_DATA_DIR = `${PLANE_ROOT}/data`
+export const PLANE_BACKUP_DIR = `${PLANE_ROOT}/backup`
+export const PLANE_BACKUP_LOG_DIR = `${PLANE_LOGS}/backup`
 
 /** Retention: 7 daily, 4 weekly and 6 monthly snapshots are kept; the rest are pruned. */
 export const RETENTION = { daily: 7, weekly: 4, monthly: 6 } as const
@@ -29,6 +44,8 @@ export const SNAPSHOT_HOST = "eido"
 export const SNAPSHOT_TAG = "eido-nightly"
 
 export type BackupConfig = {
+  /** `split`: the databases are the plane's, backed up by a root LaunchDaemon (#782). */
+  plane: "single" | "split"
   /** SQLite files, backed up as consistent copies taken into `stagingDir`. */
   databases: { name: string; path: string; staged: string }[]
   /** Originals by content hash; immutable files, backed up in place. */
@@ -40,12 +57,43 @@ export type BackupConfig = {
   logDir: string
   /** Rewritten with the time of each fully successful run. */
   stampFile: string
+  /** Split host only: the root-only file that holds the repository passphrase. */
+  passwordFile?: string
 }
 
 export type BackupConfigInput = {
   env: Env
   home: string
   repoRoot: string
+}
+
+/**
+ * The backup of a split host (#782): the gate's and data plane's directories as `_eidogate` and
+ * `_eidodata` own them, copied by a root daemon that keeps its staging directory, passphrase file
+ * and log inside root-only directories.
+ */
+export function planeBackupConfig(repository: string): BackupConfig {
+  const stagingDir = `${PLANE_BACKUP_DIR}/staging`
+  const database = (name: string, dir: string) => ({
+    name,
+    path: posix.join(dir, name),
+    staged: posix.join(stagingDir, name),
+  })
+  return {
+    plane: "split",
+    databases: [
+      database(DATA_DB_FILE, PLANE_DATA_DIR),
+      database(CONTROL_DB_FILE, PLANE_GATE_DIR),
+    ],
+    blobDir: posix.join(PLANE_DATA_DIR, "blobs"),
+    stagingDir,
+    repository,
+    logDir: PLANE_BACKUP_LOG_DIR,
+    // 0644 in the plane's log directory, so the gate user could read it. Nothing reads it there yet:
+    // the gate's daemon is not given the path (#801).
+    stampFile: posix.join(PLANE_LOGS, "backup-last-success"),
+    passwordFile: `${PLANE_BACKUP_DIR}/restic-password`,
+  }
 }
 
 export function buildBackupConfig(input: BackupConfigInput): BackupConfig {
@@ -58,6 +106,12 @@ export function buildBackupConfig(input: BackupConfigInput): BackupConfig {
     throw new BackupError(
       `EIDO_BACKUP_REPO must be an absolute local path, not ${JSON.stringify(repository)}`
     )
+  const plane = input.env["EIDO_BACKUP_PLANE"] ?? ""
+  if (plane !== "" && plane !== "single" && plane !== "split")
+    throw new BackupError(
+      `EIDO_BACKUP_PLANE must be "single" or "split", not ${JSON.stringify(plane)}`
+    )
+  if (plane === "split") return planeBackupConfig(repository)
 
   // Only the data directories are read from the stack config; the host and mode are not used.
   const stack = buildStackConfig({
@@ -89,6 +143,7 @@ export function buildBackupConfig(input: BackupConfigInput): BackupConfig {
     staged: join(stagingDir, name),
   })
   return {
+    plane: "single",
     databases: [
       database(DATA_DB_FILE, coreDir),
       database(CONTROL_DB_FILE, gateDir),

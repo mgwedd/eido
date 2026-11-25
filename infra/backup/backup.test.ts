@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { dirname, join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { describe, expect, test } from "vitest"
@@ -89,6 +95,20 @@ describe.skipIf(process.platform === "win32")("backup", () => {
     expect(readFileSync(config.stampFile, "utf8")).toBe(
       "2026-03-10T03:15:00.000Z\n"
     )
+    for (const l of live) l.close()
+  })
+
+  test("the stamp is world-readable even under a private umask, so the gate user can read it", async () => {
+    const config = testConfig(tempDir())
+    initRepo(config)
+    const live = liveData(config)
+    const before = process.umask(0o077)
+    try {
+      await runBackup(config, harness().deps)
+    } finally {
+      process.umask(before)
+    }
+    expect(statSync(config.stampFile).mode & 0o777).toBe(0o644)
     for (const l of live) l.close()
   })
 

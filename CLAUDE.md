@@ -10,7 +10,7 @@
 - Required status checks (ruleset on `main`): `check`, `title` (`commitlint.yml`, PR title lint) and GitGuardian. `check` must always run and report; do not make it skippable.
 - To add or remove a check, edit `TASKS` in `scripts/verify.ts` and `turbo.json`; CI and `pnpm verify` stay in sync. Locally, `pnpm verify` runs `--affected` when `origin/main` exists. Docs-only changes (.md and images) run only the `always` tasks.
 - `pnpm verify` and turbo never need cargo. Rust is in `packages/gate/native/file-helper` (toolchain pinned by `rust-toolchain.toml`, no crates); CI runs `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` there.
-- `.github/workflows/codeql.yml` is CodeQL advanced setup (default setup is off). It analyses `actions`, `javascript-typescript` and `rust` on every PR; `swift` (macOS) only when a PR touches `apps/helper/` or the workflow, and on every push to `main` and weekly. The ruleset's `code_scanning` rule reads its results.
+- `.github/workflows/codeql.yml` is CodeQL advanced setup (default setup is off). It analyses `actions`, `javascript-typescript` and `rust` on every PR; `swift` (macOS) only when a PR touches `apps/helper/` or the workflow, and on every push to `main` and weekly; other PRs upload an empty `/language:swift` result from Linux, because code scanning blocks a PR that lacks a configuration `main` has. The ruleset's `code_scanning` rule reads its results.
 - Workflow edits: pin actions to a full SHA with a `# vX.Y.Z` comment, `persist-credentials: false` on checkout, least-privilege `permissions`.
 
 ## Scripts and install

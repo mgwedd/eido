@@ -17,6 +17,7 @@ import type {
   EvalCase,
   EvalResults,
   EvalScores,
+  EvalThresholds,
   Verdicts,
 } from "./types"
 
@@ -27,7 +28,9 @@ import type {
 //     [--candidates <file>] [--seed <n>] [--enforce]
 //
 // Baseline mode (the default) reports every score and exits 0 unless a candidate could not run.
-// `--enforce` also needs the confirmed thresholds.json and exits 1 when any score misses it.
+// `--enforce` also needs the confirmed thresholds.json and exits 1 when a score misses its
+// threshold. thresholds.json holds only the confirmed targets (#28: schemaValid and
+// parameterExactMatch); a score with no threshold is reported and never enforced.
 
 const THRESHOLD_KEYS = [
   "schemaValid",
@@ -55,12 +58,15 @@ async function readCases(directory: string): Promise<EvalCase[]> {
   )
 }
 
-export function meets(scores: EvalScores, thresholds: EvalScores): boolean {
-  return THRESHOLD_KEYS.every((key) =>
-    key === "injectionCompliance"
-      ? scores[key] <= thresholds[key]
-      : scores[key] >= thresholds[key]
-  )
+/** True when every score that has a threshold meets it; scores without one are not checked. */
+export function meets(scores: EvalScores, thresholds: EvalThresholds): boolean {
+  return THRESHOLD_KEYS.every((key) => {
+    const target = thresholds[key]
+    if (target === undefined) return true
+    return key === "injectionCompliance"
+      ? scores[key] <= target
+      : scores[key] >= target
+  })
 }
 
 async function runCandidate(
@@ -161,15 +167,17 @@ export function formatTable(results: EvalResults): string {
   const lines = [header, ...rows].map((row) => row.join(" | "))
   if (results.thresholds !== undefined) {
     const t = results.thresholds
+    const target = (key: keyof EvalScores, bound: ">=" | "<="): string =>
+      t[key] === undefined ? "not enforced" : `${bound} ${percent(t[key])}`
     lines.push(
       [
         "Thresholds",
         "",
-        `>= ${percent(t.schemaValid)}`,
-        `>= ${percent(t.parameterExactMatch)}`,
-        `>= ${percent(t.noCallPrecision)}`,
-        `<= ${percent(t.injectionCompliance)}`,
-        `>= ${percent(t.editFreeApproval)}`,
+        target("schemaValid", ">="),
+        target("parameterExactMatch", ">="),
+        target("noCallPrecision", ">="),
+        target("injectionCompliance", "<="),
+        target("editFreeApproval", ">="),
         "",
       ].join(" | ")
     )
@@ -191,12 +199,17 @@ export function formatTable(results: EvalResults): string {
   return `${lines.join("\n")}\n`
 }
 
+const THRESHOLDS_FILE = new URL("./thresholds.json", import.meta.url)
+
 export async function main(
   argv = process.argv.slice(2),
-  env: Env = process.env
+  env: Env = process.env,
+  thresholdsFile: URL = THRESHOLDS_FILE
 ): Promise<EvalResults> {
   const args = parseCliOptions(argv, env)
-  const thresholds = args.enforce ? await readThresholds() : undefined
+  const thresholds = args.enforce
+    ? await readThresholds(thresholdsFile)
+    : undefined
   const candidates =
     args.candidates === undefined
       ? [defaultCandidate(env)]
@@ -247,12 +260,10 @@ export async function main(
   return results
 }
 
-async function readThresholds(): Promise<EvalScores> {
+async function readThresholds(file: URL): Promise<EvalThresholds> {
   let parsed: unknown
   try {
-    parsed = JSON.parse(
-      await readFile(new URL("./thresholds.json", import.meta.url), "utf8")
-    )
+    parsed = JSON.parse(await readFile(file, "utf8"))
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT")
       throw new Error(
@@ -263,8 +274,11 @@ async function readThresholds(): Promise<EvalScores> {
   return parseThresholds(parsed)
 }
 
-/** The five targets, each a share from 0 to 1; any other key is refused. */
-export function parseThresholds(parsed: unknown): EvalScores {
+/**
+ * The confirmed targets, each a share from 0 to 1, for at least one of the five scores; any other
+ * key is refused. A score left out is reported but not enforced.
+ */
+export function parseThresholds(parsed: unknown): EvalThresholds {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     throw new Error("thresholds.json must be an object")
   const allowed = new Set<string>(THRESHOLD_KEYS)
@@ -272,13 +286,13 @@ export function parseThresholds(parsed: unknown): EvalScores {
     if (!allowed.has(key))
       throw new Error(`thresholds.${key} is not a supported score`)
   }
-  return {
-    schemaValid: threshold(parsed, "schemaValid"),
-    parameterExactMatch: threshold(parsed, "parameterExactMatch"),
-    noCallPrecision: threshold(parsed, "noCallPrecision"),
-    injectionCompliance: threshold(parsed, "injectionCompliance"),
-    editFreeApproval: threshold(parsed, "editFreeApproval"),
+  const thresholds: EvalThresholds = {}
+  for (const key of THRESHOLD_KEYS) {
+    if (Reflect.has(parsed, key)) thresholds[key] = threshold(parsed, key)
   }
+  if (Object.keys(thresholds).length === 0)
+    throw new Error("thresholds.json must set at least one score")
+  return thresholds
 }
 
 function threshold(value: object, key: keyof EvalScores): number {

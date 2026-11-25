@@ -30,7 +30,7 @@ What core may reach: the gate's data-plane socket, `127.0.0.1` on the gate's egr
 - Node must live outside `/Users`, because neither service user can read your home. Use Homebrew's node (`/opt/homebrew/bin/node`), or pass `--node <path>`.
 - Run from your main checkout on an up-to-date `main`. The plan copies it to the app dir.
 - `stack.env` needs mode 0600 when it exists. The plan reads `EIDO_TAILNET_HOST` and `EIDO_LLAMA_PORT` from it, the same way the stack does.
-- Your own `com.eido.stack` agent also starts a gate and core under your user, on the same ports. Stop it before you apply: `pnpm stack:stop`. Running web and the supervisor alone under your user is #779.
+- Your own `com.eido.stack` agent also starts a gate and core under your user, on the same ports. Stop it before you apply (`pnpm stack:stop`, from your main checkout, while `stack.env` still has no `EIDO_STACK_PLANE`), then hand the ports to the plane with [Run web and the supervisor beside the plane](#run-web-and-the-supervisor-beside-the-plane) below.
 
 ## Create
 
@@ -51,6 +51,20 @@ sudo -u _eidogate security create-keychain -P \
 ```
 
 Unlocking that keychain while the gate runs under launchd without a login session is still open: #780.
+
+## Run web and the supervisor beside the plane
+
+With the plane applied, your `com.eido.stack` agent stops running a gate and core and runs only web and the supervisor. Set split mode and reinstall the agent:
+
+```sh
+printf 'EIDO_STACK_PLANE=split\n' >> "$HOME/Library/Application Support/eido-dev/stack.env"   # under $EIDO_STACK_DIR if you set it
+pnpm stack:install
+pnpm stack:status
+```
+
+`stack.env` keeps its mode 0600 when you append to it. `stack:install` loads the agent, which starts web with `EIDO_GATE_PHONE_HOST=127.0.0.1` and `EIDO_GATE_PHONE_PORT` set to the gate's phone port, so web talks to `com.eido.plane.gate`. `stack:status` and `stack:doctor` then report `com.eido.plane.gate` and `com.eido.plane.core` from `launchctl print system/<label>` and their loopback health URLs, and name one that is not installed, not loaded or stopped. `stack:stop` stops web and says it leaves the plane's daemons alone; the supervisor lists the daemons but never starts or stops them.
+
+In split mode `stack:setup`, `stack:bootstrap` and `stack:gate` refuse, because they act on a gate under your own account (#795).
 
 ## Verify
 
@@ -122,6 +136,10 @@ Unlocking that keychain while the gate runs under launchd without a login sessio
 
 8. Reboot, then repeat steps 4, 5 and 7.
 
+## Back up
+
+The owner's nightly backup cannot read the plane's data dirs. A root LaunchDaemon, `com.eido.plane.backup`, backs up both from the plane; set it up and restore from it as described under "Split host" in [backup-restore.md](backup-restore.md).
+
 ## Update
 
 After pulling a new `main`, or after changing `stack.env`, the egress port or the llama port, run the plan again and apply it. The script is idempotent: it rewrites the users' attributes, the group members, the modes, the app copy, the profiles, the anchors, the host list and the plists, then restarts the four daemons. A connector manifest added or changed on `main` reaches the egress host list only through this step.
@@ -143,14 +161,12 @@ sudo sh ~/eido-plane-remove.sh
 
 This boots out and deletes the four daemons, flushes both anchors, removes the ACL entries, deletes the users and groups that exist, and removes the policy files, the app copy and the run dir. It keeps the gate's and data plane's data, the gate keychain and the logs. The script ends by printing the `sudo rm -rf` command that deletes them, once you have backed them up. pf stays enabled; `sudo pfctl -d` disables it if nothing else uses it.
 
-To go back to the single-user stack, run `pnpm stack:install`.
+To go back to the single-user stack, remove the `EIDO_STACK_PLANE=split` line from `stack.env` and run `pnpm stack:install`.
 
 ## Open follow-ups
 
 - #777: the isolation script's data-plane probes under `core.sb`.
 - #778: a no-network fence for parsers (core's parse child inherits `core.sb`).
-- #779: a stack mode that runs only web and the supervisor under your user.
 - #780: headless unlock of the gate keychain.
 - #781: Things, EventKit and file-root writes from the gate user.
-- #782: backups of the plane's gate and data dirs.
 - #783: the supervisor socket in a directory of its own.

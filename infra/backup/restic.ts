@@ -27,16 +27,21 @@ const PASSWORD_VARIABLES = [
 
 /**
  * The variables restic is given: the repository, and unless the caller's environment already
- * names a passphrase source, a command that reads the passphrase from the login Keychain.
+ * names a passphrase source, where the passphrase is read from: the root-only file on a split
+ * host (a root daemon cannot read the owner's login Keychain), else the login Keychain.
  */
 export function resticEnv(
   config: BackupConfig,
   base: Readonly<Record<string, string | undefined>>
 ): Record<string, string> {
   const env: Record<string, string> = { RESTIC_REPOSITORY: config.repository }
-  if (!PASSWORD_VARIABLES.some((name) => (base[name] ?? "") !== ""))
-    env["RESTIC_PASSWORD_COMMAND"] =
-      `/usr/bin/security find-generic-password -s ${KEYCHAIN.service} -a ${KEYCHAIN.account} -w`
+  if (!PASSWORD_VARIABLES.some((name) => (base[name] ?? "") !== "")) {
+    if (config.passwordFile !== undefined)
+      env["RESTIC_PASSWORD_FILE"] = config.passwordFile
+    else
+      env["RESTIC_PASSWORD_COMMAND"] =
+        `/usr/bin/security find-generic-password -s ${KEYCHAIN.service} -a ${KEYCHAIN.account} -w`
+  }
   return env
 }
 

@@ -51,6 +51,22 @@ async function fixture() {
         request.path,
         Buffer.from(request.contentBase64, "base64").toString("utf8")
       )
+    } else if (request.op === "read") {
+      const bytes = disk.get(request.path)
+      if (bytes === undefined)
+        return Promise.resolve({
+          ok: false,
+          code: "not_found",
+          message: "not found",
+        })
+      const raw = Buffer.from(bytes, "utf8")
+      if (raw.length > request.maxBytes)
+        return Promise.resolve({ ok: false, code: "io", message: "too large" })
+      return Promise.resolve({
+        ok: true,
+        op: "read",
+        contentBase64: raw.toString("base64"),
+      })
     } else {
       if (
         request.op !== "move" &&
@@ -158,7 +174,12 @@ describe("native file executor lifecycle", () => {
         expect([...f.disk.values()]).toEqual([content, content])
       } else expect(f.disk).toEqual(new Map([["a.txt", content]]))
       expect((await f.executor.undo(proposed.intentId)).ok).toBe(true)
-      expect(f.helper).toHaveBeenCalledTimes(2)
+      // A create's Undo reads the file back first and trashes it only while it holds the created bytes.
+      expect(f.helper.mock.calls.map(([request]) => request.op)).toEqual(
+        intent.kind === "file.create"
+          ? ["create", "read", "trash"]
+          : ["move", "move"]
+      )
       expect(verifyChain(f.db).ok).toBe(true)
       expect(loggedText(f.db)).not.toContain(content)
       expect(loggedText(f.db)).not.toContain(ROOT.path)

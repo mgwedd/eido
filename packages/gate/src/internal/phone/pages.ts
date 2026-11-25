@@ -58,6 +58,8 @@ export function auditPage(state: PhoneState, request: GateRequest): Reply {
     )
   }
   const { before, limit = 50 } = checked.value
+  // An Undo attempt is claimed once and never repeated (the executor answers `outcome_unresolved`
+  // to every retry), so a claimed attempt without a result is not offered again.
   const columns = `SELECT a.seq, a.ts, a.actor, a.action, a.target, a.detail_hash,
       EXISTS (
         SELECT 1 FROM approvals p
@@ -72,6 +74,7 @@ export function auditPage(state: PhoneState, request: GateRequest): Reply {
       ) AS approved,
       CASE WHEN e.audit_seq = a.seq THEN
         CASE WHEN u.intent_id IS NOT NULL THEN 'done'
+             WHEN t.intent_id IS NOT NULL THEN 'none'
              WHEN e.inverse_op IS NOT NULL AND (i.tier = 'auto' OR (i.kind = 'file.delete' AND i.tier = 'approval')) THEN 'available'
              ELSE 'none' END
       ELSE 'none' END AS undo,
@@ -79,6 +82,7 @@ export function auditPage(state: PhoneState, request: GateRequest): Reply {
     FROM audit_log a
     LEFT JOIN executions e ON e.audit_seq = a.seq
     LEFT JOIN execution_undos u ON u.intent_id = e.intent_id
+    LEFT JOIN execution_attempts t ON t.intent_id = e.intent_id AND t.direction = 'undo'
     LEFT JOIN intents i ON i.id = e.intent_id`
   const selected =
     before === undefined
