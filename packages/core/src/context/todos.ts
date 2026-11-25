@@ -24,6 +24,11 @@ export interface OpenTodos {
   todos: TodoLine[]
   /** How many open to-dos shared a word with the request, shown or not. */
   matched: number
+  /**
+   * The two best matches are equally good: they share as many words with the request and cover
+   * as large a share of their own title. The request does not say which one it means (#758).
+   */
+  ambiguous: boolean
 }
 
 // Words that carry no match: articles and prepositions, plus the words of a request about a
@@ -54,9 +59,10 @@ const LIVE_OPEN_TODOS = `SELECT f.todo_id, t.title, f.due_date, t.occurred_at
 
 /**
  * The open to-dos of the document index whose title shares a word with the request (lowercase,
- * stop words removed), best match first, newest first on ties, at most ten, titles cut at 80
- * characters. A request that shares no word gets none. Completed and cancelled to-dos are never
- * listed, and neither is one whose id would not reach the model unchanged.
+ * stop words removed), best match first (most shared words, then the largest share of the title
+ * covered), newest first on ties, at most ten, titles cut at 80 characters. A request that shares
+ * no word gets none. Completed and cancelled to-dos are never listed, and neither is one whose id
+ * would not reach the model unchanged.
  */
 export function listOpenTodos(db: DatabaseSync, request: string): OpenTodos {
   const wanted = words(request)
@@ -67,12 +73,14 @@ export function listOpenTodos(db: DatabaseSync, request: string): OpenTodos {
       const id = String(row["todo_id"])
       const title = typeof row["title"] === "string" ? row["title"] : ""
       if (normalizeMaterial(id) !== id) return []
-      const shared = [...words(title)].filter((w) => wanted.has(w)).length
+      const titleWords = words(title)
+      const shared = [...titleWords].filter((w) => wanted.has(w)).length
       if (shared === 0) return []
       const due = row["due_date"]
       return [
         {
           score: shared,
+          coverage: shared / titleWords.size,
           at: typeof row["occurred_at"] === "string" ? row["occurred_at"] : "",
           line: {
             id,
@@ -86,12 +94,19 @@ export function listOpenTodos(db: DatabaseSync, request: string): OpenTodos {
   scored.sort(
     (a, b) =>
       b.score - a.score ||
+      b.coverage - a.coverage ||
       (a.at < b.at ? 1 : a.at > b.at ? -1 : 0) ||
       (a.line.id < b.line.id ? -1 : 1)
   )
+  const [first, second] = scored
   return {
     todos: scored.slice(0, MAX_TODO_LINES).map((s) => s.line),
     matched: scored.length,
+    ambiguous:
+      first !== undefined &&
+      second !== undefined &&
+      first.score === second.score &&
+      first.coverage === second.coverage,
   }
 }
 
@@ -99,7 +114,9 @@ export function listOpenTodos(db: DatabaseSync, request: string): OpenTodos {
  * The Todos block as prompt parts: a header, then one line per to-do, inside the pack's data
  * fence. No to-dos render nothing.
  */
-export function renderTodosBlock(list: OpenTodos): PromptPart[] {
+export function renderTodosBlock(
+  list: Pick<OpenTodos, "todos" | "matched">
+): PromptPart[] {
   if (list.todos.length === 0) return []
   const lines = list.todos.map(
     (t) =>
