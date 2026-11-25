@@ -153,6 +153,16 @@ Assign each SimpleFIN account an entity in Settings, under SimpleFIN accounts. U
 
 SimpleFIN allows 24 requests a day and 90 days per request. The manifest's daily limit defaults to that; set `EIDO_SIMPLEFIN_REQUESTS_PER_DAY` when building the manifest (`connector-manifest simplefin`) to pin a lower one (the committed copy the Admin page pins declares 24, so place this one first). When the limit is spent the proxy answers `daily_limit` and core waits for the next day.
 
+## Apple Calendar
+
+Core reads Apple calendars through the gate's read-only EventKit API (#749, #751); the gate runs the Eido Helper, and core never sees a credential. Nothing writes to the calendar on this path.
+
+Core environment:
+
+- `EIDO_APPLE_CALENDARS`: `*` reads every calendar the Helper lists; otherwise a comma-separated list of EventKit calendar ids. Unset or empty, core does not read Apple calendars.
+
+Every five minutes core reads each enabled calendar from 14 days ago to 180 days ahead and indexes its events under source `apple-eventkit`. A successful read replaces that calendar's events in that window; a failed read changes nothing. Each calendar read is listed as an account on the Profile page, named `Apple Calendar: <title>`; its events go to the assigned entity, else to the default entity, and are not stored while neither exists.
+
 ## Reading the result
 
 - The command's last line is the gate's verdict.

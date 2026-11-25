@@ -184,3 +184,65 @@ describe("checkReply reply-draft bounds", () => {
     expect(checked.ok).toBe(true)
   })
 })
+
+describe("checkReply Apple events", () => {
+  const calendarContext = {
+    kinds: new Set(["calendar.edit", "calendar.delete"]),
+    referable: [],
+    isAppleEvent: (eventUid: string) => eventUid.startsWith("recurrence:"),
+  }
+
+  test("a Proton delete naming an Apple occurrence is refused", () => {
+    const checked = checkReply(
+      reply({
+        kind: "calendar.delete",
+        args: { eventUid: "recurrence:apple-1:2026-12-01T09:00:00Z" },
+      }),
+      calendarContext,
+      5
+    )
+    expect(checked).toEqual({
+      ok: false,
+      failures: [
+        { code: "apple_event_not_proton", path: "$.intents[0].args.eventUid" },
+      ],
+    })
+  })
+
+  test("a Proton edit naming an Apple event is refused", () => {
+    const checked = checkReply(
+      reply({
+        kind: "calendar.edit",
+        args: { eventUid: "recurrence:apple-2:2026-12-02T09:00:00Z" },
+      }),
+      calendarContext,
+      5
+    )
+    expect(checked).toEqual({
+      ok: false,
+      failures: [
+        { code: "apple_event_not_proton", path: "$.intents[0].args.eventUid" },
+      ],
+    })
+  })
+
+  test("a Proton delete naming any other uid passes", () => {
+    const checked = checkReply(
+      reply({
+        kind: "calendar.delete",
+        args: { eventUid: "proton-uid-1@example.invalid" },
+      }),
+      calendarContext,
+      5
+    )
+    expect(checked).toEqual({
+      ok: true,
+      intents: [
+        {
+          kind: "calendar.delete",
+          args: { eventUid: "proton-uid-1@example.invalid" },
+        },
+      ],
+    })
+  })
+})

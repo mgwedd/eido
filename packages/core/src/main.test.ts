@@ -42,7 +42,9 @@ import {
   DATA_DB_FILE,
   DATA_PLANE_LOG_FILE,
   SCRUBBED_FLAG,
+  appleCalendarLabel,
   coreApiConfig,
+  createAppleCalendarSyncRuntime,
   createGmailSyncRuntime,
   createProtonSyncRuntime,
   dataPlaneConfig,
@@ -149,6 +151,21 @@ describe("dataPlaneConfig", () => {
     expect(() => dataPlaneConfig({ ...base, EIDO_FILES_SYNC: "yes" })).toThrow(
       "EIDO_FILES_SYNC must be 0 or 1"
     )
+  })
+
+  it("turns Apple calendar sync on only when EIDO_APPLE_CALENDARS names calendars", () => {
+    const base = { EIDO_DATA_DIR: "/d", EIDO_GATE_SOCKET: "/s/gate.sock" }
+    expect(dataPlaneConfig(base).appleCalendars).toBeUndefined()
+    const env = { ...base, EIDO_APPLE_CALENDARS: "cal-a,cal-b" }
+    expect(dataPlaneConfig(env).appleCalendars).toEqual({
+      kind: "ids",
+      ids: ["cal-a", "cal-b"],
+    })
+    expect(outsideAllowlist(env)).toEqual([])
+    expect(dataPlaneEnv(env)["EIDO_APPLE_CALENDARS"]).toBe("cal-a,cal-b")
+    expect(() =>
+      dataPlaneConfig({ ...base, EIDO_APPLE_CALENDARS: "cal-a,," })
+    ).toThrow("EIDO_APPLE_CALENDARS must be")
   })
 
   it("puts eido-data.db and the log in the data dir", () => {
@@ -1819,5 +1836,289 @@ describe("forwardTo", () => {
     )
     child.emit("exit", null)
     expect(exits).toEqual([1])
+  })
+})
+
+describe("appleCalendarLabel", () => {
+  it("names the calendar after the connector, within the label limit", () => {
+    expect(appleCalendarLabel(" Lorem ")).toBe("Apple Calendar: Lorem")
+    expect(appleCalendarLabel("  ")).toBe("Apple Calendar")
+    expect(appleCalendarLabel("x".repeat(200))).toBe(
+      `Apple Calendar: ${"x".repeat(84)}`
+    )
+  })
+})
+
+describe("createAppleCalendarSyncRuntime", () => {
+  const calendars = {
+    calendars: [
+      {
+        id: "cal-synthetic-a",
+        title: "Secret synthetic title",
+        writable: true,
+      },
+    ],
+  }
+  const appleEvent = {
+    id: "evt-1",
+    calendarId: "cal-synthetic-a",
+    title: "Private synthetic event",
+    start: "2026-12-02T09:00:00Z",
+    end: "2026-12-02T09:30:00Z",
+    allDay: false,
+    location: null,
+    notes: null,
+    modifiedAt: null,
+  }
+  const entities = {
+    entityForAccount: () => Promise.resolve(null),
+    getDefaultEntityId: () => Promise.resolve("entity-default"),
+  }
+  function dbWithEntity(): DatabaseSync {
+    const db = openDataDb(":memory:")
+    db.prepare(
+      `INSERT INTO entities (id, kind, name, tag, created_at)
+       VALUES ('entity-default', 'personal', 'Ipsum', 'default', datetime('now'))`
+    ).run()
+    return db
+  }
+
+  it("logs ids and counts only, and signals a committed batch", async () => {
+    const db = dbWithEntity()
+    const logged: [string, Readonly<Record<string, string>> | undefined][] = []
+    let committed = 0
+    const sync = createAppleCalendarSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      client: {
+        listCalendars: () => Promise.resolve(calendars),
+        listEvents: () => Promise.resolve({ events: [appleEvent] }),
+      },
+      entities,
+      selection: { kind: "ids", ids: ["cal-synthetic-a", "cal-gone"] },
+      now: () => new Date("2026-12-01T12:00:00Z"),
+      onBatchCommitted: () => (committed += 1),
+      log: (event, fields) => logged.push([event, fields]),
+    })
+    await sync()
+    expect(logged).toEqual([
+      [
+        "apple_calendar_synced",
+        {
+          calendar: "cal-synthetic-a",
+          fetched: "1",
+          ingested: "1",
+          retired: "0",
+        },
+      ],
+      [
+        "apple_calendar_sync_failed",
+        { calendar: "cal-gone", reason: "calendar_not_listed" },
+      ],
+    ])
+    expect(committed).toBe(1)
+    expect(JSON.stringify(logged)).not.toContain("synthetic title")
+    db.close()
+  })
+
+  it("reports a failed calendar's reason and commits nothing", async () => {
+    const db = dbWithEntity()
+    const logged: [string, Readonly<Record<string, string>> | undefined][] = []
+    let committed = 0
+    const sync = createAppleCalendarSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      client: {
+        listCalendars: () => Promise.resolve(calendars),
+        listEvents: () => Promise.reject(new Error("unavailable")),
+      },
+      entities,
+      selection: { kind: "all" },
+      onBatchCommitted: () => (committed += 1),
+      log: (event, fields) => logged.push([event, fields]),
+    })
+    await sync()
+    expect(logged).toEqual([
+      [
+        "apple_calendar_sync_failed",
+        { calendar: "cal-synthetic-a", reason: "unavailable" },
+      ],
+    ])
+    expect(committed).toBe(0)
+    db.close()
+  })
+
+  it("does not read the Helper while the gate holds the connector open", async () => {
+    const db = dbWithEntity()
+    let listed = 0
+    const sync = createAppleCalendarSyncRuntime({
+      db,
+      gate: {
+        getConnectorHealth: () =>
+          Promise.resolve([
+            {
+              name: "apple-eventkit",
+              health: "open",
+              consecutiveFailures: 3,
+              nextAttemptAt: "2999-01-01T00:00:00Z",
+            },
+          ]),
+      },
+      client: {
+        listCalendars: () => {
+          listed += 1
+          return Promise.resolve(calendars)
+        },
+        listEvents: () => Promise.resolve({ events: [] }),
+      },
+      entities,
+      selection: { kind: "all" },
+      log: () => undefined,
+    })
+    await sync()
+    expect(listed).toBe(0)
+    db.close()
+  })
+
+  it("logs a calendar list failure and runs one sync at a time", async () => {
+    const db = dbWithEntity()
+    const logged: string[] = []
+    let calls = 0
+    const sync = createAppleCalendarSyncRuntime({
+      db,
+      gate: { getConnectorHealth: () => Promise.resolve([]) },
+      client: {
+        listCalendars: () => {
+          calls += 1
+          return Promise.reject(new Error("helper unavailable"))
+        },
+        listEvents: () => Promise.resolve({ events: [] }),
+      },
+      entities,
+      selection: { kind: "all" },
+      log: (event, fields) =>
+        logged.push(`${event} ${fields?.["reason"] ?? ""}`),
+    })
+    await Promise.all([sync(), sync()])
+    expect(calls).toBe(1)
+    expect(logged).toEqual(["apple_calendar_sync_failed helper unavailable"])
+    db.close()
+  })
+})
+
+describe("runDataPlane Apple calendar sync", () => {
+  let appleDir: string
+  beforeEach(() => {
+    appleDir = mkdtempSync(join(tmpdir(), "eido-apple-"))
+  })
+  afterEach(() => {
+    rmSync(appleDir, { recursive: true, force: true })
+  })
+
+  async function withGate(
+    run: (socketPath: string, requests: string[]) => Promise<void>
+  ): Promise<void> {
+    const requests: string[] = []
+    const gate = createHttpServer((request, response) => {
+      const url = request.url ?? ""
+      requests.push(url.split("?")[0] ?? url)
+      const body = url.startsWith("/connector-health")
+        ? { connectors: [] }
+        : url.startsWith("/apple/calendars")
+          ? {
+              calendars: [
+                { id: "cal-synthetic-a", title: "Synthetic A", writable: true },
+              ],
+            }
+          : url.startsWith("/apple/events")
+            ? {
+                events: [
+                  {
+                    id: "evt-1",
+                    calendarId: "cal-synthetic-a",
+                    title: "Lorem",
+                    start: new Date(Date.now() + 86_400_000).toISOString(),
+                    end: new Date(Date.now() + 90_000_000).toISOString(),
+                    allDay: false,
+                    location: null,
+                    notes: null,
+                    modifiedAt: null,
+                  },
+                ],
+              }
+            : undefined
+      response.writeHead(body === undefined ? 404 : 200, {
+        "content-type": "application/json",
+      })
+      response.end(
+        JSON.stringify(body ?? { code: "not_found", message: "not found" })
+      )
+    })
+    const socketPath = join(appleDir, "gate.sock")
+    await new Promise<void>((resolve) => gate.listen(socketPath, resolve))
+    try {
+      await run(socketPath, requests)
+    } finally {
+      await new Promise<void>((resolve) => gate.close(() => resolve()))
+    }
+  }
+
+  it("syncs the enabled calendars through the gate and reports them as accounts", async () => {
+    await withGate(async (socketPath, requests) => {
+      const env = {
+        EIDO_DATA_DIR: join(appleDir, "data"),
+        EIDO_GATE_SOCKET: socketPath,
+        EIDO_APPLE_CALENDARS: "*",
+      }
+      mkdirSync(env.EIDO_DATA_DIR, { recursive: true })
+      const seed = openDataDb(join(env.EIDO_DATA_DIR, DATA_DB_FILE))
+      seed
+        .prepare(
+          `INSERT INTO entities (id, kind, name, tag, created_at)
+           VALUES ('entity-default', 'personal', 'Ipsum', 'ipsum', datetime('now'))`
+        )
+        .run()
+      seed
+        .prepare(
+          "INSERT INTO default_entity (id, entity_id) VALUES (1, 'entity-default')"
+        )
+        .run()
+      seed.close()
+      const plane = runDataPlane(dataPlaneConfig(env), env)
+      try {
+        await vi.waitFor(
+          () => {
+            const row = plane.db
+              .prepare(
+                "SELECT count(*) AS n FROM documents WHERE source = 'apple-eventkit'"
+              )
+              .get()
+            expect(Number(row?.["n"])).toBe(1)
+          },
+          { timeout: 5000 }
+        )
+        expect(requests).toContain("/apple/events")
+        expect(plane.connectorAccounts()).toContainEqual({
+          connector: "apple-eventkit",
+          healthName: "apple-eventkit",
+          accountRef: "cal-synthetic-a",
+          label: "Apple Calendar: Synthetic A",
+        })
+      } finally {
+        await plane.close()
+      }
+    })
+  })
+
+  it("does not read Apple calendars when EIDO_APPLE_CALENDARS is unset", async () => {
+    await withGate(async (socketPath, requests) => {
+      const env = {
+        EIDO_DATA_DIR: join(appleDir, "data"),
+        EIDO_GATE_SOCKET: socketPath,
+      }
+      const plane = runDataPlane(dataPlaneConfig(env), env)
+      await plane.close()
+      expect(requests.filter((path) => path.startsWith("/apple/"))).toEqual([])
+    })
   })
 })

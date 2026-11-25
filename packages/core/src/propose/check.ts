@@ -16,6 +16,11 @@ export interface CheckContext {
   /** The ids of the to-dos shown in the Todos block. A to-do intent may name only these. */
   todoIds?: ReadonlySet<string>
   /**
+   * Whether an event id is an indexed Apple Calendar event. `calendar.edit` and `calendar.delete`
+   * are Proton invitation operations: they may never name an Apple event.
+   */
+  isAppleEvent?: (eventUid: string) => boolean
+  /**
    * Set for a reply draft: every `email.draft` must go only to people on the seed's thread, with
    * no bcc, and reply only to the seed message.
    */
@@ -71,6 +76,19 @@ function todoFailures(
   return typeof id === "string" && shown.has(id)
     ? []
     : [{ code: "unknown_reference", path: `${at}.args.id` }]
+}
+
+/** A Proton invitation edit or delete must not name an Apple Calendar event. */
+function appleEventFailures(
+  intent: Intent,
+  at: string,
+  isAppleEvent: (eventUid: string) => boolean
+): ProposalFailure[] {
+  if (intent.kind !== "calendar.edit" && intent.kind !== "calendar.delete")
+    return []
+  return isAppleEvent(intent.args.eventUid)
+    ? [{ code: "apple_event_not_proton", path: `${at}.args.eventUid` }]
+    : []
 }
 
 function draftFailures(
@@ -141,6 +159,9 @@ export function checkReply(
     return [
       ...referenceFailures(intent, at, context),
       ...todoFailures(intent, at, context.todoIds ?? new Set()),
+      ...(context.isAppleEvent === undefined
+        ? []
+        : appleEventFailures(intent, at, context.isAppleEvent)),
       ...(context.draft === undefined
         ? []
         : draftFailures(intent, at, context.draft)),

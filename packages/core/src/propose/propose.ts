@@ -3,6 +3,7 @@ import { GateRequestError } from "@eido/gate"
 import type { IntentClient, IntentState, Tier } from "@eido/gate"
 import { INTENT_KINDS } from "@eido/schemas"
 import type { GateIntentInjection, Intent } from "@eido/schemas"
+import { isAppleEventId } from "../connectors/apple-calendar/sync"
 import { assembleContext } from "../context/assemble"
 import { listOpenTodos, renderTodosBlock } from "../context/todos"
 import { ID_DEPENDENT_THINGS_KINDS, selectTools } from "../context/tools"
@@ -198,6 +199,7 @@ export async function proposeIntents(
     kinds: new Set(kinds),
     referable,
     todoIds: new Set(todos.todos.map((t) => t.id)),
+    isAppleEvent: (eventUid: string) => isAppleEventId(deps.db, eventUid),
     ...(draft === undefined ? {} : { draft }),
   }
   const injection = injectionFlag(pack)
