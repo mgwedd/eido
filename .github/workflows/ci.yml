@@ -9,8 +9,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Each push to main gets its own group, so its run is never cancelled or replaced while pending: it is
+  # the only run of the OS matrix for a pull request that skipped it.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   TURBO_TELEMETRY_DISABLED: "1"
@@ -20,12 +22,15 @@ jobs:
   # Pull requests that only touch docs or images (.md, .png, .jpg, .jpeg, .gif, .webp: the same rule as
   # scripts/verify.ts) skip the OS matrix jobs and the heavy setup in `check`. `check` is a required status
   # check, so it always runs and reports; the matrix jobs are not required and are skipped outright.
-  # Every push to main runs everything.
+  # Pull requests whose every changed file is outside what the OS matrix jobs build and test skip those jobs
+  # too: the gate and its helpers depend on packages/schemas and the root config, not on core, web or ui.
+  # macOS runners queue for longer than the jobs run. Every push to main runs everything.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
       docs_only: ${{ steps.filter.outputs.docs_only }}
+      os_matrix: ${{ steps.filter.outputs.os_matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'pull_request'
@@ -37,15 +42,24 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           docs_only=false
+          os_matrix=true
           if [ "$EVENT" = pull_request ]; then
             files=$(git diff --name-only HEAD^1 HEAD)
             if ! printf '%s\n' "$files" | grep -qvE '\.(md|png|jpe?g|gif|webp)$|^$'; then
               docs_only=true
             fi
+            # The file-helper job runs core's files connector tests, so that directory keeps the matrix.
+            skip='^(apps/web|packages/ui|packages/core|docs|services)/|\.(md|png|jpe?g|gif|webp)$|^$'
+            keep='^packages/core/src/connectors/files/'
+            if ! printf '%s\n' "$files" | grep -qvE "$skip" && ! printf '%s\n' "$files" | grep -qE "$keep"; then
+              os_matrix=false
+            fi
             printf 'Changed files:\n%s\n' "$files"
           fi
           echo "docs_only=$docs_only"
+          echo "os_matrix=$os_matrix"
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "os_matrix=$os_matrix" >> "$GITHUB_OUTPUT"
 
   check:
     needs: changes
@@ -63,11 +77,12 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2 # the PR merge commit and its base parent, for the change filter
+      - name: Enable pnpm (version pinned by packageManager)
+        run: corepack enable
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
-      - name: Enable pnpm (version pinned by packageManager)
-        run: corepack enable
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install Tesseract (parser OCR test, #261)
         if: needs.changes.outputs.docs_only != 'true'
@@ -140,7 +155,8 @@ jobs:
   gate-os:
     name: gate tests (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    # Runs unless `changes` said no: a failed `changes` job leaves the output empty and the job runs.
+    if: ${{ !cancelled() && needs.changes.outputs.os_matrix != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -151,11 +167,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Enable pnpm (version pinned by packageManager)
+        run: corepack enable
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
-      - name: Enable pnpm (version pinned by packageManager)
-        run: corepack enable
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: EventKit Helper tests (macOS, fake store only)
         if: matrix.os == 'macos-latest'
@@ -169,7 +186,8 @@ jobs:
         if: matrix.os == 'macos-latest'
         env:
           EIDO_EVENTKIT_HELPER: ${{ github.workspace }}/apps/helper/.build/release/eido-helper
-        run: pnpm turbo run test --filter=@eido/gate
+        # The one test file that reads EIDO_EVENTKIT_HELPER; the full gate suite ran in the step above.
+        run: pnpm --filter @eido/gate exec vitest run src/internal/apple/apple-native.test.ts
       - name: Infra tests (windows-latest)
         if: matrix.os == 'windows-latest'
         run: pnpm turbo run test --filter=@eido/infra
@@ -179,7 +197,8 @@ jobs:
   file-helper:
     name: file helper (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    # Runs unless `changes` said no: a failed `changes` job leaves the output empty and the job runs.
+    if: ${{ !cancelled() && needs.changes.outputs.os_matrix != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -204,12 +223,13 @@ jobs:
         run: cargo test --locked
       # The gate's own wrapper, roots and audit against the real binary on each OS. Other gate tests
       # mock the helper, so `pnpm verify` and turbo never need cargo.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .node-version
       - name: Enable pnpm (version pinned by packageManager)
         working-directory: .
         run: corepack enable
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
       - name: Install
         working-directory: .
         run: pnpm install --frozen-lockfile
