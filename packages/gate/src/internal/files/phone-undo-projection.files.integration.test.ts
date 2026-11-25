@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { issueNonce, verifyApproval } from "../approvals"
+import { verifyChain } from "../audit"
 import { createExecutor } from "../executor"
 import { propose } from "../intents"
 import { call, projection, signIn, undoHandler } from "../phone-undo-harness"
@@ -8,6 +9,7 @@ import {
   auditRows,
   deviceChallenge,
   FILE_OPS,
+  loggedText,
   manifest,
   setup,
   signedFileRoots,
@@ -15,11 +17,13 @@ import {
   WEBAUTHN,
 } from "../test-fixtures"
 import type { Setup } from "../test-fixtures"
+import { listDisk } from "./disk-listing-double"
 import type { FileHelper } from "./file-helper"
 
-// Issue #831, file half: after a refused restore the executor never retries the Undo (the attempt
-// is claimed once), so Activity must stop offering it. The route and the projection are read side
-// by side over the real executor, against an in-memory disk behind the native helper interface.
+// Issues #831 and #846, file half: what the Undo route answers and what Activity offers around a
+// file restore, read side by side over the real executor, against an in-memory disk behind the
+// native helper interface. A restore refused before its attempt is claimed can be retried; one
+// whose helper call started and did not report is never repeated, and Activity stops offering it.
 
 const ROOT = {
   path: "/synthetic/docs",
@@ -51,6 +55,8 @@ async function world() {
         dev: ROOT.dev,
         ino: ROOT.ino,
       })
+    if (request.op === "list")
+      return Promise.resolve(listDisk(disk, ROOT.trashDir, request.path))
     if (request.op !== "trash" && request.op !== "restore")
       throw new Error("unexpected helper request")
     const from =
@@ -109,24 +115,83 @@ async function world() {
     expect((await executor.execute(proposed.intentId)).ok).toBe(true)
     return proposed.intentId
   }
-  return { ...fixture, disk, helper, handler, cookie, deleteSigned }
+  /** The Undo audit actions so far, in order. */
+  const undoActions = () =>
+    auditRows(fixture.db)
+      .map((row) => row.action)
+      .filter((action) => action.startsWith("undo"))
+  /** The helper verbs called so far, in order. */
+  const helperOps = () => helper.mock.calls.map(([request]) => request.op)
+  return {
+    ...fixture,
+    disk,
+    helper,
+    handler,
+    cookie,
+    deleteSigned,
+    undoActions,
+    helperOps,
+  }
 }
 
-describe("Activity undo state after a file restore attempt", () => {
+describe("Activity undo state around a file restore attempt", () => {
   it("offers Undo for a signed delete before any attempt", async () => {
     const f = await world()
     const id = await f.deleteSigned()
     expect((await projection(f.handler, f.cookie, id))?.undo).toBe("available")
   })
 
-  it("stops offering Undo after a refused restore, as the route refuses every retry", async () => {
+  it("keeps offering Undo after a restore refused for a taken name, and restores once it is free", async () => {
     const f = await world()
     const id = await f.deleteSigned()
     f.disk.set(SOURCE, REPLACEMENT)
     const refused = await call(f.handler, `/executions/${id}/undo`, f.cookie)
     expect(refused.status).toBe(409)
-    // The owner removes the colliding file; the executor still never repeats the attempt.
+    expect(refused.body).toEqual({
+      code: "already_decided",
+      message: "this execution cannot be undone",
+    })
+    // Refused before the attempt is claimed: listed, nothing moved, one audit row.
+    expect(f.helperOps()).toEqual(["trash", "list"])
+    expect(f.disk.get(SOURCE)).toBe(REPLACEMENT)
+    expect(f.undoActions()).toEqual(["undo.refused.file_exists"])
+    expect((await projection(f.handler, f.cookie, id))?.undo).toBe("available")
+    // The owner removes the colliding file and tries again.
     f.disk.delete(SOURCE)
+    const retry = await call(f.handler, `/executions/${id}/undo`, f.cookie)
+    expect(retry.status).toBe(200)
+    expect(retry.body).toEqual({ id, undone: true })
+    expect(f.disk).toEqual(new Map([[SOURCE, BYTES]]))
+    expect((await projection(f.handler, f.cookie, id))?.undo).toBe("done")
+    expect(f.undoActions()).toEqual([
+      "undo.refused.file_exists",
+      "undo.started",
+      "undo",
+    ])
+    expect(verifyChain(f.db).ok).toBe(true)
+    const activity = JSON.stringify(
+      (await call(f.handler, "/audit", f.cookie, "GET")).body
+    )
+    for (const text of [SOURCE, BYTES, REPLACEMENT, ROOT.path]) {
+      expect(loggedText(f.db)).not.toContain(text)
+      expect(activity).not.toContain(text)
+    }
+  })
+
+  it("stops offering Undo after a restore that started and did not report, and refuses every retry", async () => {
+    const f = await world()
+    const id = await f.deleteSigned()
+    const implementation = f.helper.getMockImplementation()
+    if (!implementation) throw new Error("missing helper")
+    f.helper.mockImplementation((request) =>
+      request.op === "restore"
+        ? Promise.reject(new Error("helper went away"))
+        : implementation(request)
+    )
+    const first = await call(f.handler, `/executions/${id}/undo`, f.cookie)
+    expect(first.status).toBe(409)
+    // The helper is back and the restore would now succeed; the attempt is still never repeated.
+    f.helper.mockImplementation(implementation)
     const retry = await call(f.handler, `/executions/${id}/undo`, f.cookie)
     expect(retry.status).toBe(409)
     expect(retry.body).toEqual({
@@ -134,9 +199,15 @@ describe("Activity undo state after a file restore attempt", () => {
       message: "this execution cannot be undone",
     })
     expect((await projection(f.handler, f.cookie, id))?.undo).toBe("none")
+    expect(f.helperOps()).toEqual(["trash", "list", "restore"])
     expect([...f.disk.keys()]).toEqual([
       expect.stringMatching(/^\.eido-trash\//),
     ])
-    expect(auditRows(f.db).filter((row) => row.action === "undo")).toEqual([])
+    expect(f.undoActions()).toEqual([
+      "undo.started",
+      "undo.failed.file_helper_failed",
+      "undo.refused.outcome_unresolved",
+    ])
+    expect(verifyChain(f.db).ok).toBe(true)
   })
 })

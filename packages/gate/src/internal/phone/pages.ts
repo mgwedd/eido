@@ -74,7 +74,9 @@ export function auditPage(state: PhoneState, request: GateRequest): Reply {
   }
   const { before, limit = 50 } = checked.value
   // An Undo attempt is claimed once and never repeated (the executor answers `outcome_unresolved`
-  // to every retry), so a claimed attempt without a result is not offered again.
+  // to every retry), so a claimed attempt without a result is not offered again. A refusal the
+  // executor makes before claiming (its `UNCLAIMED_UNDO_REFUSALS`) leaves no attempt row, so Undo
+  // stays offered and a retry can succeed (#846).
   const columns = `SELECT a.seq, a.ts, a.actor, a.action, a.target, a.detail_hash,
       EXISTS (
         SELECT 1 FROM approvals p

@@ -5,6 +5,7 @@ import { propose } from "../intents"
 import { issueNonce, verifyApproval } from "../approvals"
 import { verifyChain } from "../audit"
 import {
+  auditRows,
   FILE_OPS,
   manifest,
   setup,
@@ -17,6 +18,7 @@ import {
 } from "../test-fixtures"
 import type { Setup } from "../test-fixtures"
 import type { FileHelper } from "./file-helper"
+import { listDisk } from "./disk-listing-double"
 
 let s: Setup | undefined
 afterEach(() => {
@@ -30,6 +32,11 @@ const ROOT = {
   trashDir: ".eido-trash",
 }
 const content = "synthetic-private-content"
+/** The Undo audit actions so far, in order. */
+const auditActions = (f: { db: Setup["db"] }) =>
+  auditRows(f.db)
+    .map((row) => row.action)
+    .filter((action) => action.startsWith("undo"))
 async function fixture() {
   s = setup([manifest("files", FILE_OPS)])
   const fixture = s
@@ -67,6 +74,8 @@ async function fixture() {
         op: "read",
         contentBase64: raw.toString("base64"),
       })
+    } else if (request.op === "list") {
+      return Promise.resolve(listDisk(disk, ROOT.trashDir, request.path))
     } else {
       if (
         request.op !== "move" &&
@@ -178,7 +187,8 @@ describe("native file executor lifecycle", () => {
       expect(f.helper.mock.calls.map(([request]) => request.op)).toEqual(
         intent.kind === "file.create"
           ? ["create", "read", "trash"]
-          : ["move", "move"]
+          : // A move back first lists the destination folder for a name already taken.
+            ["move", "list", "move"]
       )
       expect(verifyChain(f.db).ok).toBe(true)
       expect(loggedText(f.db)).not.toContain(content)
@@ -204,6 +214,7 @@ describe("native file executor lifecycle", () => {
     expect(f.disk).toEqual(new Map([["a.txt", content]]))
     expect(f.helper.mock.calls.map(([request]) => request.op)).toEqual([
       "trash",
+      "list",
       "restore",
     ])
   })
@@ -278,7 +289,7 @@ describe("native file executor lifecycle", () => {
     expect(f.helper).toHaveBeenCalledTimes(1)
   })
 
-  it("restore collisions preserve both the replacement and trashed bytes", async () => {
+  it("refuses a restore onto a taken name without claiming it, and restores once the name is free", async () => {
     const f = await fixture()
     const p = f.proposal({
       kind: "file.delete",
@@ -286,14 +297,184 @@ describe("native file executor lifecycle", () => {
     })
     f.approve(p.intentId)
     await f.executor.execute(p.intentId)
-    f.disk.set("a.txt", "replacement")
+    // Another case of the same name collides on a case-insensitive volume, so it is refused too.
+    f.disk.set("A.TXT", "replacement")
+    expect(await f.executor.undo(p.intentId)).toEqual({
+      ok: false,
+      code: "file_exists",
+    })
+    // Not claimed: a retry checks again rather than answering `outcome_unresolved`.
     expect(await f.executor.undo(p.intentId)).toEqual({
       ok: false,
       code: "file_exists",
     })
     expect([...f.disk.values()].sort()).toEqual(["replacement", content].sort())
-    expect((await f.executor.undo(p.intentId)).ok).toBe(false)
-    expect(f.helper).toHaveBeenCalledTimes(2)
+    expect(f.helper.mock.calls.map(([request]) => request.op)).toEqual([
+      "trash",
+      "list",
+      "list",
+    ])
+    f.disk.delete("A.TXT")
+    expect((await f.executor.undo(p.intentId)).ok).toBe(true)
+    expect(f.disk).toEqual(new Map([["a.txt", content]]))
+    expect(auditActions(f)).toEqual([
+      "undo.refused.file_exists",
+      "undo.refused.file_exists",
+      "undo.started",
+      "undo",
+    ])
+    expect(verifyChain(f.db).ok).toBe(true)
+  })
+
+  it("refuses a move back onto a taken name without claiming it", async () => {
+    const f = await fixture()
+    const p = f.proposal(automatic[1])
+    await f.executor.execute(p.intentId)
+    f.disk.set("a.txt", "replacement")
+    expect(await f.executor.undo(p.intentId)).toEqual({
+      ok: false,
+      code: "file_exists",
+    })
+    expect(f.disk.get("renamed.txt")).toBe(content)
+    f.disk.delete("a.txt")
+    expect((await f.executor.undo(p.intentId)).ok).toBe(true)
+    expect(f.disk).toEqual(new Map([["a.txt", content]]))
+  })
+
+  it("consumes the attempt when the name is taken only after the listing", async () => {
+    const f = await fixture()
+    const p = f.proposal({
+      kind: "file.delete",
+      args: { root: "docs", path: "a.txt" },
+    })
+    f.approve(p.intentId)
+    await f.executor.execute(p.intentId)
+    const implementation = f.helper.getMockImplementation()
+    if (!implementation) throw new Error("missing helper")
+    f.helper.mockImplementation(async (request) => {
+      const reply = await implementation(request)
+      if (request.op === "list") f.disk.set("a.txt", "replacement")
+      return reply
+    })
+    expect(await f.executor.undo(p.intentId)).toEqual({
+      ok: false,
+      code: "file_exists",
+    })
+    f.disk.delete("a.txt")
+    expect(await f.executor.undo(p.intentId)).toEqual({
+      ok: false,
+      code: "outcome_unresolved",
+    })
+    expect(f.helper.mock.calls.map(([request]) => request.op)).toEqual([
+      "trash",
+      "list",
+      "restore",
+    ])
+    expect(auditActions(f)).toEqual([
+      "undo.started",
+      "undo.failed.file_exists",
+      "undo.refused.outcome_unresolved",
+    ])
+  })
+
+  it("goes on to the claimed restore when the listing fails", async () => {
+    const f = await fixture()
+    const p = f.proposal({
+      kind: "file.delete",
+      args: { root: "docs", path: "a.txt" },
+    })
+    f.approve(p.intentId)
+    await f.executor.execute(p.intentId)
+    const implementation = f.helper.getMockImplementation()
+    if (!implementation) throw new Error("missing helper")
+    f.helper.mockImplementation((request) =>
+      request.op === "list"
+        ? Promise.reject(new Error("private listing failure"))
+        : implementation(request)
+    )
+    expect((await f.executor.undo(p.intentId)).ok).toBe(true)
+    expect(f.disk).toEqual(new Map([["a.txt", content]]))
+    expect(loggedText(f.db)).not.toContain("private listing failure")
+  })
+
+  it("an uncertain restore is never retried", async () => {
+    const f = await fixture()
+    const p = f.proposal({
+      kind: "file.delete",
+      args: { root: "docs", path: "a.txt" },
+    })
+    f.approve(p.intentId)
+    await f.executor.execute(p.intentId)
+    const implementation = f.helper.getMockImplementation()
+    if (!implementation) throw new Error("missing helper")
+    f.helper.mockImplementation((request) =>
+      request.op === "restore"
+        ? Promise.reject(new Error("private restore failure"))
+        : implementation(request)
+    )
+    expect(await f.executor.undo(p.intentId)).toEqual({
+      ok: false,
+      code: "file_helper_failed",
+    })
+    f.helper.mockImplementation(implementation)
+    expect(await f.executor.undo(p.intentId)).toEqual({
+      ok: false,
+      code: "outcome_unresolved",
+    })
+    // The retry stops before any helper call, the listing included.
+    expect(f.helper.mock.calls.map(([request]) => request.op)).toEqual([
+      "trash",
+      "list",
+      "restore",
+    ])
+  })
+
+  it("runs one restore when two Undos race across executor instances", async () => {
+    const f = await fixture()
+    const p = f.proposal({
+      kind: "file.delete",
+      args: { root: "docs", path: "a.txt" },
+    })
+    f.approve(p.intentId)
+    await f.executor.execute(p.intentId)
+    const implementation = f.helper.getMockImplementation()
+    if (!implementation) throw new Error("missing helper")
+    let release: (() => void) | undefined
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    f.helper.mockImplementation(async (request) => {
+      if (request.op === "restore") await pending
+      return implementation(request)
+    })
+    const second = createExecutor(
+      f.db,
+      [],
+      () => Promise.reject(new Error("network forbidden")),
+      f.helper
+    )
+    // Both pass the listing; only one claims the attempt.
+    const results = Promise.all([
+      f.executor.undo(p.intentId),
+      second.undo(p.intentId),
+    ])
+    await vi.waitFor(() => {
+      expect(
+        f.helper.mock.calls.filter(([request]) => request.op === "restore")
+      ).toHaveLength(1)
+    })
+    release?.()
+    expect((await results).map((result) => result.ok).sort()).toEqual([
+      false,
+      true,
+    ])
+    expect(
+      f.helper.mock.calls.filter(([request]) => request.op === "restore")
+    ).toHaveLength(1)
+    expect(auditActions(f).filter((action) => action === "undo")).toEqual([
+      "undo",
+    ])
+    expect(auditActions(f)).toContain("undo.refused.outcome_unresolved")
   })
 
   it("permits at most one in-flight native mutation across executor instances", async () => {
