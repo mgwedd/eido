@@ -120,10 +120,12 @@ Input IDs are nonempty and at most 1024 Unicode scalars; titles are nonempty and
 at most 200, notes at most 20000, and locations at most 500. Empty location or
 notes strings clear those fields. An update is a full replacement of its editable
 fields: omitted location/notes clear them, while attendees, alarms, and other
-unrepresented properties remain as stored. It may move a nonrecurring event
-between writable calendars. Recurring and detached events cannot be updated;
-this prevents unintended series changes. Reminder completion changes only its
-completion state.
+unrepresented properties remain as stored. An update keeps the event in its
+calendar: a different `calendarId` is refused with `unsupported_event`, since a
+move can change accounts. Events with attendees cannot be updated, since saving
+them may send attendees an update. Recurring and detached events cannot be
+updated; this prevents unintended series changes. Reminder completion changes
+only its completion state.
 
 Success is `{"ok":true,"result":...}`. Results have these shapes:
 

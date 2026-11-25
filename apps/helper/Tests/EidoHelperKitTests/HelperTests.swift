@@ -208,8 +208,25 @@ final class HelperTests: XCTestCase {
     store.eventRows["event-1"] = StoredEvent(value: original, recurring: false)
     store.lists.append(CalendarValue(id: "read-only", title: "Read only", writable: false))
     args["id"] = "event-1"
+    args["calendarId"] = "read-only"
     try assertFailure(await service.handle(try request("update_event", args)), "read_only")
     XCTAssertEqual(store.writes, 0)
+  }
+
+  @MainActor func testUpdateRefusesCalendarMoveAndAttendeeEvents() async throws {
+    let store = FakeStore()
+    let service = HelperService(store: store)
+    store.lists.append(CalendarValue(id: "calendar-2", title: "Other", writable: true))
+    store.eventRows["event-1"] = StoredEvent(value: event(), recurring: false)
+    var args = eventArgs()
+    args["id"] = "event-1"
+    args["calendarId"] = "calendar-2"
+    try assertFailure(await service.handle(try request("update_event", args)), "unsupported_event")
+    store.eventRows["event-1"] = StoredEvent(value: event(), recurring: false, hasAttendees: true)
+    args["calendarId"] = "calendar-1"
+    try assertFailure(await service.handle(try request("update_event", args)), "unsupported_event")
+    XCTAssertEqual(store.writes, 0)
+    XCTAssertEqual(store.eventRows["event-1"]?.value.title, "Original")
   }
 
   func testSingleEventWithOccurrenceDateIsNotRecurring() {

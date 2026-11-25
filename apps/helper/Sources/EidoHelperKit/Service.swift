@@ -3,9 +3,11 @@ import Foundation
 public struct StoredEvent {
   public let value: EventValue
   public let recurring: Bool
-  public init(value: EventValue, recurring: Bool) {
+  public let hasAttendees: Bool
+  public init(value: EventValue, recurring: Bool, hasAttendees: Bool = false) {
     self.value = value
     self.recurring = recurring
+    self.hasAttendees = hasAttendees
   }
 }
 
@@ -84,8 +86,11 @@ public struct StoredEvent {
         guard let id = a.id else { throw HelperFailure.invalidRequest }
         guard !id.hasPrefix("recurrence:") else { throw HelperFailure.unsupportedEvent }
         guard let existing = try store.event(id: id) else { throw HelperFailure.notFound }
-        guard !existing.recurring else { throw HelperFailure.unsupportedEvent }
-        _ = try calendar(existing.value.calendarId, reminders: false, writing: true)
+        // Moving calendars can change accounts, and saving an event with attendees can send
+        // them updates, so neither is part of an approved field replacement.
+        guard !existing.recurring, !existing.hasAttendees,
+          existing.value.calendarId == calendarId
+        else { throw HelperFailure.unsupportedEvent }
       }
       let value = EventValue(
         id: a.id ?? "", calendarId: calendarId, title: title, start: start, end: end,

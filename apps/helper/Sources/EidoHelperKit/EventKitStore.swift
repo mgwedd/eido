@@ -53,7 +53,7 @@ func isRecurring(_ event: EKEvent) -> Bool {
   public func event(id: String) throws -> StoredEvent? {
     guard let event = store.calendarItem(withIdentifier: id) as? EKEvent else { return nil }
     return StoredEvent(
-      value: eventValue(event), recurring: isRecurring(event))
+      value: eventValue(event), recurring: isRecurring(event), hasAttendees: event.hasAttendees)
   }
 
   public func reminder(id: String) throws -> ReminderValue? {
@@ -70,9 +70,9 @@ func isRecurring(_ event: EKEvent) -> Bool {
       guard let stored = store.calendarItem(withIdentifier: id) as? EKEvent else {
         throw HelperFailure.notFound
       }
-      guard !isRecurring(stored) else {
-        throw HelperFailure.unsupportedEvent
-      }
+      guard !isRecurring(stored), !stored.hasAttendees,
+        stored.calendar.calendarIdentifier == calendar.calendarIdentifier
+      else { throw HelperFailure.unsupportedEvent }
       guard stored.calendar.allowsContentModifications else { throw HelperFailure.readOnly }
       event = stored
     } else {
