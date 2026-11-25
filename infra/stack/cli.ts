@@ -20,6 +20,10 @@
 //   dependencies, installs the pinned llama-server build (no model: that is the Admin page's job),
 //   runs setup, starts the prod stack, registers the login agent (macOS) and ends by printing the
 //   first enrolment code with the first-run page's address. Once a passkey exists it issues no code.
+// Split mode (#779): `EIDO_STACK_PLANE=split` in stack.env, for a host where the plane split (#70,
+// infra/plane-split.md) runs the gate and core as LaunchDaemons. The stack then starts web alone;
+// status and doctor report the plane's two daemons, and stop leaves them running. `gate`, `setup`
+// and `bootstrap` act on the owner's own gate, so they refuse there (#795).
 // Every command first loads stack.env (settings.ts); a variable set in the environment wins.
 // Start runs doctor's blocking checks before anything else and stops on a failure.
 import {
@@ -42,6 +46,7 @@ import {
   logFilePath,
   pathsFor,
   pidFilePath,
+  planeOf,
   type Env,
   type Mode,
   type Platform,
@@ -50,6 +55,12 @@ import {
   type StackConfig,
 } from "./config.ts"
 import { failed, formatCheck, runDoctor, type DoctorDeps } from "./doctor.ts"
+import {
+  describePlaneDaemon,
+  planeDaemon,
+  planeHealth,
+  PLANE_PROCESSES,
+} from "./plane-status.ts"
 import {
   busyPorts,
   describeListeners,
@@ -254,8 +265,16 @@ export function configFor(
     repoRoot: deps.repoRoot,
     nodePath: deps.nodePath,
     tailnetHost,
+    plane: planeOf(deps.env),
   })
 }
+
+/** Whether `EIDO_STACK_PLANE=split` is in effect: the gate and core are the plane's daemons. */
+const isSplit = (deps: Deps): boolean => planeOf(deps.env) === "split"
+
+/** The message for a command that acts on the owner's own gate, in split mode. */
+const splitRefusal = (command: string): string =>
+  `${command} acts on the gate under your own account, and EIDO_STACK_PLANE=split puts the gate under _eidogate (infra/plane-split.md). It is not supported in split mode yet (#795).`
 
 function serveDeps(deps: Deps) {
   const bin = tailscaleBin(deps.platform)
@@ -412,6 +431,10 @@ async function gate(
   script: GateScript,
   args: readonly string[]
 ): Promise<number> {
+  if (isSplit(deps)) {
+    deps.err(splitRefusal(`stack:gate ${script}`))
+    return 1
+  }
   const spec = await gateSpec(deps)
   const packageJson = deps.files.read(
     pathsFor(deps.platform).join(spec.cwd, "package.json")
@@ -565,7 +588,11 @@ async function start(deps: Deps, mode: Mode, flags: Flags): Promise<number> {
     deps.out("Running in the background. Stop with: pnpm stack:stop")
     return 0
   }
-  deps.out("Press Ctrl-C to stop all three.")
+  deps.out(
+    config.processes.length === 1
+      ? "Press Ctrl-C to stop web. The plane's gate and core are left running."
+      : "Press Ctrl-C to stop all three."
+  )
   return await supervise(deps, config, started)
 }
 
@@ -611,6 +638,10 @@ async function stop(deps: Deps): Promise<number> {
     )
   }
   if (left === 0) deps.out("Nothing listens on the stack's ports.")
+  if (config.plane === "split")
+    deps.out(
+      "Split mode: the plane's gate and core (com.eido.plane.gate, com.eido.plane.core) are not stopped by this command."
+    )
   if ((await readAgentState(deps)).kind === "loaded")
     deps.out(
       "The login agent is loaded: it starts the stack again at the next login or supervisor restart. To stop that, pnpm stack:uninstall."
@@ -719,6 +750,30 @@ async function status(deps: Deps, flags: Flags): Promise<number> {
   const config = configFor(deps, "dev", await resolveHost(deps, flags.serve))
   const probe = probeWith(deps.fetch)
   let healthy = 0
+  let expected = config.processes.length
+  if (config.plane === "split") {
+    expected += PLANE_PROCESSES.length
+    for (const name of PLANE_PROCESSES) {
+      const daemon = await planeDaemon(name, {
+        exec: deps.exec,
+        exists: deps.files.exists,
+      })
+      const code =
+        daemon.state === "running"
+          ? await planeHealth(name, config, deps.fetch)
+          : undefined
+      if (answers(code)) healthy++
+      const health =
+        code === undefined
+          ? "no answer"
+          : answers(code)
+            ? `answers ${code}`
+            : `fails ${code}`
+      deps.out(
+        `${name}: ${describePlaneDaemon(name, daemon)}; 127.0.0.1:${config.ports[name]} health ${health}`
+      )
+    }
+  }
   for (const spec of config.processes) {
     const record = readRecord(deps, config, spec.name)
     const running = await isRunning(deps, config, spec.name)
@@ -754,7 +809,7 @@ async function status(deps: Deps, flags: Flags): Promise<number> {
     deps.out(`url: ${config.url}`)
   }
   deps.out(agentStatusLine(await readAgentState(deps)))
-  return healthy === config.processes.length && serveCode === 0 ? 0 : 1
+  return healthy === expected && serveCode === 0 ? 0 : 1
 }
 
 /**
@@ -899,6 +954,10 @@ export async function main(
       case "doctor":
         return await doctor(withSettings, parsed.flags)
       case "setup": {
+        if (isSplit(withSettings)) {
+          deps.err(splitRefusal("stack:setup"))
+          return 1
+        }
         const code = await runSetup(withSettings, settingsPath, fileSettings)
         if (code !== 0) return code
         const written = readStackSettings(
@@ -915,6 +974,10 @@ export async function main(
         return issued === 0 ? checked : issued
       }
       case "bootstrap":
+        if (isSplit(withSettings)) {
+          deps.err(splitRefusal("stack:bootstrap"))
+          return 1
+        }
         return await bootstrap(deps, settingsPath, fileSettings)
       case "install":
         return await installAgent(withSettings)

@@ -3,7 +3,9 @@
 // schema in @eido/schemas:
 //   GET  /doctor                          the doctor checks, quick (no model hash)
 //   GET  /jobs                            gate, core, web and llama, and the model fetch tasks
-//   POST /jobs/start|stop|restart         core and llama only; the gate, web and the supervisor stay
+//   POST /jobs/start|stop|restart         core and llama only; the gate, web and the supervisor stay.
+//                                         In split mode (#779) the gate and core are the plane's
+//                                         daemons: GET /jobs reports them, and core is not controllable.
 //   GET  /models, POST /models/use        the model profiles; make one active
 //   POST /models/fetch                    download a profile's model as a task GET /jobs reports
 //   GET  /settings, POST /settings        stack.env, with the file's SHA-256 a write must name
@@ -56,6 +58,11 @@ import {
 } from "./cli.ts"
 import { pathsFor, stackDirOf, type StackConfig } from "./config.ts"
 import { runDoctor } from "./doctor.ts"
+import {
+  describePlaneDaemon,
+  planeDaemon,
+  type PlaneProcess,
+} from "./plane-status.ts"
 import {
   applyStackSettings,
   formatStackSettings,
@@ -316,11 +323,36 @@ export function createSupervisor(deps: SupervisorDeps) {
     })
   }
 
+  /** A plane daemon as a process row: read from launchd, never controlled from here. */
+  async function planeRow(
+    s: StackDeps,
+    name: PlaneProcess
+  ): Promise<ProcessRow> {
+    const daemon = await planeDaemon(name, {
+      exec: s.exec,
+      exists: s.files.exists,
+    })
+    const message = describePlaneDaemon(name, daemon)
+    switch (daemon.state) {
+      case "running":
+        return { name, state: "running", controllable: false }
+      case "stopped":
+        return { name, state: "stopped", controllable: false, message }
+      case "not-loaded":
+      case "missing":
+        return { name, state: "unavailable", controllable: false, message }
+    }
+  }
+
   async function processRows(): Promise<ProcessRow[]> {
     const s = stack()
     const config = pidConfig(s)
     const rows: ProcessRow[] = []
     for (const name of ["gate", "core", "web"] as const) {
+      if (config.plane === "split" && name !== "web") {
+        rows.push(await planeRow(s, name))
+        continue
+      }
       const running = await isRunning(s, config, name)
       rows.push({
         name,
@@ -330,7 +362,8 @@ export function createSupervisor(deps: SupervisorDeps) {
     }
     rows.push({ name: "llama", ...(await llamaState()), controllable: true })
     return rows.map((row) => {
-      if (row.name !== "core" && row.name !== "llama") return row
+      if (row.name !== "llama" && !(row.name === "core" && row.controllable))
+        return row
       const transition = transitions.get(row.name)
       const failure = failures.get(row.name)
       return {
@@ -397,6 +430,12 @@ export function createSupervisor(deps: SupervisorDeps) {
     if (operation !== undefined)
       return refuse(409, "busy", "another start, stop or restart is running")
     const names = CONTROLLED.filter((name) => parsed.value.names.includes(name))
+    if (names.includes("core") && pidConfig(stack()).plane === "split")
+      return refuse(
+        409,
+        "unavailable",
+        "core is the plane's daemon (com.eido.plane.core) in split mode; the stack does not control it"
+      )
     if (kind !== "stop")
       for (const name of names) {
         const refusal = await startRefusal(name)

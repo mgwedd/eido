@@ -13,6 +13,7 @@ import {
   OVERRIDES,
   PASS_THROUGH,
   pathsFor,
+  planeOf,
   stackDirOf,
   type Env,
   type Platform,
@@ -89,6 +90,8 @@ export const API_REFUSED_KEYS: ReadonlySet<string> = new Set([
   "EIDO_DEV_VAULT",
   "EIDO_GATE_VAULT_FILE",
   "EIDO_BRIDGE_ALLOW_SELF_SIGNED",
+  // Moving the gate between the owner's login and the plane's daemons is a host change.
+  "EIDO_STACK_PLANE",
 ])
 
 /** Why `value` is not a valid `key`, or undefined when it is. */
@@ -124,6 +127,13 @@ export function settingProblem(key: string, value: string): string | undefined {
     return `${key} must be an absolute path`
   if (FLAG_KEYS.has(key) && value !== "" && value !== "0" && value !== "1")
     return `${key} must be 0 or 1`
+  if (key === "EIDO_STACK_PLANE") {
+    try {
+      planeOf({ [key]: value })
+    } catch (error) {
+      return (error as Error).message
+    }
+  }
   return undefined
 }
 

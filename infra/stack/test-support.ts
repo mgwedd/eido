@@ -39,6 +39,9 @@ export const fixture = (name: string) =>
   )
 export const ok = (stdout = ""): RunResult => ({ code: 0, stdout, stderr: "" })
 
+/** What launchd says of a plane daemon (#779): loaded and running, loaded and waiting, plist only, or neither. */
+export type PlaneState = "running" | "waiting" | "not-loaded" | "missing"
+
 export type Proc = {
   spec: ProcessSpec
   options: LaunchOptions
@@ -69,6 +72,10 @@ export function world(
     uid?: number
     /** The gate reports a passkey on /passkey/status. */
     enrolled?: boolean
+    /** The plane's LaunchDaemons as `launchctl print system/<label>` shows them; absent means missing. */
+    plane?: Partial<Record<"gate" | "core", PlaneState>>
+    /** The HTTP status a running plane daemon's health URL answers; 200 when absent. */
+    planeHealth?: Partial<Record<"gate" | "core", number>>
   } = {}
 ) {
   const procs: Proc[] = []
@@ -104,6 +111,13 @@ export function world(
   let builds = 0
   let agentLoaded = options.agentLoaded === true
   const launchctlCalls: string[] = []
+  const planeLabels = {
+    "com.eido.plane.gate": "gate",
+    "com.eido.plane.core": "core",
+  } as const
+  for (const name of ["gate", "core"] as const)
+    if (options.plane?.[name] === "not-loaded")
+      files.set(`/Library/LaunchDaemons/com.eido.plane.${name}.plist`, "")
   const launchctl = (args: readonly string[]): RunResult => {
     launchctlCalls.push(args.join(" "))
     const [verb, target] = args
@@ -113,6 +127,23 @@ export function world(
         stdout: "",
         stderr: `${verb} failed: Input/output error`,
       }
+    if (verb === "print" && target?.startsWith("system/") === true) {
+      const label = target.slice("system/".length)
+      const name =
+        label in planeLabels
+          ? planeLabels[label as keyof typeof planeLabels]
+          : undefined
+      const state = name === undefined ? undefined : options.plane?.[name]
+      if (state === "running")
+        return ok(
+          `${target} = {\n\tstate = running\n\truns = 1\n\tpid = 4242\n}\n`
+        )
+      if (state === "waiting")
+        return ok(
+          `${target} = {\n\tstate = waiting\n\truns = 3\n\tlast exit code = 78\n}\n`
+        )
+      return { code: 113, stdout: "", stderr: "Could not find service" }
+    }
     if (verb === "print")
       return agentLoaded && target === "gui/501/com.eido.stack"
         ? ok(
@@ -240,6 +271,21 @@ export function world(
     fetch: (url) => {
       if (url === "http://127.0.0.1:8080/health")
         return Promise.resolve(new Response(null, { status: 200 }))
+      for (const [name, port, path] of [
+        ["gate", 8788, "/passkey/status"],
+        ["core", 8789, "/connectors/health"],
+      ] as const)
+        if (
+          options.plane !== undefined &&
+          url === `http://127.0.0.1:${port}${path}`
+        )
+          return options.plane[name] === "running"
+            ? Promise.resolve(
+                new Response(null, {
+                  status: options.planeHealth?.[name] ?? 200,
+                })
+              )
+            : Promise.reject(new Error("ECONNREFUSED"))
       const proc = procs.find((p) => p.alive && p.spec.healthUrl === url)
       if (proc === undefined) return Promise.reject(new Error("ECONNREFUSED"))
       if (proc.spec.name === "gate")
