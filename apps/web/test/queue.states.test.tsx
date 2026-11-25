@@ -115,11 +115,10 @@ async function sign(container: HTMLElement) {
   })
 }
 
-const withPasskey =
-  (outcome: () => unknown, gate?: Gate) => () => {
-    signApproval.mockImplementation(outcome)
-    return render(gate)()
-  }
+const withPasskey = (outcome: () => unknown, gate?: Gate) => () => {
+  signApproval.mockImplementation(outcome)
+  return render(gate)()
+}
 
 const refused = (code: string, message: string) => () =>
   Promise.resolve({ ok: false, error: { code, message } })
