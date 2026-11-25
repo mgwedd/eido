@@ -161,7 +161,7 @@ Core environment:
 
 - `EIDO_APPLE_CALENDARS`: `*` reads every calendar the Helper lists; otherwise a comma-separated list of EventKit calendar ids. Unset or empty, core does not read Apple calendars.
 
-Every five minutes core reads each enabled calendar from 14 days ago to 180 days ahead and indexes its events under source `apple-eventkit`. A successful read replaces that calendar's events in that window; a read that reports skipped items adds what it returned and removes nothing; a failed read changes nothing. Each calendar read is listed as an account on the Profile page, named `Apple Calendar: <title>`; its events go to the assigned entity, else to the default entity, and are not stored while neither exists.
+Every five minutes core reads each enabled calendar from 14 days ago to 180 days ahead and indexes its events under source `apple-eventkit`. A successful read replaces that calendar's events in that window, so an event moved out of the window leaves the index until the window reaches its new time. A read that reports skipped items, or returns items core cannot index (another calendar's event, a repeated id, an id too long to cite), adds the rest and removes nothing; the log counts both. A failed read changes nothing. Each calendar read is listed as an account on the Profile page, named `Apple Calendar: <title>`; its events go to the assigned entity, else to the default entity, and are not stored while neither exists.
 
 ## Reading the result
 
