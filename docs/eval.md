@@ -94,7 +94,7 @@ EIDO_EVAL_CASES="$D/cases" EIDO_EVAL_OUT="$D/results" \
   pnpm --filter @eido/core eval -- --candidates "$D/candidates.json"
 ```
 
-The runner prints one row per candidate and the ids of the cases to read, and writes `results.json` with scores, model ids and per-case diffs. Baseline mode exits 0 unless a candidate could not run. `--enforce` also needs the confirmed `packages/core/src/eval/thresholds.json` and exits 1 when it is missing or a score misses it.
+The runner prints one row per candidate and the ids of the cases to read, and writes `results.json` with scores, model ids and per-case diffs. Baseline mode exits 0 unless a candidate could not run. `--enforce` also needs the confirmed `packages/core/src/eval/thresholds.json` and exits 1 when it is missing or an enforced score misses it. The file holds the confirmed targets only: `schemaValid` 0.90 and `parameterExactMatch` 0.80 (#712). The other scores are reported and not enforced (the table shows "not enforced") until the owner sets a target for them from the baseline numbers; add a key to the file to enforce it. Never lower a target to make a run pass.
 
 ## Ask answer eval
 
