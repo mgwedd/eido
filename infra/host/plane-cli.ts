@@ -11,7 +11,6 @@ import {
   type FileStat,
 } from "../stack/settings.ts"
 import { parseDnsName, parsePort } from "../tailscale/serve-routes.ts"
-import type { RunResult } from "./cli.ts"
 import {
   DEFAULT_FIRST_ID,
   accountProblems,
@@ -23,6 +22,8 @@ import {
   removeSteps,
   renderScript,
 } from "./plane.ts"
+
+export type RunResult = { code: number; stdout: string; stderr: string }
 
 export type PlaneDeps = {
   run: (command: string, args: readonly string[]) => Promise<RunResult>

@@ -5,7 +5,7 @@
 import { fileVaultFinding, tailscaleFinding, type Finding } from "./checks.ts"
 import { PLANE_USAGE, plane, type PlaneDeps } from "./plane-cli.ts"
 
-export type RunResult = { code: number; stdout: string; stderr: string }
+export type { RunResult } from "./plane-cli.ts"
 
 export type Deps = PlaneDeps
 

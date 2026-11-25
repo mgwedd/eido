@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import type { RunResult } from "./cli.ts"
-import { plane, type PlaneDeps } from "./plane-cli.ts"
+import { plane, type PlaneDeps, type RunResult } from "./plane-cli.ts"
 import type { FileStat } from "../stack/settings.ts"
 
 const ok = (stdout: string): RunResult => ({ code: 0, stdout, stderr: "" })
