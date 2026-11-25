@@ -366,3 +366,165 @@ public enum Response: Encodable {
     return data
   }
 }
+
+// MARK: - Session bridge frames (agent mode, #825)
+
+/// Failure codes of the session bridge. EventKit ops answer with `HelperFailure` codes instead,
+/// exactly as in request mode. Codes never echo request values, paths, or OS error text.
+public enum BridgeFailure: String, Error, Encodable {
+  case invalidRequest = "invalid_request"
+  case unknownOp = "unknown_op"
+  case unknownScript = "unknown_script"
+  case frameTooLarge = "frame_too_large"
+  case automationDenied = "automation_denied"
+  case unavailable
+}
+
+/// One frame is a 4-byte big-endian unsigned length followed by that many bytes of UTF-8 JSON.
+/// A connection carries one request frame and one response frame, then closes.
+public enum BridgeFrame {
+  public static let headerBytes = 4
+  /// Fits the file helper's largest request (4,000,000 base64 characters) with room to spare.
+  public static let requestLimit = 8 * 1024 * 1024
+  /// Fits a 12 MiB file read reply in base64 with its envelope.
+  public static let responseLimit = 24 * 1024 * 1024
+
+  public static func encode(_ body: Data) -> Data {
+    let count = UInt32(body.count)
+    return Data([
+      UInt8(count >> 24), UInt8(count >> 16 & 0xff), UInt8(count >> 8 & 0xff), UInt8(count & 0xff),
+    ]) + body
+  }
+
+  public static func length(_ header: Data) -> Int {
+    header.reduce(0) { $0 << 8 | Int($1) }
+  }
+
+  public static func failure(_ code: BridgeFailure) -> Data {
+    Data("{\"ok\":false,\"code\":\"\(code.rawValue)\"}".utf8)
+  }
+
+  /// A successful Things or file-helper op: the child's stdout, unchanged, in base64.
+  public static func success(stdout: Data) -> Data {
+    Data("{\"ok\":true,\"result\":{\"stdoutBase64\":\"\(stdout.base64EncodedString())\"}}".utf8)
+  }
+}
+
+/// A bridge request after parsing. Every case carries only values the op table allows.
+public enum BridgeRequest: Equatable {
+  /// A request-mode EventKit request, re-serialized from the parsed object.
+  case eventKit(Data)
+  /// A pinned Things script by id, with the SHA-256 the caller expects and its arguments.
+  case things(script: String, sha256: String, argv: [String])
+  /// A file-helper request rebuilt from table-defined fields only, as the helper's stdin.
+  case file(op: String, stdin: Data)
+
+  public static func parse(_ data: Data) throws -> BridgeRequest {
+    guard let parsed = try? JSONSerialization.jsonObject(with: data),
+      let object = parsed as? [String: Any], let op = object["op"] as? String
+    else { throw BridgeFailure.invalidRequest }
+    let keys = Set(object.keys)
+    switch op {
+    case "eventkit":
+      guard keys == ["op", "request"], let request = object["request"] as? [String: Any],
+        let body = try? JSONSerialization.data(withJSONObject: request)
+      else { throw BridgeFailure.invalidRequest }
+      return .eventKit(body)
+    case "things":
+      guard keys == ["op", "script", "sha256", "argv"], let script = object["script"] as? String,
+        let sha256 = object["sha256"] as? String, let list = object["argv"] as? [Any]
+      else { throw BridgeFailure.invalidRequest }
+      let argv = list.compactMap { $0 as? String }
+      guard argv.count == list.count,
+        argv.allSatisfy({ $0.unicodeScalars.count <= 65_536 && !$0.contains("\0") })
+      else { throw BridgeFailure.invalidRequest }
+      return .things(script: script, sha256: sha256, argv: argv)
+    case "file":
+      guard keys == ["op", "request"], let request = object["request"] as? [String: Any] else {
+        throw BridgeFailure.invalidRequest
+      }
+      let (fileOp, fields) = try FileOps.rebuild(request)
+      guard
+        let stdin = try? JSONSerialization.data(
+          withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes]),
+        stdin.count <= FileOps.helperRequestLimit
+      else { throw BridgeFailure.invalidRequest }
+      return .file(op: fileOp, stdin: stdin)
+    default:
+      throw BridgeFailure.unknownOp
+    }
+  }
+}
+
+/// The file-helper op table: each op, the fields it takes, and the rule for each field. It
+/// mirrors `gate-file-helper-request` in `packages/schemas` (ADR 0006); anything else is refused.
+public enum FileOps {
+  /// The file helper's own stdin bound (`MAX_REQUEST_BYTES`).
+  public static let helperRequestLimit = 4 * 1024 * 1024
+
+  enum Field { case root, path, listPath, content, trashName, readLimit }
+
+  static let table: [String: [String: Field]] = [
+    "identify": ["path": .path],
+    "list": ["root": .root, "path": .listPath],
+    "read": ["root": .root, "path": .path, "maxBytes": .readLimit],
+    "create": ["root": .root, "path": .path, "contentBase64": .content],
+    "move": ["root": .root, "from": .path, "to": .path],
+    "trash": ["root": .root, "path": .path, "trashName": .trashName],
+    "restore": ["root": .root, "trashName": .trashName, "path": .path],
+  ]
+
+  /// The stdout bound per op, as the gate's file-helper wrapper sets it.
+  public static func outputLimit(_ op: String) -> Int {
+    op == "read" ? 12 * 1024 * 1024 : op == "list" ? 512 * 1024 : 64 * 1024
+  }
+
+  static func rebuild(_ request: [String: Any]) throws -> (String, [String: Any]) {
+    guard let op = request["op"] as? String else { throw BridgeFailure.invalidRequest }
+    guard let fields = table[op] else { throw BridgeFailure.unknownOp }
+    guard Set(request.keys) == Set(fields.keys).union(["op"]) else {
+      throw BridgeFailure.invalidRequest
+    }
+    var rebuilt: [String: Any] = ["op": op]
+    for (key, rule) in fields {
+      rebuilt[key] = try value(request[key], rule)
+    }
+    return (op, rebuilt)
+  }
+
+  private static func value(_ raw: Any?, _ rule: Field) throws -> Any {
+    switch rule {
+    case .root:
+      guard let root = raw as? [String: Any], Set(root.keys) == ["path", "dev", "ino", "trashDir"],
+        let path = root["path"] as? String, let dev = root["dev"] as? String,
+        let ino = root["ino"] as? String, let trashDir = root["trashDir"] as? String,
+        text(path, 1, 4096), matches(dev, #"^[0-9a-f]{1,40}\z"#),
+        matches(ino, #"^[0-9a-f]{1,40}\z"#), text(trashDir, 1, 64),
+        matches(trashDir, #"^[A-Za-z0-9._-]*[A-Za-z0-9_-]\z"#)
+      else { throw BridgeFailure.invalidRequest }
+      return ["path": path, "dev": dev, "ino": ino, "trashDir": trashDir]
+    case .path, .listPath, .trashName, .content:
+      let (min, max) =
+        rule == .path ? (1, 4096) : rule == .listPath ? (0, 4096) : rule == .trashName ? (1, 255)
+        : (0, 4_000_000)
+      guard let value = raw as? String, text(value, min, max) else {
+        throw BridgeFailure.invalidRequest
+      }
+      return value
+    case .readLimit:
+      guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+        !CFNumberIsFloatType(number), (1...8_388_608).contains(number.int64Value)
+      else { throw BridgeFailure.invalidRequest }
+      return number.int64Value
+    }
+  }
+
+  private static func text(_ value: String, _ min: Int, _ max: Int) -> Bool {
+    let count = value.unicodeScalars.count
+    return count >= min && count <= max && !value.contains("\0")
+  }
+
+  private static func matches(_ value: String, _ pattern: String) -> Bool {
+    value.range(of: pattern, options: .regularExpression) != nil
+  }
+}

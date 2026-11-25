@@ -1,11 +1,14 @@
 # Eido Helper
 
 The macOS 14+ native adapter for Apple Calendar and Reminders, tracked by #749
-(part of #79). It uses EventKit and contains no network client, socket listener,
-credentials, delete operation, or package dependencies. The gate starts a fresh
+(part of #79). It uses EventKit and contains no network client, credentials,
+delete operation, or package dependencies. In request mode the gate starts a fresh
 process for each operation, with private anonymous stdin/stdout pipes, and checks
 the response against the shared schemas. Read operations reach it through the
-gate's read client; writes run only after the gate verifies signed approval.
+gate's read client; writes run only after the gate verifies signed approval. In
+[session bridge mode](#session-bridge-mode) (#825) the same executable runs as an
+agent in the owner's login session and serves a fixed table of operations on a
+Unix socket to the gate's OS user only.
 
 ## Build and permission setup
 
@@ -203,3 +206,156 @@ application boundary; enforcing a separate OS principal and restricting executab
 access are host-isolation work in #70. This adapter does not assert those host
 controls are installed. It does not itself implement ingestion, Today rows, or
 source-aware proposal routing; those belong to #79 and #746.
+
+## Session bridge mode
+
+The gate runs as its own OS user (`_eidogate`), outside the owner's login session,
+so it cannot reach EventKit grants, Things automation, or the owner's file roots
+directly. The session bridge is an agent mode of this executable that runs as the
+owner, started by a LaunchAgent (#827), and does those operations for the gate
+over a Unix socket (decision in #781). It holds no tokens and makes no approval,
+policy, or audit decision: the gate has already verified the signed approval and
+written the audit row before it calls, and it parses every response again.
+
+```sh
+eido-helper --bridge \
+  --socket <absolute path> \
+  --peer-user <gate user name> \
+  --things-scripts <absolute directory> \
+  --file-helper <absolute path> \
+  --file-helper-sha256 <lowercase hex>
+```
+
+Each flag is required once, in any order; anything else exits with
+`invalid_request` on stdout. At start the bridge, in this order:
+
+1. resolves `--peer-user` to a uid once (a later rename does not change it);
+2. reads every Things script in the table below from `--things-scripts`, checks
+   each file's SHA-256 against the hash built into the bridge, and keeps the
+   checked bytes in memory;
+3. hashes `--file-helper` and compares it with `--file-helper-sha256`;
+4. binds the socket with mode `0600`. A stale socket at the path is replaced; any
+   other kind of file there is refused.
+
+Any failure stops the start before the socket exists: the bridge writes one code
+to stderr (`peer_user_unknown`, `things_scripts_mismatch`, `file_helper_mismatch`,
+or `socket_failed`) and exits 1. It never serves with a partial table. It does not
+watch its parent (launchd); SIGTERM or SIGINT stops it, removes the socket and
+exits 0. Request mode is unchanged and still exits when the gate exits.
+
+The socket's `0600` mode admits only the owner at the file system; the LaunchAgent
+work in #827 grants the gate user access with an ACL. That is not the check that
+matters: each accepted connection's peer uid is read from the kernel with
+`getpeereid` before any byte is read, and a connection from any uid other than the
+`--peer-user` uid is closed with no response. `getpeereid` reports the effective
+uid the peer had when it connected; the bridge does not check the peer's pid,
+audit token, or code signature, since uid is the boundary #781 sets (any process
+running as the gate user is the gate). At most eight connections are served at
+once; a ninth gets `unavailable`.
+
+### Framing
+
+One request and one response per connection. A frame is a 4-byte big-endian
+unsigned length followed by that many bytes of UTF-8 JSON. Requests are at most
+8 MiB, and responses at most 24 MiB (an over-long response is replaced by
+`unavailable`). A header naming a longer request gets `frame_too_large` without
+the body being read; a zero length gets `invalid_request`. Each read and write
+times out after 10 seconds, and the bridge closes the connection after its
+response. Peer input is parsed, never interpolated: no request field becomes a
+script, a path to run, a shell word, or an environment variable.
+
+### Operations
+
+Every request is an object whose `op` selects one of three entries. Unknown keys
+are refused with `invalid_request`, and an unknown `op` with `unknown_op`.
+
+| `op`       | Fields                                        | What runs                                    |
+| ---------- | --------------------------------------------- | -------------------------------------------- |
+| `eventkit` | `request`: a request-mode object              | the request-mode service, in process         |
+| `things`   | `script`, `sha256`, `argv` (array of strings) | a pinned Things script through `osascript -` |
+| `file`     | `request`: a file-helper request              | the pinned file helper                       |
+
+**`eventkit`.** The response is exactly the request-mode response
+(`{"ok":true,"result":...}` or `{"ok":false,"code":"..."}`) for the same
+`{"operation":...,"args":...}` object, with the same validation, bounds, and
+codes as the [one-request protocol](#one-request-process-protocol). The EventKit
+store is opened on the first `eventkit` request, so a bridge that never serves one
+never opens EventKit.
+
+**`things`.** `script` must name an entry in the table and `sha256` must equal its
+built-in hash, or the request is `unknown_script`. `argv` must have exactly the
+listed number of strings, each at most 65536 Unicode scalars with no NUL, or the
+request is `invalid_request`. The bridge pipes the script bytes it checked at
+start to `/usr/bin/osascript -` on stdin, with `argv` after the `-` (so an
+argument that looks like an `osascript` flag is only an argument to the script's
+`on run argv`), environment `PATH=/usr/bin:/bin`, a 10-second limit, and a 5 MiB
+stdout limit, as the gate's own Things runner uses. Exit 0 returns
+`{"ok":true,"result":{"stdoutBase64":"..."}}`. An Automation refusal (`-1743`)
+returns `automation_denied`; any other failure, timeout, or overflow returns
+`unavailable`. Stderr is never returned.
+
+The table is the scripts in `packages/gate/src/internal/things/scripts/` with the
+argument counts the gate passes them. A changed script needs a new hash in
+`Sources/EidoHelperKit/Bridge.swift` and a new bridge build; a test fails when
+the table and the directory differ.
+
+| Script          | Arguments | SHA-256                                                            |
+| --------------- | --------- | ------------------------------------------------------------------ |
+| `add-project`   | 6         | `cca3c1d0e748cf09e7ab652729896e7536a013306efad49f3db2d4dcb90104df` |
+| `add-todo`      | 5         | `9338821e3c180a49ec73757ba471cc6db347ee2acc9bdae23767cbe2c4e9143c` |
+| `cancel-todo`   | 1         | `43aee049e865ca8281dfbbe4dd9632f580aac13a507eda3619090a3fbb65225a` |
+| `complete-todo` | 1         | `7add17bfaf9345775b29c8d96bf0a466461c3739eb35bb17ad1ffd6953c95363` |
+| `get-project`   | 1         | `6bfc1420ec7ce50cf67f60ddf439eb3b36523647360952b26e38a9976958fc00` |
+| `get-todo`      | 1         | `26a7d607992e9d6a3ee854120210dcbebdb25e1dd119a04cee34e00687b6746e` |
+| `list-areas`    | 0         | `9a55833b22dc537d9472b9f97e625d0c24f898e88bb9ce275bc47dbc193ef390` |
+| `list-deadline` | 1         | `05e2d9711cc7e01060f5a90d8a6b4a88cbd2976e4d9ca9d60dfd42ff487a1d1c` |
+| `list-projects` | 1         | `c23bc2cb30d1bcffbbbbe64313cb70a6fb2fb8b0adc4505695725986a11dfd75` |
+| `list-tags`     | 0         | `2a7a7f473f2cbfd0abcdfecd11b192a43bc438b2bc4d68ecfea2d371ceb5bcbe` |
+| `list-todos`    | 1         | `bb4515744a8f4cc4cc4494afb158e79a8a493c0085509605fdbafc044185af84` |
+| `schedule-todo` | 2         | `bb189c2fdac33c531e8e49005964bc04248bfa9c06b3e129c16c0500c256daf6` |
+| `update-todo`   | 9         | `016679f8cbdbdcc49e790bbf88819f2690815ca2c1d748e2f567ac6715d1374f` |
+
+**`file`.** `request` is one request to the file helper (ADR 0006), checked
+against the bridge's copy of `gate-file-helper-request` in `packages/schemas`:
+
+| File op    | Fields                          |
+| ---------- | ------------------------------- |
+| `identify` | `path`                          |
+| `list`     | `root`, `path` (may be empty)   |
+| `read`     | `root`, `path`, `maxBytes`      |
+| `create`   | `root`, `path`, `contentBase64` |
+| `move`     | `root`, `from`, `to`            |
+| `trash`    | `root`, `path`, `trashName`     |
+| `restore`  | `root`, `trashName`, `path`     |
+
+`root` is exactly `{path, dev, ino, trashDir}`: `dev` and `ino` are 1 to 40
+lowercase hex digits, and `trashDir` is 1 to 64 of `A-Z a-z 0-9 . _ -`, not ending
+in `.`. Paths are 1 to 4096 Unicode scalars, `trashName` 1 to 255,
+`contentBase64` at most 4,000,000, all without NUL; `maxBytes` is an integer from
+1 to 8388608. An op outside the table is `unknown_op`; a missing, extra, or
+invalid field is `invalid_request`. The bridge rebuilds the request from these
+fields alone, serializes it with sorted keys, and writes it to the helper's stdin.
+The helper runs with no arguments and an empty environment, after its SHA-256 is
+checked again against the pin (a changed binary is `unavailable` and never runs),
+with a 30-second limit and the gate's stdout limits (12 MiB for `read`, 512 KiB
+for `list`, 64 KiB otherwise). Exit 0 returns
+`{"ok":true,"result":{"stdoutBase64":"..."}}` with the helper's own JSON response
+inside; anything else is `unavailable`. The helper confines every path to the
+root, as it does for the gate today.
+
+### Errors
+
+Failure is `{"ok":false,"code":"..."}` and never echoes request values, paths, or
+OS messages. Bridge codes are `invalid_request`, `unknown_op`, `unknown_script`,
+`frame_too_large`, `automation_denied`, and `unavailable`; `eventkit` responses
+also carry the request-mode codes. A refused request ends only its own connection.
+
+### What the tests do not prove
+
+The tests use socket pairs and sockets under `/tmp` in the test user's own
+account, a fake EventKit store, and a recording double in place of `osascript` and
+the file helper. They do not show the uid the bridge sees when `_eidogate`
+connects through the #827 ACL, which app macOS credits with the Automation and
+EventKit grants when launchd starts the bridge, or how the bridge behaves while
+the screen is locked or another user is switched in. Those are checked on the
+host when #827 installs the LaunchAgent.
