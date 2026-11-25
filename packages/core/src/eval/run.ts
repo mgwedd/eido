@@ -58,6 +58,7 @@ function seedCase(testCase: EvalCase): {
     nextCursor: "done",
   })
   seedTodos(db, testCase)
+  seedEvents(db, testCase)
   return { db, seed: documents[0]?.sha256 ?? "" }
 }
 
@@ -101,6 +102,49 @@ function seedTodos(
       todo.status,
       todo.due ?? null
     )
+}
+
+/** Index the case's calendar events the way a calendar sync does, so the real pack builder lists them. */
+function seedEvents(
+  db: ReturnType<typeof openDataDb>,
+  testCase: EvalCase
+): void {
+  for (const event of testCase.events ?? []) {
+    const sha256 = createHash("sha256")
+      .update(`${testCase.id}\n${event.source}\n${event.uid}\n${event.title}`)
+      .digest("hex")
+    const sourceRef = `${event.source}://calendar/eval/event/${encodeURIComponent(event.uid)}`
+    ingestBatch(db, {
+      connector: event.source,
+      stream: `${testCase.id}-events`,
+      documents: [
+        {
+          sha256,
+          source: event.source,
+          sourceRef,
+          mime: "application/x-eido-calendar-event",
+          entityId: "eval-entity",
+          title: event.title,
+          body: event.title,
+          occurredAt: event.start,
+        },
+      ],
+      heads: [{ source: event.source, sourceRef, sha256 }],
+      nextCursor: "done",
+    })
+    db.prepare(
+      `INSERT INTO calendar_event_facts
+         (sha256, source, calendar_id, event_id, start_at, end_at, all_day)
+       VALUES (?, ?, 'eval', ?, ?, ?, ?)`
+    ).run(
+      sha256,
+      event.source,
+      event.uid,
+      event.start,
+      event.end,
+      event.allDay === true ? 1 : 0
+    )
+  }
 }
 
 export async function runEval(options: EvalOptions): Promise<EvalReport> {

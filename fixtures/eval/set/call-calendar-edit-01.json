@@ -1,0 +1,50 @@
+{
+  "id": "call-calendar-edit-01",
+  "request": "Move the budget review meeting to 2025-07-03T10:00:00.000Z until 2025-07-03T11:00:00.000Z.",
+  "messages": [
+    {
+      "id": "call-calendar-edit-01-1@example.invalid",
+      "from": "assistant-bot@example.invalid",
+      "to": ["owner@example.invalid"],
+      "date": "2025-06-20T09:30:00.000Z",
+      "subject": "Notes",
+      "body": "Nothing to do in this message."
+    }
+  ],
+  "events": [
+    {
+      "uid": "eido-cal-7edd38f6-1849-4292-802e-e297f767457c",
+      "title": "Budget review",
+      "start": "2025-07-01T14:00:00.000Z",
+      "end": "2025-07-01T15:00:00.000Z",
+      "source": "proton-calendar"
+    },
+    {
+      "uid": "eido-cal-7104b978-c87c-49c4-9745-aa5ad40e213e",
+      "title": "Budget review prep",
+      "start": "2025-06-30T14:00:00.000Z",
+      "end": "2025-06-30T14:30:00.000Z",
+      "source": "proton-calendar"
+    },
+    {
+      "uid": "eido-cal-a5a6461a-41d9-4bc4-bdca-149167575a3d",
+      "title": "Team offsite",
+      "start": "2025-07-10T09:00:00.000Z",
+      "end": "2025-07-10T17:00:00.000Z",
+      "source": "proton-calendar"
+    }
+  ],
+  "kind": "call",
+  "expected": {
+    "intents": [
+      {
+        "kind": "calendar.edit",
+        "args": {
+          "eventUid": "eido-cal-7edd38f6-1849-4292-802e-e297f767457c",
+          "start": "2025-07-03T10:00:00.000Z",
+          "end": "2025-07-03T11:00:00.000Z"
+        }
+      }
+    ]
+  }
+}
