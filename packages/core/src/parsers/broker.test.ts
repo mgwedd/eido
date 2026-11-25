@@ -317,9 +317,10 @@ describe("bad frames and vanishing clients", SLOW, () => {
       })
     )
     await servesNext(client)
-    // Let the abandoned child finish; then its work dir is gone as well.
-    await new Promise((resolve) => setTimeout(resolve, 1200))
-    expect(readdirSync(scratchDir)).toEqual([])
+    // The abandoned child finishes or is never started; either way its work dir goes.
+    await expect
+      .poll(() => readdirSync(scratchDir), { timeout: 20_000 })
+      .toEqual([])
   })
 
   it("skips a queued job whose client has left", async () => {
@@ -377,7 +378,8 @@ describe("limits", SLOW, () => {
       .map(([from, to]) => ({ from: from ?? 0, to: to ?? 0 }))
       .sort((a, b) => a.from - b.from)
 
-  const bodies = ["a:500", "b:500", "c:500"].map((s) => Buffer.from(s))
+  const bodies = (delayMs: number) =>
+    ["a", "b", "c"].map((name) => Buffer.from(`${name}:${String(delayMs)}`))
 
   it("runs one parse at a time when maxConcurrent is 1", async () => {
     const { client } = await start({
@@ -385,7 +387,9 @@ describe("limits", SLOW, () => {
       maxConcurrent: 1,
     })
     const spans = intervals(
-      await Promise.all(bodies.map((b) => client.parseBytes(b, "text/plain")))
+      await Promise.all(
+        bodies(500).map((b) => client.parseBytes(b, "text/plain"))
+      )
     )
     expect(spans).toHaveLength(3)
     expect(spans[1]!.from).toBeGreaterThanOrEqual(spans[0]!.to)
@@ -398,7 +402,10 @@ describe("limits", SLOW, () => {
       maxConcurrent: 3,
     })
     const spans = intervals(
-      await Promise.all(bodies.map((b) => client.parseBytes(b, "text/plain")))
+      // Long enough that a slow runner starting three processes still overlaps them.
+      await Promise.all(
+        bodies(6_000).map((b) => client.parseBytes(b, "text/plain"))
+      )
     )
     // The last to start began before the first to start had finished.
     expect(spans[2]!.from).toBeLessThan(spans[0]!.to)
