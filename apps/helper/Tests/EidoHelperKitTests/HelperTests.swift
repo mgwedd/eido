@@ -58,6 +58,12 @@ final class HelperTests: XCTestCase {
   private func object(_ response: Response) throws -> [String: Any] {
     try XCTUnwrap(JSONSerialization.jsonObject(with: response.data()) as? [String: Any])
   }
+  @MainActor private func read(
+    _ service: HelperService, _ operation: String, _ args: [String: Any] = [:]
+  ) async throws -> [String: Any] {
+    let response = try object(await service.handle(try request(operation, args)))
+    return try XCTUnwrap(response["result"] as? [String: Any])
+  }
   private func assertFailure(
     _ response: Response, _ code: String, file: StaticString = #filePath, line: UInt = #line
   ) throws {
@@ -286,14 +292,110 @@ final class HelperTests: XCTestCase {
     XCTAssertTrue(items?.allSatisfy { $0["notes"] is NSNull } ?? false)
   }
 
+  @MainActor func testInvalidItemsAreSkippedAndCountedNotFatal() async throws {
+    let store = FakeStore()
+    let service = HelperService(store: store)
+    store.lists.append(
+      CalendarValue(id: "calendar-2", title: String(repeating: "x", count: 2001), writable: true))
+    store.lists.append(CalendarValue(id: "", title: "Synthetic", writable: true))
+    let calendars = try await read(service, "list_calendars")
+    XCTAssertEqual(
+      (calendars["calendars"] as? [[String: Any]])?.compactMap { $0["id"] as? String },
+      ["calendar-1"])
+    XCTAssertEqual(calendars["skipped"] as? Int, 2)
+
+    var nul = event("event-nul")
+    nul.title = "Synthetic\0title"
+    var badDate = event("event-date")
+    badDate.modifiedAt = "yesterday"
+    store.eventRows = [
+      "event-1": StoredEvent(value: event(), recurring: false),
+      "event-nul": StoredEvent(value: nul, recurring: false),
+      "event-date": StoredEvent(value: badDate, recurring: false),
+    ]
+    let events = try await read(
+      service, "list_events", ["calendarId": "calendar-1", "start": start, "end": end])
+    XCTAssertEqual(
+      (events["events"] as? [[String: Any]])?.compactMap { $0["id"] as? String }, ["event-1"])
+    XCTAssertEqual(events["skipped"] as? Int, 2)
+
+    var longNotes = reminder("long-notes")
+    longNotes.notes = String(repeating: "x", count: 20_001)
+    var badDue = reminder("bad-due")
+    badDue.due = "2026-02-30T00:00:00Z"
+    store.reminderRows = ["open": reminder("open"), "long-notes": longNotes, "bad-due": badDue]
+    let reminders = try await read(
+      service, "list_reminders", ["listId": "calendar-1", "completedSince": start])
+    XCTAssertEqual(
+      (reminders["reminders"] as? [[String: Any]])?.compactMap { $0["id"] as? String }, ["open"])
+    XCTAssertEqual(reminders["skipped"] as? Int, 2)
+  }
+
+  @MainActor func testCleanReadReportsZeroSkipped() async throws {
+    let result = try await read(HelperService(store: FakeStore()), "list_calendars")
+    XCTAssertEqual(result["skipped"] as? Int, 0)
+  }
+
+  @MainActor func testItemBoundCountsOnlyKeptItems() async throws {
+    let store = FakeStore()
+    store.lists =
+      (0..<2000).map { CalendarValue(id: "calendar-\($0)", title: "Synthetic", writable: false) }
+      + [CalendarValue(id: "", title: "Synthetic", writable: false)]
+    let result = try await read(HelperService(store: store), "list_calendars")
+    XCTAssertEqual((result["calendars"] as? [Any])?.count, 2000)
+    XCTAssertEqual(result["skipped"] as? Int, 1)
+  }
+
+  @MainActor func testReminderReadRefusesCompletedSinceBeyondTheBound() async throws {
+    let store = FakeStore()
+    let now = try XCTUnwrap(Dates.parse("2026-11-14T10:00:00Z"))
+    let service = HelperService(store: store, now: { now })
+    store.reminderRows = ["open": reminder("open")]
+    // 366 days before now is the oldest accepted cutoff; one second earlier is refused.
+    try assertFailure(
+      await service.handle(
+        try request(
+          "list_reminders", ["listId": "calendar-1", "completedSince": "2025-11-13T09:59:59Z"])),
+      "invalid_request")
+    XCTAssertEqual(store.calendarReads, 0)
+    let accepted = try object(
+      await service.handle(
+        try request(
+          "list_reminders", ["listId": "calendar-1", "completedSince": "2025-11-13T10:00:00Z"])))
+    XCTAssertEqual(accepted["ok"] as? Bool, true)
+  }
+
+  @MainActor func testIncompleteRemindersStayReadableWhenCompletedHistoryExceedsTheBound()
+    async throws
+  {
+    let store = FakeStore()
+    let now = try XCTUnwrap(Dates.parse("2026-11-14T10:00:00Z"))
+    let service = HelperService(store: store, now: { now })
+    store.reminderRows["open"] = reminder("open")
+    for index in 0..<2000 {
+      store.reminderRows["done-\(index)"] = reminder(
+        "done-\(index)", completed: true, completedAt: "2026-11-01T00:00:00Z")
+    }
+    try assertFailure(
+      await service.handle(
+        try request(
+          "list_reminders", ["listId": "calendar-1", "completedSince": "2026-10-01T00:00:00Z"])),
+      "unavailable")
+    // The documented incomplete-only read: a cutoff at the request time.
+    let open = try object(
+      await service.handle(
+        try request(
+          "list_reminders", ["listId": "calendar-1", "completedSince": "2026-11-14T10:00:00Z"])))
+    let items = (open["result"] as? [String: Any])?["reminders"] as? [[String: Any]]
+    XCTAssertEqual(items?.compactMap { $0["id"] as? String }, ["open"])
+  }
+
   @MainActor func testBoundsAndNativeFailuresReturnFixedError() async throws {
     let store = FakeStore()
     let service = HelperService(store: store)
     store.fail = true
     try assertFailure(await service.handle(try request("list_calendars")), "unavailable")
     store.fail = false
-    store.lists[0].title = String(repeating: "x", count: 2001)
-    try assertFailure(await service.handle(try request("list_calendars")), "unavailable")
     store.lists = (0..<2001).map {
       CalendarValue(id: "calendar-\($0)", title: "Synthetic", writable: false)
     }
@@ -302,7 +404,7 @@ final class HelperTests: XCTestCase {
       .calendars([
         CalendarValue(
           id: "x", title: String(repeating: "x", count: Request.byteLimit), writable: false)
-      ]))
+      ], skipped: 0))
     try assertFailure(tooLarge, "unavailable")
   }
 }

@@ -72,6 +72,23 @@ describe("proposeIntents with to-dos", () => {
     expect(result.status).toBe("rejected")
   })
 
+  test("a request two to-dos fit equally well gets no block, is not offered the id kinds and proposes nothing", async () => {
+    h = await harness({ replies: [reply([CANCEL]), reply([CANCEL])] })
+    const seed = seedNewsletters(h.db)
+    indexTodos(h.db, [
+      { id: "id-dentist", title: "Send dentist invoice" },
+      { id: "id-plumber", title: "Check plumber invoice" },
+    ])
+    const result = await proposeIntents(
+      { id: "req-1", text: "Cancel the todo about the invoice", seed },
+      h.deps
+    )
+    expect(prompt(h)).not.toContain("## Todos")
+    expect(prompt(h)).not.toContain("things.cancel_todo")
+    expect(h.gate.proposals).toEqual([])
+    expect(result.status).toBe("rejected")
+  })
+
   test("an intent with an id the block did not show never reaches the gate", async () => {
     const unseen = {
       kind: "things.cancel_todo",

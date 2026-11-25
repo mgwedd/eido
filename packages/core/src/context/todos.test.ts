@@ -36,6 +36,7 @@ describe("listOpenTodos", () => {
         },
       ],
       matched: 1,
+      ambiguous: false,
     })
   })
 
@@ -45,6 +46,7 @@ describe("listOpenTodos", () => {
     expect(listOpenTodos(d, "Cancel the todo about the piano.")).toEqual({
       todos: [],
       matched: 0,
+      ambiguous: false,
     })
   })
 
@@ -55,7 +57,7 @@ describe("listOpenTodos", () => {
     ])
     expect(
       listOpenTodos(d, "Cancel the todo and mark the task as done")
-    ).toEqual({ todos: [], matched: 0 })
+    ).toEqual({ todos: [], matched: 0, ambiguous: false })
   })
 
   test("completed and cancelled to-dos are excluded", () => {
@@ -122,7 +124,62 @@ describe("listOpenTodos", () => {
     expect(listOpenTodos(d, "anything at all")).toEqual({
       todos: [],
       matched: 0,
+      ambiguous: false,
     })
+  })
+
+  test("two to-dos that fit the request equally well are ambiguous", () => {
+    const d = fresh()
+    indexTodos(d, [
+      { id: "id-printer", title: "Send the invoice to the printer" },
+      { id: "id-plumber", title: "Check the invoice from the plumber" },
+    ])
+    const list = listOpenTodos(d, "Complete the todo about the invoice.")
+    expect(list.matched).toBe(2)
+    expect(list.ambiguous).toBe(true)
+  })
+
+  test("more shared words make one to-do the clear best match", () => {
+    const d = fresh()
+    indexTodos(d, [
+      { id: "id-tax", title: "Send tax receipts to the accountant" },
+      { id: "id-folder", title: "Sort tax folder" },
+    ])
+    const list = listOpenTodos(d, "Mark todo send tax receipts as done")
+    expect(list.todos.map((t) => t.id)).toEqual(["id-tax", "id-folder"])
+    expect(list.ambiguous).toBe(false)
+  })
+
+  test("the same shared words but a closer title is not ambiguous", () => {
+    const d = fresh()
+    indexTodos(d, [
+      { id: "id-deposit", title: "Pay rent deposit" },
+      { id: "id-rent", title: "Pay rent" },
+    ])
+    const list = listOpenTodos(d, "Complete the todo pay rent")
+    expect(list.todos.map((t) => t.id)).toEqual(["id-rent", "id-deposit"])
+    expect(list.ambiguous).toBe(false)
+  })
+
+  test("a tie below the best match does not make the request ambiguous", () => {
+    const d = fresh()
+    indexTodos(d, [
+      { id: "id-best", title: "Water the balcony plants" },
+      { id: "id-a", title: "Balcony railing repair" },
+      { id: "id-b", title: "Balcony chairs repair" },
+    ])
+    expect(listOpenTodos(d, "Cancel todo water balcony plants").ambiguous).toBe(
+      false
+    )
+  })
+
+  test("completed to-dos do not make a request ambiguous", () => {
+    const d = fresh()
+    indexTodos(d, [
+      { id: "id-open", title: "Garden hose" },
+      { id: "id-done", title: "Garden hose", status: "completed" },
+    ])
+    expect(listOpenTodos(d, "garden hose").ambiguous).toBe(false)
   })
 })
 

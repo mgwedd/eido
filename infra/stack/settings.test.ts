@@ -162,8 +162,16 @@ describe("settingProblem", () => {
       apiSettingProblem("EIDO_EVENTKIT_HELPER", "/home/u/bin/eido-helper")
     ).toMatch(/cannot be changed through/)
     expect(
-      parseStackSettings("EIDO_EVENTKIT_HELPER=/home/u/bin/eido-helper\n")
-    ).toEqual({ EIDO_EVENTKIT_HELPER: "/home/u/bin/eido-helper" })
+      apiSettingProblem("EIDO_EVENTKIT_HELPER_SHA256", "ab".repeat(32))
+    ).toMatch(/cannot be changed through/)
+    expect(
+      parseStackSettings(
+        `EIDO_EVENTKIT_HELPER=/home/u/bin/eido-helper\nEIDO_EVENTKIT_HELPER_SHA256=${"ab".repeat(32)}\n`
+      )
+    ).toEqual({
+      EIDO_EVENTKIT_HELPER: "/home/u/bin/eido-helper",
+      EIDO_EVENTKIT_HELPER_SHA256: "ab".repeat(32),
+    })
   })
 
   it("lets the settings endpoint write an ordinary key", () => {

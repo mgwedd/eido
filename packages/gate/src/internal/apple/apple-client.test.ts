@@ -32,14 +32,14 @@ describe("Apple gate read client", () => {
     body = { calendars: [] }
     await expect(client.listReminderLists()).resolves.toEqual({ calendars: [] })
     expect(received).toBe("GET /apple/reminder-lists")
-    body = { events: [] }
+    body = { events: [], skipped: 1 }
     await expect(
       client.listEvents({
         calendarId: "cal & 1",
         start: "2026-11-14T00:00:00Z",
         end: "2026-11-15T00:00:00Z",
       })
-    ).resolves.toEqual({ events: [] })
+    ).resolves.toEqual({ events: [], skipped: 1 })
     expect(received).toBe(
       "GET /apple/events?calendarId=cal+%26+1&start=2026-11-14T00%3A00%3A00Z&end=2026-11-15T00%3A00%3A00Z"
     )

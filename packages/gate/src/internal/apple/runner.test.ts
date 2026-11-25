@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto"
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -25,6 +27,23 @@ function executable(script: string, consumeInput = true): string {
   )
   return path
 }
+/** The runner config for `path`, pinned to the file's current bytes (any pin when it is missing). */
+function pinned(path: string): { path: string; sha256: string } {
+  return {
+    path,
+    sha256: existsSync(path)
+      ? createHash("sha256").update(readFileSync(path)).digest("hex")
+      : "0".repeat(64),
+  }
+}
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
 const request = { operation: "list_calendars", args: {} } as const
 const options = { platform: "darwin" } as const
 const nativeTest = process.platform === "win32" ? test.skip : test
@@ -35,10 +54,10 @@ describe("Apple Helper private-pipe runner", () => {
       code: "unavailable",
     })
     await expect(
-      createAppleRunner("/tmp/helper", { platform: "linux" })(request)
+      createAppleRunner(pinned("/tmp/helper"), { platform: "linux" })(request)
     ).rejects.toMatchObject({ code: "unavailable" })
     await expect(
-      createAppleRunner("relative", options)(request)
+      createAppleRunner(pinned("relative"), options)(request)
     ).rejects.toMatchObject({ code: "unavailable" })
   })
   nativeTest("only accepts a gate-owned executable regular file", async () => {
@@ -47,19 +66,19 @@ describe("Apple Helper private-pipe runner", () => {
     )
     chmodSync(path, 0o720)
     await expect(
-      createAppleRunner(path, options)(request)
+      createAppleRunner(pinned(path), options)(request)
     ).rejects.toMatchObject({ code: "unavailable" })
     chmodSync(path, 0o600)
     await expect(
-      createAppleRunner(path, options)(request)
+      createAppleRunner(pinned(path), options)(request)
     ).rejects.toMatchObject({ code: "unavailable" })
     chmodSync(path, 0o700)
     symlinkSync(path, `${path}-link`)
     await expect(
-      createAppleRunner(`${path}-link`, options)(request)
+      createAppleRunner(pinned(`${path}-link`), options)(request)
     ).rejects.toMatchObject({ code: "unavailable" })
     await expect(
-      createAppleRunner(`${path}-missing`, options)(request)
+      createAppleRunner(pinned(`${path}-missing`), options)(request)
     ).rejects.toMatchObject({ code: "unavailable" })
   })
   nativeTest(
@@ -81,12 +100,12 @@ describe("Apple Helper private-pipe runner", () => {
       )
       chmodSync(directory, 0o777)
       await expect(
-        createAppleRunner(nestedExecutable, options)(request)
+        createAppleRunner(pinned(nestedExecutable), options)(request)
       ).rejects.toMatchObject({ code: "unavailable" })
       expect(existsSync(marker)).toBe(false)
       chmodSync(directory, 0o700)
       await expect(
-        createAppleRunner(nestedExecutable, options)(request)
+        createAppleRunner(pinned(nestedExecutable), options)(request)
       ).resolves.toEqual({ calendars: [] })
       expect(existsSync(marker)).toBe(true)
     }
@@ -112,7 +131,7 @@ describe("Apple Helper private-pipe runner", () => {
       symlinkSync(target, join(directory, "release"))
       await expect(
         createAppleRunner(
-          join(directory, "release", "helper"),
+          pinned(join(directory, "release", "helper")),
           options
         )(request)
       ).resolves.toEqual({ calendars: [] })
@@ -130,7 +149,10 @@ describe("Apple Helper private-pipe runner", () => {
       symlinkSync(directory, join(unsafe, "release"))
       chmodSync(unsafe, 0o777)
       await expect(
-        createAppleRunner(join(unsafe, "release", "helper"), options)(request)
+        createAppleRunner(
+          pinned(join(unsafe, "release", "helper")),
+          options
+        )(request)
       ).rejects.toMatchObject({ code: "unavailable" })
     }
   )
@@ -148,7 +170,7 @@ printf '%s' '{"ok":true,"result":{"calendars":[{"id":"cal-1","title":"Work","wri
       process.env["EIDO_RUNNER_TEST_SECRET"] = "synthetic-not-a-credential"
       try {
         await expect(
-          createAppleRunner(path, options)(request)
+          createAppleRunner(pinned(path), options)(request)
         ).resolves.toEqual({
           calendars: [{ id: "cal-1", title: "Work", writable: true }],
         })
@@ -163,7 +185,7 @@ printf '%s' '{"ok":true,"result":{"calendars":[{"id":"cal-1","title":"Work","wri
     const path = executable("exit 1")
     await expect(
       createAppleRunner(
-        path,
+        pinned(path),
         options
       )({
         operation: "list_events",
@@ -181,7 +203,7 @@ printf '%s' '{"ok":true,"result":{"calendars":[{"id":"cal-1","title":"Work","wri
   ])("returns only the bounded error code %s", async (code) => {
     const path = executable(`printf '%s' '{"ok":false,"code":"${code}"}'`)
     await expect(
-      createAppleRunner(path, options)(request)
+      createAppleRunner(pinned(path), options)(request)
     ).rejects.toMatchObject({ code, message: `Apple Helper refused: ${code}` })
   })
   nativeTest.each([
@@ -192,7 +214,7 @@ printf '%s' '{"ok":true,"result":{"calendars":[{"id":"cal-1","title":"Work","wri
     "rejects malformed replies and subprocess failures without leaking content",
     async (script) => {
       await expect(
-        createAppleRunner(executable(script), options)(request)
+        createAppleRunner(pinned(executable(script)), options)(request)
       ).rejects.toMatchObject({
         code: "unavailable",
         message: "Apple Helper refused: unavailable",
@@ -202,15 +224,68 @@ printf '%s' '{"ok":true,"result":{"calendars":[{"id":"cal-1","title":"Work","wri
   nativeTest("kills an oversized response and a timed-out child", async () => {
     await expect(
       createAppleRunner(
-        executable(`/usr/bin/head -c ${APPLE_MAX_BYTES + 1} /dev/zero`),
+        pinned(executable(`/usr/bin/head -c ${APPLE_MAX_BYTES + 1} /dev/zero`)),
         options
       )(request)
     ).rejects.toMatchObject({ code: "unavailable" })
     await expect(
-      createAppleRunner(executable("while :; do :; done"), {
+      createAppleRunner(pinned(executable("while :; do :; done")), {
         ...options,
         timeoutMs: 20,
       })(request)
     ).rejects.toMatchObject({ code: "unavailable" })
   })
+  nativeTest(
+    "refuses a Helper whose SHA-256 differs from the pin before launching it",
+    async () => {
+      const path = executable(
+        `/usr/bin/touch "$(dirname "$0")/launched"
+printf '%s' '{"ok":true,"result":{"calendars":[]}}'`
+      )
+      const marker = join(dirname(path), "launched")
+      const pin = pinned(path)
+      // Same owner, mode and location; only the bytes changed after pinning.
+      writeFileSync(path, `${readFileSync(path, "utf8")}# rebuilt\n`, {
+        mode: 0o700,
+      })
+      await expect(
+        createAppleRunner(pin, options)(request)
+      ).rejects.toMatchObject({
+        code: "unavailable",
+        message: "Apple Helper refused: unavailable",
+      })
+      expect(existsSync(marker)).toBe(false)
+      await expect(
+        createAppleRunner(pinned(path), options)(request)
+      ).resolves.toEqual({ calendars: [] })
+      expect(existsSync(marker)).toBe(true)
+    }
+  )
+  nativeTest(
+    "a timed-out Helper that started a grandchild leaves no process behind",
+    async () => {
+      const path = executable(
+        `/bin/sleep 60 &
+echo $! > "$(dirname "$0")/grandchild"
+while :; do :; done`
+      )
+      const pidFile = join(dirname(path), "grandchild")
+      cleanups.unshift(() => {
+        if (!existsSync(pidFile)) return
+        const leftover = Number(readFileSync(pidFile, "utf8"))
+        if (leftover > 0 && alive(leftover)) process.kill(leftover, "SIGKILL")
+      })
+      await expect(
+        createAppleRunner(pinned(path), { ...options, timeoutMs: 500 })(request)
+      ).rejects.toMatchObject({ code: "unavailable" })
+      const grandchild = Number(readFileSync(pidFile, "utf8"))
+      expect(Number.isSafeInteger(grandchild) && grandchild > 0).toBe(true)
+      // SIGKILL is delivered asynchronously and the orphan is reaped by init; allow a moment.
+      const deadline = Date.now() + 5_000
+      while (alive(grandchild) && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      expect(alive(grandchild)).toBe(false)
+    },
+    15_000
+  )
 })

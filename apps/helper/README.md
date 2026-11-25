@@ -27,19 +27,31 @@ install -m 0500 apps/helper/.build/release/eido-helper "$HOME/Library/Applicatio
 ```
 
 Configure **the gate's** launch environment with `EIDO_EVENTKIT_HELPER` set to
-that installed binary's absolute path. The gate refuses a relative path, symlink,
+that installed binary's absolute path and `EIDO_EVENTKIT_HELPER_SHA256` set to its
+lowercase SHA-256. The two are set together; the gate will not start with only one.
+
+```sh
+shasum -a 256 "$HOME/Library/Application Support/eido-dev/helper/eido-helper"
+```
+
+Before every launch the gate hashes the resolved binary and refuses to run it when
+the hash differs from the pin, so a rebuilt or replaced Helper needs a new pin.
+The gate refuses a relative path, symlink,
 non-regular file, executable owned by another user, or group/world-writable file.
 Its containing directories must be owned by the gate user or root and must prevent
 replacement by another OS user. Gate/root-owned sticky directories such as
 `/private/tmp` are allowed. The gate checks both the configured location and its
 resolved target, then launches the resolved executable. Directory aliases such as
 Swift's `.build/release` remain usable when their containing directories are safe.
-When using stack commands, this gate-only key can also be stored in the local
-`stack.env`; the settings API deliberately refuses executable-path changes.
+When using stack commands, these gate-only keys can also be stored in the local
+`stack.env`; the settings API refuses changes to the executable path and its pin.
 Do not configure a Helper socket: core uses the gate's HTTP data-plane read routes
 `GET /apple/calendars`, `/apple/reminder-lists`, `/apple/events`, and
 `/apple/reminders`; only the gate launches the native executable. The Apple read
 client allows 35 seconds per call, covering the native runner's 30-second limit.
+The gate runs at most four Helper processes at once and refuses a call beyond that
+with `unavailable` instead of queueing it. Each Helper runs in its own process
+group, and a timeout kills the whole group, including anything the Helper started.
 
 The Helper needs full Calendar and Reminder access. The owner explicitly grants
 access to the **exact installed binary** before enabling the connector:
@@ -112,7 +124,13 @@ are accepted. Responses emit UTC timestamps with milliseconds. Event intervals
 must have a strictly later end, and read intervals may span at most 366 days.
 Reminder reads return all incomplete items and completed items whose completion
 timestamp is at or after `completedSince`. Items with unknown completion timestamps
-are not represented as recently completed. Date-only Reminder due dates are
+are not represented as recently completed. `completedSince` may be at most 366 days
+before the request (the same span as an event read window); an older cutoff is
+refused with `invalid_request`, by the gate's `GET /apple/reminders` route before
+the Helper starts and by the Helper itself. When a list's completed history in
+that window exceeds the item or byte bound, read its incomplete reminders alone
+by passing the request time (or later) as `completedSince`, then narrow the
+window to read recent completions. Date-only Reminder due dates are
 interpreted at midnight in their recorded timezone, or the host timezone when
 EventKit supplies none, and returned as UTC.
 
@@ -129,15 +147,19 @@ only its completion state.
 
 Success is `{"ok":true,"result":...}`. Results have these shapes:
 
-- Calendar and reminder-list reads: `{"calendars":[{"id":"...","title":"...","writable":true}]}`.
-- Event reads: `{"events":[{"id":"...","calendarId":"...","title":"...","start":"...","end":"...","allDay":false,"location":null,"notes":null,"modifiedAt":null}]}`.
-- Reminder reads: `{"reminders":[{"id":"...","listId":"...","title":"...","notes":null,"due":null,"completed":false,"completedAt":null,"modifiedAt":null}]}`.
+- Calendar and reminder-list reads: `{"calendars":[{"id":"...","title":"...","writable":true}],"skipped":0}`.
+- Event reads: `{"events":[{"id":"...","calendarId":"...","title":"...","start":"...","end":"...","allDay":false,"location":null,"notes":null,"modifiedAt":null}],"skipped":0}`.
+- Reminder reads: `{"reminders":[{"id":"...","listId":"...","title":"...","notes":null,"due":null,"completed":false,"completedAt":null,"modifiedAt":null}],"skipped":0}`.
 - Writes: `{"id":"..."}`.
 
 Nullable fields are always present. Upstream titles may be empty and are bounded
-at 2000 Unicode scalars; output notes and locations at 20000; IDs at 1024. Lists
-have at most 2000 items. An oversized result returns `unavailable`, never silently
-truncated data. Split event read windows or narrow the upstream calendar/list
+at 2000 Unicode scalars; output notes and locations at 20000; IDs at 1024. An
+upstream item that fails these checks (an empty or over-long ID, an over-long
+field, a NUL character, or an unparsable date) is left out of the read and counted
+in `skipped`, so one malformed item does not fail the whole read and none is
+dropped unreported. The gate's `GET /apple/*` replies always carry `skipped`, and
+its audit row records the count. Lists have at most 2000 returned items. An
+oversized result returns `unavailable`, never silently truncated data. Split event read windows or narrow the upstream calendar/list
 when the result exceeds a bound. There is no pagination claim.
 
 Failure is `{"ok":false,"code":"..."}`. Codes are `invalid_request`,
