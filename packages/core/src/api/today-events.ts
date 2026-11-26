@@ -39,7 +39,7 @@ function readRow(row: Record<string, unknown>): Row | null {
   if (Number.isNaN(startMs) || Number.isNaN(endMs)) return null
   return {
     id: String(row["event_id"]),
-    title: String(row["title"] ?? "")
+    title: (typeof row["title"] === "string" ? row["title"] : "")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, MAX_TODAY_EVENT_TITLE_CHARS),
