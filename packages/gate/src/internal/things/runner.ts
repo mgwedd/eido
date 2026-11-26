@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process"
+import { createHash } from "node:crypto"
+import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import type {
@@ -9,6 +11,13 @@ import type {
   GateThingsTodoItem,
   GateThingsTodoList,
 } from "@eido/schemas"
+import {
+  BRIDGE_MAX_RESPONSE_BYTES,
+  SessionBridgeRefusal,
+  SessionUnavailableError,
+  bridgeStdout,
+} from "../session-bridge/client"
+import type { SessionBridge } from "../session-bridge/client"
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const SCRIPTS_DIR = join(here, "scripts")
@@ -18,13 +27,13 @@ export const FIELD_SEPARATOR = "\u001F"
 export const MAX_OUTPUT_BYTES = 5 * 1024 * 1024 // 5 MiB
 export const SCRIPT_TIMEOUT_MS = 10_000 // 10 seconds
 
-export class ThingsError extends Error {
-  readonly code: "things_unavailable" | "automation_denied"
+export type ThingsErrorCode =
+  "things_unavailable" | "automation_denied" | "session_unavailable"
 
-  constructor(
-    code: "things_unavailable" | "automation_denied",
-    message: string
-  ) {
+export class ThingsError extends Error {
+  readonly code: ThingsErrorCode
+
+  constructor(code: ThingsErrorCode, message: string) {
     super(message)
     this.name = "ThingsError"
     this.code = code
@@ -115,6 +124,67 @@ export async function runThingsScript(
       }
     })
   })
+}
+
+/** The bridge's own osascript limit, plus time to connect and frame the answer. */
+export const BRIDGE_SCRIPT_TIMEOUT_MS = SCRIPT_TIMEOUT_MS + 5_000
+
+/**
+ * Runs the same script in the owner's session through the session bridge (#826). The gate
+ * sends the SHA-256 of its own copy, so the bridge refuses a script that differs from the one
+ * it checked at start. The stdout limit and decoding match `runThingsScript`.
+ */
+export function bridgeThingsRunner(bridge: SessionBridge): ThingsScriptRunner {
+  return async (scriptName, argv = []) => {
+    let stdout: Buffer
+    try {
+      const script = await readFile(
+        join(SCRIPTS_DIR, `${scriptName}.applescript`)
+      )
+      stdout = await bridgeStdout(
+        bridge,
+        {
+          op: "things",
+          script: scriptName,
+          sha256: createHash("sha256").update(script).digest("hex"),
+          argv: [...argv],
+        },
+        {
+          timeoutMs: BRIDGE_SCRIPT_TIMEOUT_MS,
+          maxResponseBytes: BRIDGE_MAX_RESPONSE_BYTES,
+        }
+      )
+    } catch (error) {
+      if (error instanceof SessionUnavailableError)
+        throw new ThingsError(
+          "session_unavailable",
+          "The owner's session is unavailable"
+        )
+      if (
+        error instanceof SessionBridgeRefusal &&
+        error.code === "automation_denied"
+      )
+        throw new ThingsError(
+          "automation_denied",
+          "macOS Automation permission denied for Things"
+        )
+      throw new ThingsError(
+        "things_unavailable",
+        "Things is unavailable through the session bridge"
+      )
+    }
+    if (stdout.length > MAX_OUTPUT_BYTES)
+      throw new ThingsError(
+        "things_unavailable",
+        "osascript output exceeded limit"
+      )
+    return stdout.toString("utf8")
+  }
+}
+
+/** The bridge runner when the gate has a session bridge, else the direct osascript runner. */
+export function thingsRunner(bridge?: SessionBridge): ThingsScriptRunner {
+  return bridge === undefined ? runThingsScript : bridgeThingsRunner(bridge)
 }
 
 function parseStatus(s: string): "open" | "completed" | "canceled" {

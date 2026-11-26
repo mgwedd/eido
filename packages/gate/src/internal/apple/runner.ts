@@ -8,6 +8,8 @@ import {
   validateGateAppleResponse,
 } from "@eido/schemas"
 import type { GateAppleRequest, GateAppleResponse } from "@eido/schemas"
+import { SessionUnavailableError } from "../session-bridge/client"
+import type { SessionBridge } from "../session-bridge/client"
 
 export const APPLE_MAX_BYTES = 1024 * 1024
 export const APPLE_TIMEOUT_MS = 30_000
@@ -15,7 +17,8 @@ export const APPLE_TIMEOUT_MS = 30_000
 export const APPLE_MAX_CONCURRENT = 4
 /** The installed Helper binary and the SHA-256 it must have, like the file helper (ADR 0006). */
 export type AppleHelperConfig = { path: string; sha256: string }
-export type AppleErrorCode = Extract<GateAppleResponse, { ok: false }>["code"]
+export type AppleErrorCode =
+  Extract<GateAppleResponse, { ok: false }>["code"] | "session_unavailable"
 export class AppleError extends Error {
   readonly code: AppleErrorCode
   constructor(code: AppleErrorCode) {
@@ -67,10 +70,46 @@ function killGroup(child: ChildProcess): void {
   child.kill("SIGKILL")
 }
 
-/** The only peer is the child inheriting these anonymous pipes; no listener is opened. */
+/**
+ * Sends the checked request to the bridge's in-process EventKit service (#826). Its answer is
+ * the request-mode response, so it gets the Helper's own size limit and schema.
+ */
+async function viaBridge(
+  bridge: SessionBridge,
+  request: GateAppleRequest,
+  timeoutMs: number
+): Promise<unknown> {
+  let answer: unknown
+  try {
+    answer = await bridge.call(
+      { op: "eventkit", request },
+      { timeoutMs, maxResponseBytes: APPLE_MAX_BYTES }
+    )
+  } catch (error) {
+    throw new AppleError(
+      error instanceof SessionUnavailableError
+        ? "session_unavailable"
+        : "unavailable"
+    )
+  }
+  const response = validateGateAppleResponse(answer)
+  if (!response.ok) throw new AppleError("unavailable")
+  if (!response.value.ok) throw new AppleError(response.value.code)
+  return response.value.result
+}
+
+/**
+ * Without `bridge`, the only peer is the child inheriting these anonymous pipes; no listener is
+ * opened. With it, the Helper runs in the owner's session instead, and the gate still checks the
+ * Helper's pin and the concurrency limit first.
+ */
 export function createAppleRunner(
   helper: AppleHelperConfig | undefined,
-  options: { platform?: NodeJS.Platform; timeoutMs?: number } = {}
+  options: {
+    platform?: NodeJS.Platform
+    timeoutMs?: number
+    bridge?: SessionBridge
+  } = {}
 ): AppleRunner {
   let running = 0
   return async (request) => {
@@ -119,6 +158,18 @@ export function createAppleRunner(
       throw new AppleError("unavailable")
     }
     if (running >= APPLE_MAX_CONCURRENT) throw new AppleError("unavailable")
+    if (options.bridge !== undefined) {
+      running += 1
+      try {
+        return await viaBridge(
+          options.bridge,
+          checked.value,
+          options.timeoutMs ?? APPLE_TIMEOUT_MS
+        )
+      } finally {
+        running -= 1
+      }
+    }
     return new Promise((resolve, reject) => {
       const child = (() => {
         try {

@@ -144,6 +144,12 @@ export async function appleRoute(
         "auth_failed",
         "Apple Calendar or Reminders permission was denied"
       )
+    if (code === "session_unavailable")
+      return apiError(
+        502,
+        "session_unavailable",
+        "The owner's session is unavailable"
+      )
     return apiError(502, "unavailable", "Apple Helper is unavailable")
   } finally {
     releaseConnectorProbe(db, APPLE_CONNECTOR, attempt)

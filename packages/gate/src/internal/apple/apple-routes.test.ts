@@ -184,6 +184,7 @@ describe("Apple data-plane reads", () => {
     ["not_found", 404, "not_found"],
     ["invalid_request", 400, "invalid_request"],
     ["unavailable", 502, "unavailable"],
+    ["session_unavailable", 502, "session_unavailable"],
   ] as const)(
     "maps Helper %s to a bounded response",
     async (code, status, resultCode) => {
@@ -221,6 +222,19 @@ describe("Apple data-plane reads", () => {
       ).toMatchObject({ health, consecutive_failures: failures })
     }
   )
+  test("names the owner's session when the session bridge is down", async () => {
+    const state = fixture()
+    const apple = reads()
+    apple.listCalendars = () =>
+      Promise.reject(new AppleError("session_unavailable"))
+    expect(await appleRoute(req("/apple/calendars"), state.db, apple)).toEqual({
+      status: 502,
+      body: {
+        code: "session_unavailable",
+        message: "The owner's session is unavailable",
+      },
+    })
+  })
   test("does not expose arbitrary subprocess errors", async () => {
     const state = fixture()
     const apple = reads()
