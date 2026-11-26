@@ -143,17 +143,21 @@ function recordEventFacts(
   db: DatabaseSync,
   events: readonly AppleEvent[]
 ): void {
-  // A fact row is immutable. The one exception is a row written before its location and notes
-  // were stored (`details_known = 0`): the digest covers both, so the event read now is that
-  // version, and the conflict clause fills the row in. A known row is left as it is.
+  // A fact row is immutable apart from two things. A row written before its location and notes
+  // were stored (`details_known = 0`) is filled in: the digest covers both, so the event read now
+  // is that version. A known row keeps its location and notes. `has_attendees` and `recurring`
+  // describe the event as it is now and are not in the digest, so every read rewrites them.
   const insert = db.prepare(
     `INSERT INTO calendar_event_facts
        (sha256, source, calendar_id, event_id, start_at, end_at, all_day,
-        details_known, location, notes)
-     SELECT ?, ?, ?, ?, ?, ?, ?, 1, ?, ? WHERE EXISTS (SELECT 1 FROM documents WHERE sha256 = ?)
+        details_known, location, notes, has_attendees, recurring)
+     SELECT ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM documents WHERE sha256 = ?)
      ON CONFLICT (sha256) DO UPDATE SET
-       details_known = 1, location = excluded.location, notes = excluded.notes
-     WHERE details_known = 0`
+       details_known = 1,
+       location = CASE WHEN details_known = 0 THEN excluded.location ELSE location END,
+       notes = CASE WHEN details_known = 0 THEN excluded.notes ELSE notes END,
+       has_attendees = excluded.has_attendees,
+       recurring = excluded.recurring`
   )
   for (const event of events) {
     const digest = eventDigest(event)
@@ -167,6 +171,8 @@ function recordEventFacts(
       event.allDay ? 1 : 0,
       event.location,
       event.notes,
+      event.hasAttendees ? 1 : 0,
+      event.recurring ? 1 : 0,
       digest
     )
   }
@@ -410,4 +416,55 @@ export function appleEventDetails(
     location: text(row["location"]),
     notes: text(row["notes"]),
   }
+}
+
+/**
+ * Whether the Helper would refuse `apple.event_update` for an indexed Apple event, from what the
+ * last sync that read it reported (#872).
+ */
+export type AppleEventFlags =
+  | { known: true; hasAttendees: boolean; recurring: boolean }
+  /**
+   * The event was indexed before the flags were stored and no sync has read it since. A caller
+   * must not treat either flag as false: offer no update for the event.
+   */
+  | { known: false }
+
+/** The flags column values of a fact row, as `AppleEventFlags`. */
+export function appleEventFlagsOf(row: {
+  has_attendees: unknown
+  recurring: unknown
+}): AppleEventFlags {
+  const { has_attendees: hasAttendees, recurring } = row
+  if (
+    (hasAttendees !== 0 && hasAttendees !== 1) ||
+    (recurring !== 0 && recurring !== 1)
+  )
+    return { known: false }
+  return {
+    known: true,
+    hasAttendees: hasAttendees === 1,
+    recurring: recurring === 1,
+  }
+}
+
+/** The flags of the live Apple event `eventId` in `calendarId`, or `null` when it is not indexed. */
+export function appleEventFlags(
+  db: DatabaseSync,
+  calendarId: string,
+  eventId: string
+): AppleEventFlags | null {
+  const row = db
+    .prepare(
+      `SELECT f.has_attendees, f.recurring
+       FROM document_heads h
+       JOIN calendar_event_facts f ON f.sha256 = h.sha256 AND f.source = h.source
+       WHERE h.source = ? AND h.source_ref = ?`
+    )
+    .get(APPLE_CALENDAR_CONNECTOR, appleEventSourceRef(calendarId, eventId))
+  if (row === undefined) return null
+  return appleEventFlagsOf({
+    has_attendees: row["has_attendees"],
+    recurring: row["recurring"],
+  })
 }

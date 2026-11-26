@@ -177,6 +177,9 @@ export interface EventSpec {
   allDay?: boolean
   /** The calendar source. Default: Apple Calendar. */
   source?: string
+  /** Apple event flags as a sync stores them; omitted, they are NULL (unknown), as before v17. */
+  hasAttendees?: boolean
+  recurring?: boolean
   /** Set to index the event as a past version with no current head. */
   retired?: boolean
 }
@@ -212,15 +215,18 @@ export function indexEvents(
     })
     db.prepare(
       `INSERT INTO calendar_event_facts
-         (sha256, source, calendar_id, event_id, start_at, end_at, all_day)
-       VALUES (?, ?, 'cal-1', ?, ?, ?, ?)`
+         (sha256, source, calendar_id, event_id, start_at, end_at, all_day,
+          has_attendees, recurring)
+       VALUES (?, ?, 'cal-1', ?, ?, ?, ?, ?, ?)`
     ).run(
       digest,
       source,
       spec.uid,
       spec.start,
       spec.end ?? spec.start,
-      spec.allDay ? 1 : 0
+      spec.allDay ? 1 : 0,
+      spec.hasAttendees === undefined ? null : spec.hasAttendees ? 1 : 0,
+      spec.recurring === undefined ? null : spec.recurring ? 1 : 0
     )
   }
 }
