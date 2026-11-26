@@ -297,6 +297,8 @@ describe("GET /today/events after a calendar sync", () => {
     hasAttendees: false,
     recurring: false,
     modifiedAt: "2030-02-28T10:00:00Z",
+    hasAttendees: false,
+    recurring: false,
   })
 
   function sync(
