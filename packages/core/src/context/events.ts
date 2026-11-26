@@ -1,5 +1,9 @@
 import type { DatabaseSync } from "node:sqlite"
-import { APPLE_CALENDAR_CONNECTOR } from "../connectors/apple-calendar/sync"
+import {
+  APPLE_CALENDAR_CONNECTOR,
+  appleEventFlagsOf,
+} from "../connectors/apple-calendar/sync"
+import type { AppleEventFlags } from "../connectors/apple-calendar/sync"
 import { fence, normalizeMaterial, toMaterial } from "../inference/fence"
 import type { PromptPart } from "../inference/fence"
 import { matchWords, stopWords } from "./match-words"
@@ -22,6 +26,11 @@ export interface EventLine {
   end: string
   allDay: boolean
   source: string
+  /**
+   * An Apple event only: whether it has attendees or belongs to a series, the two things that make
+   * the Helper refuse `update_event` (#872). Absent for an event of another source.
+   */
+  appleFlags?: AppleEventFlags
 }
 
 export interface MatchingEvents {
@@ -66,7 +75,8 @@ function aboutThePast(request: string): boolean {
 // Live event heads whose uid an intent can carry. Matching titles against the request stays in
 // JavaScript: SQLite's lower() and LIKE fold ASCII only, so a word filter in SQL would miss
 // titles in other scripts.
-const LIVE_EVENTS = `SELECT f.event_id, f.source, f.start_at, f.end_at, f.all_day, t.title
+const LIVE_EVENTS = `SELECT f.event_id, f.source, f.start_at, f.end_at, f.all_day, f.has_attendees, f.recurring,
+    t.title
   FROM document_heads h
   JOIN calendar_event_facts f ON f.sha256 = h.sha256 AND f.source = h.source
   JOIN document_text t ON t.sha256 = h.sha256
@@ -107,6 +117,7 @@ export function listMatchingEvents(
       if (shared === 0) return []
       const start = String(row["start_at"])
       const end = String(row["end_at"])
+      const source = String(row["source"])
       return [
         {
           score: shared,
@@ -122,7 +133,15 @@ export function listMatchingEvents(
             start,
             end,
             allDay: row["all_day"] === 1,
-            source: String(row["source"]),
+            source,
+            ...(source === APPLE_CALENDAR_CONNECTOR
+              ? {
+                  appleFlags: appleEventFlagsOf({
+                    has_attendees: row["has_attendees"],
+                    recurring: row["recurring"],
+                  }),
+                }
+              : {}),
           },
         },
       ]
