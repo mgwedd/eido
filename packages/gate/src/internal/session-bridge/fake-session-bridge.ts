@@ -3,6 +3,7 @@ import { createServer } from "node:net"
 import type { Socket } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { SessionBridge, SessionBridgeRequest } from "./client"
 
 // A stand-in for the session bridge in tests (#826), speaking the framing in
 // apps/helper/README.md over a real Unix socket in a temp directory: a 4-byte big-endian
@@ -25,6 +26,23 @@ export function frame(json: unknown): Buffer {
   const header = Buffer.alloc(4)
   header.writeUInt32BE(body.length, 0)
   return Buffer.concat([header, body])
+}
+
+/**
+ * An in-memory bridge that answers every call with `answer`, already parsed. It has no
+ * socket, so tests of what the gate does with an answer run on every platform.
+ */
+export function answeringBridge(
+  answer: unknown
+): SessionBridge & { requests: SessionBridgeRequest[] } {
+  const requests: SessionBridgeRequest[] = []
+  return {
+    requests,
+    call: (request) => {
+      requests.push(request)
+      return Promise.resolve(answer)
+    },
+  }
 }
 
 /** A temp directory short enough for a Unix socket path, removed by the returned cleanup. */

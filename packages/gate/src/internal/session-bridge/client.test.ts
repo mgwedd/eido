@@ -10,12 +10,17 @@ import {
   bridgeStdout,
   createSessionBridge,
 } from "./client"
-import { frame, socketDir, startFakeSessionBridge } from "./fake-session-bridge"
+import {
+  answeringBridge,
+  frame,
+  socketDir,
+  startFakeSessionBridge,
+} from "./fake-session-bridge"
 import type { SessionBridgeRequest } from "./client"
 import type { FakeAnswer } from "./fake-session-bridge"
 
 // Unix sockets and the plane split are macOS-only (#781); the gate on Windows never has a
-// session bridge, so these tests do not run there.
+// session bridge, so the socket tests do not run there. Answer handling runs everywhere.
 const unix = process.platform === "win32" ? describe.skip : describe
 
 const cleanups: (() => Promise<void> | void)[] = []
@@ -193,11 +198,9 @@ unix("session bridge client", () => {
   })
 })
 
-unix("bridge stdout", () => {
-  const run = async (answer: unknown) => {
-    const bridge = await fake(() => ({ json: answer }))
-    return bridgeStdout(createSessionBridge(bridge.socketPath), things, call)
-  }
+describe("bridge stdout", () => {
+  const run = (answer: unknown) =>
+    bridgeStdout(answeringBridge(answer), things, call)
 
   test("decodes the child's stdout", async () => {
     expect(

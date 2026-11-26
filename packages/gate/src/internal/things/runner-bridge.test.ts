@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { createSessionBridge } from "../session-bridge/client"
 import {
+  answeringBridge,
   socketDir,
   startFakeSessionBridge,
 } from "../session-bridge/fake-session-bridge"
@@ -57,7 +58,7 @@ const ADD_TODO_SHA256 =
 const LIST_AREAS_SHA256 =
   "9a55833b22dc537d9472b9f97e625d0c24f898e88bb9ce275bc47dbc193ef390"
 
-// Unix sockets and the plane split are macOS-only (#781); these tests do not run on Windows.
+// Unix sockets and the plane split are macOS-only (#781); the socket tests do not run on Windows.
 const unix = process.platform === "win32" ? describe.skip : describe
 
 test("without a session bridge the direct osascript runner is used", () => {
@@ -143,39 +144,46 @@ unix("Things through the session bridge", () => {
     expect(mocked.spawn).not.toHaveBeenCalled()
   })
 
-  test("the bridge's automation_denied keeps its code and message", async () => {
-    const bridge = await fake(() => ({
-      json: { ok: false, code: "automation_denied" },
-    }))
+  test("a malformed frame from the bridge is things_unavailable", async () => {
+    const bridge = await fake(() => ({ raw: Buffer.from([0, 0, 0, 0]) }))
     await expect(
       bridgeThingsRunner(createSessionBridge(bridge.socketPath))("list-areas")
+    ).rejects.toMatchObject({ code: "things_unavailable" })
+    expect(mocked.spawn).not.toHaveBeenCalled()
+  })
+})
+
+// What the runner does with an answer needs no socket, so these run on every platform.
+describe("Things answers from the session bridge", () => {
+  const answered = (answer: unknown) =>
+    bridgeThingsRunner(answeringBridge(answer))
+  const stdoutOf = (bytes: Buffer) => ({
+    ok: true,
+    result: { stdoutBase64: bytes.toString("base64") },
+  })
+
+  test("the bridge's automation_denied keeps its code and message", async () => {
+    await expect(
+      answered({ ok: false, code: "automation_denied" })("list-areas")
     ).rejects.toMatchObject({
       code: "automation_denied",
       message: "macOS Automation permission denied for Things",
     })
   })
 
-  test.each([
-    ["unknown_script", { json: { ok: false, code: "unknown_script" } }],
-    ["unavailable", { json: { ok: false, code: "unavailable" } }],
-    ["a malformed answer", { raw: Buffer.from([0, 0, 0, 0]) }],
-  ] satisfies [string, FakeAnswer][])(
+  test.each(["unknown_script", "unavailable"])(
     "%s from the bridge is things_unavailable",
-    async (_name, answer) => {
-      const bridge = await fake(() => answer)
+    async (code) => {
       await expect(
-        bridgeThingsRunner(createSessionBridge(bridge.socketPath))("list-areas")
+        answered({ ok: false, code })("list-areas")
       ).rejects.toMatchObject({ code: "things_unavailable" })
       expect(mocked.spawn).not.toHaveBeenCalled()
     }
   )
 
   test("refuses stdout over the direct runner's 5 MiB limit", async () => {
-    const bridge = await fake(() =>
-      stdout(Buffer.alloc(MAX_OUTPUT_BYTES + 1, 0x61))
-    )
     await expect(
-      bridgeThingsRunner(createSessionBridge(bridge.socketPath))("list-areas")
+      answered(stdoutOf(Buffer.alloc(MAX_OUTPUT_BYTES + 1, 0x61)))("list-areas")
     ).rejects.toMatchObject({
       code: "things_unavailable",
       message: "osascript output exceeded limit",
@@ -183,20 +191,17 @@ unix("Things through the session bridge", () => {
   })
 
   test("accepts stdout of exactly 5 MiB", async () => {
-    const bridge = await fake(() =>
-      stdout(Buffer.alloc(MAX_OUTPUT_BYTES, 0x61))
+    const text = await answered(stdoutOf(Buffer.alloc(MAX_OUTPUT_BYTES, 0x61)))(
+      "list-areas"
     )
-    const text = await bridgeThingsRunner(
-      createSessionBridge(bridge.socketPath)
-    )("list-areas")
     expect(text.length).toBe(MAX_OUTPUT_BYTES)
   })
 
   test("a script the gate does not ship never reaches the bridge", async () => {
-    const bridge = await fake(() => stdout(Buffer.from("")))
+    const bridge = answeringBridge(stdoutOf(Buffer.from("")))
     await expect(
-      bridgeThingsRunner(createSessionBridge(bridge.socketPath))("delete-all")
+      bridgeThingsRunner(bridge)("delete-all")
     ).rejects.toMatchObject({ code: "things_unavailable" })
-    expect(bridge.connections()).toBe(0)
+    expect(bridge.requests).toEqual([])
   })
 })

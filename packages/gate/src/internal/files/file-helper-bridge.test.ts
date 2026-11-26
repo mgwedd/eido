@@ -19,6 +19,7 @@ import {
   createSessionBridge,
 } from "../session-bridge/client"
 import {
+  answeringBridge,
   socketDir,
   startFakeSessionBridge,
 } from "../session-bridge/fake-session-bridge"
@@ -85,7 +86,7 @@ const identify = { op: "identify", path: "/srv/example/docs" } as const
 const IDENTIFIED =
   '{"ok":true,"op":"identify","canonicalPath":"/srv/example/docs","dev":"2a","ino":"1001"}\n'
 
-// Unix sockets and the plane split are macOS-only (#781); these tests do not run on Windows.
+// Unix sockets and the plane split are macOS-only (#781); the socket tests do not run on Windows.
 const unix = process.platform === "win32" ? describe.skip : describe
 
 unix("file helper through the session bridge", () => {
@@ -117,14 +118,6 @@ unix("file helper through the session bridge", () => {
     expect(mocked.spawn).not.toHaveBeenCalled()
   })
 
-  test("accepts a valid reply at the limit", async () => {
-    const atLimit = IDENTIFIED + " ".repeat(64 * 1024 - IDENTIFIED.length)
-    const bridge = await fake(() => stdout(atLimit))
-    await expect(
-      fileHelper(pin, createSessionBridge(bridge.socketPath))(identify)
-    ).resolves.toMatchObject({ ok: true, op: "identify" })
-  })
-
   test("returns the same reply the spawned helper gives for the same stdout", async () => {
     const direct = fileHelper(pin)(identify)
     await vi.waitFor(() => expect(mocked.spawn).toHaveBeenCalled())
@@ -146,17 +139,6 @@ unix("file helper through the session bridge", () => {
       ino: "1001",
     })
     expect(mocked.spawn).not.toHaveBeenCalled()
-  })
-
-  test("a binary that does not match its pin never reaches the bridge", async () => {
-    const bridge = await fake(() => stdout(IDENTIFIED))
-    await expect(
-      fileHelper(
-        { path: binary, sha256: "0".repeat(64) },
-        createSessionBridge(bridge.socketPath)
-      )(identify)
-    ).rejects.toThrow("file helper does not match its pinned hash")
-    expect(bridge.connections()).toBe(0)
   })
 
   test("a missing socket is session_unavailable and nothing is spawned", async () => {
@@ -187,29 +169,57 @@ unix("file helper through the session bridge", () => {
     expect(mocked.spawn).not.toHaveBeenCalled()
   })
 
+  test("a malformed frame is a helper failure", async () => {
+    const bridge = await fake(() => ({ raw: Buffer.from([0, 0, 0, 0]) }))
+    const error = await fileHelper(
+      pin,
+      createSessionBridge(bridge.socketPath)
+    )(identify).catch((e: unknown) => e)
+    expect(error).not.toBeInstanceOf(SessionUnavailableError)
+    expect(error).toMatchObject({ message: "file helper failed" })
+  })
+})
+
+// What the helper does with an answer needs no socket, so these run on every platform.
+describe("file helper answers from the session bridge", () => {
+  const stdoutOf = (text: string) => ({
+    ok: true,
+    result: { stdoutBase64: Buffer.from(text, "utf8").toString("base64") },
+  })
+
+  test("accepts a valid reply at the limit", async () => {
+    const atLimit = IDENTIFIED + " ".repeat(64 * 1024 - IDENTIFIED.length)
+    await expect(
+      fileHelper(pin, answeringBridge(stdoutOf(atLimit)))(identify)
+    ).resolves.toMatchObject({ ok: true, op: "identify" })
+  })
+
+  test("a binary that does not match its pin never reaches the bridge", async () => {
+    const bridge = answeringBridge(stdoutOf(IDENTIFIED))
+    await expect(
+      fileHelper({ path: binary, sha256: "0".repeat(64) }, bridge)(identify)
+    ).rejects.toThrow("file helper does not match its pinned hash")
+    expect(bridge.requests).toEqual([])
+  })
+
   test.each([
-    ["a bridge refusal", { json: { ok: false, code: "unavailable" } }],
-    ["stdout that is not JSON", stdout("not json\n")],
+    ["a bridge refusal", { ok: false, code: "unavailable" }],
+    ["stdout that is not JSON", stdoutOf("not json\n")],
     [
       "stdout outside the helper's schema",
-      stdout('{"ok":true,"op":"teapot"}\n'),
+      stdoutOf('{"ok":true,"op":"teapot"}\n'),
     ],
     [
       "stdout over the 64 KiB reply limit",
       // A valid reply padded with whitespace JSON.parse would accept: only the limit refuses it.
-      stdout(IDENTIFIED + " ".repeat(64 * 1024)),
+      stdoutOf(IDENTIFIED + " ".repeat(64 * 1024)),
     ],
-    ["a malformed frame", { raw: Buffer.from([0, 0, 0, 0]) }],
-  ] satisfies [string, FakeAnswer][])(
-    "%s is a helper failure",
-    async (_name, answer) => {
-      const bridge = await fake(() => answer)
-      const error = await fileHelper(
-        pin,
-        createSessionBridge(bridge.socketPath)
-      )(identify).catch((e: unknown) => e)
-      expect(error).not.toBeInstanceOf(SessionUnavailableError)
-      expect(error).toMatchObject({ message: "file helper failed" })
-    }
-  )
+  ])("%s is a helper failure", async (_name, answer) => {
+    const error = await fileHelper(
+      pin,
+      answeringBridge(answer)
+    )(identify).catch((e: unknown) => e)
+    expect(error).not.toBeInstanceOf(SessionUnavailableError)
+    expect(error).toMatchObject({ message: "file helper failed" })
+  })
 })
