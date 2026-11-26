@@ -388,6 +388,9 @@ public enum BridgeFailure: String, Error, Encodable {
   case unknownScript = "unknown_script"
   case frameTooLarge = "frame_too_large"
   case automationDenied = "automation_denied"
+  /// A file op named a root (or an `identify` path) the owner has not approved, or the
+  /// directory at that path is no longer the one the owner approved (#865).
+  case rootNotApproved = "root_not_approved"
   case unavailable
 }
 
@@ -427,8 +430,9 @@ public enum BridgeRequest: Equatable {
   case eventKit(Data)
   /// A pinned Things script by id, with the SHA-256 the caller expects and its arguments.
   case things(script: String, sha256: String, argv: [String])
-  /// A file-helper request rebuilt from table-defined fields only, as the helper's stdin.
-  case file(op: String, stdin: Data)
+  /// A file-helper request rebuilt from table-defined fields only, as the helper's stdin, and
+  /// the root (or `identify` path) it names, for the approved-roots check.
+  case file(op: String, target: FileTarget, stdin: Data)
 
   public static func parse(_ data: Data) throws -> BridgeRequest {
     guard let parsed = try? JSONSerialization.jsonObject(with: data),
@@ -460,7 +464,7 @@ public enum BridgeRequest: Equatable {
           withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes]),
         stdin.count <= FileOps.helperRequestLimit
       else { throw BridgeFailure.invalidRequest }
-      return .file(op: fileOp, stdin: stdin)
+      return .file(op: fileOp, target: FileOps.target(fields), stdin: stdin)
     default:
       throw BridgeFailure.unknownOp
     }
@@ -501,6 +505,17 @@ public enum FileOps {
       rebuilt[key] = try value(request[key], rule)
     }
     return (op, rebuilt)
+  }
+
+  /// The root a rebuilt request names, or for `identify` the path it asks about. `rebuild`
+  /// has already checked every field, so the casts hold.
+  static func target(_ rebuilt: [String: Any]) -> FileTarget {
+    if let root = rebuilt["root"] as? [String: String], let path = root["path"],
+      let dev = root["dev"], let ino = root["ino"]
+    {
+      return .root(path: path, dev: dev, ino: ino)
+    }
+    return .identify(path: rebuilt["path"] as? String ?? "")
   }
 
   private static func value(_ raw: Any?, _ rule: Field) throws -> Any {
