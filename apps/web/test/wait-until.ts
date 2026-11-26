@@ -11,11 +11,11 @@ const POLL_MS = 10
 /**
  * Waits until `condition` holds, checking it between `act` steps.
  *
- * Each poll sleeps inside its own `act` scope. That matters: when this runs inside an outer
- * async `act` (as the `interact` hook of `describeStates` does), React keeps state updates
- * from fetches that settle during the outer scope in its act queue and only renders them when
- * the scope ends. A plain `setTimeout` poll then never sees the card change, and the wait runs
- * out. Leaving a nested `act` renders the queued updates, so the condition sees them.
+ * Each poll sleeps inside its own `act` scope, so updates that land during the sleep are
+ * rendered before the condition is checked again. Call it outside any other `act` scope (the
+ * `settle` hook of `describeStates`, not `interact`): inside an outer async `act`, React holds
+ * back the renders for fetches that settle during that scope until it ends, a nested `act` does
+ * not release them, and the wait runs out (#869).
  *
  * The bound is a wall-clock deadline, not a count of polls, so a slow runner gets the same time
  * as a fast one. `failure` is the message when the deadline passes.
