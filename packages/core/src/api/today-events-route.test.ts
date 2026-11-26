@@ -294,8 +294,6 @@ describe("GET /today/events after a calendar sync", () => {
     allDay: false,
     location: "",
     notes: "",
-    hasAttendees: false,
-    recurring: false,
     modifiedAt: "2030-02-28T10:00:00Z",
     hasAttendees: false,
     recurring: false,
