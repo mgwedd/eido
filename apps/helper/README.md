@@ -377,7 +377,11 @@ from `--file-roots`:
 ```json
 {
   "roots": [
-    { "path": "/Users/example/Documents/Notes", "dev": "16777232", "ino": "1234567" }
+    {
+      "path": "/Users/example/Documents/Notes",
+      "dev": "16777232",
+      "ino": "1234567"
+    }
   ]
 }
 ```
