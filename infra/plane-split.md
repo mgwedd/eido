@@ -148,6 +148,10 @@ In split mode `stack:setup`, `stack:bootstrap` and `stack:gate` refuse, because 
 
 8. Reboot, then repeat steps 4, 5 and 7.
 
+## Approved file roots
+
+The session bridge reaches only the file roots the owner approved (#865). The owner keeps the list in a JSON file they own, mode `600`, and the bridge reads it once at start from `--file-roots <absolute path>`; the format is under "Approved file roots" in [apps/helper/README.md](../apps/helper/README.md). Without the flag, or with an empty list, every file op from the gate is refused. The bridge refuses to start on a list that is group or other writable, not owned by the owner, a symbolic link, or malformed. After changing the list, restart the bridge. The bridge LaunchAgent (#827) passes the flag.
+
 ## Back up
 
 The owner's nightly backup cannot read the plane's data dirs. A root LaunchDaemon, `com.eido.plane.backup`, backs up both from the plane; set it up and restore from it as described under "Split host" in [backup-restore.md](backup-restore.md).
