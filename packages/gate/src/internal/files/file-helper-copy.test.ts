@@ -60,12 +60,14 @@ const privateDirs = (parent: string) =>
   readdirSync(parent).filter((name) => name.startsWith("eido-file-helper."))
 /**
  * Renames a new file with `bytes` and the copy's mode over the copy. The new file exists while
- * the copy does, so it has another inode (Linux reuses a freed inode number at once).
+ * the copy does, so it has another inode (Linux reuses a freed inode number at once). Windows
+ * refuses to rename over a read-only file, so the copy is made writable first.
  */
 function swap(path: string, bytes: string) {
   const next = `${path}.next`
   writeFileSync(next, bytes)
   chmodSync(next, 0o500)
+  chmodSync(path, 0o700)
   renameSync(next, path)
 }
 
@@ -282,9 +284,13 @@ describe("checking the copy before each run", () => {
   )
 })
 
-/** A synthetic helper: a shell script that prints one identify reply naming `marker`. */
+/**
+ * A synthetic helper: a shell script that drains the request on stdin, as the real helper does,
+ * then prints one identify reply naming `marker`. `read` and `printf` are builtins, so the empty
+ * environment the gate gives the helper is enough.
+ */
 const script = (marker: string) =>
-  `#!/bin/sh\nprintf '%s' '{"ok":true,"op":"identify","canonicalPath":"/srv/example/${marker}","dev":"2a","ino":"1"}'\n`
+  `#!/bin/sh\nwhile read -r _; do :; done\nprintf '%s' '{"ok":true,"op":"identify","canonicalPath":"/srv/example/${marker}","dev":"2a","ino":"1"}'\n`
 const request = { op: "identify", path: "/srv/example/docs" } as const
 
 describe.skipIf(!posix)("running the copy", () => {
