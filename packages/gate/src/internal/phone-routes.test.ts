@@ -14,6 +14,7 @@ import {
   validateGateAuditPage,
   validateGateBackupStatus,
   validateGateConnectorSettings,
+  validateGateControlStatus,
   validateGateCredentialStatus,
   validateGateDecisionResult,
   validateGateEnrolOptions,
@@ -49,6 +50,10 @@ import {
 import { checkDrift, manifestHash } from "./connectors"
 import { payloadHash } from "./canonical"
 import { prepareControlApproval } from "./control-approvals"
+import {
+  MemoryControlStore,
+  attachControlCheckpoint,
+} from "./control-checkpoint"
 import { GoogleFlows } from "./google-connect"
 import { InMemoryVault } from "./vault/vault"
 import { loadPolicy, SHIPPED_DEFAULT_PATH } from "./policy"
@@ -658,6 +663,7 @@ describe("phoneHandler: authenticated settings reads", () => {
     for (const path of [
       "/audit",
       "/audit/chain",
+      "/audit/control",
       "/connector-settings",
       "/backup/status",
       "/passkeys",
@@ -752,6 +758,39 @@ describe("phoneHandler: authenticated settings reads", () => {
     expect(checkedAudit.value.entries).toContainEqual(
       expect.objectContaining({ actor: "gate", displayActor: "gate" })
     )
+  })
+
+  describe("GET /audit/control", () => {
+    it("reports an unenforced checkpoint to a signed-in owner", async () => {
+      enrol(auth)
+      const cookie = await signIn()
+      const reply = await call("GET", "/audit/control", { cookie })
+      expect(reply.status).toBe(200)
+      expect(reply.body).toStrictEqual({ enforced: false })
+    })
+
+    it("reports the deny reason to a signed-in owner while the checkpoint is denied", async () => {
+      enrol(auth)
+      const cookie = await signIn()
+      const store = new MemoryControlStore()
+      store.locked = true
+      const guard = attachControlCheckpoint(s.db, {
+        store,
+        schedule: () => () => undefined,
+      })
+      try {
+        const denied = await call("GET", "/audit/control", { cookie })
+        expect(denied.status).toBe(200)
+        expect(validateGateControlStatus(denied.body)).toEqual({
+          ok: true,
+          value: { enforced: true, denied: "keychain_locked" },
+        })
+        // The phone listener's other session routes keep answering too.
+        expect((await call("GET", "/approvals", { cookie })).status).toBe(200)
+      } finally {
+        guard.close()
+      }
+    })
   })
 
   describe("GET /backup/status", () => {
@@ -1317,7 +1356,9 @@ describe("phoneHandler: session", () => {
     ["invalid_inverse", 409, "already_decided"],
     ["record_mismatch", 409, "already_decided"],
     ["outcome_unresolved", 409, "already_decided"],
+    ["outcome_unknown", 409, "already_decided"],
     ["upstream_error", 503, "unavailable"],
+    ["session_unavailable", 503, "unavailable"],
     ["connector_unavailable", 503, "unavailable"],
     ["connector_misconfigured", 503, "unavailable"],
     ["unknown_writer", 503, "unavailable"],

@@ -18,17 +18,22 @@ import { openControlDb } from "../control-db"
 import { fileRootRoute } from "../file-root-routes"
 import type { GateRequest } from "../http"
 import {
+  SessionBridgeOutcomeUnknownError,
   SessionUnavailableError,
   createSessionBridge,
+  outcomeUnknown,
 } from "../session-bridge/client"
 import {
   TEST_OWNER_UID,
   answeringBridge,
+  failingBridge,
   socketDir,
   startFakeSessionBridge,
 } from "../session-bridge/fake-session-bridge.test-support"
 import type { FakeAnswer } from "../session-bridge/fake-session-bridge.test-support"
-import { signedFileRoots } from "../test-fixtures"
+import { createExecutor } from "../executor"
+import { propose } from "../intents"
+import { FILE_OPS, manifest, setup, signedFileRoots } from "../test-fixtures"
 import { HostRootNotApproved, fileHelper } from "./file-helper"
 import { createFile } from "./file-ops"
 import { approvedFileRoot } from "./file-roots"
@@ -229,6 +234,41 @@ unix("file helper through the session bridge", () => {
     expect(mocked.spawn).not.toHaveBeenCalled()
   })
 
+  test("an approved file write the bridge was not up for runs once the bridge starts", async () => {
+    const f = setup([manifest("files", FILE_OPS)])
+    cleanups.push(f.cleanup)
+    await signedFileRoots(f.db, { roots: [{ id: "docs", root: DOCS }] })
+    const { dir: parent, remove } = socketDir()
+    cleanups.push(remove)
+    const socketPath = join(parent, "bridge.sock")
+    const executor = createExecutor(
+      f.db,
+      [],
+      () => Promise.reject(new Error("network forbidden")),
+      fileHelper(pin, createSessionBridge(socketPath, TEST_OWNER_UID))
+    )
+    const proposed = propose(f.db, f.policy, {
+      intent: {
+        kind: "file.create",
+        args: { root: "docs", path: "lorem.txt", content: "lorem" },
+      },
+      origin: "reactive",
+    })
+    if (!proposed.ok) throw new Error(proposed.code)
+    expect(await executor.execute(proposed.intentId)).toEqual({
+      ok: false,
+      code: "session_unavailable",
+    })
+    const bridge = await startFakeSessionBridge(
+      () => stdout('{"ok":true,"op":"create"}\n'),
+      socketPath
+    )
+    cleanups.push(bridge.close)
+    expect((await executor.execute(proposed.intentId)).ok).toBe(true)
+    expect(bridge.requests).toHaveLength(1)
+    expect(mocked.spawn).not.toHaveBeenCalled()
+  })
+
   test("a malformed frame is a helper failure", async () => {
     const bridge = await fake(() => ({ raw: Buffer.from([0, 0, 0, 0]) }))
     const error = await fileHelper(
@@ -301,5 +341,29 @@ describe("file helper answers from the session bridge", () => {
     )(identify).catch((e: unknown) => e)
     expect(error).not.toBeInstanceOf(SessionUnavailableError)
     expect(error).toMatchObject({ message: "file helper failed" })
+  })
+})
+
+describe("file helper bridge deadline and causes", () => {
+  test("waits past the bridge's worst case: 10 s receive, 30 s helper, 10 s reply", async () => {
+    const bridge = answeringBridge({
+      ok: true,
+      result: {
+        stdoutBase64: Buffer.from(IDENTIFIED, "utf8").toString("base64"),
+      },
+    })
+    await fileHelper(pin, bridge)(identify)
+    expect(bridge.calls).toEqual([
+      expect.objectContaining({ timeoutMs: 55_000 }),
+    ])
+  })
+
+  test("a timeout after the request was sent is a helper failure whose outcome is unknown", async () => {
+    const error = await fileHelper(
+      pin,
+      failingBridge(new SessionBridgeOutcomeUnknownError())
+    )(identify).catch((e: unknown) => e)
+    expect(error).toMatchObject({ message: "file helper failed" })
+    expect(outcomeUnknown(error)).toBe(true)
   })
 })

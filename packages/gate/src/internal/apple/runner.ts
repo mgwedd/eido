@@ -8,11 +8,19 @@ import {
   validateGateAppleResponse,
 } from "@eido/schemas"
 import type { GateAppleRequest, GateAppleResponse } from "@eido/schemas"
-import { SessionUnavailableError } from "../session-bridge/client"
+import {
+  SessionUnavailableError,
+  bridgeTimeout,
+} from "../session-bridge/client"
 import type { SessionBridge } from "../session-bridge/client"
 
 export const APPLE_MAX_BYTES = 1024 * 1024
 export const APPLE_TIMEOUT_MS = 30_000
+/**
+ * The bridge runs EventKit in process; its limit is the native runner's 30 s (#866 follows up
+ * on enforcing it there). With the bridge's receive and reply limits the worst case is 50 s.
+ */
+export const APPLE_BRIDGE_TIMEOUT_MS = bridgeTimeout(APPLE_TIMEOUT_MS)
 /** Helper processes one runner keeps alive at once; a call beyond it is refused, not queued. */
 export const APPLE_MAX_CONCURRENT = 4
 /** The installed Helper binary and the SHA-256 it must have, like the file helper (ADR 0006). */
@@ -21,8 +29,8 @@ export type AppleErrorCode =
   Extract<GateAppleResponse, { ok: false }>["code"] | "session_unavailable"
 export class AppleError extends Error {
   readonly code: AppleErrorCode
-  constructor(code: AppleErrorCode) {
-    super(`Apple Helper refused: ${code}`)
+  constructor(code: AppleErrorCode, options?: ErrorOptions) {
+    super(`Apple Helper refused: ${code}`, options)
     this.name = "AppleError"
     this.code = code
   }
@@ -89,7 +97,8 @@ async function viaBridge(
     throw new AppleError(
       error instanceof SessionUnavailableError
         ? "session_unavailable"
-        : "unavailable"
+        : "unavailable",
+      { cause: error }
     )
   }
   const response = validateGateAppleResponse(answer)
@@ -164,7 +173,7 @@ export function createAppleRunner(
         return await viaBridge(
           options.bridge,
           checked.value,
-          options.timeoutMs ?? APPLE_TIMEOUT_MS
+          options.timeoutMs ?? APPLE_BRIDGE_TIMEOUT_MS
         )
       } finally {
         running -= 1

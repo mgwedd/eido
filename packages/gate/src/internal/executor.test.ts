@@ -11,6 +11,10 @@ import { createExecutor } from "./executor"
 import type { UpstreamRequest, UpstreamWriter, WriteRequest } from "./executor"
 import { intentHistory, intentStatus, propose } from "./intents"
 import {
+  SessionBridgeOutcomeUnknownError,
+  SessionUnavailableError,
+} from "./session-bridge/client"
+import {
   MAIL_OPS,
   auditRows,
   loggedText,
@@ -574,6 +578,94 @@ describe("executor", () => {
     expect(intentStatus(s.db, f.id)?.state).toBe("failed")
     expect(loggedText(s.db)).not.toContain("synthetic-secret-payload")
     expect(verifyChain(s.db).ok).toBe(true)
+  })
+
+  // A runner wraps the client's error in its own, keeping it as the cause (things/runner.ts).
+  const wrapped = (cause: Error) => new Error("runner failed", { cause })
+  const attempts = (id: string) =>
+    s.db
+      .prepare("SELECT direction FROM execution_attempts WHERE intent_id=?")
+      .all(id)
+      .map((row) => row["direction"])
+  const actionsFor = (id: string) =>
+    auditRows(s.db)
+      .filter((row) => row.target === id)
+      .map((row) => row.action)
+
+  it("keeps the approval when the session bridge was not reached, then runs once it is", async () => {
+    const f = fixture()
+    f.transport.mockRejectedValueOnce(wrapped(new SessionUnavailableError()))
+    expect(await f.executor.execute(f.id)).toEqual({
+      ok: false,
+      code: "session_unavailable",
+    })
+    expect(intentStatus(s.db, f.id)?.state).toBe("approved")
+    expect(attempts(f.id)).toEqual([])
+    expect(actionsFor(f.id)).toContain("execute.refused.session_unavailable")
+    expect(actionsFor(f.id)).not.toContain("execute.failed.upstream_error")
+    expect((await f.executor.execute(f.id)).ok).toBe(true)
+    expect(intentStatus(s.db, f.id)?.state).toBe("executed")
+    expect(f.transport).toHaveBeenCalledTimes(2)
+    expect(verifyChain(s.db).ok).toBe(true)
+  })
+
+  it("keeps the Undo when the session bridge was not reached, then runs it once it is", async () => {
+    const f = fixture()
+    await f.executor.execute(f.id)
+    f.transport.mockRejectedValueOnce(new SessionUnavailableError())
+    expect(await f.executor.undo(f.id)).toEqual({
+      ok: false,
+      code: "session_unavailable",
+    })
+    expect(attempts(f.id)).toEqual(["execute"])
+    expect(actionsFor(f.id)).toContain("undo.refused.session_unavailable")
+    expect((await f.executor.undo(f.id)).ok).toBe(true)
+    expect(f.labels.has("work")).toBe(false)
+  })
+
+  it("records a timeout after the request was sent as outcome unknown and never runs it again", async () => {
+    const f = fixture()
+    f.transport.mockRejectedValueOnce(
+      wrapped(new SessionBridgeOutcomeUnknownError())
+    )
+    expect(await f.executor.execute(f.id)).toEqual({
+      ok: false,
+      code: "outcome_unknown",
+    })
+    // Neither failed nor executed: nothing proves either.
+    expect(intentStatus(s.db, f.id)?.state).toBe("approved")
+    expect(attempts(f.id)).toEqual(["execute"])
+    expect(actionsFor(f.id)).toContain("execute.outcome_unknown")
+    expect(actionsFor(f.id).some((a) => a.startsWith("execute.failed"))).toBe(
+      false
+    )
+    expect(intentHistory(s.db, f.id).at(-1)).toMatchObject({
+      from: "approved",
+      to: "approved",
+      reason: "outcome_unknown",
+    })
+    expect(await f.executor.execute(f.id)).toEqual({
+      ok: false,
+      code: "outcome_unresolved",
+    })
+    expect(f.transport).toHaveBeenCalledTimes(1)
+    expect(verifyChain(s.db).ok).toBe(true)
+  })
+
+  it("records an Undo that timed out after sending as outcome unknown and keeps its claim", async () => {
+    const f = fixture()
+    await f.executor.execute(f.id)
+    f.transport.mockRejectedValueOnce(new SessionBridgeOutcomeUnknownError())
+    expect(await f.executor.undo(f.id)).toEqual({
+      ok: false,
+      code: "outcome_unknown",
+    })
+    expect(intentStatus(s.db, f.id)?.state).toBe("executed")
+    expect(await f.executor.undo(f.id)).toEqual({
+      ok: false,
+      code: "outcome_unresolved",
+    })
+    expect(f.transport).toHaveBeenCalledTimes(2)
   })
 
   it.each(["money.transfer", "file.hardDelete", "email.archive"])(

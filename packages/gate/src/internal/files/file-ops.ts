@@ -6,15 +6,28 @@ import type {
 } from "@eido/schemas"
 import { append } from "../audit"
 import { payloadHash } from "../canonical"
+import { outcomeUnknown, sentNothing } from "../session-bridge/client"
 import { HostRootNotApproved } from "./file-helper"
 import type { FileHelper } from "./file-helper"
 import { approvedFileRoot } from "./file-roots"
 
 type FailureCode = Extract<GateFileHelperResponse, { ok: false }>["code"]
-/** A refusal carries a code only: never a path, file bytes or helper text. */
+/**
+ * A refusal carries a code only: never a path, file bytes or helper text. `session_unavailable`
+ * means the bridge was not reached and nothing was sent; `outcome_unknown` means the request was
+ * sent through the bridge and the gate gave up waiting, so the helper may have run it (#893).
+ */
 export type FileOpOutcome<T = Record<never, never>> =
   | ({ ok: true } & T)
-  | { ok: false; code: FailureCode | "root_not_approved" | "helper_failed" }
+  | {
+      ok: false
+      code:
+        | FailureCode
+        | "root_not_approved"
+        | "helper_failed"
+        | "session_unavailable"
+        | "outcome_unknown"
+    }
 
 type Verb = "create" | "move" | "trash" | "restore"
 const TRASH_ATTEMPTS = 3
@@ -64,7 +77,14 @@ async function audited(
     // The host's own approved list refused the root: the same outcome as the gate's list.
     if (error instanceof HostRootNotApproved)
       return finish({ ok: false, code: "root_not_approved" })
-    return finish({ ok: false, code: "helper_failed" })
+    return finish({
+      ok: false,
+      code: sentNothing(error)
+        ? "session_unavailable"
+        : outcomeUnknown(error)
+          ? "outcome_unknown"
+          : "helper_failed",
+    })
   }
   if (!reply.ok) return finish({ ok: false, code: reply.code })
   if (reply.op !== verb) return finish({ ok: false, code: "helper_failed" })
@@ -127,6 +147,10 @@ export async function trashFile(
       (root) => ({ op: "trash", root, path: input.path, trashName })
     )
     if (outcome.ok) return { ok: true, trashName }
+    // An earlier attempt reached the helper, which may have made the trash folder: only the
+    // first attempt can say that nothing was written.
+    if (attempt > 0 && outcome.code === "session_unavailable")
+      return { ok: false, code: "helper_failed" }
     if (outcome.code !== "exists") return outcome
   }
   return outcome
