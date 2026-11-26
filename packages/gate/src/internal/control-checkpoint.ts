@@ -606,6 +606,27 @@ function behindHeld(held: Held, record: ControlRecord, raw: string): boolean {
   )
 }
 
+/**
+ * Appends one audit row for a move into or out of `keychain_locked` (#878): the reason only, never
+ * record contents. The denial is already decided and the file log records the same move, so a
+ * failed append changes nothing and never stops the retry.
+ */
+function auditLockMove(db: DatabaseSync, denied: DenyReason | undefined): void {
+  try {
+    append(db, {
+      actor: "system",
+      action:
+        denied === "keychain_locked"
+          ? "control.keychain_locked"
+          : "control.keychain_lock_cleared",
+      target: "control",
+      detailHash: payloadHash({ reason: denied ?? "verified" }),
+    })
+  } catch {
+    // See above: the audit row is a record of the move, not a condition of it.
+  }
+}
+
 /** A failing listener never changes the denial and never stops the retry. */
 function notify(retry: Retry, denied: DenyReason | undefined): void {
   try {
@@ -687,7 +708,10 @@ function scheduleRetry(db: DatabaseSync, state: State): void {
     }
     if (state.denied === undefined) retry.attempt = 0
     scheduleRetry(db, state)
-    if (state.denied !== "keychain_locked") notify(retry, state.denied)
+    if (state.denied !== "keychain_locked") {
+      auditLockMove(db, state.denied)
+      notify(retry, state.denied)
+    }
   }, delay)
 }
 
@@ -741,8 +765,24 @@ export function attachControlCheckpoint(
     }
   }
   loadAndVerify(db, state)
+  if (state.denied === "keychain_locked") auditLockMove(db, state.denied)
   scheduleRetry(db, state)
   return handle(db, state)
+}
+
+/**
+ * Called when a vault read fails because the keychain is locked (#878). A gate whose checkpoint
+ * verified moves into `keychain_locked`, as a locked load at a control change does: authority
+ * reads are denied, the back-off retry starts and the listener is told. Any other denial is kept,
+ * so a lock never turns a denial that needs recovery into one the retry can leave. Never throws.
+ */
+export function reportKeychainLocked(db: DatabaseSync): void {
+  const state = guards.get(db)
+  if (state === undefined || state.denied !== undefined) return
+  deny(state, "keychain_locked")
+  auditLockMove(db, state.denied)
+  scheduleRetry(db, state)
+  notify(state.retry, state.denied)
 }
 
 function handle(db: DatabaseSync, state: State): ControlCheckpoint {
@@ -929,6 +969,9 @@ export function controlTransaction<T>(
   if (db.isTransaction) throw new ControlStateError("unsupported_transaction")
   let next: ControlRecord | undefined
   let nextRaw = ""
+  // Set when the store load fails; reported once the transaction has rolled back, so the audit
+  // row of a lock is not rolled back with it.
+  let failed: DenyReason | undefined
   state.depth = 1
   state.pending = []
   try {
@@ -944,8 +987,7 @@ export function controlTransaction<T>(
             ? "keychain_locked"
             : "store_unreadable"
         deny(state, reason)
-        scheduleRetry(db, state)
-        notify(state.retry, reason)
+        failed = reason
         throw new ControlStateError(reason)
       }
       // Another gate instance moved the protected record on: stop, never overwrite it.
@@ -977,6 +1019,11 @@ export function controlTransaction<T>(
   } finally {
     state.depth = 0
     state.pending = []
+    if (failed !== undefined) {
+      if (failed === "keychain_locked") auditLockMove(db, failed)
+      scheduleRetry(db, state)
+      notify(state.retry, failed)
+    }
   }
 }
 

@@ -1,9 +1,10 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterAll, describe, expect, test } from "vitest"
+import { afterAll, describe, expect, test, vi } from "vitest"
 import { FileVault, devFlagFromEnv } from "./file-vault"
-import { InMemoryVault } from "./vault"
+import { InMemoryVault, KeychainLockedError, reportingLocks } from "./vault"
+import type { Vault } from "./vault"
 import { vaultContract } from "./vault-contract"
 
 const dirs: string[] = []
@@ -110,5 +111,44 @@ describe("FileVault", () => {
     await vault.set(KEY, "test-refresh-token-1")
     await vault.delete(KEY)
     expect(await readFile(path, "utf8")).not.toContain("test-refresh-token-1")
+  })
+})
+
+describe("reportingLocks", () => {
+  function failingGet(error: Error): Vault {
+    const inner = new InMemoryVault()
+    return {
+      get: () => Promise.reject(error),
+      set: (key, secret) => inner.set(key, secret),
+      delete: (key) => inner.delete(key),
+    }
+  }
+
+  test("reports a locked keychain read and rethrows the same error", async () => {
+    const onLocked = vi.fn()
+    const locked = new KeychainLockedError()
+    const vault = reportingLocks(failingGet(locked), onLocked)
+    await expect(vault.get(KEY)).rejects.toBe(locked)
+    expect(onLocked).toHaveBeenCalledTimes(1)
+  })
+
+  test("does not report other read failures", async () => {
+    const onLocked = vi.fn()
+    const failure = new Error("Keychain credential could not be read")
+    const vault = reportingLocks(failingGet(failure), onLocked)
+    await expect(vault.get(KEY)).rejects.toBe(failure)
+    expect(onLocked).not.toHaveBeenCalled()
+  })
+
+  test("passes reads, writes and deletes through to the wrapped vault", async () => {
+    const onLocked = vi.fn()
+    const inner = new InMemoryVault()
+    const vault = reportingLocks(inner, onLocked)
+    await vault.set(KEY, "test-refresh-token-1")
+    expect(await inner.get(KEY)).toBe("test-refresh-token-1")
+    expect(await vault.get(KEY)).toBe("test-refresh-token-1")
+    await vault.delete(KEY)
+    expect(await inner.get(KEY)).toBeUndefined()
+    expect(onLocked).not.toHaveBeenCalled()
   })
 })

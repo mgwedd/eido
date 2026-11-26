@@ -6,11 +6,12 @@ import { createIntentClient, GateRequestError } from "./internal/client"
 import {
   ControlStateError,
   MemoryControlStore,
+  controlStatus,
 } from "./internal/control-checkpoint"
 import type { RetrySchedule } from "./internal/control-checkpoint"
 import { runningGate } from "./internal/runtime"
 import { sample, socketAddress, WEBAUTHN } from "./internal/test-fixtures"
-import { InMemoryVault } from "./internal/vault/vault"
+import { InMemoryVault, KeychainLockedError } from "./internal/vault/vault"
 import type { VaultKey } from "./internal/vault/vault"
 import { GATE_LOG_FILE, finishLockedStart, gateConfig, runGate } from "./main"
 import type { GateConfig, RunningGate } from "./main"
@@ -74,12 +75,17 @@ class CountingVault extends InMemoryVault {
   }
 }
 
-/** The gate's own lifecycle events, without the per-request lines. */
-function events(): unknown[] {
+/** The gate log lines, parsed. */
+function logLines(): unknown[] {
   return readFileSync(join(dir, "gate", GATE_LOG_FILE), "utf8")
     .trim()
     .split("\n")
     .map((line): unknown => JSON.parse(line))
+}
+
+/** The gate's own lifecycle events, without the per-request lines. */
+function events(): unknown[] {
+  return logLines()
     .map((line) =>
       typeof line === "object" && line !== null && "event" in line
         ? line.event
@@ -249,5 +255,97 @@ describe("finishLockedStart (#870)", () => {
     finishLockedStart(s)
     expect(s.prepare).not.toHaveBeenCalled()
     expect(s.log.mock.calls).toEqual([["policy_load_failed"]])
+  })
+})
+
+/** A vault whose reads fail as a locked keychain's do, while `locked` is set. */
+class LockingVault extends InMemoryVault {
+  locked = true
+  override async get(key: VaultKey): Promise<string | undefined> {
+    if (this.locked) throw new KeychainLockedError()
+    return super.get(key)
+  }
+}
+
+function lockRows(): string[] {
+  return runningGate()
+    .db.prepare(
+      "SELECT action FROM audit_log WHERE action LIKE 'control.keychain%' ORDER BY seq"
+    )
+    .all()
+    .map((row) => String(row["action"]))
+}
+
+describe("runGate when a secret read finds the keychain locked (#878)", () => {
+  async function startVerifiedThenLocked() {
+    const store = new MemoryControlStore()
+    const vault = new LockingVault()
+    const retries: { run: () => void; delayMs: number }[] = []
+    const schedule: RetrySchedule = (run, delayMs) => {
+      retries.push({ run, delayMs })
+      return () => undefined
+    }
+    // The checkpoint store is readable, so the gate starts verified; the profile-audit key read
+    // at start is the first secret read, and it finds the keychain locked.
+    gate = await runGate(
+      config(false),
+      undefined,
+      () => vault,
+      () => store,
+      undefined,
+      schedule
+    )
+    const client = createIntentClient({ socketPath: config(false).socketPath })
+    const propose = () =>
+      client.propose({ intent: sample("email.draft"), origin: "reactive" })
+    return { store, vault, retries, propose }
+  }
+
+  it("moves the running gate into keychain_locked, schedules the retry and reports it", async () => {
+    const { store, retries, propose } = await startVerifiedThenLocked()
+    const record = store.value
+    expect(record).toBeDefined()
+    expect(retries.map((retry) => retry.delayMs)).toEqual([5_000])
+    expect(controlStatus(runningGate().db)).toEqual({
+      enforced: true,
+      denied: "keychain_locked",
+    })
+    expect(logLines()).toContainEqual(
+      expect.objectContaining({
+        event: "control_checkpoint_denied",
+        reason: "keychain_locked",
+      })
+    )
+    expect(events()).toEqual([
+      "control_checkpoint_denied",
+      "profile_audit_unavailable",
+      "started",
+    ])
+    await expect(propose()).rejects.toMatchObject({
+      status: 500,
+      code: "unavailable",
+    })
+    // No control change: the checkpoint record is the one the gate started with.
+    expect(store.value).toBe(record)
+    expect(lockRows()).toEqual(["control.keychain_locked"])
+  })
+
+  it("leaves keychain_locked on the retry once the keychain unlocks, with one row each way", async () => {
+    const { vault, retries, propose } = await startVerifiedThenLocked()
+    const first = retries.shift()
+    if (first === undefined) throw new Error("no retry was scheduled")
+    // The checkpoint store is readable, so the retry verifies on its first run.
+    vault.locked = false
+    first.run()
+    expect(controlStatus(runningGate().db)).toEqual({ enforced: true })
+    expect(events().slice(-1)).toEqual(["control_checkpoint_verified"])
+    expect(await propose()).toMatchObject({
+      tier: "forbidden",
+      reason: "no_operation",
+    })
+    expect(lockRows()).toEqual([
+      "control.keychain_locked",
+      "control.keychain_lock_cleared",
+    ])
   })
 })
