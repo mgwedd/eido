@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -73,6 +74,27 @@ class CountingVault extends InMemoryVault {
     if (this.failReads) throw new Error("Keychain is locked")
     return super.get(key)
   }
+}
+
+/** One GET over a gate socket: the status and the parsed body. */
+function getOver(
+  socketPath: string,
+  path: string
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({ socketPath, path, method: "GET" }, (res) => {
+      const chunks: Buffer[] = []
+      res.on("data", (chunk: Buffer) => chunks.push(chunk))
+      res.on("end", () => {
+        resolve({
+          status: res.statusCode ?? 0,
+          body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown,
+        })
+      })
+    })
+    request.on("error", reject)
+    request.end()
+  })
 }
 
 /** The gate log lines, parsed. */
@@ -151,6 +173,24 @@ describe("runGate with the control checkpoint locked (#870)", () => {
     expect(await client.listPending()).toEqual([])
     expect(vault.reads).toEqual([])
     expect(events()).toEqual(["control_checkpoint_denied", "started"])
+  })
+
+  it("reports the deny reason on the control socket while locked and none once the retry verifies (#916)", async () => {
+    const { unlock } = await startLocked(false)
+    const control = config(false).controlSocketPath
+    expect(await getOver(control, "/audit/control")).toEqual({
+      status: 200,
+      body: { enforced: true, denied: "keychain_locked" },
+    })
+    // The data plane is never given the checkpoint status.
+    expect(
+      (await getOver(config(false).socketPath, "/audit/control")).status
+    ).toBe(404)
+    unlock()
+    expect(await getOver(control, "/audit/control")).toEqual({
+      status: 200,
+      body: { enforced: true, denied: null },
+    })
   })
 
   it("loads the policy and the push key once the retry verifies, in the same lifetime", async () => {
