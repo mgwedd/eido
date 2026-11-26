@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+
 import { describe, expect, it } from "vitest"
 
 import {
@@ -6,6 +8,7 @@ import {
   DEFAULTS,
   defaultDirs,
   logFilePath,
+  PASS_THROUGH,
   pidFilePath,
   platformOf,
   stackDirOf,
@@ -414,5 +417,101 @@ describe("settings passed through", () => {
     expect(byName(config, "web").env).not.toHaveProperty(
       "EIDO_PUSH_VAPID_SUBJECT"
     )
+  })
+})
+
+describe("core settings passed through (#935)", () => {
+  const CORE_SETTINGS = {
+    EIDO_PROTON_USERNAME: "owner@example.invalid",
+    EIDO_REPLIES_CONFIG: '{"me":["owner@example.invalid"]}',
+    EIDO_TRIAGE_CONFIG: '{"perDay":3}',
+    EIDO_SIMPLEFIN_MAX_RANGE_DAYS: "30",
+    EIDO_SIMPLEFIN_SYNC_TIME: "06:30",
+    EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES: "90",
+    EIDO_DIGEST_SECTION_TOKENS: "400",
+  } as const
+
+  it.each(Object.entries(CORE_SETTINGS))(
+    "hands %s to core only",
+    (key, value) => {
+      const config = buildStackConfig(input({ env: { [key]: value } }))
+      expect(byName(config, "core").env[key]).toBe(value)
+      expect(byName(config, "gate").env).not.toHaveProperty(key)
+      expect(byName(config, "web").env).not.toHaveProperty(key)
+      expect(byName(buildStackConfig(input()), "core").env).not.toHaveProperty(
+        key
+      )
+    }
+  )
+
+  it("leaves an empty value out of core's environment", () => {
+    const config = buildStackConfig(
+      input({ env: { EIDO_PROTON_USERNAME: "" } })
+    )
+    expect(byName(config, "core").env).not.toHaveProperty(
+      "EIDO_PROTON_USERNAME"
+    )
+  })
+})
+
+// Core re-runs itself with only the names in DATA_PLANE_ENV (packages/core/src/main.ts, ADR
+// 0003). Every one of them needs a stack decision: the stack sets it, passes it through from
+// stack.env, or leaves it out for a reason written here. The list is read from main.ts as text:
+// infra may import core only through its public entry point, which does not export main.ts.
+describe("DATA_PLANE_ENV against the stack", () => {
+  const LEFT_OUT: Readonly<Record<string, string>> = {
+    EIDO_CORE_ROLE_PUBLIC_KEY:
+      "turns on role enforcement (ADR 0010); the stack has no decision on it yet",
+    EIDO_GMAIL_PROXY_URL:
+      "points core at the gate's egress proxy; only the split plane sets it (infra/host/plane.ts)",
+    EIDO_SIMPLEFIN_PROXY_URL:
+      "points core at the gate's egress proxy; only the split plane sets it",
+    EIDO_PARSER_SOCKET:
+      "names the parser broker's socket; only the split plane sets it (infra/host/plane.ts)",
+  }
+
+  const dataPlaneEnv = (): string[] => {
+    const text = readFileSync(
+      new URL("../../packages/core/src/main.ts", import.meta.url),
+      "utf8"
+    )
+    const body = /export const DATA_PLANE_ENV = \[([^\]]*)\] as const/.exec(
+      text
+    )?.[1]
+    if (body === undefined)
+      throw new Error("DATA_PLANE_ENV not found in main.ts")
+    return [...body.matchAll(/"(EIDO_[A-Z0-9_]+)"/g)].flatMap((m) =>
+      m[1] === undefined ? [] : [m[1]]
+    )
+  }
+
+  const stackSetsInCore = Object.keys(
+    byName(buildStackConfig(input({ env: { EIDO_FILES_SYNC: "1" } })), "core")
+      .env
+  )
+  const passedThrough: readonly string[] = PASS_THROUGH.core
+
+  it.each(dataPlaneEnv())("%s has a stack decision", (name) => {
+    const decisions = [
+      stackSetsInCore.includes(name),
+      passedThrough.includes(name),
+      name in LEFT_OUT,
+    ].filter(Boolean)
+    expect(
+      decisions.length,
+      `${name} is in DATA_PLANE_ENV: set it in infra/stack/config.ts, add it to PASS_THROUGH.core, or list it as left out with a reason`
+    ).toBe(1)
+  })
+
+  it("lists no left-out name that core stopped taking", () => {
+    const names = dataPlaneEnv()
+    expect(
+      Object.keys(LEFT_OUT).filter((name) => !names.includes(name))
+    ).toEqual([])
+  })
+
+  it("passes through no name core would scrub from its environment", () => {
+    const names = dataPlaneEnv()
+    expect(passedThrough.filter((name) => !names.includes(name))).toEqual([])
   })
 })

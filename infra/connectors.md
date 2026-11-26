@@ -176,6 +176,8 @@ With a read client configured, `connected` checks the connector with one pinned 
 
 Both Proton connectors use the one Bridge password, read with `info` in `bridge --cli` (see "Proton Bridge LaunchAgent" in `infra/README.md`). The command asks for it without showing it as you type, and stores it in the gate vault.
 
+Core registers `proton-mail` only when `EIDO_PROTON_USERNAME` (the Bridge account address, not a secret) is set. Under `pnpm stack` put it in `stack.env`; the stack hands it to core.
+
 Changing the Bridge certificate pin from the Admin page deletes the stored password first; enter it again after the stack restarts. Each connector is checked separately. After a new Bridge password, run the command for both `proton-mail` and `proton-calendar`, so that each is checked and, if it was disabled, re-enabled.
 
 ## SimpleFIN

@@ -321,3 +321,120 @@ describe("applyStackSettings", () => {
     ).toEqual({ EIDO_WEB_PORT: "4000", EIDO_CORE_PORT: "8790" })
   })
 })
+
+describe("core settings (#935)", () => {
+  it.each([
+    ["EIDO_PROTON_USERNAME", "owner@example.invalid"],
+    [
+      "EIDO_REPLIES_CONFIG",
+      '{"me":["owner@example.invalid"],"excludeSenders":["^noreply@"]}',
+    ],
+    ["EIDO_TRIAGE_CONFIG", '{"perDay":3,"ledgerOnlyBelow":0.4}'],
+    ["EIDO_SIMPLEFIN_MAX_RANGE_DAYS", "3650"],
+    ["EIDO_SIMPLEFIN_MAX_RANGE_DAYS", "1"],
+    ["EIDO_SIMPLEFIN_SYNC_TIME", "6:05"],
+    ["EIDO_SIMPLEFIN_SYNC_TIME", "23:59"],
+    ["EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES", "90"],
+    ["EIDO_DIGEST_SECTION_TOKENS", "400"],
+  ])("accepts %s=%s", (key, value) => {
+    expect(settingProblem(key, value)).toBeUndefined()
+  })
+
+  it.each([
+    [
+      "EIDO_PROTON_USERNAME",
+      "owner",
+      "EIDO_PROTON_USERNAME must be an address",
+    ],
+    [
+      "EIDO_REPLIES_CONFIG",
+      "/etc/replies.json",
+      "EIDO_REPLIES_CONFIG must be a JSON object",
+    ],
+    [
+      "EIDO_REPLIES_CONFIG",
+      '["a"]',
+      "EIDO_REPLIES_CONFIG must be a JSON object",
+    ],
+    ["EIDO_TRIAGE_CONFIG", "null", "EIDO_TRIAGE_CONFIG must be a JSON object"],
+    [
+      "EIDO_TRIAGE_CONFIG",
+      "{perDay: 3}",
+      "EIDO_TRIAGE_CONFIG must be a JSON object",
+    ],
+    [
+      "EIDO_SIMPLEFIN_MAX_RANGE_DAYS",
+      "0",
+      "EIDO_SIMPLEFIN_MAX_RANGE_DAYS must be an integer from 1 to 3650",
+    ],
+    [
+      "EIDO_SIMPLEFIN_MAX_RANGE_DAYS",
+      "3651",
+      "EIDO_SIMPLEFIN_MAX_RANGE_DAYS must be an integer from 1 to 3650",
+    ],
+    [
+      "EIDO_SIMPLEFIN_MAX_RANGE_DAYS",
+      "7.5",
+      "EIDO_SIMPLEFIN_MAX_RANGE_DAYS must be an integer from 1 to 3650",
+    ],
+    [
+      "EIDO_SIMPLEFIN_SYNC_TIME",
+      "24:00",
+      "EIDO_SIMPLEFIN_SYNC_TIME must be a 24-hour time, HH:MM",
+    ],
+    [
+      "EIDO_SIMPLEFIN_SYNC_TIME",
+      "6:5",
+      "EIDO_SIMPLEFIN_SYNC_TIME must be a 24-hour time, HH:MM",
+    ],
+    [
+      "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
+      "0",
+      "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES must be a positive integer",
+    ],
+    [
+      "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
+      "-5",
+      "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES must be a positive integer",
+    ],
+    [
+      "EIDO_DIGEST_SECTION_TOKENS",
+      "many",
+      "EIDO_DIGEST_SECTION_TOKENS must be a positive integer",
+    ],
+    [
+      "EIDO_DIGEST_SECTION_TOKENS",
+      "99999999999999999999",
+      "EIDO_DIGEST_SECTION_TOKENS must be a positive integer",
+    ],
+  ])("refuses %s=%s", (key, value, problem) => {
+    expect(settingProblem(key, value)).toBe(problem)
+  })
+
+  it("accepts an empty value, which clears the key", () => {
+    expect(settingProblem("EIDO_SIMPLEFIN_SYNC_TIME", "")).toBeUndefined()
+    expect(settingProblem("EIDO_TRIAGE_CONFIG", "")).toBeUndefined()
+  })
+
+  it("keeps inline JSON intact through a write and a read of stack.env", () => {
+    const replies =
+      '{"me":["owner@example.invalid"],"excludeSenders":["^no-?reply@"]}'
+    const text = formatStackSettings({
+      EIDO_PROTON_USERNAME: "owner@example.invalid",
+      EIDO_REPLIES_CONFIG: replies,
+    })
+    expect(parseStackSettings(text)).toEqual({
+      EIDO_PROTON_USERNAME: "owner@example.invalid",
+      EIDO_REPLIES_CONFIG: replies,
+    })
+  })
+
+  it("lets the settings API write them: none is a secret or code location", () => {
+    expect(
+      apiSettingProblem("EIDO_PROTON_USERNAME", "owner@example.invalid")
+    ).toBeUndefined()
+    expect(
+      apiSettingProblem("EIDO_TRIAGE_CONFIG", '{"perDay":2}')
+    ).toBeUndefined()
+  })
+})
