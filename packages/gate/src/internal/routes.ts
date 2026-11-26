@@ -49,6 +49,7 @@ import type { ProfileAudit } from "./profile-audit"
 import type { FileHelper } from "./files/file-helper"
 import type { FileReads } from "./files/file-reads"
 import { fileReadRoute } from "./files/file-reads"
+import { controlStatusRoute } from "./control-status-route"
 import { fileRootRoute } from "./file-root-routes"
 import type { WebAuthnConfig } from "./webauthn"
 
@@ -515,8 +516,8 @@ async function revokePasskeyRoute(
 }
 
 /**
- * The control listener: the intent reads, the audit chain check, enrolment codes, passkey
- * revocation and the connector check after a connect (#98). Never given to the data plane or the phone.
+ * The control listener: the intent reads, the audit chain check, the control checkpoint status,
+ * enrolment codes, passkey revocation and the connector check after a connect (#98). Never given to the data plane or the phone.
  */
 export function controlHandler(gate: () => GateState, now: Clock): Handler {
   return async (request) => {
@@ -532,6 +533,9 @@ export function controlHandler(gate: () => GateState, now: Clock): Handler {
     }
     if (request.method === "GET" && request.path === "/audit/chain") {
       return { status: 200, body: verifyChain(state.db) }
+    }
+    if (request.method === "GET" && request.path === "/audit/control") {
+      return controlStatusRoute(state.db)
     }
     if (request.method === "POST" && request.path === "/enrolment-codes") {
       return enrolmentCodeRoute(state.db, now)

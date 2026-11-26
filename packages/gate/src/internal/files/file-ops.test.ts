@@ -8,6 +8,10 @@ import { verifyChain } from "../audit"
 import { payloadHash } from "../canonical"
 import { openControlDb } from "../control-db"
 import { auditRows, loggedText, signedFileRoots } from "../test-fixtures"
+import {
+  SessionBridgeOutcomeUnknownError,
+  SessionUnavailableError,
+} from "../session-bridge/client"
 import type { FileHelper } from "./file-helper"
 import { createFile, moveFile, restoreFile, trashFile } from "./file-ops"
 
@@ -172,6 +176,56 @@ describe("confined file operations", () => {
       { op: "restore", root: DOCS, trashName: "t", path: "a.txt" },
     ])
     expect(loggedText(db)).not.toContain("private-marker")
+    db.close()
+  })
+
+  it.each([
+    [
+      "an unreachable bridge, which sent nothing",
+      new SessionUnavailableError(),
+      "session_unavailable",
+    ],
+    [
+      "a bridge timeout after the request was sent",
+      // file-helper.ts wraps every bridge error but SessionUnavailableError.
+      new Error("file helper failed", {
+        cause: new SessionBridgeOutcomeUnknownError(),
+      }),
+      "outcome_unknown",
+    ],
+  ])("reports %s by its own code", async (_name, error, code) => {
+    const db = await approved()
+    const { helper } = scripted(error)
+    expect(
+      await createFile(db, helper, {
+        rootId: "docs",
+        path: "a.txt",
+        content: new Uint8Array(),
+      })
+    ).toEqual({ ok: false, code })
+    expect(auditRows(db).at(-1)?.action).toBe("files.create.refused")
+    db.close()
+  })
+
+  it("a trash retry that finds the bridge gone is a helper failure, since the first attempt reached it", async () => {
+    const db = await approved()
+    const { helper, requests } = scripted(
+      refused("exists"),
+      new SessionUnavailableError()
+    )
+    expect(
+      await trashFile(db, helper, { rootId: "docs", path: "a.txt" })
+    ).toEqual({ ok: false, code: "helper_failed" })
+    expect(requests).toHaveLength(2)
+    db.close()
+  })
+
+  it("a first trash attempt that finds the bridge gone sent nothing", async () => {
+    const db = await approved()
+    const { helper } = scripted(new SessionUnavailableError())
+    expect(
+      await trashFile(db, helper, { rootId: "docs", path: "a.txt" })
+    ).toEqual({ ok: false, code: "session_unavailable" })
     db.close()
   })
 

@@ -5,12 +5,17 @@ import { afterEach, describe, expect, test } from "vitest"
 import {
   BRIDGE_MAX_REQUEST_BYTES,
   SessionBridgeError,
+  SessionBridgeOutcomeUnknownError,
   SessionBridgeRefusal,
   SessionUnavailableError,
   bridgeStdout,
+  bridgeTimeout,
   createSessionBridge,
+  deadlineError,
   frameReader,
+  outcomeUnknown,
   parseFrameBody,
+  sentNothing,
 } from "./client"
 import {
   TEST_OWNER_UID,
@@ -254,6 +259,7 @@ unix("session bridge client", () => {
       .call(things, call)
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SessionUnavailableError)
+    expect(sentNothing(error)).toBe(true)
   })
 
   test("an unreadable path is a bridge failure, not a missing session", async () => {
@@ -309,6 +315,17 @@ unix("session bridge client", () => {
     ).rejects.toThrow("session bridge timed out")
   })
 
+  test("a deadline after the request was written is an unknown outcome, not unavailable", async () => {
+    const bridge = await fake(() => ({ hang: true }))
+    const error = await createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
+      .call(things, { timeoutMs: 100, maxResponseBytes: 1024 })
+      .catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(SessionBridgeOutcomeUnknownError)
+    expect(sentNothing(error)).toBe(false)
+    expect(outcomeUnknown(error)).toBe(true)
+    expect(bridge.requests).toEqual([things])
+  })
+
   test("a connection the bridge drops unread is a bridge failure", async () => {
     const { dir, remove } = socketDir()
     cleanups.push(remove)
@@ -324,6 +341,68 @@ unix("session bridge client", () => {
       .call(things, call)
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SessionBridgeError)
+  })
+})
+
+describe("bridge timeouts", () => {
+  // apps/helper/README.md: 10 s to receive the request, the op's own limit, 10 s to write the
+  // reply. The gate waits longer than all three together.
+  test.each([
+    ["Things osascript (10 s)", 10_000, 35_000],
+    ["the file helper (30 s)", 30_000, 55_000],
+  ])(
+    "waits past the bridge's worst case for %s",
+    (_name, operation, timeout) => {
+      expect(bridgeTimeout(operation)).toBe(timeout)
+    }
+  )
+})
+
+describe("what a bridge error says was sent", () => {
+  const unavailable = new SessionUnavailableError()
+  const unknown = new SessionBridgeOutcomeUnknownError()
+  test.each([
+    ["SessionUnavailableError itself", unavailable, true, false],
+    [
+      "SessionUnavailableError wrapped twice",
+      new Error("outer", { cause: new Error("inner", { cause: unavailable }) }),
+      true,
+      false,
+    ],
+    ["an unknown outcome", unknown, false, true],
+    [
+      "an unknown outcome wrapped",
+      new Error("outer", { cause: unknown }),
+      false,
+      true,
+    ],
+    [
+      "a plain bridge failure",
+      new SessionBridgeError("closed early"),
+      false,
+      false,
+    ],
+    ["a value that is not an Error", "session_unavailable", false, false],
+    [
+      "a wrapper whose cause is not an Error",
+      new Error("outer", { cause: { code: "session_unavailable" } }),
+      false,
+      false,
+    ],
+  ])("%s", (_name, error, nothing, unknownOutcome) => {
+    expect(sentNothing(error)).toBe(nothing)
+    expect(outcomeUnknown(error)).toBe(unknownOutcome)
+  })
+
+  test("a deadline before the connection opened sent nothing; one after it may have run", () => {
+    expect(deadlineError(false)).toBeInstanceOf(SessionUnavailableError)
+    expect(deadlineError(true)).toBeInstanceOf(SessionBridgeOutcomeUnknownError)
+  })
+
+  test("a cause chain deeper than eight is not followed", () => {
+    let error: Error = unavailable
+    for (let i = 0; i < 8; i++) error = new Error(`wrap ${i}`, { cause: error })
+    expect(sentNothing(error)).toBe(false)
   })
 })
 

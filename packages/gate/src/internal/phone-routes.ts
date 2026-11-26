@@ -7,6 +7,7 @@ import type { GateRequest, Handler, Reply } from "./http"
 import type { ExecutionResult } from "./executor"
 import { pendingIntents } from "./intents"
 import { verifyChain } from "./audit"
+import { controlStatusRoute } from "./control-status-route"
 import { prepareEnrolmentCodeIssue } from "./enrolment"
 import { allowAttempt } from "./rate-limit"
 import type { RateState } from "./rate-limit"
@@ -130,6 +131,7 @@ export const PHONE_ROUTES = [
   { method: "GET", path: "/approvals", tier: "session" },
   { method: "GET", path: "/audit", tier: "session" },
   { method: "GET", path: "/audit/chain", tier: "session" },
+  { method: "GET", path: "/audit/control", tier: "session" },
   { method: "GET", path: "/connector-settings", tier: "session" },
   { method: "GET", path: "/backup/status", tier: "session" },
   { method: "POST", path: "/connector-settings/:id/repin", tier: "session" },
@@ -281,6 +283,8 @@ function route(
       return auditPage(state, request)
     case "/audit/chain":
       return { status: 200, body: verifyChain(state.db) }
+    case "/audit/control":
+      return controlStatusRoute(state.db)
     case "/connector-settings":
       return connectorSettings(state, now)
     case "/backup/status":

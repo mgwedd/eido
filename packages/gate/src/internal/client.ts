@@ -567,10 +567,14 @@ export type FileClient = {
   perform(request: GateLocalFileRequest): Promise<GateFileHelperResponse>
 }
 
+/**
+ * The default call limit is above the gate's file bridge wait (BRIDGE_TIMEOUT_MS, 55 s), so the
+ * client never gives up on a call the gate is still waiting on (#914).
+ */
 export function createFileClient(options: IntentClientOptions): FileClient {
   const resolved = {
     socketPath: options.socketPath,
-    timeoutMs: options.timeoutMs ?? 30_000,
+    timeoutMs: options.timeoutMs ?? 60_000,
   }
   return {
     roots: async () =>
@@ -605,10 +609,14 @@ export interface AppleClient {
   }): Promise<GateAppleReminderList>
 }
 
+/**
+ * The default call limit is above the gate's EventKit bridge wait (APPLE_BRIDGE_TIMEOUT_MS, 55 s),
+ * so a read the gate is still waiting on is not reported failed (#914).
+ */
 export function createAppleClient(options: IntentClientOptions): AppleClient {
   const config = {
     socketPath: options.socketPath,
-    timeoutMs: options.timeoutMs ?? 35_000,
+    timeoutMs: options.timeoutMs ?? 60_000,
   }
   return {
     listCalendars: async () =>

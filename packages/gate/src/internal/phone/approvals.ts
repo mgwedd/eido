@@ -272,6 +272,7 @@ export async function undo(
     }
     if (
       result.code === "upstream_error" ||
+      result.code === "session_unavailable" ||
       result.code === "connector_unavailable" ||
       result.code === "connector_misconfigured" ||
       result.code === "unknown_writer" ||
