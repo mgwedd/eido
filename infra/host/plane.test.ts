@@ -352,17 +352,16 @@ describe("planeServices", () => {
         },
       })
     )
-    expect(services.gate.user).toBe("_eidogate")
     expect(services.gate.cwd).toBe(
       "/Library/Application Support/Eido/app/packages/gate"
     )
-    expect(services.gate.args).toEqual([
-      "/opt/homebrew/bin/node",
-      "--disable-warning=ExperimentalWarning",
-      "--import",
-      "./src/ts-hooks.ts",
-      "./src/main.ts",
-    ])
+    // The launcher execs the gate's command as _eidogate, from the same cwd.
+    expect(services.launcher).toContain(
+      ` '/usr/bin/env' '-C' '/Library/Application Support/Eido/app/packages/gate' '/opt/homebrew/bin/node' '--disable-warning=ExperimentalWarning' '--import' './src/ts-hooks.ts' './src/main.ts'\n`
+    )
+    expect(services.launcher).toContain(
+      `'/usr/sbin/chroot' '-u' '_eidogate' '-g' '_eidogate' '-G' '_eidogate,_eidoipc' '/'`
+    )
     expect(services.gate.env["EIDO_GATE_DATA_DIR"]).toBe(
       "/Library/Application Support/Eido/gate"
     )
@@ -669,6 +668,45 @@ describe("applySteps", () => {
     )
   })
 
+  it("starts the gate daemon as root through the launcher, not as _eidogate", () => {
+    const plist = steps.find(
+      (step) => line(step) === `/usr/bin/tee ${layout.plists.gate}`
+    )?.stdin
+    expect(plist).toContain(
+      "  <key>UserName</key>\n  <string>root</string>\n  <key>GroupName</key>\n  <string>wheel</string>\n"
+    )
+    expect(plist).not.toContain("<string>_eidogate</string>")
+    expect(plist).toContain(
+      "  <key>ProgramArguments</key>\n  <array>\n    <string>/bin/zsh</string>\n    <string>-f</string>\n    <string>/Library/Application Support/Eido/app/gate-launcher.zsh</string>\n  </array>\n"
+    )
+    // The gate's own settings still reach it: the launcher passes the job's env through.
+    expect(plist).toContain(
+      "    <key>EIDO_GATE_KEYCHAIN_PATH</key>\n    <string>/Library/Application Support/Eido/home/gate/Library/Keychains/eido/eido.keychain-db</string>\n"
+    )
+  })
+
+  it("writes the launcher root-owned and read-only after the app copy, before the gate's plist", () => {
+    const launcher = "/Library/Application Support/Eido/app/gate-launcher.zsh"
+    const write = at(`/usr/bin/tee ${launcher}`)
+    expect(steps[write]?.stdin).toBe(planeServices(input()).launcher)
+    expect(all.slice(write, write + 3)).toEqual([
+      `/usr/bin/tee ${launcher}`,
+      `/usr/sbin/chown root:wheel ${launcher}`,
+      `/bin/chmod 0555 ${launcher}`,
+    ])
+    expect(
+      at("/bin/chmod -R go-w /Library/Application Support/Eido/app")
+    ).toBeLessThan(write)
+    expect(write).toBeLessThan(at(`/usr/bin/tee ${layout.plists.gate}`))
+    // Its directory, the app copy, is root's and 0755: the gate user cannot replace the file.
+    expect(all).toContain(
+      "/usr/sbin/chown root:wheel /Library/Application Support/Eido/app"
+    )
+    expect(all).toContain(
+      "/bin/chmod 0755 /Library/Application Support/Eido/app"
+    )
+  })
+
   it("only creates or sets, apart from dropping the old run dir entry, which it tolerates being absent, so it can run again on a host it already ran on", () => {
     const destructive = steps.filter((step) =>
       /\s-delete\s|^\/bin\/rm\b|^\/bin\/chmod -a\s/.test(line(step))
@@ -691,6 +729,11 @@ describe("removeSteps", () => {
       ]),
     })
     const all = lines(steps)
+    const at = (text: string) => {
+      const index = all.indexOf(text)
+      expect(index, text).toBeGreaterThanOrEqual(0)
+      return index
+    }
     expect(all.slice(0, 2)).toEqual([
       "/bin/launchctl bootout system/com.eido.plane.core",
       "/bin/rm -f /Library/LaunchDaemons/com.eido.plane.core.plist",
@@ -711,6 +754,11 @@ describe("removeSteps", () => {
       "/usr/bin/dscl . -delete /Groups/_eidoipc",
       "/usr/bin/dscl . -delete /Groups/_eidogate",
     ])
+    const launcher =
+      "/bin/rm -f /Library/Application Support/Eido/app/gate-launcher.zsh"
+    expect(at(launcher)).toBeGreaterThan(
+      at("/bin/launchctl bootout system/com.eido.plane.gate")
+    )
     const rm = all.find((text) => text.startsWith("/bin/rm -rf"))
     expect(rm).toBe(
       "/bin/rm -rf /Library/Application Support/Eido/policy /Library/Application Support/Eido/app /Library/Application Support/Eido/run"

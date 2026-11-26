@@ -24,6 +24,12 @@ import {
   type EgressTargets,
 } from "./egress.ts"
 import {
+  gateLauncher,
+  LAUNCHER_FILE,
+  launchedGate,
+  launcherSteps,
+} from "./gate-launcher.ts"
+import {
   DAEMON_DIR,
   daemonPlist,
   PLANE_LOGS,
@@ -101,6 +107,8 @@ export type PlaneLayout = {
   }
   root: string
   app: string
+  /** The gate daemon's root launch step (#823), root-owned and read-only in the app copy. */
+  gateLauncher: string
   gateDir: string
   dataDir: string
   runDir: string
@@ -183,6 +191,7 @@ export function planeLayout(input: {
     },
     root,
     app: `${root}/app`,
+    gateLauncher: `${root}/app/${LAUNCHER_FILE}`,
     gateDir: `${root}/gate`,
     dataDir: `${root}/data`,
     runDir,
@@ -409,6 +418,8 @@ export function planePorts(input: PlaneInput, core: ProcessSpec): PlanePorts {
 export type PlaneServices = {
   ports: PlanePorts
   gate: DaemonSpec
+  /** The launcher script the gate daemon runs as root (#823). */
+  launcher: string
   core: DaemonSpec
   pf: DaemonSpec
   egress: DaemonSpec
@@ -459,22 +470,33 @@ export function planeServices(input: PlaneInput): PlaneServices {
     input.egressPort === undefined ? undefined : String(input.egressPort)
   return {
     ports,
-    gate: {
-      label: LABELS.gate,
-      user: NAMES.gate,
-      group: NAMES.gate,
-      args: [gate.command, ...gate.args],
-      cwd: gate.cwd,
-      env: {
-        ...gate.env,
-        ...(egress === undefined ? {} : { EIDO_GATE_EGRESS_PORT: egress }),
-        HOME: layout.gateHome,
-        PATH: SERVICE_PATH,
+    // launchd starts the launcher as root; it pipes the keychain passphrase to the gate's stdin and
+    // drops to the gate user before it execs the gate, with the env and cwd below.
+    gate: launchedGate(
+      {
+        label: LABELS.gate,
+        user: NAMES.gate,
+        group: NAMES.gate,
+        args: [gate.command, ...gate.args],
+        cwd: gate.cwd,
+        env: {
+          ...gate.env,
+          ...(egress === undefined ? {} : { EIDO_GATE_EGRESS_PORT: egress }),
+          HOME: layout.gateHome,
+          PATH: SERVICE_PATH,
+        },
+        outLog: `${layout.logs.gate}/gate.out.log`,
+        errLog: `${layout.logs.gate}/gate.err.log`,
+        keepAlive: true,
       },
-      outLog: `${layout.logs.gate}/gate.out.log`,
-      errLog: `${layout.logs.gate}/gate.err.log`,
-      keepAlive: true,
-    },
+      layout.gateLauncher
+    ),
+    launcher: gateLauncher({
+      user: NAMES.gate,
+      groups: [NAMES.gate, NAMES.ipc],
+      cwd: gate.cwd,
+      argv: [gate.command, ...gate.args],
+    }),
     core: {
       label: LABELS.core,
       user: NAMES.data,
@@ -732,6 +754,8 @@ export function applySteps(input: PlaneInput): Step[] {
     },
     { argv: [CHOWN, "-R", "root:wheel", layout.app] },
     { argv: [CHMOD, "-R", "go-w", layout.app] },
+    // After the copy, so `rsync --delete` cannot take it back before the gate starts.
+    ...launcherSteps(layout.gateLauncher, services.launcher),
     ...file(layout.coreProfile, coreProfile(layout, services.ports)),
     ...file(layout.parserProfile, parserProfile(layout.parser)),
     ...file(layout.pfRules, pfAnchor(layout, services.ports)),
@@ -815,6 +839,7 @@ export function removeSteps(layout: PlaneLayout, accounts: Accounts): Step[] {
       },
       { argv: ["/bin/rm", "-f", layout.plists[name]] },
     ]),
+    { argv: ["/bin/rm", "-f", layout.gateLauncher] },
     { argv: [PFCTL, "-a", PF_ANCHOR, "-F", "all"], mayFail: true },
     { argv: [PFCTL, "-a", EGRESS_ANCHOR, "-F", "all"], mayFail: true },
     ...[...supervisorAces(layout), legacyRunDirAce(layout)].map(
