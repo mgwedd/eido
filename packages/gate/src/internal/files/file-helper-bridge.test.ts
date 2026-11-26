@@ -13,7 +13,10 @@ import {
   test,
   vi,
 } from "vitest"
+import { validateGateApiError } from "@eido/schemas"
 import { openControlDb } from "../control-db"
+import { fileRootRoute } from "../file-root-routes"
+import type { GateRequest } from "../http"
 import {
   SessionBridgeOutcomeUnknownError,
   SessionUnavailableError,
@@ -31,8 +34,9 @@ import type { FakeAnswer } from "../session-bridge/fake-session-bridge.test-supp
 import { createExecutor } from "../executor"
 import { propose } from "../intents"
 import { FILE_OPS, manifest, setup, signedFileRoots } from "../test-fixtures"
-import { fileHelper } from "./file-helper"
+import { HostRootNotApproved, fileHelper } from "./file-helper"
 import { createFile } from "./file-ops"
+import { approvedFileRoot } from "./file-roots"
 
 const mocked = vi.hoisted(() => ({ spawn: vi.fn() }))
 vi.mock("node:child_process", () => ({ spawn: mocked.spawn }))
@@ -147,6 +151,70 @@ unix("file helper through the session bridge", () => {
     expect(mocked.spawn).not.toHaveBeenCalled()
   })
 
+  test("prepare names a folder the host's list does not hold as root_not_approved", async () => {
+    const db = openControlDb(":memory:")
+    const bridge = await fake(() => ({
+      json: { ok: false, code: "root_not_approved" },
+    }))
+    const prepare: GateRequest = {
+      method: "POST",
+      path: "/file-roots/prepare",
+      query: new URLSearchParams(),
+      headers: {},
+      body: () =>
+        Promise.resolve({
+          ok: true,
+          text: JSON.stringify({
+            roots: [{ id: "docs", path: DOCS.path, trashDir: DOCS.trashDir }],
+          }),
+        }),
+    }
+    const reply = await fileRootRoute(prepare, {
+      db,
+      fileHelper: fileHelper(
+        pin,
+        createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
+      ),
+    })
+    expect(reply).toEqual({
+      status: 422,
+      body: {
+        code: "root_not_approved",
+        rootId: "docs",
+        message: "this folder is not on the host's approved list",
+      },
+    })
+    expect(validateGateApiError(reply?.body).ok).toBe(true)
+    expect(bridge.requests).toEqual([{ op: "file", request: identify }])
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM control_approvals").get()?.[
+        "count"
+      ]
+    ).toBe(0)
+    expect(approvedFileRoot(db, "docs")).toBeUndefined()
+    db.close()
+  })
+
+  test("a file op the host's list refuses is root_not_approved, not a helper failure", async () => {
+    const db = openControlDb(":memory:")
+    await signedFileRoots(db, { roots: [{ id: "docs", root: DOCS }] })
+    const bridge = await fake(() => ({
+      json: { ok: false, code: "root_not_approved" },
+    }))
+    const outcome = await createFile(
+      db,
+      fileHelper(pin, createSessionBridge(bridge.socketPath, TEST_OWNER_UID)),
+      {
+        rootId: "docs",
+        path: "notes/lorem.txt",
+        content: new TextEncoder().encode("lorem-ipsum-file-body"),
+      }
+    )
+    expect(outcome).toEqual({ ok: false, code: "root_not_approved" })
+    expect(mocked.spawn).not.toHaveBeenCalled()
+    db.close()
+  })
+
   test("a refused connection is session_unavailable and nothing is spawned", async () => {
     const { dir: parent, remove } = socketDir()
     cleanups.push(remove)
@@ -242,6 +310,14 @@ describe("file helper answers from the session bridge", () => {
       fileHelper({ path: binary, sha256: "0".repeat(64) }, bridge)(identify)
     ).rejects.toThrow("file helper does not match its pinned hash")
     expect(bridge.requests).toEqual([])
+  })
+
+  test("the bridge's root_not_approved is its own error, not a helper failure", async () => {
+    const error = await fileHelper(
+      pin,
+      answeringBridge({ ok: false, code: "root_not_approved" })
+    )(identify).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(HostRootNotApproved)
   })
 
   test.each([

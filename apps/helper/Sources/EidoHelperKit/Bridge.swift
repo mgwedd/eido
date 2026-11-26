@@ -675,7 +675,7 @@ private func send(_ fd: Int32, _ body: Data) {
   let fileHelper = try PinnedExecutable.install(
     source: options.fileHelper, sha256: options.fileHelperSHA256, parent: copyParent)
   do {
-    let roots = try options.fileRoots.map { try ApprovedRoots.load(path: $0) } ?? .none
+    let roots = try ApprovedRoots.atStart(options.fileRoots)
     let handler = BridgeHandler(
       scripts: scripts, fileHelper: fileHelper, roots: roots, runner: runner, store: store)
     let server = BridgeServer(

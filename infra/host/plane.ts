@@ -2,7 +2,8 @@
 // the data plane's sandbox profile, the pf rules for the data-plane user, the LaunchDaemons that
 // start each process under its own user, and the ACL that lets the gate user reach the owner's
 // supervisor socket. The gate user's outbound allowlist (#471) is egress.ts, and the parser
-// broker's user, sandbox and pf rules (#818) are parser-plane.ts, both wired in here.
+// broker's user, sandbox and pf rules (#818) are parser-plane.ts, and the session bridge's login
+// agent, socket directory and ACL (#827) are session-bridge.ts, all wired in here.
 // Pure functions: what to create and which commands create it. `plane-cli.ts` reads the host's
 // state and prints the commands as a script the owner runs with sudo; nothing here touches the
 // system.
@@ -51,6 +52,22 @@ import {
   parserService,
   type ParserPaths,
 } from "./parser-plane.ts"
+import {
+  BRIDGE_SOCKET_ENV,
+  BRIDGE_UID_ENV,
+  bridgeAces,
+  bridgeAgentSteps,
+  bridgeInstallSteps,
+  bridgePaths,
+  bridgeRemovePaths,
+  bridgeSocketDirSteps,
+  bridgeStopSteps,
+  checkBridge,
+  withoutAces,
+  type Ace,
+  type BridgeInput,
+  type BridgePaths,
+} from "./session-bridge.ts"
 
 export {
   DAEMON_DIR,
@@ -134,6 +151,8 @@ export type PlaneLayout = {
   supervisorSocket: string
   /** The parser broker's home, scratch, socket and logs (#818). */
   parser: ParserPaths
+  /** The session bridge's helper copies, socket directory, login agent and logs (#827). */
+  bridge: BridgePaths
   plists: {
     pf: string
     egress: string
@@ -218,6 +237,12 @@ export function planeLayout(input: {
     supervisorDir,
     supervisorSocket: `${supervisorDir}/${SUPERVISOR_SOCKET_NAME}`,
     parser: parserPaths(root, homeRoot),
+    bridge: bridgePaths({
+      root,
+      app: `${root}/app`,
+      ownerHome: input.ownerHome,
+      ownerRunDir,
+    }),
     plists: {
       pf: `${DAEMON_DIR}/${LABELS.pf}.plist`,
       egress: `${DAEMON_DIR}/${LABELS.egress}.plist`,
@@ -384,6 +409,11 @@ export type PlaneInput = {
   egressPort?: number
   /** What the gate user may reach (#471), from the reviewed manifests: `egressTargets`. */
   allowlist: EgressTargets
+  /**
+   * The session bridge (#827). Left out, the plan makes no bridge and the gate gets no socket
+   * variable; given, the plan installs the agent and points the gate at its socket.
+   */
+  bridge?: BridgeInput
 }
 
 /** Where a setting would point a service somewhere the plane does not allow. */
@@ -437,6 +467,7 @@ export function planeServices(input: PlaneInput): PlaneServices {
       `node is at ${input.node}, inside a home the service users cannot read; install node outside /Users (for example with Homebrew) and pass --node`
     )
   checkSettings(input.settings)
+  if (input.bridge !== undefined) checkBridge(layout.bridge, input.bridge)
   const config = buildStackConfig({
     mode: "prod",
     platform: "darwin",
@@ -482,6 +513,13 @@ export function planeServices(input: PlaneInput): PlaneServices {
         env: {
           ...gate.env,
           ...(egress === undefined ? {} : { EIDO_GATE_EGRESS_PORT: egress }),
+          // Both together: the gate refuses a socket without the uid it must belong to (#892).
+          ...(input.bridge === undefined
+            ? {}
+            : {
+                [BRIDGE_SOCKET_ENV]: layout.bridge.socket,
+                [BRIDGE_UID_ENV]: String(input.bridge.ownerUid),
+              }),
           HOME: layout.gateHome,
           PATH: SERVICE_PATH,
         },
@@ -708,6 +746,21 @@ export function supervisorAces(
 }
 
 /**
+ * The ACL entries for the session bridge's socket directory (#827): the same shape as the
+ * supervisor's, on the bridge's own directory. The entries on the directories above, which the
+ * supervisor's already grant, are left out so no entry is added twice.
+ */
+export function bridgeSocketAces(layout: PlaneLayout): Ace[] {
+  return withoutAces(
+    bridgeAces(layout.bridge, NAMES.gate, [
+      ...supervisorAncestors(layout),
+      layout.ownerRunDir,
+    ]),
+    supervisorAces(layout)
+  )
+}
+
+/**
  * The entry an earlier generator put on the run dir itself, which every file created there
  * inherited. Apply and remove drop it (`chmod -a` fails when it is absent, so they tolerate that).
  */
@@ -811,6 +864,9 @@ export function applySteps(input: PlaneInput): Step[] {
     { argv: [CHMOD, "-R", "go-w", layout.app] },
     // After the copy, so `rsync --delete` cannot take it back before the gate starts.
     ...launcherSteps(layout.gateLauncher, services.launcher),
+    ...(input.bridge === undefined
+      ? []
+      : bridgeInstallSteps(layout.bridge, input.bridge)),
     ...file(layout.coreProfile, coreProfile(layout, services.ports)),
     ...file(layout.parserProfile, parserProfile(layout.parser)),
     ...file(layout.pfRules, pfAnchor(layout, services.ports)),
@@ -867,6 +923,13 @@ export function applySteps(input: PlaneInput): Step[] {
     ...supervisorAces(layout).map(({ path, ace }) => ({
       argv: [CHMOD, "+a", ace, path],
     })),
+    ...(input.bridge === undefined
+      ? []
+      : bridgeSocketDirSteps(
+          layout.bridge,
+          layout.owner,
+          bridgeSocketAces(layout)
+        )),
     ...DAEMONS.flatMap((name) => [
       ...file(layout.plists[name], daemonPlist(services[name])),
       { argv: ["/usr/bin/plutil", "-lint", layout.plists[name]] },
@@ -875,11 +938,21 @@ export function applySteps(input: PlaneInput): Step[] {
       { argv: [LAUNCHCTL, "bootout", `system/${LABELS[name]}`], mayFail: true },
       { argv: [LAUNCHCTL, "bootstrap", "system", layout.plists[name]] },
     ]),
+    // Last: the daemons and the ACL are in place when the bridge starts, and a failed start of
+    // the agent (the owner is not logged in) leaves everything else applied.
+    ...(input.bridge === undefined
+      ? []
+      : bridgeAgentSteps(
+          layout.bridge,
+          input.bridge,
+          layout.owner,
+          NAMES.gate
+        )),
   ]
 }
 
 /**
- * Every command that takes the plane down: the daemons, the pf anchor, the ACL entries, the
+ * Every command that takes the plane down: the daemons, the bridge agent, the pf anchor, the ACL entries, the
  * users and groups, the policy files and the app copy. The gate's and data plane's directories
  * and their logs are kept; `removeNotes` says where they are. The parser holds nothing to keep
  * (documents in flight only), so its directories and logs go with its user.
@@ -894,15 +967,19 @@ export function removeSteps(layout: PlaneLayout, accounts: Accounts): Step[] {
       },
       { argv: ["/bin/rm", "-f", layout.plists[name]] },
     ]),
+    // Whether or not the bridge was applied: every step tolerates its absence.
+    ...bridgeStopSteps(layout.bridge, accounts.users.get(layout.owner)),
     { argv: ["/bin/rm", "-f", layout.gateLauncher] },
     { argv: [PFCTL, "-a", PF_ANCHOR, "-F", "all"], mayFail: true },
     { argv: [PFCTL, "-a", EGRESS_ANCHOR, "-F", "all"], mayFail: true },
-    ...[...supervisorAces(layout), legacyRunDirAce(layout)].map(
-      ({ path, ace }) => ({
-        argv: [CHMOD, "-a", ace, path],
-        mayFail: true,
-      })
-    ),
+    ...[
+      ...supervisorAces(layout),
+      legacyRunDirAce(layout),
+      ...bridgeSocketAces(layout),
+    ].map(({ path, ace }) => ({
+      argv: [CHMOD, "-a", ace, path],
+      mayFail: true,
+    })),
     ...[gate, data, parse]
       .filter((name) => accounts.users.has(name))
       .map((name) => ({ argv: [DSCL, ".", "-delete", `/Users/${name}`] })),
@@ -911,6 +988,7 @@ export function removeSteps(layout: PlaneLayout, accounts: Accounts): Step[] {
       .map((name) => ({ argv: [DSCL, ".", "-delete", `/Groups/${name}`] })),
     { argv: ["/bin/rm", "-rf", layout.policyDir, layout.app, layout.runDir] },
     { argv: ["/bin/rm", "-rf", ...parserRemovePaths(layout.parser)] },
+    { argv: ["/bin/rm", "-rf", ...bridgeRemovePaths(layout.bridge)] },
   ]
 }
 
