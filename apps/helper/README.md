@@ -443,20 +443,42 @@ regular file of at most 256 MiB, reads it and checks the bytes against
 
 1. opens the copy directory (`--file-helper-copy-dir`, or the user's cache
    directory from `confstr(_CS_DARWIN_USER_CACHE_DIR)` when the flag is absent)
-   without following a symbolic link;
+   without following a symbolic link, and checks its owner, mode, volume and ACL
+   (see below);
 2. removes private directories (`eido-file-helper.*`) a bridge that did not stop
    cleanly left there. A directory another running bridge still holds (an
    exclusive `flock`) is kept;
-3. creates a new directory `eido-file-helper.<random>` with mode `0700` and
-   holds its lock for the life of the bridge;
+3. creates a new directory `eido-tmp.<random>` with mode `0700`, takes its
+   exclusive `flock`, and only then renames it to `eido-file-helper.<random>`
+   (`renameatx_np` with `RENAME_EXCL`, so a taken name is never replaced). The
+   lock is held for the life of the bridge. Step 2 only lists
+   `eido-file-helper.*`, so a bridge starting at the same moment cannot remove a
+   directory that exists but is not yet locked;
 4. creates `file-helper` in it exclusively (`O_CREAT | O_EXCL`, no symbolic link
    followed), writes the bytes it hashed in memory, and sets mode `0500`;
 5. reads the copy back through a new descriptor and checks it against the pin
-   again (`file_helper_copy_failed` otherwise).
+   again (`file_helper_copy_failed` otherwise). The copy is hashed in 64 KiB
+   pieces, so it is never held in memory a second time.
 
 Before every `file` op the copy is opened again and must be the same file
 (device and inode), with one link, owner and mode `0500`, and the pinned
-SHA-256; otherwise the op is `unavailable` and nothing runs.
+SHA-256, hashed in 64 KiB pieces as at start; otherwise the op is `unavailable`
+and nothing runs. The bridge then logs one line on standard error, which launchd
+keeps: `eido-helper: file helper copy not run: <reason>`, where the reason is one
+of `removed`, `unopenable`, `replaced`, `mode_changed`, `unreadable` or
+`bytes_changed`. The line carries no path and no request value.
+
+**ACLs.** The copy directory and every directory above it must carry no ACL
+entry that allows a principal other than the bridge's user or root to write
+data, add a file or subdirectory, delete the directory or an entry in it, or
+change its attributes, security or owner (`add_file`, `add_subdirectory`,
+`delete`, `delete_child`, `writeattr`, `writesecurity`, `chown`). An allow entry
+for a group, or for a GUID that cannot be resolved to a user, counts as another
+principal. Deny entries (the home directory's default is `everyone deny delete`)
+and allow entries that only read or search pass. An ACL that cannot be read
+fails the start. The result is `file_helper_copy_unsafe`. The check does not
+evaluate the order of deny and allow entries: an allow entry for another
+principal fails the start even when a deny entry before it would cancel it.
 
 **Location requirements.** The original `--file-helper` needs only to be a
 regular file the bridge's user can read, not a symbolic link at its last
@@ -478,10 +500,28 @@ directory.
 
 **What remains.** A process running as the bridge's own user (or root) can still
 change the copy between the check before a run and the `exec`, since macOS has no
-`fexecve`; such a process can already act as the owner. ACLs on the copy
-directory are not checked, only owner and mode bits. The gate's own file helper
-runner (`packages/gate`) still hashes and then runs by path; that is #903. The gate does not yet send its pin on file requests
-(#904).
+`fexecve`; such a process can already act as the owner. A bridge that is killed
+between creating `eido-tmp.<random>` and the rename leaves that empty directory
+behind; nothing removes it, and it holds no file. The gate's own file helper
+runner (`packages/gate`) still hashes and then runs by path; that is #903. The
+gate does not yet send its pin on file requests (#904).
+
+**Descriptors in a child.** The runner starts every child with Foundation's
+`Process`. On macOS 27.2.1 it spawns with `POSIX_SPAWN_CLOEXEC_DEFAULT`, so a child
+holds only its own three standard descriptors: not the parent's pipes made
+without close-on-exec, and not the pipes of a sibling request running at the same
+time. A control with a raw `posix_spawn` that sets no such flag does hand those
+pipes to the child, so the probe can detect a leak. Nothing is changed in the
+runner; the tests would fail if a macOS release started leaking.
+
+**What the tests do not prove.** The ACL tests add entries with `chmod +a` to
+directories the test owns; they do not run against the real home directory's ACL
+or a directory with an ACL the test user cannot create. The concurrent-start race
+is tested deterministically by running a whole second start inside the window
+between `mkdirat` and `flock` through a test hook, and by starting two installs at
+once 40 times, which fails only if the timing lines up. The memory test measures
+the process footprint while hashing a 96 MiB file and is an upper bound, not an
+exact figure. The descriptor test was run on macOS 27.2.1 only.
 
 ### Errors
 
