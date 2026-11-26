@@ -13,7 +13,16 @@ import { intentHistory, intentStatus, propose } from "./intents"
 import {
   SessionBridgeOutcomeUnknownError,
   SessionUnavailableError,
+  createSessionBridge,
 } from "./session-bridge/client"
+import {
+  TEST_OWNER_UID,
+  frame,
+  socketDir,
+  startFakeSessionBridge,
+} from "./session-bridge/fake-session-bridge.test-support"
+import type { FakeAnswer } from "./session-bridge/fake-session-bridge.test-support"
+import { bridgeThingsRunner } from "./things/runner"
 import {
   MAIL_OPS,
   auditRows,
@@ -650,6 +659,80 @@ describe("executor", () => {
     })
     expect(f.transport).toHaveBeenCalledTimes(1)
     expect(verifyChain(s.db).ok).toBe(true)
+  })
+
+  // Unix sockets and the plane split are macOS-only (#781); these do not run on Windows.
+  const unix = process.platform === "win32" ? describe.skip : describe
+  unix("a write through the session bridge (#912)", () => {
+    /** The fixture's write, sent as a Things script through a fake bridge that answers `answer`. */
+    async function throughBridge(answer: FakeAnswer) {
+      const f = fixture()
+      const { dir, remove } = socketDir()
+      cleanups.push(remove)
+      const bridge = await startFakeSessionBridge(
+        () => answer,
+        join(dir, "bridge.sock")
+      )
+      cleanups.push(() => void bridge.close())
+      const run = bridgeThingsRunner(
+        createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
+      )
+      f.transport.mockImplementation(async () => {
+        await run("complete-todo", ["todo-1"])
+        return {
+          upstreamRef: "provider-ref-1",
+          result: { labels: [...f.labels] },
+        }
+      })
+      return { ...f, bridge }
+    }
+
+    it.each([
+      ["closes without answering", { raw: Buffer.alloc(0) }],
+      ["closes inside the answer", { raw: frame({ ok: true }).subarray(0, 6) }],
+      [
+        "answers outside the schema",
+        { json: { ok: true, result: { stdout: "" } } },
+      ],
+    ] satisfies [string, FakeAnswer][])(
+      "a bridge that %s after the request was written is audited as outcome unknown",
+      async (_name, answer) => {
+        const f = await throughBridge(answer)
+        expect(await f.executor.execute(f.id)).toEqual({
+          ok: false,
+          code: "outcome_unknown",
+        })
+        expect(f.bridge.requests).toHaveLength(1)
+        expect(intentStatus(s.db, f.id)?.state).toBe("approved")
+        expect(attempts(f.id)).toEqual(["execute"])
+        expect(actionsFor(f.id)).toContain("execute.outcome_unknown")
+        expect(
+          actionsFor(f.id).some((a) => a.startsWith("execute.failed"))
+        ).toBe(false)
+        // The claim stays: the write that may have happened is never sent again.
+        expect(await f.executor.execute(f.id)).toEqual({
+          ok: false,
+          code: "outcome_unresolved",
+        })
+        expect(f.bridge.requests).toHaveLength(1)
+        expect(verifyChain(s.db).ok).toBe(true)
+      }
+    )
+
+    it("a bridge refusal code proves the script did not run and stays a clean failure", async () => {
+      const f = await throughBridge({
+        json: { ok: false, code: "unknown_script" },
+      })
+      expect(await f.executor.execute(f.id)).toEqual({
+        ok: false,
+        code: "upstream_error",
+      })
+      expect(intentStatus(s.db, f.id)?.state).toBe("failed")
+      expect(attempts(f.id)).toEqual(["execute"])
+      expect(actionsFor(f.id)).toContain("execute.failed.upstream_error")
+      expect(actionsFor(f.id)).not.toContain("execute.outcome_unknown")
+      expect(verifyChain(s.db).ok).toBe(true)
+    })
   })
 
   it("records an Undo that timed out after sending as outcome unknown and keeps its claim", async () => {

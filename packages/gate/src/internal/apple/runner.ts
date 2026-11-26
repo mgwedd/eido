@@ -6,9 +6,11 @@ import { dirname, isAbsolute } from "node:path"
 import {
   validateGateAppleRequest,
   validateGateAppleResponse,
+  validateGateSessionBridgeResponse,
 } from "@eido/schemas"
 import type { GateAppleRequest, GateAppleResponse } from "@eido/schemas"
 import {
+  SessionBridgeOutcomeUnknownError,
   SessionUnavailableError,
   bridgeTimeout,
 } from "../session-bridge/client"
@@ -102,7 +104,17 @@ async function viaBridge(
     )
   }
   const response = validateGateAppleResponse(answer)
-  if (!response.ok) throw new AppleError("unavailable")
+  if (!response.ok) {
+    // One of the bridge's own codes (`unknown_op`, `frame_too_large`, ...) is its answer that the
+    // request was refused. Anything else outside the schema proves neither outcome (#912).
+    const refusal = validateGateSessionBridgeResponse(answer)
+    if (refusal.ok && !refusal.value.ok) throw new AppleError("unavailable")
+    throw new AppleError("unavailable", {
+      cause: new SessionBridgeOutcomeUnknownError(
+        "session bridge answer refused"
+      ),
+    })
+  }
   if (!response.value.ok) throw new AppleError(response.value.code)
   return response.value.result
 }

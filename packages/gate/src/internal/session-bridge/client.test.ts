@@ -10,6 +10,7 @@ import {
   SessionUnavailableError,
   bridgeStdout,
   bridgeTimeout,
+  connectionError,
   createSessionBridge,
   deadlineError,
   frameReader,
@@ -190,11 +191,19 @@ describe("session bridge client checks", () => {
     expect(read(chunks)).toBe(message)
   })
 
-  test("parses a body as JSON and refuses one that is not", () => {
+  test("parses a body as JSON and refuses one that is not as an unknown outcome", () => {
     expect(parseFrameBody(Buffer.from('{"ok":true}'))).toEqual({ ok: true })
-    expect(() => parseFrameBody(Buffer.from("{no"))).toThrow(
-      "session bridge answer is not JSON"
-    )
+    const error = (() => {
+      try {
+        return parseFrameBody(Buffer.from("{no"))
+      } catch (e) {
+        return e
+      }
+    })()
+    expect(error).toBeInstanceOf(SessionBridgeOutcomeUnknownError)
+    expect(error).toMatchObject({
+      message: "session bridge answer is not JSON",
+    })
   })
 })
 
@@ -296,14 +305,19 @@ unix("session bridge client", () => {
       Buffer.concat([Buffer.from([0, 0, 0, 3]), Buffer.from("{no")]),
       "session bridge answer is not JSON",
     ],
-  ])("a frame with %s is a bridge failure", async (_name, raw, message) => {
-    const bridge = await fake(() => ({ raw }))
-    const error = await createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
-      .call(things, call)
-      .catch((e: unknown) => e)
-    expect(error).toBeInstanceOf(SessionBridgeError)
-    expect(error).toMatchObject({ message })
-  })
+  ])(
+    "a frame with %s after the request was sent is an unknown outcome",
+    async (_name, raw, message) => {
+      const bridge = await fake(() => ({ raw }))
+      const error = await createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
+        .call(things, call)
+        .catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(SessionBridgeOutcomeUnknownError)
+      expect(error).toMatchObject({ message })
+      expect(sentNothing(error)).toBe(false)
+      expect(bridge.requests).toEqual([things])
+    }
+  )
 
   test("gives up at the deadline when the bridge never answers", async () => {
     const bridge = await fake(() => ({ hang: true }))
@@ -326,7 +340,7 @@ unix("session bridge client", () => {
     expect(bridge.requests).toEqual([things])
   })
 
-  test("a connection the bridge drops unread is a bridge failure", async () => {
+  test("a connection the bridge drops unread is an unknown outcome, not unavailable", async () => {
     const { dir, remove } = socketDir()
     cleanups.push(remove)
     const path = join(dir, "bridge.sock")
@@ -340,7 +354,77 @@ unix("session bridge client", () => {
     const error = await createSessionBridge(path, TEST_OWNER_UID)
       .call(things, call)
       .catch((e: unknown) => e)
+    // The gate cannot tell a close before the read from a bridge that ran the op and died.
+    expect(error).toBeInstanceOf(SessionBridgeOutcomeUnknownError)
+    expect(sentNothing(error)).toBe(false)
+  })
+
+  test("a connection broken while the request is being written is an unknown outcome", async () => {
+    const { dir, remove } = socketDir()
+    cleanups.push(remove)
+    const path = join(dir, "bridge.sock")
+    let received = 0
+    // Drops the connection on the first bytes, while most of a large request is still unsent.
+    const server = createServer((socket) => {
+      socket.on("error", () => undefined)
+      socket.once("data", (chunk: Buffer) => {
+        received += chunk.length
+        socket.destroy()
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(path, resolve))
+    chmodSync(path, 0o600)
+    cleanups.push(
+      () => new Promise<void>((resolve) => server.close(() => resolve()))
+    )
+    const large = { ...things, argv: ["x".repeat(4 * 1024 * 1024)] }
+    const error = await createSessionBridge(path, TEST_OWNER_UID)
+      .call(large, call)
+      .catch((e: unknown) => e)
+    expect(received).toBeGreaterThan(0)
+    expect(error).toBeInstanceOf(SessionBridgeOutcomeUnknownError)
+    expect(sentNothing(error)).toBe(false)
+  })
+})
+
+describe("what a connection error says was sent", () => {
+  const reset = Object.assign(new Error("read ECONNRESET"), {
+    code: "ECONNRESET",
+  })
+  const missing = Object.assign(new Error("connect ENOENT"), {
+    code: "ENOENT",
+  })
+
+  test("a reset after the request was written is an unknown outcome, never unavailable", () => {
+    const error = connectionError(true, reset)
+    expect(error).not.toBeInstanceOf(SessionUnavailableError)
+    expect(error).toBeInstanceOf(SessionBridgeOutcomeUnknownError)
+    expect(sentNothing(error)).toBe(false)
+    expect(outcomeUnknown(error)).toBe(true)
+  })
+
+  test("once the connection opened even an absent-socket code is not unavailable", () => {
+    expect(connectionError(true, missing)).toBeInstanceOf(
+      SessionBridgeOutcomeUnknownError
+    )
+  })
+
+  test.each(["ENOENT", "ECONNREFUSED"])(
+    "%s before the connection opened sent nothing",
+    (code) => {
+      const error = connectionError(
+        false,
+        Object.assign(new Error(code), { code })
+      )
+      expect(error).toBeInstanceOf(SessionUnavailableError)
+    }
+  )
+
+  test("any other error before the connection opened is a plain failure", () => {
+    const error = connectionError(false, reset)
     expect(error).toBeInstanceOf(SessionBridgeError)
+    expect(sentNothing(error)).toBe(false)
+    expect(outcomeUnknown(error)).toBe(false)
   })
 })
 
@@ -418,12 +502,13 @@ describe("bridge stdout", () => {
     ).toBe("hié\n")
   })
 
-  test("a bridge code is a refusal carrying that code", async () => {
+  test("a bridge code is a refusal carrying that code, not an unknown outcome", async () => {
     const error = await run({ ok: false, code: "unknown_script" }).catch(
       (e: unknown) => e
     )
     expect(error).toBeInstanceOf(SessionBridgeRefusal)
     expect(error).toMatchObject({ code: "unknown_script" })
+    expect(outcomeUnknown(error)).toBe(false)
   })
 
   test.each([
@@ -433,7 +518,9 @@ describe("bridge stdout", () => {
       "stdout that is not canonical base64",
       { ok: true, result: { stdoutBase64: "aG k=" } },
     ],
-  ])("refuses %s", async (_name, answer) => {
-    await expect(run(answer)).rejects.toBeInstanceOf(SessionBridgeError)
+  ])("refuses %s as an unknown outcome", async (_name, answer) => {
+    await expect(run(answer)).rejects.toBeInstanceOf(
+      SessionBridgeOutcomeUnknownError
+    )
   })
 })
