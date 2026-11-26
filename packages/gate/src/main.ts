@@ -87,9 +87,13 @@ import type { FileHelperConfig } from "./internal/files/file-helper"
 import { createFileReads } from "./internal/files/file-reads"
 import { assertFileHelperInstall } from "./internal/files/file-install"
 import { devFlagFromEnv, FileVault } from "./internal/vault/file-vault"
+import { reportingLocks } from "./internal/vault/vault"
 import type { Vault } from "./internal/vault/vault"
 import { KeychainVault } from "./internal/vault/keychain-vault"
-import { attachControlCheckpoint } from "./internal/control-checkpoint"
+import {
+  attachControlCheckpoint,
+  reportKeychainLocked,
+} from "./internal/control-checkpoint"
 import type {
   ControlCheckpoint,
   ControlStore,
@@ -625,6 +629,12 @@ export async function runGate(
     if (denied !== undefined)
       log("control_checkpoint_denied", { reason: denied })
   }
+  // A secret read that finds the keychain locked moves the checkpoint into keychain_locked and
+  // starts its retry, so a keychain that locks while the gate runs is noticed and recovers (#878).
+  const openVault = (vault: VaultConfig): Vault =>
+    reportingLocks(vaultFactory(vault), () => {
+      reportKeychainLocked(db)
+    })
   const servers: Server[] = []
   let notifier: ReturnType<typeof createPushNotifier> | undefined
   let phone: RunningGate["phone"]
@@ -649,7 +659,7 @@ export async function runGate(
     const push =
       config.push === undefined
         ? undefined
-        : { ...config.push, keys: vaultFactory(config.push.vault) }
+        : { ...config.push, keys: openVault(config.push.vault) }
     const vapidKey = {
       connector: "eido-web-push",
       kind: "api_key",
@@ -685,7 +695,7 @@ export async function runGate(
       try {
         profileAudit = await initializeProfileAudit(
           db,
-          vaultFactory(config.profileAudit.vault),
+          openVault(config.profileAudit.vault),
           config.profileAudit.epoch
         )
       } catch {
@@ -720,14 +730,14 @@ export async function runGate(
         ? undefined
         : createProtonBridge({
             config: config.bridge.config,
-            vault: vaultFactory(config.bridge.vault),
+            vault: openVault(config.bridge.vault),
           })
     const gmailOptions =
       config.gmail === undefined
         ? undefined
         : {
             db,
-            vault: vaultFactory(config.gmail.vault),
+            vault: openVault(config.gmail.vault),
             clientId: config.gmail.clientId,
           }
     const gmail =
@@ -737,7 +747,7 @@ export async function runGate(
         ? undefined
         : {
             db,
-            vault: vaultFactory(config.egress.vault),
+            vault: openVault(config.egress.vault),
             clientIds: config.egress.clientIds,
           }
     const readProbes: Record<string, ConnectorProbe> =
@@ -795,7 +805,7 @@ export async function runGate(
         ? undefined
         : createSupervisorClient({ socketPath: config.supervisorSocketPath })
     const secretVault =
-      config.vault === undefined ? undefined : vaultFactory(config.vault)
+      config.vault === undefined ? undefined : openVault(config.vault)
     const bridgePin = config.bridge?.config
     const bridge =
       bridgePin?.certificateSha256 === undefined ||

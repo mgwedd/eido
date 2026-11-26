@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url"
 import { lstat } from "node:fs/promises"
 import { runKeychainCommand } from "./keychain-bridge"
 import { KeychainVault } from "./keychain-vault"
+import { KeychainLockedError } from "./vault"
 
 vi.mock("./keychain-bridge", () => ({ runKeychainCommand: vi.fn() }))
 vi.mock("node:fs/promises", () => ({ lstat: vi.fn() }))
@@ -108,9 +109,11 @@ test.each([-25293, -25300])(
   "a read the helper reports as locked says the keychain is locked (status %i)",
   async (status) => {
     run.mockResolvedValue({ status, locked: true })
-    await expect(
-      new KeychainVault({ path: "/test.keychain-db" }).get(KEY)
-    ).rejects.toThrow("Keychain is locked")
+    const error = await new KeychainVault({ path: "/test.keychain-db" })
+      .get(KEY)
+      .catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(KeychainLockedError)
+    expect(String(error)).toBe("KeychainLockedError: Keychain is locked")
   }
 )
 test("write/delete failures expose only static messages", async () => {

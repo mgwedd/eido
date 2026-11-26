@@ -17,6 +17,33 @@ export interface Vault {
   delete(key: VaultKey): Promise<void>
 }
 
+/** A read refused because the keychain that holds the secret is locked (#878). */
+export class KeychainLockedError extends Error {
+  constructor() {
+    super("Keychain is locked")
+    this.name = "KeychainLockedError"
+  }
+}
+
+/**
+ * The same vault, calling `onLocked` each time a read fails because the keychain is locked, then
+ * rethrowing. The gate uses it to move the control checkpoint into `keychain_locked` (#878).
+ */
+export function reportingLocks(vault: Vault, onLocked: () => void): Vault {
+  return {
+    get: async (key) => {
+      try {
+        return await vault.get(key)
+      } catch (error) {
+        if (error instanceof KeychainLockedError) onLocked()
+        throw error
+      }
+    },
+    set: (key, secret) => vault.set(key, secret),
+    delete: (key) => vault.delete(key),
+  }
+}
+
 /** Stable map key. JSON keeps connector names with any characters from colliding. */
 export function vaultKeyId(key: VaultKey): string {
   return JSON.stringify([key.connector, key.kind, key.client])

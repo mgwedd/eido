@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path"
 import { lstat } from "node:fs/promises"
 import { runKeychainCommand } from "./keychain-bridge"
-import { vaultKeyId } from "./vault"
+import { KeychainLockedError, vaultKeyId } from "./vault"
 import type { Vault, VaultKey } from "./vault"
 
 /** An explicitly selected, pre-existing gate-user keychain; never the default search list. */
@@ -42,7 +42,7 @@ export class KeychainVault implements Vault {
       account: vaultKeyId(key),
     })
     if (result.status !== 0 && result.locked === true)
-      throw new Error("Keychain is locked")
+      throw new KeychainLockedError()
     if (result.status === -25300) return undefined
     if (result.status !== 0 || result.data === undefined)
       throw new Error("Keychain credential could not be read")
