@@ -36,6 +36,7 @@ export {
   validateGateConnectorSettings,
   validateGateControlDenyReason,
   validateGateControlPrepared,
+  validateGateControlStatus,
   validateGateCredentialStatus,
   validateGateDecisionRequest,
   validateGateDecisionResult,

@@ -32,6 +32,7 @@ import {
   validateGateProposeResult,
   validateGateRejectReason,
   validateGateControlDenyReason,
+  validateGateControlStatus,
   validateGateKeychainResult,
   validateGateRepinPrepared,
   validateGateRepinRequest,
@@ -951,6 +952,44 @@ describe("control-state denial reason", () => {
     expect(validateGateControlDenyReason("keychain_locked").ok).toBe(true)
     expect(validateGateControlDenyReason("store_unreadable").ok).toBe(true)
     expect(errorsOf(validateGateControlDenyReason("locked"))).toHaveLength(1)
+  })
+})
+
+describe("control checkpoint status", () => {
+  test("is the flag alone when no checkpoint is enforced", () => {
+    expect(validateGateControlStatus({ enforced: false }).ok).toBe(true)
+    expect(
+      errorsOf(validateGateControlStatus({ enforced: false, denied: null }))
+        .length
+    ).toBeGreaterThan(0)
+  })
+
+  test("carries the deny reason, or null while the checkpoint verifies", () => {
+    expect(validateGateControlStatus({ enforced: true, denied: null }).ok).toBe(
+      true
+    )
+    expect(
+      validateGateControlStatus({ enforced: true, denied: "keychain_locked" })
+        .ok
+    ).toBe(true)
+    expect(errorsOf(validateGateControlStatus({ enforced: true }))).not.toEqual(
+      []
+    )
+    expect(
+      errorsOf(validateGateControlStatus({ enforced: true, denied: "locked" }))
+    ).not.toEqual([])
+  })
+
+  test("refuses any record, hash or keychain field beside the reason", () => {
+    expect(
+      errorsOf(
+        validateGateControlStatus({
+          enforced: true,
+          denied: null,
+          snapshotHash: "0".repeat(64),
+        })
+      )
+    ).not.toEqual([])
   })
 })
 
