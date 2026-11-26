@@ -8,16 +8,21 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { fileHelper } from "./file-helper"
-import { installFileHelperCopy } from "./file-helper-copy"
+import {
+  FILE_HELPER_SIZE_LIMIT,
+  installFileHelperCopy,
+} from "./file-helper-copy"
 import type { FileHelperCopy } from "./file-helper-copy"
 
 const posix = process.platform !== "win32"
@@ -53,12 +58,15 @@ async function install(f: ReturnType<typeof fixture>, sha256 = sha(BYTES)) {
 }
 const privateDirs = (parent: string) =>
   readdirSync(parent).filter((name) => name.startsWith("eido-file-helper."))
-/** Puts a new file with `bytes` and the copy's mode where the copy is: a new inode. */
+/**
+ * Renames a new file with `bytes` and the copy's mode over the copy. The new file exists while
+ * the copy does, so it has another inode (Linux reuses a freed inode number at once).
+ */
 function swap(path: string, bytes: string) {
-  chmodSync(path, 0o700)
-  rmSync(path)
-  writeFileSync(path, bytes)
-  chmodSync(path, 0o500)
+  const next = `${path}.next`
+  writeFileSync(next, bytes)
+  chmodSync(next, 0o500)
+  renameSync(next, path)
 }
 
 describe("installing the private copy", () => {
@@ -110,6 +118,18 @@ describe("installing the private copy", () => {
       "file helper does not match its pinned hash"
     )
     expect(privateDirs(f.parent)).toEqual([])
+  })
+
+  it("refuses a source over the size limit even when its pin is right", async () => {
+    const f = fixture()
+    // Sparse, so it takes no space; the pin is the hash of exactly those zero bytes.
+    truncateSync(f.source, FILE_HELPER_SIZE_LIMIT + 1)
+    const pin = createHash("sha256")
+      .update(Buffer.alloc(FILE_HELPER_SIZE_LIMIT + 1))
+      .digest("hex")
+    await expect(install(f, pin)).rejects.toThrow(
+      "file helper does not match its pinned hash"
+    )
   })
 
   it.skipIf(!posix)(

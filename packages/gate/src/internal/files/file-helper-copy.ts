@@ -80,16 +80,26 @@ async function readBounded(handle: FileHandle): Promise<Buffer | undefined> {
   }
 }
 
-/** One open, without following a final link, then the stat and the bytes from that descriptor. */
-async function readOnce(
-  path: string
-): Promise<{ info: BigIntStats; bytes: Buffer | undefined }> {
+/**
+ * One open, without following a final link, then the stat and the bytes read from that
+ * descriptor with their SHA-256. Nothing is read but a regular file within the size limit;
+ * `readBounded` keeps the limit should the file grow while it is read.
+ */
+async function readOnce(path: string): Promise<{
+  info: BigIntStats
+  read: { bytes: Buffer; sha256: string } | undefined
+}> {
   const handle = await open(path, READ_FLAGS)
   try {
     const info = await handle.stat({ bigint: true })
+    const bytes =
+      info.isFile() && info.size <= FILE_HELPER_SIZE_LIMIT
+        ? await readBounded(handle)
+        : undefined
     return {
       info,
-      bytes: info.isFile() ? await readBounded(handle) : undefined,
+      read:
+        bytes === undefined ? undefined : { bytes, sha256: sha256Hex(bytes) },
     }
   } finally {
     await handle.close()
@@ -105,14 +115,13 @@ function isPrivateCopy(info: BigIntStats, owner: number | undefined): boolean {
 
 async function readSource(source: string, sha256: string): Promise<Buffer> {
   if (!/^[0-9a-f]{64}$/.test(sha256)) throw mismatch()
-  let read: Awaited<ReturnType<typeof readOnce>>
+  let read: Awaited<ReturnType<typeof readOnce>>["read"]
   try {
-    read = await readOnce(source)
+    read = (await readOnce(source)).read
   } catch {
     throw mismatch()
   }
-  if (read.bytes === undefined || sha256Hex(read.bytes) !== sha256)
-    throw mismatch()
+  if (read?.sha256 !== sha256) throw mismatch()
   return read.bytes
 }
 
@@ -255,12 +264,8 @@ export async function installFileHelperCopy(
   try {
     await writeCopy(path, bytes)
     // Read the copy back through a new descriptor: the bytes that will run must be the pin.
-    const { info, bytes: readBack } = await readOnce(path)
-    if (
-      !isPrivateCopy(info, owner) ||
-      readBack === undefined ||
-      sha256Hex(readBack) !== source.sha256
-    )
+    const { info, read } = await readOnce(path)
+    if (!isPrivateCopy(info, owner) || read?.sha256 !== source.sha256)
       throw copyFailed()
     identity = { dev: info.dev, ino: info.ino }
   } catch {
@@ -274,14 +279,13 @@ export async function installFileHelperCopy(
     verified: async () => {
       if (removed) return undefined
       try {
-        const { info, bytes: current } = await readOnce(path)
+        const { info, read } = await readOnce(path)
         const same =
           info.dev === identity.dev &&
           info.ino === identity.ino &&
           isPrivateCopy(info, owner) &&
-          current !== undefined &&
-          sha256Hex(current) === source.sha256
-        return same && !removed ? path : undefined
+          read?.sha256 === source.sha256
+        return same ? path : undefined
       } catch {
         return undefined
       }
