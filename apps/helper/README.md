@@ -170,9 +170,16 @@ only its completion state.
 Success is `{"ok":true,"result":...}`. Results have these shapes:
 
 - Calendar and reminder-list reads: `{"calendars":[{"id":"...","title":"...","writable":true}],"skipped":0}`.
-- Event reads: `{"events":[{"id":"...","calendarId":"...","title":"...","start":"...","end":"...","allDay":false,"location":null,"notes":null,"modifiedAt":null}],"skipped":0}`.
+- Event reads: `{"events":[{"id":"...","calendarId":"...","title":"...","start":"...","end":"...","allDay":false,"location":null,"notes":null,"modifiedAt":null,"hasAttendees":false,"recurring":false}],"skipped":0}`.
 - Reminder reads: `{"reminders":[{"id":"...","listId":"...","title":"...","notes":null,"due":null,"completed":false,"completedAt":null,"modifiedAt":null}],"skipped":0}`.
 - Writes: `{"id":"..."}`.
+
+Event reads report whether `update_event` would refuse an event, so a caller
+need not try it: `hasAttendees` is true when the event has attendees, and
+`recurring` is true when it belongs to a series (it has recurrence rules or is a
+detached occurrence; its id then carries the `recurrence:` prefix). Both are
+always present on every event. The gate rejects an event reply that omits them,
+so a Helper built before these fields must be rebuilt.
 
 Nullable fields are always present. Upstream titles may be empty and are bounded
 at 2000 Unicode scalars; output notes and locations at 20000; IDs at 1024. An

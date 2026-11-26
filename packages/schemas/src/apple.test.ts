@@ -92,6 +92,8 @@ describe("EventKit wire contract", () => {
             notes: null,
             location: null,
             modifiedAt: null,
+            hasAttendees: false,
+            recurring: false,
           },
         ],
       },
@@ -144,6 +146,35 @@ describe("EventKit wire contract", () => {
       validateGateAppleCalendarList({ calendars: [], skipped: 1_000_001 }).ok
     ).toBe(false)
   })
+  test("an event read must report attendees and series membership", () => {
+    const base = {
+      id: "e",
+      ...EVENT,
+      notes: null,
+      location: null,
+      modifiedAt: null,
+    }
+    const event = { ...base, hasAttendees: true, recurring: true }
+    const withoutAttendees = { ...base, recurring: true }
+    const withoutRecurring = { ...base, hasAttendees: true }
+    expect(validateGateAppleEventList({ events: [event] }).ok).toBe(true)
+    expect(validateGateAppleEventList({ events: [withoutAttendees] }).ok).toBe(
+      false
+    )
+    expect(validateGateAppleEventList({ events: [withoutRecurring] }).ok).toBe(
+      false
+    )
+    expect(
+      validateGateAppleEventList({ events: [{ ...event, recurring: "yes" }] })
+        .ok
+    ).toBe(false)
+    expect(
+      validateGateAppleResponse({
+        ok: true,
+        result: { events: [withoutAttendees] },
+      }).ok
+    ).toBe(false)
+  })
   test("refuses malformed upstream records", () => {
     expect(
       validateGateAppleCalendarList({
@@ -159,6 +190,8 @@ describe("EventKit wire contract", () => {
             notes: null,
             location: null,
             modifiedAt: "yesterday",
+            hasAttendees: false,
+            recurring: false,
           },
         ],
       }).ok
@@ -187,6 +220,8 @@ describe("EventKit wire contract", () => {
           notes: null,
           location: null,
           modifiedAt: null,
+          hasAttendees: false,
+          recurring: false,
         }),
       }).ok
     ).toBe(false)

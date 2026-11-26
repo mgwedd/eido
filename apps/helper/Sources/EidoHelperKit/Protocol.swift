@@ -253,9 +253,15 @@ public struct EventValue: Encodable, Equatable {
   public var location: String?
   public var notes: String?
   public var modifiedAt: String?
+  /// The event has attendees; saving it could send them an update, so `update_event` refuses it.
+  public var hasAttendees: Bool
+  /// The event belongs to a series (it has recurrence rules or is a detached occurrence);
+  /// `update_event` refuses it, and its id carries the `recurrence:` prefix.
+  public var recurring: Bool
   public init(
     id: String, calendarId: String, title: String, start: String, end: String, allDay: Bool,
-    location: String?, notes: String?, modifiedAt: String?
+    location: String?, notes: String?, modifiedAt: String?, hasAttendees: Bool = false,
+    recurring: Bool = false
   ) {
     self.id = id
     self.calendarId = calendarId
@@ -266,6 +272,8 @@ public struct EventValue: Encodable, Equatable {
     self.location = location
     self.notes = notes
     self.modifiedAt = modifiedAt
+    self.hasAttendees = hasAttendees
+    self.recurring = recurring
   }
   public func encode(to encoder: Encoder) throws {
     var c = encoder.container(keyedBy: Keys.self)
@@ -278,9 +286,12 @@ public struct EventValue: Encodable, Equatable {
     try c.encode(location, forKey: .location)
     try c.encode(notes, forKey: .notes)
     try c.encode(modifiedAt, forKey: .modifiedAt)
+    try c.encode(hasAttendees, forKey: .hasAttendees)
+    try c.encode(recurring, forKey: .recurring)
   }
   private enum Keys: String, CodingKey {
-    case id, calendarId, title, start, end, allDay, location, notes, modifiedAt
+    case id, calendarId, title, start, end, allDay, location, notes, modifiedAt, hasAttendees
+    case recurring
   }
 }
 public struct ReminderValue: Encodable, Equatable {

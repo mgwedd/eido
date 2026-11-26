@@ -56,6 +56,7 @@ import { crossSiteRefused } from "./request-origin"
 import type { RoleGuard } from "./caller-role"
 import { MAIL_SIGNALS_PATH, mailSignalsRoute } from "./mail-signals-route"
 import { dueSoonRoute } from "./due-soon"
+import { TODAY_EVENTS_PATH, todayEventsRoute } from "./today-events"
 import { SIMPLEFIN_SYNC_PATH, simplefinSyncRoute } from "./simplefin-sync-route"
 import type { SimpleFinSyncer } from "./simplefin-sync-route"
 import {
@@ -125,7 +126,7 @@ export interface ApiDeps {
   documents?: DocumentsDeps
   /** The conversation store behind `/conversations/search`. When absent, the route is not served. */
   conversations?: ConversationStore
-  /** The clock `/today/due-soon` reads "today" from. Absent: the system clock. */
+  /** The clock `/today/due-soon` and `/today/events` read "today" from. Absent: the system clock. */
   now?: () => Date
   /**
    * The caller's role check for state-changing requests (ADR 0010). Absent (single-owner mode,
@@ -631,6 +632,18 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       )
       if (result.ok) return json(result.body)
       return failure(result.code, result.message, { fields: result.fields })
+    }
+
+    if (path === TODAY_EVENTS_PATH && deps.documents !== undefined) {
+      if (method !== "GET") return notAllowed("GET")
+      const timezone = (await profile.getProfile())?.timezone ?? "Etc/UTC"
+      return json(
+        todayEventsRoute(
+          deps.documents.db,
+          timezone,
+          deps.now?.() ?? new Date()
+        )
+      )
     }
 
     const briefMatch = BRIEF_PATH.exec(path)

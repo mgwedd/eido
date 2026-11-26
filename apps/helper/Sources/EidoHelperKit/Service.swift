@@ -1,22 +1,11 @@
 import Foundation
 
-public struct StoredEvent {
-  public let value: EventValue
-  public let recurring: Bool
-  public let hasAttendees: Bool
-  public init(value: EventValue, recurring: Bool, hasAttendees: Bool = false) {
-    self.value = value
-    self.recurring = recurring
-    self.hasAttendees = hasAttendees
-  }
-}
-
 @MainActor public protocol CalendarStore {
   func authorized(reminders: Bool) -> Bool
   func calendars(reminders: Bool) throws -> [CalendarValue]
   func events(calendarId: String, start: Date, end: Date) throws -> [EventValue]
   func reminders(listId: String) async throws -> [ReminderValue]
-  func event(id: String) throws -> StoredEvent?
+  func event(id: String) throws -> EventValue?
   func reminder(id: String) throws -> ReminderValue?
   func saveEvent(_ value: EventValue, existingId: String?) throws -> String
   func saveReminder(_ value: ReminderValue, existingId: String?) throws -> String
@@ -94,8 +83,7 @@ public let completedSinceLimit: TimeInterval = 366 * 86400
         guard let existing = try store.event(id: id) else { throw HelperFailure.notFound }
         // Moving calendars can change accounts, and saving an event with attendees can send
         // them updates, so neither is part of an approved field replacement.
-        guard !existing.recurring, !existing.hasAttendees,
-          existing.value.calendarId == calendarId
+        guard !existing.recurring, !existing.hasAttendees, existing.calendarId == calendarId
         else { throw HelperFailure.unsupportedEvent }
       }
       let value = EventValue(
