@@ -33,9 +33,15 @@ gate last held, or a later one of the same installation and epoch: an older, emp
 record is `stale_generation`, even with a database that matches it. A database error during a
 retry stays `keychain_locked` and retries again. The retry never unlocks the Keychain: something
 else must (`EIDO_GATE_KEYCHAIN_UNLOCK=stdin` at the next start, or the owner). Retries stop when
-the gate shuts down. A gate started with the Keychain already locked does not finish starting yet
-(#870); the recovery above covers a Keychain that locks while the gate runs, and that lock is
-noticed only at the next control change.
+the gate shuts down. A gate started with the Keychain already locked still starts: it logs
+`control_checkpoint_denied` then `started`, with no policy, so policy reads are denied with
+`keychain_locked`, routes that read no policy still answer, and no vault secret is read. When a
+retry verifies, it logs `control_checkpoint_verified`, loads the policy and logs `policy_loaded`
+with `overlayErrors` (a count), then reads the profile-audit and Web Push keys. A failed policy load
+logs `policy_load_failed` and policy reads stay denied. A secret that still cannot be read logs
+`profile_audit_unavailable` or `push_unavailable`, and policy reads keep working. Mid-run lock
+detection is #878: the recovery above covers a Keychain that locks while the gate runs, and that
+lock is noticed only at the next control change.
 
 ## Inspect (read-only, safe while the gate runs)
 
