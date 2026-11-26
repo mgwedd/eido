@@ -431,8 +431,9 @@ public enum BridgeRequest: Equatable {
   /// A pinned Things script by id, with the SHA-256 the caller expects and its arguments.
   case things(script: String, sha256: String, argv: [String])
   /// A file-helper request rebuilt from table-defined fields only, as the helper's stdin, and
-  /// the root (or `identify` path) it names, for the approved-roots check.
-  case file(op: String, target: FileTarget, stdin: Data)
+  /// the root (or `identify` path) it names, for the approved-roots check, and the file
+  /// helper's SHA-256 the caller pinned, when it sent one.
+  case file(op: String, target: FileTarget, stdin: Data, sha256: String? = nil)
 
   public static func parse(_ data: Data) throws -> BridgeRequest {
     guard let parsed = try? JSONSerialization.jsonObject(with: data),
@@ -455,16 +456,20 @@ public enum BridgeRequest: Equatable {
       else { throw BridgeFailure.invalidRequest }
       return .things(script: script, sha256: sha256, argv: argv)
     case "file":
-      guard keys == ["op", "request"], let request = object["request"] as? [String: Any] else {
-        throw BridgeFailure.invalidRequest
-      }
+      guard keys == ["op", "request"] || keys == ["op", "request", "sha256"],
+        let request = object["request"] as? [String: Any]
+      else { throw BridgeFailure.invalidRequest }
+      // An optional pin: when present it must be a SHA-256, and the handler refuses it unless
+      // it is the bridge's own `--file-helper-sha256`.
+      let sha256 = object["sha256"].map { $0 as? String }
+      if let sha256, !(sha256.map(isSHA256) ?? false) { throw BridgeFailure.invalidRequest }
       let (fileOp, fields) = try FileOps.rebuild(request)
       guard
         let stdin = try? JSONSerialization.data(
           withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes]),
         stdin.count <= FileOps.helperRequestLimit
       else { throw BridgeFailure.invalidRequest }
-      return .file(op: fileOp, target: FileOps.target(fields), stdin: stdin)
+      return .file(op: fileOp, target: FileOps.target(fields), stdin: stdin, sha256: sha256 ?? nil)
     default:
       throw BridgeFailure.unknownOp
     }

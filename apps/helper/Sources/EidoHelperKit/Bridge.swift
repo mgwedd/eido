@@ -15,6 +15,9 @@ public struct BridgeOptions: Equatable {
   /// The owner's approved file roots list (#865). Absent means no root is approved, so every
   /// file op is refused.
   public var fileRoots: String? = nil
+  /// Where the private copy of the file helper is made (#866). Absent means the user's cache
+  /// directory (`PinnedExecutable.defaultParent`).
+  public var fileHelperCopyDir: String? = nil
 }
 
 /// How the executable runs, chosen from its arguments only.
@@ -36,7 +39,7 @@ public enum HelperMode: Equatable {
       guard
         [
           "--socket", "--peer-user", "--things-scripts", "--file-helper", "--file-helper-sha256",
-          "--file-roots",
+          "--file-roots", "--file-helper-copy-dir",
         ].contains(flag), values[flag] == nil
       else { return nil }
       values[flag] = arguments[index + 1]
@@ -44,7 +47,8 @@ public enum HelperMode: Equatable {
     guard let socket = values["--socket"], let peerUser = values["--peer-user"],
       let scripts = values["--things-scripts"], let helper = values["--file-helper"],
       let sha256 = values["--file-helper-sha256"],
-      ([socket, scripts, helper] + [values["--file-roots"]].compactMap { $0 }).allSatisfy({
+      ([socket, scripts, helper]
+        + [values["--file-roots"], values["--file-helper-copy-dir"]].compactMap { $0 }).allSatisfy({
         $0.hasPrefix("/") && !$0.contains("\0")
       }),
       !peerUser.isEmpty, isSHA256(sha256)
@@ -53,7 +57,8 @@ public enum HelperMode: Equatable {
     return .bridge(
       BridgeOptions(
         socket: socket, peerUser: peerUser, thingsScripts: scripts, fileHelper: helper,
-        fileHelperSHA256: sha256, fileRoots: roots))
+        fileHelperSHA256: sha256, fileRoots: roots,
+        fileHelperCopyDir: values["--file-helper-copy-dir"]))
   }
 
   /// Only request mode ends with its parent. The bridge is started by launchd and lives
@@ -300,22 +305,6 @@ public enum ThingsScripts {
   }
 }
 
-/// The file helper the bridge runs, pinned by SHA-256 at start (ADR 0006). The pin is
-/// checked again before every run.
-public struct PinnedExecutable: Equatable {
-  public let path: String
-  public let sha256: String
-  public init(path: String, sha256: String) {
-    self.path = path
-    self.sha256 = sha256
-  }
-  public func matches() -> Bool {
-    guard let bytes = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return false }
-    return sha256Hex(bytes) == sha256
-  }
-  public static let timeout: TimeInterval = 30
-}
-
 /// Runs the EventKit ops exactly as request mode does. The store is created on first use, so
 /// a bridge that never serves an EventKit op never opens EventKit.
 @MainActor final class EventKitOps {
@@ -377,16 +366,21 @@ public final class BridgeHandler: @unchecked Sendable {
       return BridgeFrame.failure(
         text.contains("-1743") || text.contains("Not authorized to send Apple events")
           ? .automationDenied : .unavailable)
-    case .file(let op, let target, let stdin):
+    case .file(let op, let target, let stdin, let sha256):
+      // A request pinned to another file helper is refused before anything else: the bridge
+      // runs only the binary it was started with.
+      if let sha256, sha256 != fileHelper.sha256 { return BridgeFrame.failure(.unavailable) }
       // The approved-roots check runs first: a root the owner has not approved never reaches
       // the file helper, which is not even started.
       guard await offload({ self.roots.admits(target) }) else {
         return BridgeFrame.failure(.rootNotApproved)
       }
       let outcome = await offload { () -> ProcessOutcome? in
-        guard self.fileHelper.matches() else { return nil }
+        // Only the private copy runs, and only while it is still the file made at start with
+        // the pinned bytes.
+        guard let copy = self.fileHelper.verified() else { return nil }
         return self.runner.run(
-          executable: self.fileHelper.path, arguments: [], environment: [:], stdin: stdin,
+          executable: copy, arguments: [], environment: [:], stdin: stdin,
           outputLimit: FileOps.outputLimit(op), timeout: PinnedExecutable.timeout)
       }
       guard case .exited(0, let stdout, _) = outcome else {
@@ -415,6 +409,11 @@ public enum BridgeStartError: String, Error {
   /// The approved file roots list is a symbolic link, not a regular file, not owned by the
   /// bridge's user, or writable by group or others.
   case fileRootsUnsafe = "file_roots_unsafe"
+  /// The directory for the file helper's private copy, or a directory above it, is a symbolic
+  /// link, not owned by the bridge's user (or root, above it), or writable by group or others.
+  case fileHelperCopyUnsafe = "file_helper_copy_unsafe"
+  /// The private copy could not be made, or did not read back with the pin.
+  case fileHelperCopyFailed = "file_helper_copy_failed"
   case socketFailed = "socket_failed"
 }
 
@@ -502,6 +501,12 @@ public final class BridgeServer: @unchecked Sendable {
       unlink(path)
     }
     boundInode = nil
+  }
+
+  /// Deletes the file helper's private copy. Called after `waitForConnections`, once no
+  /// accepted request can still run it.
+  public func removeFileHelperCopy() {
+    handler.fileHelper.remove()
   }
 
   /// Waits until no accepted connection is still being served, or the timeout passes. True
@@ -642,9 +647,8 @@ private func send(_ fd: Int32, _ body: Data) {
   }
 }
 
-/// Resolves the peer user, loads and checks the pinned scripts, the file helper and the
-/// approved file roots list, and starts
-/// listening. Any failure stops the start; the bridge never serves with a partial table.
+/// Resolves the peer user, loads and checks the pinned scripts, checks the file helper and
+/// makes its private copy, loads the approved file roots list, and starts listening. Any failure stops the start; the bridge never serves with a partial table.
 @MainActor public func startBridge(
   _ options: BridgeOptions, runner: ProcessRunner = SystemProcessRunner(),
   credentials: PeerCredentials = SocketPeerCredentials(),
@@ -654,13 +658,22 @@ private func send(_ fd: Int32, _ body: Data) {
     throw BridgeStartError.peerUserUnknown
   }
   let scripts = try ThingsScripts.load(directory: options.thingsScripts)
-  let fileHelper = PinnedExecutable(path: options.fileHelper, sha256: options.fileHelperSHA256)
-  guard fileHelper.matches() else { throw BridgeStartError.fileHelperMismatch }
-  let roots = try options.fileRoots.map { try ApprovedRoots.load(path: $0) } ?? .none
-  let handler = BridgeHandler(
-    scripts: scripts, fileHelper: fileHelper, roots: roots, runner: runner, store: store)
-  let server = BridgeServer(
-    path: options.socket, peerUID: peerUID, credentials: credentials, handler: handler)
-  try server.start()
-  return server
+  guard let copyParent = options.fileHelperCopyDir ?? PinnedExecutable.defaultParent() else {
+    throw BridgeStartError.fileHelperCopyFailed
+  }
+  let fileHelper = try PinnedExecutable.install(
+    source: options.fileHelper, sha256: options.fileHelperSHA256, parent: copyParent)
+  do {
+    let roots = try options.fileRoots.map { try ApprovedRoots.load(path: $0) } ?? .none
+    let handler = BridgeHandler(
+      scripts: scripts, fileHelper: fileHelper, roots: roots, runner: runner, store: store)
+    let server = BridgeServer(
+      path: options.socket, peerUID: peerUID, credentials: credentials, handler: handler)
+    try server.start()
+    return server
+  } catch {
+    // A refused start leaves no copy behind.
+    fileHelper.remove()
+    throw error
+  }
 }
