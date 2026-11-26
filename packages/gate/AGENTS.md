@@ -2,6 +2,7 @@
 
 - No new dependencies without adding them to `ALLOWED_DEPENDENCIES` with a one-line reason.
 - No network libraries beyond `fetch`. The one exception is `node:http` over the gate's local sockets (ADR 0003) and the phone listener's one loopback TCP port (#85), which binds `127.0.0.1` or `::1` only. Google's OAuth redirect lands on the phone listener's callback route (#662); there is no loopback callback listener.
+- The session bridge client (`src/internal/session-bridge/client.ts`, #826) uses `node:net` as a client of one Unix socket, `EIDO_SESSION_BRIDGE_SOCKET`, and never listens. With it set, Things, EventKit and the file helper run in the owner's session; the gate still checks approvals, pins and limits, parses every answer with a schema, and never falls back to spawning when the bridge is down (`session_unavailable`).
 - Runs as its own process (`src/main.ts`); it owns `eido-control.db` and imports nothing but `@eido/schemas` (ADR 0003).
 - Every change ships with tests.
 - Never log token values or payload bodies.

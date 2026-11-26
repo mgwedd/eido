@@ -9,6 +9,12 @@ import type {
   GateFileHelperRequest,
   GateFileHelperResponse,
 } from "@eido/schemas"
+import {
+  BRIDGE_MAX_RESPONSE_BYTES,
+  SessionUnavailableError,
+  bridgeStdout,
+} from "../session-bridge/client"
+import type { SessionBridge } from "../session-bridge/client"
 
 /** The installed helper binary and the SHA-256 it must have (ADR 0006). */
 export type FileHelperConfig = { path: string; sha256: string }
@@ -18,7 +24,22 @@ export type FileHelper = (
 
 const MAX_REPLY_BYTES = 64 * 1024
 const TIMEOUT_MS = 30_000
+/** The bridge's own 30-second helper limit, plus time to connect and frame the answer. */
+const BRIDGE_TIMEOUT_MS = TIMEOUT_MS + 5_000
 const failed = () => new Error("file helper failed")
+
+/** The helper's stdout, one JSON line, schema-checked and never cast. */
+function parseReply(stdout: Buffer): GateFileHelperResponse {
+  let raw: unknown
+  try {
+    raw = JSON.parse(stdout.toString("utf8"))
+  } catch {
+    throw failed()
+  }
+  const checked = validateGateFileHelperResponse(raw)
+  if (!checked.ok) throw failed()
+  return checked.value
+}
 
 /** Refuses a binary whose bytes differ from the pinned hash, before anything runs. */
 async function checkPin(config: FileHelperConfig): Promise<void> {
@@ -70,10 +91,7 @@ function run(
         return
       }
       try {
-        const raw: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"))
-        const checked = validateGateFileHelperResponse(raw)
-        if (checked.ok) resolve(checked.value)
-        else fail()
+        resolve(parseReply(Buffer.concat(chunks)))
       } catch {
         fail()
       }
@@ -82,20 +100,53 @@ function run(
   })
 }
 
-/** Runs one request per helper process; the reply is schema-checked, never cast. */
-export function fileHelper(config: FileHelperConfig): FileHelper {
+/**
+ * The same request run by the bridge in the owner's session (#826). The bridge checks the
+ * helper's pin again and applies the same stdout limits; the gate checks the limit and the
+ * schema once more on what comes back.
+ */
+async function viaBridge(
+  bridge: SessionBridge,
+  request: GateFileHelperRequest,
+  limit: number
+): Promise<GateFileHelperResponse> {
+  let stdout: Buffer
+  try {
+    stdout = await bridgeStdout(
+      bridge,
+      { op: "file", request },
+      {
+        timeoutMs: BRIDGE_TIMEOUT_MS,
+        maxResponseBytes: BRIDGE_MAX_RESPONSE_BYTES,
+      }
+    )
+  } catch (error) {
+    if (error instanceof SessionUnavailableError) throw error
+    throw failed()
+  }
+  if (stdout.length > limit) throw failed()
+  return parseReply(stdout)
+}
+
+/**
+ * Runs one request per helper process; the reply is schema-checked, never cast. With `bridge`
+ * the helper runs in the owner's session, after the same pin check here.
+ */
+export function fileHelper(
+  config: FileHelperConfig,
+  bridge?: SessionBridge
+): FileHelper {
   return async (request) => {
     const checked = validateGateFileHelperRequest(request)
     if (!checked.ok) throw failed()
     await checkPin(config)
-    return run(
-      config.path,
-      JSON.stringify(checked.value),
+    const limit =
       checked.value.op === "read"
         ? 12 * 1024 * 1024
         : checked.value.op === "list"
           ? 512 * 1024
           : MAX_REPLY_BYTES
-    )
+    if (bridge !== undefined) return viaBridge(bridge, checked.value, limit)
+    return run(config.path, JSON.stringify(checked.value), limit)
   }
 }

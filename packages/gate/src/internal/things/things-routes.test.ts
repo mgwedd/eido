@@ -229,6 +229,26 @@ describe("Things gate routes", () => {
     })
   })
 
+  test("session_unavailable gives a 502 naming the owner's session", async () => {
+    s = setup()
+    const things = makeStubThings({
+      listTodos: () =>
+        Promise.reject(
+          new ThingsError("session_unavailable", "session bridge unavailable")
+        ),
+    })
+    const reply = await thingsRoute(
+      req("GET", "/things/lists/Today"),
+      s.db,
+      things
+    )
+    expect(reply?.status).toBe(502)
+    expect(reply?.body).toEqual({
+      code: "session_unavailable",
+      message: "The owner's session is unavailable",
+    })
+  })
+
   test("GET /things/lists/deadline?daysAhead=10 calls listByDeadline, and defaults to 7 days", async () => {
     s = setup()
     let recordedDays = 0

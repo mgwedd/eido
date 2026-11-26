@@ -344,6 +344,22 @@ describe("gateConfig", () => {
     ).toThrow("EIDO_GATE_SUPERVISOR_SOCKET must be an absolute path")
   })
 
+  it("reads the session bridge socket when it is set, and refuses a relative path", () => {
+    expect(gateConfig(BASE)).not.toHaveProperty("sessionBridgeSocket")
+    expect(
+      gateConfig({
+        ...BASE,
+        EIDO_SESSION_BRIDGE_SOCKET: "/d/run/session-bridge.sock",
+      }).sessionBridgeSocket
+    ).toBe("/d/run/session-bridge.sock")
+    expect(() =>
+      gateConfig({
+        ...BASE,
+        EIDO_SESSION_BRIDGE_SOCKET: "run/session-bridge.sock",
+      })
+    ).toThrow("EIDO_SESSION_BRIDGE_SOCKET must be an absolute path")
+  })
+
   it("names every missing or empty variable", () => {
     expect(() =>
       gateConfig({ EIDO_GATE_DATA_DIR: "/d", EIDO_GATE_SOCKET: "" })

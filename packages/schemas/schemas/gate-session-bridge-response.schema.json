@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateSessionBridgeResponse",
+  "description": "The session bridge's answer to a things or file op (apps/helper/README.md, #826). ok true carries the child's stdout as base64; the gate decodes it and applies the same limits and parsing as when it runs the child itself. ok false carries a bridge code. The gate caps the whole frame at 24 MiB before parsing, so stdoutBase64 has no length limit of its own. An eventkit op answers with a GateAppleResponse instead.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "ok": { "const": true },
+        "result": {
+          "type": "object",
+          "properties": {
+            "stdoutBase64": { "type": "string" }
+          },
+          "required": ["stdoutBase64"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["ok", "result"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "ok": { "const": false },
+        "code": {
+          "enum": [
+            "invalid_request",
+            "unknown_op",
+            "unknown_script",
+            "frame_too_large",
+            "automation_denied",
+            "unavailable"
+          ]
+        }
+      },
+      "required": ["ok", "code"],
+      "additionalProperties": false
+    }
+  ]
+}

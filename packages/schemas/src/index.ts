@@ -43,6 +43,7 @@ export {
   validateGateKeychainResult,
   validateGateFileHelperRequest,
   validateGateFileHelperResponse,
+  validateGateSessionBridgeResponse,
   validateGateFileRoots,
   validateGateLocalFileRequest,
   validateGateFileRootsRequest,

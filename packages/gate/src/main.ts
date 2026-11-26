@@ -28,6 +28,11 @@ import {
   createAppleTransport,
 } from "./internal/apple/apple-writers"
 import { createThingsReads } from "./internal/things/things-adapter"
+import { thingsRunner } from "./internal/things/runner"
+import {
+  SESSION_BRIDGE_SOCKET_ENV,
+  createSessionBridge,
+} from "./internal/session-bridge/client"
 import {
   THINGS_WRITERS,
   createThingsTransport,
@@ -208,6 +213,11 @@ export type GateConfig = {
   fileHelper?: FileHelperConfig
   /** Optional gate-owned EventKit executable and its pinned SHA-256; no Helper code or path reaches the data plane. */
   appleHelper?: AppleHelperConfig
+  /**
+   * The session bridge's socket (#826): Things, EventKit and the file helper then run in the
+   * owner's session, never in the gate. Absent, the gate runs them itself.
+   */
+  sessionBridgeSocket?: string
   backupStampPath?: string
   /** The stack supervisor's socket (#659); absent outside the stack, so the admin routes answer 503. */
   supervisorSocketPath?: string
@@ -313,6 +323,9 @@ export function gateConfig(
   if (supervisorSocket !== "" && !isAbsolute(supervisorSocket)) {
     throw new Error(`${SUPERVISOR_SOCKET_ENV} must be an absolute path`)
   }
+  const sessionBridgeSocket = read(SESSION_BRIDGE_SOCKET_ENV)
+  if (sessionBridgeSocket !== "" && !isAbsolute(sessionBridgeSocket))
+    throw new Error(`${SESSION_BRIDGE_SOCKET_ENV} must be an absolute path`)
   const appleHelperPath = read("EIDO_EVENTKIT_HELPER")
   const appleHelperSha256 = read("EIDO_EVENTKIT_HELPER_SHA256")
   if ((appleHelperPath === "") !== (appleHelperSha256 === ""))
@@ -339,6 +352,7 @@ export function gateConfig(
     ...(supervisorSocket === ""
       ? {}
       : { supervisorSocketPath: supervisorSocket }),
+    ...(sessionBridgeSocket === "" ? {} : { sessionBridgeSocket }),
   }
   const port = env["EIDO_GATE_PHONE_PORT"] ?? ""
   const bridge = bridgeConfig(env)
@@ -667,10 +681,15 @@ export async function runGate(
     }
     if (config.fileHelper !== undefined)
       await assertFileHelperInstall(config.fileHelper.path)
+    // No fallback: with a bridge configured, a call it cannot carry fails.
+    const sessionBridge =
+      config.sessionBridgeSocket === undefined
+        ? undefined
+        : createSessionBridge(config.sessionBridgeSocket)
     const nativeFiles =
       config.fileHelper === undefined
         ? undefined
-        : fileHelper(config.fileHelper)
+        : fileHelper(config.fileHelper, sessionBridge)
     const fileReads =
       nativeFiles === undefined ? undefined : createFileReads(db, nativeFiles)
     // FileVault refuses to open without the explicit development flag.
@@ -729,7 +748,10 @@ export async function runGate(
     // The checks the control socket runs after the owner connects a connector (#98). Both Proton
     // connectors sign in to Bridge with the one stored password. Gmail is healthy only when each
     // of its configured clients (compose and read) can make its read.
-    const appleRunner = createAppleRunner(config.appleHelper)
+    const appleRunner = createAppleRunner(
+      config.appleHelper,
+      sessionBridge === undefined ? {} : { bridge: sessionBridge }
+    )
     const apple = createAppleReads(appleRunner)
     const probes: ConnectorProbes = {
       ...readProbes,
@@ -811,8 +833,8 @@ export async function runGate(
       mail === undefined
         ? () => Promise.reject(new Error("Bridge is not configured"))
         : bridgeTransport(mail, { tracker })
-    const things = createThingsReads()
-    const thingsTransport = createThingsTransport()
+    const things = createThingsReads(thingsRunner(sessionBridge))
+    const thingsTransport = createThingsTransport(thingsRunner(sessionBridge))
     const appleTransport = createAppleTransport(appleRunner)
     const executor = createExecutor(
       db,

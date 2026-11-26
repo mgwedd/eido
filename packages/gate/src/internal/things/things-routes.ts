@@ -46,7 +46,9 @@ function handleFailure(
   const message =
     code === "automation_denied"
       ? "macOS Automation permission denied for Things"
-      : "Things is unavailable"
+      : code === "session_unavailable"
+        ? "The owner's session is unavailable"
+        : "Things is unavailable"
   audit(db, action, `failed.${code}`, {})
   return apiError(502, code, message)
 }
