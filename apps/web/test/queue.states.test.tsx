@@ -1,6 +1,5 @@
 // @vitest-environment happy-dom
 import { createHash } from "node:crypto"
-import { act } from "react"
 import { afterEach, vi } from "vitest"
 import { QueueView } from "../components/queue-view"
 import { mailPayload, mailPrepared, mailQueued } from "./fixtures/queue"
@@ -103,14 +102,12 @@ const waitForApprove = (container: HTMLElement) =>
     "approval card did not finish loading"
   )
 
-/** Clicks Approve and lets the stubbed passkey outcome land. The card is loaded by `settle`. */
-async function sign(container: HTMLElement) {
+/** Clicks Approve. The card is loaded by `settle`; `describeStates` runs this inside `act` and flushes the stubbed passkey outcome after it. */
+function sign(container: HTMLElement): Promise<void> {
   const button = approveButton(container)
   if (!(button instanceof HTMLElement)) throw new Error("no Approve button")
-  await act(async () => {
-    button.click()
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  })
+  button.click()
+  return Promise.resolve()
 }
 
 const withPasskey = (outcome: () => unknown, gate?: Gate) => () => {
@@ -121,10 +118,12 @@ const withPasskey = (outcome: () => unknown, gate?: Gate) => () => {
 const refused = (code: string, message: string) => () =>
   Promise.resolve({ ok: false, error: { code, message } })
 
-const wait = () =>
-  new Promise<void>((resolve) => {
-    setTimeout(resolve, 50)
-  })
+/** Waits until the row's own region is rendered; the row's assertion then checks its role and message. */
+const waitForRegion = (selector: string) => (container: HTMLElement) =>
+  waitUntil(
+    () => container.querySelector(selector) !== null,
+    `no element matching ${selector} rendered`
+  )
 
 describeStates("Queue", [
   {
@@ -136,7 +135,7 @@ describeStates("Queue", [
   {
     state: "empty",
     render: render({ intents: "none" }),
-    interact: wait,
+    settle: waitForRegion('p[role="status"][tabindex="-1"]'),
     role: "status",
     selector: 'p[role="status"][tabindex="-1"]',
     message: "Queue clear. Every decision is in Activity.",
@@ -144,21 +143,21 @@ describeStates("Queue", [
   {
     state: "gate unreachable",
     render: render({ intents: "unreachable" }),
-    interact: wait,
+    settle: waitForRegion('[role="alert"]'),
     role: "alert",
     message: "Couldn't load the queue.",
   },
   {
     state: "payload failed",
     render: render({ payload: "failed" }),
-    interact: wait,
+    settle: waitForRegion('[role="alert"]'),
     role: "alert",
     message: "Could not load the payload.",
   },
   {
     state: "payload hash mismatch",
     render: render({ payload: "hash-mismatch" }),
-    interact: wait,
+    settle: waitForRegion('[role="alert"]'),
     role: "alert",
     message: "Payload changed. Reload the card.",
   },
@@ -223,7 +222,7 @@ describeStates("Queue", [
       vi.setSystemTime(new Date(2026, 9, 18, 9, 5))
       return render()()
     },
-    interact: wait,
+    settle: waitForRegion("[data-slot=alert][role=status]"),
     role: "status",
     selector: "[data-slot=alert][role=status]",
     message:
