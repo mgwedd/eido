@@ -3,9 +3,9 @@
 //
 //   sudo node scripts/check-isolation-live.ts --gate-user <gate user> --data-user <data user> \
 //     --intent-socket <path> --control-socket <path> --control-db <path> --gate-keychain <path> \
-//     --proxy-port <port> --llama-port <port> --parser-profile <path> \
-//     --public-host <hostname> --public-ip <IPv4 address> [--data-profile <path>] \
-//     [--stack-dir <owner's stack dir>] [--timeout-ms 3000]
+//     --proxy-port <port> --llama-port <port> --parser-profile <path> --parser-socket <path> \
+//     --data-db <path> --public-host <hostname> --public-ip <IPv4 address> \
+//     [--data-profile <path>] [--stack-dir <owner's stack dir>] [--timeout-ms 3000]
 //
 // It runs as root only to start its children through `sudo -u`: one long-lived child as the gate
 // user holds the synthetic canaries (a loopback TCP listener, Keychain items, a copy of the
@@ -18,15 +18,20 @@
 // user alone (#70): it connects to the supervisor socket and reads no other file in the stack's run
 // dir. The Keychain is probed three ways: the data-plane user reads a canary item, adds a new item
 // and modifies a second canary item in the gate Keychain; all three must fail, and the gate user
-// does each as the control (#724). See docs/isolation-tests.md.
+// does each as the control (#724). The parse child is probed through the real broker path (#820):
+// a probe broker (the production broker, as `_eidoparse` under the installed `parser.sb`) is
+// started on a probe socket, a probe job is sent to it as the data-plane user, and its parse child
+// reports whether it reached the canary listener, the egress proxy, the llama port, the intent
+// socket and `eido-data.db`. Each of those has a witness: a probe that proves an unfenced user
+// reaches the same target. See docs/isolation-tests.md.
 import { spawn, spawnSync } from "node:child_process"
+import type { ChildProcessByStdio } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
 import dns from "node:dns"
 import {
   chmodSync,
   chownSync,
   closeSync,
-  mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
@@ -35,14 +40,28 @@ import {
   writeFileSync,
 } from "node:fs"
 import { connect, createServer, isIP } from "node:net"
-import { tmpdir, userInfo } from "node:os"
+import { userInfo } from "node:os"
 import { dirname, isAbsolute, join } from "node:path"
 import { createInterface } from "node:readline"
-import { fileURLToPath } from "node:url"
+import type { Readable, Writable } from "node:stream"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import {
   SUPERVISOR_DIR_NAME,
   SUPERVISOR_SOCKET_NAME,
 } from "../infra/stack/config.ts"
+import type { createBrokerClient as CreateBrokerClient } from "../packages/core/src/parsers/broker-client.ts"
+import {
+  PARSER_PROBE_MIME,
+  classifyParserAnswer,
+  isParserProbeName,
+  parserProbeDocument,
+  parserTargetOf,
+  safeCode,
+} from "./isolation-parser.ts"
+import type { ParserProbeName, ParserProbeResult } from "./isolation-parser.ts"
+import { buildParserPlan } from "./isolation-parser-plan.ts"
+
+export { safeCode }
 
 export type Role = "data" | "gate"
 
@@ -58,7 +77,9 @@ export type ProbeName =
   | "keychain-modify"
   | "control-db"
   | "control-socket"
-  | "parser"
+  | "data-db"
+  | "parser-socket"
+  | ParserProbeName
   | "supervisor-socket"
   | "run-dir-files"
 
@@ -74,6 +95,16 @@ export type ProbeDef = {
   canaryListener: boolean
   /** Blocked must mean permission denied, not a missing file or a timeout. */
   permission: boolean
+  /**
+   * `broker`: the probe is a parse job sent to the probe broker, and the target is tried by the
+   * broker's parse child (#820). There is no gate-user control; the witness stands in for it.
+   */
+  via: "direct" | "broker"
+  /**
+   * The probe that proves the target can be reached at all, so a blocked result means the fence
+   * and not a dead target: it must have run and reached, in that role, earlier in the run.
+   */
+  witness?: { probe: ProbeName; role: Role }
 }
 
 export const PROBES: readonly ProbeDef[] = [
@@ -88,7 +119,27 @@ export const PROBES: readonly ProbeDef[] = [
   probeDef("keychain-modify", "blocked"),
   { ...probeDef("control-db", "blocked"), permission: true },
   { ...probeDef("control-socket", "blocked"), permission: true },
-  { ...probeDef("parser", "blocked"), canaryListener: true },
+  probeDef("data-db", "allowed"),
+  probeDef("parser-socket", "allowed"),
+  brokerProbe(
+    "parser-loopback",
+    { probe: "loopback-canary", role: "gate" },
+    {
+      canaryListener: true,
+    }
+  ),
+  brokerProbe("parser-proxy", { probe: "proxy", role: "data" }),
+  brokerProbe("parser-llama", { probe: "llama", role: "data" }),
+  brokerProbe(
+    "parser-intent-socket",
+    { probe: "intent-socket", role: "data" },
+    { permission: true }
+  ),
+  brokerProbe(
+    "parser-data-db",
+    { probe: "data-db", role: "data" },
+    { permission: true }
+  ),
   { ...probeDef("supervisor-socket", "allowed"), subject: "gate" },
   {
     ...probeDef("run-dir-files", "blocked"),
@@ -106,13 +157,28 @@ function probeDef(name: ProbeName, data: "blocked" | "allowed"): ProbeDef {
     control: data === "blocked",
     canaryListener: false,
     permission: false,
+    via: "direct",
+  }
+}
+
+function brokerProbe(
+  name: ParserProbeName,
+  witness: { probe: ProbeName; role: Role },
+  options: { canaryListener?: boolean; permission?: boolean } = {}
+): ProbeDef {
+  return {
+    ...probeDef(name, "blocked"),
+    control: false,
+    canaryListener: options.canaryListener ?? false,
+    permission: options.permission ?? false,
+    via: "broker",
+    witness,
   }
 }
 
 const PERMISSION_CODES = new Set(["EACCES", "EPERM"])
 
-export type ProbeResult =
-  { ran: true; reached: boolean; code: string } | { ran: false; code: string }
+export type ProbeResult = ParserProbeResult
 
 export type LiveConfig = {
   gateUser: string
@@ -123,7 +189,12 @@ export type LiveConfig = {
   gateKeychain: string
   proxyPort: number
   llamaPort: number
+  /** The installed `parser.sb` (#818): the probe broker runs under it with its socket swapped. */
   parserProfile: string
+  /** The production broker's socket, which the installed profile names; the data user must reach it. */
+  parserSocket: string
+  /** `eido-data.db`: the data plane's own file, which the parse child must not open. */
+  dataDb: string
   /** The core sandbox profile: when set, data-plane probes run under `sandbox-exec -f` it. */
   dataProfile?: string
   /** The owner's stack dir: when set, the supervisor probes run (`run/supervisor/supervisor.sock`). */
@@ -163,6 +234,8 @@ export type ProbeSpec = {
   service?: string
   profile?: string
   paths?: string[]
+  /** The probe broker's socket: where a broker probe sends its job. */
+  socket?: string
 }
 
 export type LiveRunner = {
@@ -174,22 +247,15 @@ export type LiveRunner = {
    * supervisor dir. `teardown` removes the canary.
    */
   stackFiles: (stackDir: string) => Promise<StackFiles>
+  /**
+   * Starts the probe broker as the parser user and returns its socket. `teardown` stops it and
+   * removes the socket. A broker that does not start rejects, and only the parser probes are
+   * skipped.
+   */
+  startParserBroker: () => Promise<{ socket: string }>
   /** Connections the canary listener has accepted so far. */
   connections: () => Promise<number>
   teardown: () => Promise<void>
-}
-
-/** An error code safe to print: an errno-style name, or "error". Never a message or a value. */
-export function safeCode(value: unknown): string {
-  const code =
-    typeof value === "string"
-      ? value
-      : typeof value === "object" && value !== null && "code" in value
-        ? value.code
-        : undefined
-  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,40}$/.test(code)
-    ? code
-    : "error"
 }
 
 // ---- arguments -------------------------------------------------------------------------------
@@ -202,6 +268,8 @@ const STRING_FLAGS = {
   "--control-db": "controlDb",
   "--gate-keychain": "gateKeychain",
   "--parser-profile": "parserProfile",
+  "--parser-socket": "parserSocket",
+  "--data-db": "dataDb",
   "--data-profile": "dataProfile",
   "--stack-dir": "stackDir",
   "--public-host": "publicHost",
@@ -222,6 +290,8 @@ const PATH_KEYS = [
   "controlDb",
   "gateKeychain",
   "parserProfile",
+  "parserSocket",
+  "dataDb",
   "dataProfile",
   "stackDir",
 ] as const
@@ -231,8 +301,9 @@ const USER_NAME = /^[a-z_][a-z0-9_.-]{0,31}$/
 export const USAGE =
   "usage: sudo node scripts/check-isolation-live.ts --gate-user <user> --data-user <user> " +
   "--intent-socket <path> --control-socket <path> --control-db <path> --gate-keychain <path> " +
-  "--proxy-port <port> --llama-port <port> --parser-profile <path> --public-host <hostname> " +
-  "--public-ip <IPv4> [--data-profile <path>] [--stack-dir <path>] [--timeout-ms <ms>]"
+  "--proxy-port <port> --llama-port <port> --parser-profile <path> --parser-socket <path> " +
+  "--data-db <path> --public-host <hostname> --public-ip <IPv4> [--data-profile <path>] " +
+  "[--stack-dir <path>] [--timeout-ms <ms>]"
 
 function isKey<T extends object>(
   table: T,
@@ -306,6 +377,8 @@ export function parseArgs(
     controlDb,
     gateKeychain,
     parserProfile,
+    parserSocket,
+    dataDb,
     dataProfile,
     stackDir,
     publicHost,
@@ -321,6 +394,8 @@ export function parseArgs(
     controlDb === undefined ||
     gateKeychain === undefined ||
     parserProfile === undefined ||
+    parserSocket === undefined ||
+    dataDb === undefined ||
     publicHost === undefined ||
     publicIp === undefined ||
     proxyPort === undefined ||
@@ -339,6 +414,8 @@ export function parseArgs(
       proxyPort,
       llamaPort,
       parserProfile,
+      parserSocket,
+      dataDb,
       ...(dataProfile === undefined ? {} : { dataProfile }),
       ...(stackDir === undefined ? {} : { stackDir }),
       publicHost,
@@ -430,8 +507,19 @@ export function probeSpec(
       return { ...base, path: canaries.canaryDb, digest: canaries.dbDigest }
     case "control-socket":
       return { ...base, path: config.controlSocket }
-    case "parser":
-      return { ...base, port: canaries.port, profile: config.parserProfile }
+    case "data-db":
+    case "parser-data-db":
+      return { ...base, path: config.dataDb }
+    case "parser-socket":
+      return { ...base, path: config.parserSocket }
+    case "parser-loopback":
+      return { ...base, host: "127.0.0.1", port: canaries.port }
+    case "parser-proxy":
+      return { ...base, host: "127.0.0.1", port: config.proxyPort }
+    case "parser-llama":
+      return { ...base, host: "127.0.0.1", port: config.llamaPort }
+    case "parser-intent-socket":
+      return { ...base, path: config.intentSocket }
     // Without --stack-dir the spec lacks its target and runProbe reports BAD_SPEC; runLive never
     // gets there, it skips these two probes.
     case "supervisor-socket":
@@ -511,7 +599,8 @@ export function judge(
   def: ProbeDef,
   role: Role,
   result: ProbeResult,
-  newConnections: number
+  newConnections: number,
+  witnessReached: boolean | undefined = undefined
 ): string {
   const label =
     role === "data" || def.subject === "gate" ? def.name : `${def.name}.control`
@@ -537,12 +626,30 @@ export function judge(
     return result.reached
       ? `PASS ${label}`
       : `FAIL ${label}: the data-plane user cannot reach an allowed endpoint (${code})`
-  if (result.reached) return `FAIL ${label}: reached as the data-plane user`
+  if (result.reached)
+    return `FAIL ${label}: reached ${def.via === "broker" ? "from the parse child" : "as the data-plane user"}`
   if (def.canaryListener && newConnections > 0)
     return `FAIL ${label}: the canary listener saw ${String(newConnections)} connection(s)`
   if (def.permission && !PERMISSION_CODES.has(code))
     return `FAIL ${label}: refused with ${code}, not permission denied`
+  // A refusal only shows the fence when the target can be reached at all: the witness did it.
+  if (def.witness !== undefined && witnessReached !== true)
+    return `FAIL ${label}: ${def.witness.probe} did not reach the target as the ${def.witness.role === "gate" ? "gate" : "data-plane"} user (${code}), so the probe proves nothing`
   return `PASS ${label} (${code})`
+}
+
+/** The result a probe's witness must have had: it ran and reached. */
+export function witnessHeld(
+  def: ProbeDef,
+  seen: ReadonlyMap<string, ProbeResult>
+): boolean | undefined {
+  if (def.witness === undefined) return undefined
+  const result = seen.get(witnessKey(def.witness.probe, def.witness.role))
+  return result !== undefined && result.ran && result.reached
+}
+
+function witnessKey(name: ProbeName, role: Role): string {
+  return `${name}/${role}`
 }
 
 /** Runs every probe through `runner` and prints a line each. Returns the exit code. */
@@ -583,13 +690,36 @@ export async function runLive(
       }
     }
     if (canaries !== undefined) {
+      const seen = new Map<string, ProbeResult>()
+      let broker: { socket: string } | undefined
+      let brokerFailed = false
       for (const def of PROBES) {
         if (def.subject === "gate" && config.stackDir === undefined) {
           print(`SKIP ${def.name}: no --stack-dir given`)
           continue
         }
         if (def.name === "run-dir-files" && stackFiles === undefined) continue
-        const spec = probeSpec(def.name, config, canaries, stackFiles)
+        if (def.via === "broker" && broker === undefined) {
+          if (!brokerFailed) {
+            try {
+              broker = await runner.startParserBroker()
+            } catch (error) {
+              brokerFailed = true
+              report(
+                `FAIL parser-broker: the probe broker did not start (${safeCode(error)})`
+              )
+            }
+          }
+          if (broker === undefined) {
+            print(`SKIP ${def.name}: the probe broker did not start`)
+            continue
+          }
+        }
+        const base = probeSpec(def.name, config, canaries, stackFiles)
+        const spec: ProbeSpec =
+          def.via === "broker" && broker !== undefined
+            ? { ...base, socket: broker.socket }
+            : base
         for (const role of def.subject === "gate"
           ? (["gate"] as const)
           : def.control
@@ -598,7 +728,10 @@ export async function runLive(
           const before = def.canaryListener ? await runner.connections() : 0
           const result = await attempt(role, spec)
           const after = def.canaryListener ? await runner.connections() : 0
-          report(judge(def, role, result, after - before))
+          seen.set(witnessKey(def.name, role), result)
+          report(
+            judge(def, role, result, after - before, witnessHeld(def, seen))
+          )
         }
       }
     }
@@ -827,15 +960,24 @@ async function holdCanaries(spec: {
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..")
 const CORE_HOOKS = join(REPO, "packages", "core", "src", "ts-hooks.ts")
-const NETWORK_FIXTURE = join(
+const NO_NETWORK = join(
   REPO,
   "packages",
   "core",
   "src",
   "parsers",
-  "hostile",
-  "network.test-support.ts"
+  "no-network.ts"
 )
+const BROKER_CLIENT = join(
+  REPO,
+  "packages",
+  "core",
+  "src",
+  "parsers",
+  "broker-client.ts"
+)
+const PROBE_BROKER = join(REPO, "scripts", "isolation-parser-broker.ts")
+const PROBE_WORKER = join(REPO, "scripts", "isolation-parser-child.ts")
 
 function reachSocket(
   target: { host: string; port: number } | { path: string },
@@ -1003,78 +1145,48 @@ export function attemptKeychainWrite(
 }
 
 /**
- * Runs the #43 hostile network fixture against the canary port: under the parser sandbox profile
- * as the data-plane user, and without it as the gate user (the control). The no-network preload
- * is left out on purpose, so what is tested is the OS fence, not the in-process one.
+ * Sends one probe parse job to the probe broker (#820) and classifies what comes back. The job is
+ * delivered the way core delivers a document: `createBrokerClient` over the broker's socket. The
+ * parse child, a process of the probe broker running as the parser user, tries the target.
  */
-function reachFromParser(
-  port: number,
-  profile: string | undefined,
-  timeoutMs: number
-): ProbeResult {
-  const workDir = mkdtempSync(join(tmpdir(), "eido-isolation-parser-"))
-  try {
-    const resultPath = join(workDir, "result.json")
-    const jobPath = join(workDir, "job.json")
-    writeFileSync(
-      jobPath,
-      JSON.stringify({ resultPath, workDir, payload: { port } }),
-      {
-        mode: 0o600,
-      }
-    )
-    const node = [
-      process.execPath,
-      "--disable-warning=ExperimentalWarning",
-      "--import",
-      CORE_HOOKS,
-      NETWORK_FIXTURE,
-      jobPath,
-    ]
-    const [command = "", ...args] =
-      profile === undefined ? node : ["sandbox-exec", "-f", profile, ...node]
-    spawnSync(command, args, {
-      cwd: workDir,
-      env: {},
-      stdio: "ignore",
-      timeout: timeoutMs * 10,
-    })
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(readFileSync(resultPath, "utf8"))
-    } catch {
-      return { ran: false, code: "NO_RESULT" }
-    }
-    return parserOutcome(parsed)
-  } finally {
-    rmSync(workDir, { recursive: true, force: true })
-  }
+async function reachFromParseChild(spec: ProbeSpec): Promise<ProbeResult> {
+  const { name, socket } = spec
+  if (!isParserProbeName(name) || socket === undefined)
+    return { ran: false, code: "BAD_SPEC" }
+  const target = parserTargetOf(name, {
+    ...(spec.host === undefined ? {} : { host: spec.host }),
+    ...(spec.port === undefined ? {} : { port: spec.port }),
+    ...(spec.path === undefined ? {} : { path: spec.path }),
+    timeoutMs: spec.timeoutMs,
+  })
+  if (target === undefined) return { ran: false, code: "BAD_SPEC" }
+  const client = (await loadBrokerClient())({
+    socketPath: socket,
+    deadlineMs: spec.timeoutMs * 20,
+  })
+  const answer = await client.parseBytes(
+    parserProbeDocument(target),
+    PARSER_PROBE_MIME
+  )
+  return classifyParserAnswer(answer, target)
 }
 
-/** Reached when any connect attempt in the fixture's report connected. */
-export function parserOutcome(report: unknown): ProbeResult {
-  const attempts =
-    typeof report === "object" && report !== null && "attempts" in report
-      ? report.attempts
-      : undefined
-  if (!Array.isArray(attempts)) return { ran: false, code: "NO_RESULT" }
-  const connected = attempts.some(
-    (attempt: unknown) =>
-      typeof attempt === "object" &&
-      attempt !== null &&
-      "name" in attempt &&
-      "outcome" in attempt &&
-      ["fetch", "net.connect", "http.request"].includes(String(attempt.name)) &&
-      attempt.outcome === "connected"
-  )
-  return { ran: true, reached: connected, code: connected ? "OK" : "BLOCKED" }
+/**
+ * Core's broker client, loaded by file URL: core's sources import each other without extensions,
+ * which only the core hooks resolve, and the probe child that sends a job is started with them.
+ * The run, the canary holder and the usage text never load it.
+ */
+async function loadBrokerClient(): Promise<typeof CreateBrokerClient> {
+  // Our own checked-in module, loaded by path: the cast only restores the type the dynamic import
+  // loses, no external input is involved.
+  const loaded = (await import(pathToFileURL(BROKER_CLIENT).href)) as {
+    createBrokerClient: typeof CreateBrokerClient
+  }
+  return loaded.createBrokerClient
 }
 
 /** Runs one probe in this process, as whoever this process is. */
-export async function runProbe(
-  spec: ProbeSpec,
-  asGate: boolean
-): Promise<ProbeResult> {
+export async function runProbe(spec: ProbeSpec): Promise<ProbeResult> {
   const missing: ProbeResult = { ran: false, code: "BAD_SPEC" }
   switch (spec.name) {
     case "dns":
@@ -1090,6 +1202,7 @@ export async function runProbe(
         : await reachTcp(spec.host, spec.port, spec.timeoutMs)
     case "intent-socket":
     case "control-socket":
+    case "parser-socket":
       return spec.path === undefined
         ? missing
         : await reachUnixSocket(spec.path, spec.timeoutMs)
@@ -1124,14 +1237,14 @@ export async function runProbe(
         ? missing
         : readMatches(() => readFileSync(path), digest)
     }
-    case "parser":
-      return spec.port === undefined || spec.profile === undefined
-        ? missing
-        : reachFromParser(
-            spec.port,
-            asGate ? undefined : spec.profile,
-            spec.timeoutMs
-          )
+    case "data-db":
+      return spec.path === undefined ? missing : openFiles([spec.path])
+    case "parser-loopback":
+    case "parser-proxy":
+    case "parser-llama":
+    case "parser-intent-socket":
+    case "parser-data-db":
+      return await reachFromParseChild(spec)
   }
 }
 
@@ -1171,6 +1284,7 @@ export function parseSpec(text: string): ProbeSpec | undefined {
     "keychain",
     "service",
     "profile",
+    "socket",
   ] as const) {
     const v = field(key)
     if (typeof v === "string") spec[key] = v
@@ -1222,33 +1336,44 @@ function sudoArgs(user: string, command: readonly string[]): string[] {
 }
 
 /** The command for one script child: this script under Node, with `args`. */
-function selfCommand(args: readonly string[]): string[] {
-  return [process.execPath, SELF, ...args]
+function selfCommand(
+  args: readonly string[],
+  nodeFlags: readonly string[] = []
+): string[] {
+  return [process.execPath, ...nodeFlags, SELF, ...args]
 }
 
 /**
  * The `sudo` arguments that start one probe child. A data-plane probe starts under
- * `sandbox-exec -f <data profile>` when one is configured, as the data plane itself runs: name
+ * `sandbox-exec -f <data profile>` when one is configured, as the data plane runs: name
  * resolution goes through mDNSResponder, which per-user pf cannot block, so only the sandbox
- * denies it. Gate-user controls are never sandboxed. The `parser` probe is not either: it applies
- * the parser profile itself, and under the core profile its result would no longer show the
- * parser profile's own fence.
+ * denies it. Gate-user controls are never sandboxed. A broker probe is not either: it only
+ * delivers a job to the probe broker, loading core's broker client with the core hooks as core
+ * does, and what it proves is the fence around the parse child, which the broker's own sandbox
+ * (`parser.sb`) and the parser user's pf rules draw. No probe child is wrapped in `parser.sb` here.
  */
 export function probeSudoArgs(
   role: Role,
   spec: ProbeSpec,
   config: LiveConfig
 ): string[] {
-  const profile =
-    role === "data" && spec.name !== "parser" ? config.dataProfile : undefined
+  const viaBroker = isParserProbeName(spec.name)
+  const profile = role === "data" && !viaBroker ? config.dataProfile : undefined
+  const probe = [
+    "probe",
+    "--spec",
+    JSON.stringify(spec),
+    ...(role === "gate" ? ["--as-gate"] : []),
+  ]
   return sudoArgs(role === "gate" ? config.gateUser : config.dataUser, [
     ...(profile === undefined ? [] : [SANDBOX_EXEC, "-f", profile]),
-    ...selfCommand([
-      "probe",
-      "--spec",
-      JSON.stringify(spec),
-      ...(role === "gate" ? ["--as-gate"] : []),
-    ]),
+    ...(viaBroker
+      ? selfCommand(probe, [
+          "--disable-warning=ExperimentalWarning",
+          "--import",
+          CORE_HOOKS,
+        ])
+      : selfCommand(probe)),
   ])
 }
 
@@ -1286,6 +1411,21 @@ function sudoRunner(config: LiveConfig): LiveRunner {
     removeRunDirCanary()
     process.exit(130)
   })
+  // The probe broker stops when its stdin ends; the socket file is removed here as a backstop.
+  let broker: ChildProcessByStdio<Writable, Readable, null> | undefined
+  let brokerSocket: string | undefined
+  let brokerExited: Promise<void> | undefined
+  const stopBroker = async () => {
+    broker?.stdin.end()
+    const exitedInTime = await Promise.race([
+      brokerExited?.then(() => true),
+      new Promise<boolean>((resolve) =>
+        setTimeout(() => resolve(false), config.timeoutMs * 10).unref()
+      ),
+    ])
+    if (exitedInTime !== true) broker?.kill("SIGTERM")
+    if (brokerSocket !== undefined) rmSync(brokerSocket, { force: true })
+  }
   const pending: ((message: unknown) => void)[] = []
   let last: unknown
   createInterface({ input: holder.stdout }).on("line", (line) => {
@@ -1345,6 +1485,54 @@ function sudoRunner(config: LiveConfig): LiveRunner {
       runDirCanary = createRunDirCanary(stackDir)
       return Promise.resolve([...files, runDirCanary.path])
     },
+    startParserBroker: async () => {
+      const built = buildParserPlan({
+        daemonProfile: readFileSync(config.parserProfile, "utf8"),
+        daemonSocket: config.parserSocket,
+        node: process.execPath,
+        coreHooks: CORE_HOOKS,
+        noNetwork: NO_NETWORK,
+        brokerEntry: PROBE_BROKER,
+        workerEntry: PROBE_WORKER,
+        id: randomBytes(8).toString("hex"),
+      })
+      if (!built.ok)
+        throw Object.assign(new Error(built.error), { code: "BAD_PLAN" })
+      const { plan } = built
+      broker = spawn("sudo", plan.brokerSudoArgs, {
+        cwd: "/",
+        stdio: ["pipe", "pipe", "inherit"],
+      })
+      brokerSocket = plan.socket
+      const child = broker
+      brokerExited = new Promise<void>((resolve) =>
+        child.once("close", () => resolve())
+      )
+      const ready = await new Promise<unknown>((resolve) => {
+        const timer = setTimeout(
+          () => resolve(undefined),
+          config.timeoutMs * 10
+        )
+        const lines = createInterface({ input: child.stdout })
+        lines.once("line", (line) => {
+          clearTimeout(timer)
+          try {
+            resolve(JSON.parse(line))
+          } catch {
+            resolve(undefined)
+          }
+        })
+        void brokerExited?.then(() => {
+          clearTimeout(timer)
+          resolve(undefined)
+        })
+      })
+      if (field(ready, "ready") !== true)
+        throw Object.assign(new Error("the probe broker is not ready"), {
+          code: "BROKER_NOT_READY",
+        })
+      return { socket: plan.socket }
+    },
     connections: async () => {
       const reply = next()
       holder.stdin.write("count\n")
@@ -1367,6 +1555,7 @@ function sudoRunner(config: LiveConfig): LiveRunner {
     // The holder prints `cleaned` last: after stdin closes, or at once when it could not set up.
     teardown: async () => {
       removeRunDirCanary()
+      await stopBroker()
       holder.stdin.end()
       await exited
       if (runDirCanary !== undefined || field(last, "cleaned") !== true)
@@ -1399,7 +1588,7 @@ async function main(argv: readonly string[]): Promise<number> {
       console.error(refused)
       return 2
     }
-    process.stdout.write(`${JSON.stringify(await runProbe(spec, asGate))}\n`)
+    process.stdout.write(`${JSON.stringify(await runProbe(spec))}\n`)
     return 0
   }
   if (mode === "canaries") {
