@@ -15,6 +15,7 @@ import { afterAll, describe, expect, test } from "vitest"
 import { openControlDb } from "../control-db"
 import { controlAuthorization } from "../test-fixtures"
 import { fileHelper } from "./file-helper"
+import { installFileHelperCopy } from "./file-helper-copy"
 import { createFile, moveFile, restoreFile, trashFile } from "./file-ops"
 import { approvedFileRoot, prepareFileRoots, setFileRoots } from "./file-roots"
 
@@ -26,17 +27,23 @@ afterAll(() => rmSync(base, { recursive: true, force: true }))
 
 describe.skipIf(binary === undefined)("the native file helper", () => {
   const path = binary ?? ""
-  const helper = () =>
-    fileHelper({
-      path,
-      sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
-    })
+  // Each run gets its own copy parent: installing removes earlier copies in the same one.
+  const helper = async () =>
+    fileHelper(
+      await installFileHelperCopy(
+        {
+          path,
+          sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
+        },
+        mkdtempSync(join(realpathSync.native(base), "helper-"))
+      )
+    )
 
   test("runs every verb through signed roots and refuses a replaced root", async () => {
     const rootPath = join(realpathSync.native(base), "docs")
     mkdirSync(rootPath)
     const db = openControlDb(":memory:")
-    const run = helper()
+    const run = await helper()
     const prepared = await prepareFileRoots(db, run, {
       roots: [{ id: "docs", path: rootPath, trashDir: ".eido-trash" }],
     })

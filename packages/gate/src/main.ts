@@ -86,6 +86,8 @@ import { fileHelper } from "./internal/files/file-helper"
 import type { FileHelperConfig } from "./internal/files/file-helper"
 import { createFileReads } from "./internal/files/file-reads"
 import { assertFileHelperInstall } from "./internal/files/file-install"
+import { installFileHelperCopy } from "./internal/files/file-helper-copy"
+import type { FileHelperCopy } from "./internal/files/file-helper-copy"
 import { devFlagFromEnv, FileVault } from "./internal/vault/file-vault"
 import { reportingLocks } from "./internal/vault/vault"
 import type { Vault } from "./internal/vault/vault"
@@ -671,6 +673,7 @@ export async function runGate(
   let notifier: ReturnType<typeof createPushNotifier> | undefined
   let phone: RunningGate["phone"]
   let egressProxy: Awaited<ReturnType<typeof startEgressProxy>> | undefined
+  let helperCopy: FileHelperCopy | undefined
   try {
     // Owner addresses and allowed roots come from the gate-owned owner-config.json (#167).
     // Stored attendees are read from the calendar connector's sent record (#21, #290).
@@ -740,8 +743,14 @@ export async function runGate(
       await preparePush()
     }
     if (!policyPending()) await prepareSecrets()
-    if (config.fileHelper !== undefined)
+    if (config.fileHelper !== undefined) {
       await assertFileHelperInstall(config.fileHelper.path)
+      // From here on only this private copy runs, never the configured path (#903).
+      helperCopy = await installFileHelperCopy(
+        config.fileHelper,
+        config.dataDir
+      )
+    }
     // No fallback: with a bridge configured, a call it cannot carry fails.
     const sessionBridge =
       config.sessionBridge === undefined
@@ -751,9 +760,9 @@ export async function runGate(
             config.sessionBridge.ownerUid
           )
     const nativeFiles =
-      config.fileHelper === undefined
+      helperCopy === undefined
         ? undefined
-        : fileHelper(config.fileHelper, sessionBridge)
+        : fileHelper(helperCopy, sessionBridge)
     const fileReads =
       nativeFiles === undefined ? undefined : createFileReads(db, nativeFiles)
     // FileVault refuses to open without the explicit development flag.
@@ -1002,6 +1011,7 @@ export async function runGate(
     stopGate()
     checkpoint?.close()
     db.close()
+    await helperCopy?.remove()
     throw error
   }
   return {
@@ -1016,6 +1026,7 @@ export async function runGate(
       stopGate()
       checkpoint?.close()
       db.close()
+      await helperCopy?.remove()
       log("stopped")
     },
   }

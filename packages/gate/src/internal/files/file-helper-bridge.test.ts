@@ -1,12 +1,19 @@
 import { createHash } from "node:crypto"
 import { EventEmitter } from "node:events"
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   afterAll,
   afterEach,
+  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -35,6 +42,8 @@ import { createExecutor } from "../executor"
 import { propose } from "../intents"
 import { FILE_OPS, manifest, setup, signedFileRoots } from "../test-fixtures"
 import { HostRootNotApproved, fileHelper } from "./file-helper"
+import { installFileHelperCopy } from "./file-helper-copy"
+import type { FileHelperCopy } from "./file-helper-copy"
 import { createFile } from "./file-ops"
 import { approvedFileRoot } from "./file-roots"
 
@@ -59,11 +68,22 @@ beforeEach(() => {
 const dir = mkdtempSync(join(tmpdir(), "eido-file-helper-bridge-"))
 const binary = join(dir, "eido-file-helper")
 writeFileSync(binary, "synthetic helper bytes")
-const pin = {
-  path: binary,
-  sha256: createHash("sha256").update("synthetic helper bytes").digest("hex"),
-}
-afterAll(() => rmSync(dir, { recursive: true, force: true }))
+let pin: FileHelperCopy
+beforeAll(async () => {
+  pin = await installFileHelperCopy(
+    {
+      path: binary,
+      sha256: createHash("sha256")
+        .update("synthetic helper bytes")
+        .digest("hex"),
+    },
+    dir
+  )
+})
+afterAll(async () => {
+  await pin.remove()
+  rmSync(dir, { recursive: true, force: true })
+})
 
 const cleanups: (() => Promise<void> | void)[] = []
 afterEach(async () => {
@@ -304,11 +324,36 @@ describe("file helper answers from the session bridge", () => {
     ).resolves.toMatchObject({ ok: true, op: "identify" })
   })
 
-  test("a binary that does not match its pin never reaches the bridge", async () => {
+  test("a configured path replaced after start never reaches the bridge, which runs it", async () => {
+    const parent = mkdtempSync(join(dir, "parent-"))
+    const source = join(parent, "eido-file-helper")
+    writeFileSync(source, "synthetic helper bytes", { mode: 0o700 })
+    const copy = await installFileHelperCopy(
+      { path: source, sha256: pin.sha256 },
+      parent
+    )
+    cleanups.push(copy.remove)
+    writeFileSync(source, "replaced helper bytes", { mode: 0o700 })
     const bridge = answeringBridge(stdoutOf(IDENTIFIED))
-    await expect(
-      fileHelper({ path: binary, sha256: "0".repeat(64) }, bridge)(identify)
-    ).rejects.toThrow("file helper does not match its pinned hash")
+    await expect(fileHelper(copy, bridge)(identify)).rejects.toThrow(
+      "file helper does not match its pinned hash"
+    )
+    expect(bridge.requests).toEqual([])
+  })
+
+  test("a copy that no longer has the pinned bytes never reaches the bridge", async () => {
+    const parent = mkdtempSync(join(dir, "parent-"))
+    const changed = await installFileHelperCopy(
+      { path: binary, sha256: pin.sha256 },
+      parent
+    )
+    cleanups.push(changed.remove)
+    chmodSync(changed.path, 0o700)
+    writeFileSync(changed.path, "changed helper bytes")
+    const bridge = answeringBridge(stdoutOf(IDENTIFIED))
+    await expect(fileHelper(changed, bridge)(identify)).rejects.toThrow(
+      /^file helper failed$/
+    )
     expect(bridge.requests).toEqual([])
   })
 
