@@ -78,10 +78,13 @@ describe("KeychainControlStore", () => {
     )
   })
 
-  it("throws the locked error only when the helper reports the keychain locked", () => {
-    mocked.spawnSync.mockReturnValue(reply({ status: -25293, locked: true }))
-    expect(() => open().load()).toThrow(ControlStoreLockedError)
-  })
+  it.each([-25293, NOT_FOUND])(
+    "throws the locked error when the helper reports the keychain locked (status %i)",
+    (status) => {
+      mocked.spawnSync.mockReturnValue(reply({ status, locked: true }))
+      expect(() => open().load()).toThrow(ControlStoreLockedError)
+    }
+  )
 
   it("writes the item and accepts it only when it reads back identically", () => {
     const text = '{"generation":2}'

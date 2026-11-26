@@ -41,9 +41,9 @@ export class KeychainVault implements Vault {
       path: this.path,
       account: vaultKeyId(key),
     })
-    if (result.status === -25300) return undefined
     if (result.status !== 0 && result.locked === true)
       throw new Error("Keychain is locked")
+    if (result.status === -25300) return undefined
     if (result.status !== 0 || result.data === undefined)
       throw new Error("Keychain credential could not be read")
     const data = Buffer.from(result.data, "base64")

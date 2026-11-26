@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto"
-import { mkdtempSync, rmSync } from "node:fs"
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { DatabaseSync } from "node:sqlite"
+import { DatabaseSync, backup } from "node:sqlite"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Intent } from "@eido/schemas"
 import { issueNonce, verifyApproval } from "./approvals"
@@ -19,13 +19,11 @@ import type {
 import {
   ControlStateError,
   LOCKED_RETRY_FIRST_MS,
-  LOCKED_RETRY_MAX_MS,
   MemoryControlStore,
   attachControlCheckpoint,
   controlStatus,
   controlTransaction,
   inspectControlCheckpoint,
-  lockedRetryDelay,
 } from "./control-checkpoint"
 import type { ControlCheckpoint, RetrySchedule } from "./control-checkpoint"
 import { openControlDb } from "./control-db"
@@ -46,6 +44,8 @@ import {
   testAuthenticator,
 } from "./test-fixtures"
 import type { TestAuthenticator } from "./test-fixtures"
+import { InMemoryVault } from "./vault/vault"
+import type { Vault, VaultKey } from "./vault/vault"
 
 // #822: a keychain that is locked when the gate starts, or locks later, denies every authority
 // read as `keychain_locked` and is loaded again on a back-off timer. Only a store that reports
@@ -336,16 +336,123 @@ describe("a keychain that locks after start", () => {
   })
 })
 
-describe("retry back-off", () => {
-  it("starts at 5 s, doubles, and caps at 5 min", () => {
-    expect(
-      [0, 1, 2, 3, 4, 5, 6, 7, 20].map((attempt) => lockedRetryDelay(attempt))
-    ).toEqual([
-      5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000, 300_000,
-    ])
-    expect(LOCKED_RETRY_MAX_MS).toBe(300_000)
+describe("a rollback behind a lock", () => {
+  /** Saves the stopped installation's database and record, as an older backup would hold them. */
+  function saveOld(): { path: string; value: string | undefined } {
+    const path = join(dir, "old.db")
+    copyFileSync(dbPath, path)
+    return { path, value: store.value }
+  }
+
+  /** Puts the older database back under the running gate's open handle. */
+  async function restore(old: { path: string }): Promise<void> {
+    const source = new DatabaseSync(old.path)
+    handles.push(source)
+    await backup(source, dbPath)
+    source.close()
+  }
+
+  it("refuses an older record with its matching database after the unlock, and never retries", async () => {
+    const owner = established()
+    const old = saveOld()
+    const timer = manualSchedule()
+    const changes: (string | undefined)[] = []
+    const { db, guard } = start({
+      schedule: timer.schedule,
+      onChange: (denied) => changes.push(denied),
+    })
+    const saved = guard.generation() ?? 0
+    const things = manifest("things", MAIL_OPS)
+    pinManifest(
+      db,
+      things,
+      "owner",
+      sign(owner, prepareManifestPin(db, things))
+    )
+    // The pin moved the generation past the saved record's.
+    expect(guard.generation()).toBe(saved + 1)
+
+    store.locked = true
+    expect(denial(() => controlTransaction(db, "roster", () => 1))).toBe(
+      "keychain_locked"
+    )
+    // While locked, an older Keychain item and an older database are put back together.
+    await restore(old)
+    store.value = old.value
+    expect(hasConnectorRow(db, "things")).toBe(false)
+    store.locked = false
+    timer.fire()
+
+    expect(guard.denied()).toBe("stale_generation")
+    expect(denial(() => getPinnedManifest(db, "mail"))).toBe("stale_generation")
+    expect(changes).toEqual(["keychain_locked", "stale_generation"])
+    expect(timer.pending).toHaveLength(1)
   })
 
+  it("refuses a store emptied while locked, and never retries", () => {
+    established()
+    const timer = manualSchedule()
+    const { db, guard } = start({ schedule: timer.schedule })
+    store.locked = true
+    denial(() => controlTransaction(db, "roster", () => 1))
+    store.value = undefined
+    store.locked = false
+    timer.fire()
+    expect(guard.denied()).toBe("stale_generation")
+    expect(timer.pending).toHaveLength(1)
+  })
+})
+
+/** True when the connector row exists, read past the checkpoint. */
+function hasConnectorRow(db: DatabaseSync, name: string): boolean {
+  return (
+    db.prepare("SELECT 1 FROM connectors WHERE name = ?").get(name) !==
+    undefined
+  )
+}
+
+describe("a failure inside the retry", () => {
+  it("a listener that throws at a lock still denies, queues the retry and recovers", () => {
+    established()
+    const timer = manualSchedule()
+    const { db, guard } = start({
+      schedule: timer.schedule,
+      onChange: () => {
+        throw new Error("listener failed")
+      },
+    })
+    store.locked = true
+    expect(denial(() => controlTransaction(db, "roster", () => 1))).toBe(
+      "keychain_locked"
+    )
+    expect(timer.delays()).toEqual([LOCKED_RETRY_FIRST_MS])
+    store.locked = false
+    expect(() => timer.fire()).not.toThrow()
+    expect(guard.denied()).toBeUndefined()
+    expect(getPinnedManifest(db, "mail")?.name).toBe("mail")
+  })
+
+  it("a database error during the retried load stays denied and keeps retrying", () => {
+    established()
+    store.locked = true
+    const timer = manualSchedule()
+    const { db, guard } = start({ schedule: timer.schedule })
+    store.locked = false
+    const prepare = vi.spyOn(db, "prepare").mockImplementation(() => {
+      throw new Error("disk I/O error")
+    })
+    expect(() => timer.fire()).not.toThrow()
+    prepare.mockRestore()
+    expect(guard.denied()).toBe("keychain_locked")
+    expect(denial(() => getPinnedManifest(db, "mail"))).toBe("keychain_locked")
+    expect(timer.delays()).toEqual([5_000, 10_000])
+
+    timer.fire()
+    expect(guard.denied()).toBeUndefined()
+  })
+})
+
+describe("retry back-off", () => {
   it("schedules each retry with the next delay while the store stays locked", () => {
     established()
     store.locked = true
@@ -502,10 +609,30 @@ describe("no external write while locked", () => {
     const timer = manualSchedule()
     const { db, guard } = start({ schedule: timer.schedule })
     expect(guard.denied()).toBe("keychain_locked")
+    const tokens = new InMemoryVault()
+    const tokenKey: VaultKey = {
+      connector: "mail",
+      kind: "access_token",
+      client: "write",
+    }
+    await tokens.set(tokenKey, "synthetic-access-token")
+    const readsWhileLocked: VaultKey[] = []
+    const reads: VaultKey[] = []
+    /** Fails the test if any token is read while the checkpoint denies. */
+    const vault: Vault = {
+      get: (key) => {
+        if (guard.denied() !== undefined) readsWhileLocked.push(key)
+        reads.push(key)
+        return tokens.get(key)
+      },
+      set: (key, secret) => tokens.set(key, secret),
+      delete: (key) => tokens.delete(key),
+    }
     const sent: string[] = []
-    const transport = vi.fn((request: WriteRequest) => {
+    const transport = vi.fn(async (request: WriteRequest) => {
+      await vault.get(tokenKey)
       sent.push(request.url)
-      return Promise.resolve({ upstreamRef: "provider-ref-1", result: {} })
+      return { upstreamRef: "provider-ref-1", result: {} }
     })
     const executor = createExecutor(db, [labelWriter()], transport)
 
@@ -519,6 +646,7 @@ describe("no external write while locked", () => {
       code: "connector_unavailable",
     })
     expect(transport).not.toHaveBeenCalled()
+    expect(readsWhileLocked).toEqual([])
     expect(intentStatus(db, label)?.state).toBe("approved")
 
     store.locked = false
@@ -528,5 +656,7 @@ describe("no external write while locked", () => {
     expect(intentStatus(db, send)?.state).toBe("approved")
     await expect(executor.execute(label)).resolves.toMatchObject({ ok: true })
     expect(sent).toEqual([LABEL_URL])
+    expect(reads).toEqual([tokenKey])
+    expect(readsWhileLocked).toEqual([])
   })
 })

@@ -510,8 +510,20 @@ type State = {
   denied: DenyReason | undefined
   record: ControlRecord | undefined
   raw: string | undefined
+  /**
+   * The last record this gate held, kept through a denial. A locked-store retry may only take
+   * this record back, or a later one of the same installation and epoch.
+   */
+  held: Held | undefined
   depth: number
   pending: Provenance[]
+}
+
+type Held = {
+  installationId: string
+  epoch: string
+  generation: number
+  raw: string
 }
 
 const guards = new WeakMap<DatabaseSync, State>()
@@ -568,6 +580,41 @@ function deny(state: State, reason: DenyReason): void {
   state.raw = undefined
 }
 
+function anchor(state: State, record: ControlRecord, raw: string): void {
+  state.denied = undefined
+  state.record = record
+  state.raw = raw
+  state.held = {
+    installationId: record.installationId,
+    epoch: record.epoch,
+    generation: record.generation,
+    raw,
+  }
+}
+
+/**
+ * True when a reloaded record could not follow the one this gate held: another installation or
+ * epoch, an older generation, or different content under the same generation. That is a rollback
+ * (an older Keychain file with an older database) or a second writer, never a lock.
+ */
+function behindHeld(held: Held, record: ControlRecord, raw: string): boolean {
+  return (
+    record.installationId !== held.installationId ||
+    record.epoch !== held.epoch ||
+    record.generation < held.generation ||
+    (record.generation === held.generation && raw !== held.raw)
+  )
+}
+
+/** A failing listener never changes the denial and never stops the retry. */
+function notify(retry: Retry, denied: DenyReason | undefined): void {
+  try {
+    retry.onChange(denied)
+  } catch {
+    // The listener only logs; the checkpoint state is already decided.
+  }
+}
+
 /**
  * Loads the stored record and verifies it against the database: the one check that admits
  * authority, at startup and on every locked-store retry. A store that reports itself locked
@@ -588,6 +635,11 @@ function loadAndVerify(db: DatabaseSync, state: State): void {
   }
   const snapshot = computeSnapshot(db)
   if (raw === undefined) {
+    // An emptied store after this gate held a record is a rollback, not a new installation.
+    if (state.held !== undefined) {
+      deny(state, "stale_generation")
+      return
+    }
     if (hasControlState(snapshot)) {
       deny(state, "uninitialized")
       return
@@ -600,22 +652,20 @@ function loadAndVerify(db: DatabaseSync, state: State): void {
       deny(state, "checkpoint_write_failed")
       return
     }
-    state.denied = undefined
-    state.record = record
-    state.raw = raw
+    anchor(state, record, raw)
     return
   }
   const record = parseControlRecord(raw)
   if (record === undefined) {
     deny(state, "store_malformed")
+  } else if (state.held !== undefined && behindHeld(state.held, record, raw)) {
+    deny(state, "stale_generation")
   } else if (!reverify(record)) {
     deny(state, "reverify_failed")
   } else if (snapshotHash(snapshot) !== record.snapshotHash) {
     deny(state, "control_state_mismatch")
   } else {
-    state.denied = undefined
-    state.record = record
-    state.raw = raw
+    anchor(state, record, raw)
   }
 }
 
@@ -629,10 +679,15 @@ function scheduleRetry(db: DatabaseSync, state: State): void {
   retry.cancel = retry.schedule(() => {
     retry.cancel = undefined
     if (retry.closed || state.denied !== "keychain_locked") return
-    loadAndVerify(db, state)
+    try {
+      loadAndVerify(db, state)
+    } catch {
+      // A database error mid-load proves nothing: stay denied and try again later.
+      deny(state, "keychain_locked")
+    }
     if (state.denied === undefined) retry.attempt = 0
-    if (state.denied !== "keychain_locked") retry.onChange(state.denied)
     scheduleRetry(db, state)
+    if (state.denied !== "keychain_locked") notify(retry, state.denied)
   }, delay)
 }
 
@@ -673,6 +728,7 @@ export function attachControlCheckpoint(
     denied: undefined,
     record: undefined,
     raw: undefined,
+    held: undefined,
     depth: 0,
     pending: [],
   }
@@ -888,8 +944,8 @@ export function controlTransaction<T>(
             ? "keychain_locked"
             : "store_unreadable"
         deny(state, reason)
-        state.retry.onChange(reason)
         scheduleRetry(db, state)
+        notify(state.retry, reason)
         throw new ControlStateError(reason)
       }
       // Another gate instance moved the protected record on: stop, never overwrite it.
@@ -912,8 +968,7 @@ export function controlTransaction<T>(
       deny(state, "checkpoint_write_failed")
       throw new ControlStateError("checkpoint_write_failed")
     }
-    state.record = next
-    state.raw = nextRaw
+    anchor(state, next, nextRaw)
     if (snapshotHash(computeSnapshot(db)) !== next.snapshotHash) {
       deny(state, "control_state_mismatch")
       throw new ControlStateError("control_state_mismatch")

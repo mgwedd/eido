@@ -229,6 +229,7 @@ describe.skipIf(process.platform !== "darwin")(
       expect(await nativeFixture({ ...f, operation: "lock" })).toBe("0")
       for (const command of [
         { operation: "get", path: f.path, account },
+        { operation: "get", path: f.path, account: "absent" },
         { operation: "set", path: f.path, account, data: "AAAA" },
       ] as const) {
         const result = await runKeychainCommand(command)

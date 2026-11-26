@@ -15,8 +15,9 @@ export type KeychainCommand =
  * padding, lockInterval INT32_MAX}, and the read-back must show lock-on-sleep off and no timeout.
  * Once the unlock succeeded, any later failure locks the keychain again before it returns, so a
  * gate that refuses to start does not leave it unlocked.
- * An item request that fails reports `locked` only when SecKeychainGetStatus succeeds and its
- * unlocked bit (kSecUnlockStateStatus) is clear; any other failure is reported by status alone.
+ * An item request that fails, item-not-found included, reports `locked` only when
+ * SecKeychainGetStatus succeeds and its unlocked bit (kSecUnlockStateStatus) is clear; any other
+ * failure is reported by status alone.
  */
 export const KEYCHAIN_SCRIPT = String.raw`
 ObjC.import('Foundation');
@@ -51,7 +52,7 @@ function relock(keychain, status) {
   return JSON.stringify({status: status});
 }
 function itemReply(keychain, status) {
-  if (status === 0 || status === -25300) return JSON.stringify({status: status});
+  if (status === 0) return JSON.stringify({status: status});
   var flags = Ref();
   if ($.SecKeychainGetStatus(keychain, flags) === 0 && (flags[0] & 1) === 0) {
     return JSON.stringify({status: status, locked: true});
