@@ -1,8 +1,10 @@
-import { lstat } from "node:fs/promises"
+import { lstatSync } from "node:fs"
 import { createConnection } from "node:net"
 import { isAbsolute } from "node:path"
 import { validateGateSessionBridgeResponse } from "@eido/schemas"
 import type { GateSessionBridgeResponse } from "@eido/schemas"
+import { trustedAncestors } from "../trusted-ancestors"
+import type { Lstat } from "../trusted-ancestors"
 
 // The gate's client for the session bridge (#826, decision in #781; protocol in
 // apps/helper/README.md). Under the plane split the gate runs as `_eidogate`, outside the
@@ -11,6 +13,9 @@ import type { GateSessionBridgeResponse } from "@eido/schemas"
 // policy, audit and the binary pins stay in the gate, and every answer is parsed again here.
 // One request and one response per connection; a frame is a 4-byte big-endian length then
 // UTF-8 JSON. Nothing here falls back to running a child process itself.
+// Node cannot read a Unix socket's peer credentials, so the gate authenticates the bridge by
+// the file system (#892): the socket must belong to the owner's uid and sit in directories
+// only that uid or root can change. It is checked at start and again before every connect.
 
 /** Names the bridge's socket. Unset, the gate spawns osascript and its helpers itself. */
 export const SESSION_BRIDGE_SOCKET_ENV = "EIDO_SESSION_BRIDGE_SOCKET"
@@ -22,8 +27,8 @@ export const BRIDGE_MAX_RESPONSE_BYTES = 24 * 1024 * 1024
 /** The socket is not there or nothing listens on it: the owner's session is not running the bridge. */
 export class SessionUnavailableError extends Error {
   readonly code = "session_unavailable"
-  constructor() {
-    super("session bridge unavailable")
+  constructor(message = "session bridge unavailable") {
+    super(message)
     this.name = "SessionUnavailableError"
   }
 }
@@ -160,7 +165,37 @@ function exchange(
   })
 }
 
-export function createSessionBridge(socketPath: string): SessionBridge {
+/**
+ * Whether the entry at `path` may be the owner's bridge: `not_socket` for a file, directory
+ * or alias; `untrusted` for a socket another uid owns, one with a group or world write bit,
+ * or one under a directory another principal can change. Errors from `lstat` propagate.
+ */
+export function socketRefusal(
+  path: string,
+  ownerUid: number,
+  lstat: Lstat
+): "not_socket" | "untrusted" | undefined {
+  const entry = lstat(path)
+  if (!entry.isSocket()) return "not_socket"
+  if (
+    entry.uid !== ownerUid ||
+    (entry.mode & 0o022) !== 0 ||
+    !trustedAncestors(path, ownerUid, lstat)
+  )
+    return "untrusted"
+  return undefined
+}
+
+/**
+ * The client for the bridge at `socketPath`, run by `ownerUid`. Before each connect the
+ * socket and its directories are checked again (`socketRefusal`); a socket that is not the
+ * owner's is `session_unavailable`, and no byte is sent to it.
+ */
+export function createSessionBridge(
+  socketPath: string,
+  ownerUid: number,
+  lstat: Lstat = lstatSync
+): SessionBridge {
   if (!isAbsolute(socketPath))
     throw new Error(`${SESSION_BRIDGE_SOCKET_ENV} must be an absolute path`)
   return {
@@ -168,16 +203,20 @@ export function createSessionBridge(socketPath: string): SessionBridge {
       const body = Buffer.from(JSON.stringify(request), "utf8")
       if (body.length > BRIDGE_MAX_REQUEST_BYTES)
         throw new SessionBridgeError("session bridge request too large")
-      let kind
+      let refusal
       try {
-        kind = await lstat(socketPath)
+        refusal = socketRefusal(socketPath, ownerUid, lstat)
       } catch (error) {
         if (absent(error)) throw new SessionUnavailableError()
         throw new SessionBridgeError("session bridge socket unreadable")
       }
       // A file, directory or alias at the path is never connected to.
-      if (!kind.isSocket())
+      if (refusal === "not_socket")
         throw new SessionBridgeError("session bridge path is not a socket")
+      if (refusal === "untrusted")
+        throw new SessionUnavailableError(
+          "session bridge socket is not the owner's"
+        )
       const header = Buffer.alloc(4)
       header.writeUInt32BE(body.length, 0)
       return parseFrameBody(

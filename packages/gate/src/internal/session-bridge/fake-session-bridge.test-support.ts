@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { chmodSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { createServer } from "node:net"
 import type { Socket } from "node:net"
 import { tmpdir } from "node:os"
@@ -45,9 +45,18 @@ export function answeringBridge(
   }
 }
 
-/** A temp directory short enough for a Unix socket path, removed by the returned cleanup. */
+/**
+ * The uid the test runs as, which owns the sockets it creates. Windows has none; its tests
+ * never reach a socket, so any number serves there.
+ */
+export const TEST_OWNER_UID = process.getuid?.() ?? 0
+
+/**
+ * A temp directory short enough for a Unix socket path, removed by the returned cleanup. It is
+ * resolved, since the client refuses an alias above the socket (macOS's `/var` is one).
+ */
 export function socketDir(): { dir: string; remove: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "eido-sb-"))
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "eido-sb-")))
   return { dir, remove: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
@@ -79,6 +88,9 @@ export async function startFakeSessionBridge(
     })
   })
   await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+  // The bridge binds its socket 0600 (apps/helper/README.md); the client refuses a group or
+  // world write bit, so the fake does not depend on the test's umask.
+  chmodSync(socketPath, 0o600)
   return {
     socketPath,
     requests,

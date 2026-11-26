@@ -29,10 +29,9 @@ import {
 } from "./internal/apple/apple-writers"
 import { createThingsReads } from "./internal/things/things-adapter"
 import { thingsRunner } from "./internal/things/runner"
-import {
-  SESSION_BRIDGE_SOCKET_ENV,
-  createSessionBridge,
-} from "./internal/session-bridge/client"
+import { createSessionBridge } from "./internal/session-bridge/client"
+import { sessionBridgeConfig } from "./internal/session-bridge/config"
+import type { SessionBridgeConfig } from "./internal/session-bridge/config"
 import {
   THINGS_WRITERS,
   createThingsTransport,
@@ -214,10 +213,11 @@ export type GateConfig = {
   /** Optional gate-owned EventKit executable and its pinned SHA-256; no Helper code or path reaches the data plane. */
   appleHelper?: AppleHelperConfig
   /**
-   * The session bridge's socket (#826): Things, EventKit and the file helper then run in the
-   * owner's session, never in the gate. Absent, the gate runs them itself.
+   * The session bridge's socket and the owner uid that must own it (#826, #892): Things,
+   * EventKit and the file helper then run in the owner's session, never in the gate. Absent,
+   * the gate runs them itself.
    */
-  sessionBridgeSocket?: string
+  sessionBridge?: SessionBridgeConfig
   backupStampPath?: string
   /** The stack supervisor's socket (#659); absent outside the stack, so the admin routes answer 503. */
   supervisorSocketPath?: string
@@ -323,9 +323,7 @@ export function gateConfig(
   if (supervisorSocket !== "" && !isAbsolute(supervisorSocket)) {
     throw new Error(`${SUPERVISOR_SOCKET_ENV} must be an absolute path`)
   }
-  const sessionBridgeSocket = read(SESSION_BRIDGE_SOCKET_ENV)
-  if (sessionBridgeSocket !== "" && !isAbsolute(sessionBridgeSocket))
-    throw new Error(`${SESSION_BRIDGE_SOCKET_ENV} must be an absolute path`)
+  const sessionBridge = sessionBridgeConfig(env)
   const appleHelperPath = read("EIDO_EVENTKIT_HELPER")
   const appleHelperSha256 = read("EIDO_EVENTKIT_HELPER_SHA256")
   if ((appleHelperPath === "") !== (appleHelperSha256 === ""))
@@ -352,7 +350,7 @@ export function gateConfig(
     ...(supervisorSocket === ""
       ? {}
       : { supervisorSocketPath: supervisorSocket }),
-    ...(sessionBridgeSocket === "" ? {} : { sessionBridgeSocket }),
+    ...sessionBridge,
   }
   const port = env["EIDO_GATE_PHONE_PORT"] ?? ""
   const bridge = bridgeConfig(env)
@@ -683,9 +681,12 @@ export async function runGate(
       await assertFileHelperInstall(config.fileHelper.path)
     // No fallback: with a bridge configured, a call it cannot carry fails.
     const sessionBridge =
-      config.sessionBridgeSocket === undefined
+      config.sessionBridge === undefined
         ? undefined
-        : createSessionBridge(config.sessionBridgeSocket)
+        : createSessionBridge(
+            config.sessionBridge.socketPath,
+            config.sessionBridge.ownerUid
+          )
     const nativeFiles =
       config.fileHelper === undefined
         ? undefined

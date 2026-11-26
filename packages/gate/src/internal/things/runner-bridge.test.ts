@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { createSessionBridge } from "../session-bridge/client"
 import {
+  TEST_OWNER_UID,
   answeringBridge,
   socketDir,
   startFakeSessionBridge,
@@ -77,7 +78,7 @@ unix("Things through the session bridge", () => {
 
     const bridge = await fake(() => stdout(output))
     const viaBridge = await bridgeThingsRunner(
-      createSessionBridge(bridge.socketPath)
+      createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
     )("add-todo", ["a", "b", "", "", "x,y"])
 
     expect(viaBridge).toBe(await direct)
@@ -97,7 +98,7 @@ unix("Things through the session bridge", () => {
       stdout(Buffer.from("area-1\u001FLorem\u001Earea-2\u001FIpsum", "utf8"))
     )
     const reads = createThingsReads(
-      thingsRunner(createSessionBridge(bridge.socketPath))
+      thingsRunner(createSessionBridge(bridge.socketPath, TEST_OWNER_UID))
     )
     expect(await reads.listAreas()).toEqual({
       areas: [
@@ -124,7 +125,7 @@ unix("Things through the session bridge", () => {
     await new Promise<void>((resolve) => server.listen(live, resolve))
     renameSync(live, stale)
     await new Promise<void>((resolve) => server.close(() => resolve()))
-    const run = bridgeThingsRunner(createSessionBridge(stale))
+    const run = bridgeThingsRunner(createSessionBridge(stale, TEST_OWNER_UID))
     await expect(run("list-areas")).rejects.toMatchObject({
       code: "session_unavailable",
     })
@@ -134,7 +135,9 @@ unix("Things through the session bridge", () => {
   test("a malformed frame from the bridge is things_unavailable", async () => {
     const bridge = await fake(() => ({ raw: Buffer.from([0, 0, 0, 0]) }))
     await expect(
-      bridgeThingsRunner(createSessionBridge(bridge.socketPath))("list-areas")
+      bridgeThingsRunner(
+        createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
+      )("list-areas")
     ).rejects.toMatchObject({ code: "things_unavailable" })
     expect(mocked.spawn).not.toHaveBeenCalled()
   })
@@ -147,7 +150,7 @@ describe("Things answers from the session bridge", () => {
     const { dir, remove } = socketDir()
     cleanups.push(remove)
     const run = bridgeThingsRunner(
-      createSessionBridge(join(dir, "absent.sock"))
+      createSessionBridge(join(dir, "absent.sock"), TEST_OWNER_UID)
     )
     await expect(run("list-areas")).rejects.toMatchObject({
       name: "ThingsError",

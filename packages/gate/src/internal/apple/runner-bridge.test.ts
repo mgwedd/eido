@@ -13,6 +13,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
 import { createSessionBridge } from "../session-bridge/client"
 import {
+  TEST_OWNER_UID,
   socketDir,
   startFakeSessionBridge,
 } from "../session-bridge/fake-session-bridge.test-support"
@@ -94,7 +95,7 @@ unix("EventKit through the session bridge", () => {
     const bridge = await fake(() => ({ json: ANSWER }))
     const viaBridge = await createAppleRunner(pin, {
       ...darwin,
-      bridge: createSessionBridge(bridge.socketPath),
+      bridge: createSessionBridge(bridge.socketPath, TEST_OWNER_UID),
     })(request)
 
     expect(viaBridge).toEqual(direct)
@@ -110,7 +111,10 @@ unix("EventKit through the session bridge", () => {
     const bridge = await fake(() => ({ json: ANSWER }))
     const run = createAppleRunner(
       { path: pin.path, sha256: "0".repeat(64) },
-      { ...darwin, bridge: createSessionBridge(bridge.socketPath) }
+      {
+        ...darwin,
+        bridge: createSessionBridge(bridge.socketPath, TEST_OWNER_UID),
+      }
     )
     await expect(run(request)).rejects.toMatchObject({ code: "unavailable" })
     expect(bridge.connections()).toBe(0)
@@ -120,7 +124,7 @@ unix("EventKit through the session bridge", () => {
     const bridge = await fake(() => ({ json: ANSWER }))
     const run = createAppleRunner(helper(), {
       ...darwin,
-      bridge: createSessionBridge(bridge.socketPath),
+      bridge: createSessionBridge(bridge.socketPath, TEST_OWNER_UID),
     })
     await expect(
       run({
@@ -136,7 +140,7 @@ unix("EventKit through the session bridge", () => {
     cleanups.push(remove)
     const run = createAppleRunner(helper(), {
       ...darwin,
-      bridge: createSessionBridge(join(dir, "absent.sock")),
+      bridge: createSessionBridge(join(dir, "absent.sock"), TEST_OWNER_UID),
     })
     await expect(run(request)).rejects.toMatchObject({
       name: "AppleError",
@@ -156,7 +160,7 @@ unix("EventKit through the session bridge", () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     const run = createAppleRunner(helper(), {
       ...darwin,
-      bridge: createSessionBridge(stale),
+      bridge: createSessionBridge(stale, TEST_OWNER_UID),
     })
     await expect(run(request)).rejects.toMatchObject({
       code: "session_unavailable",
@@ -170,7 +174,7 @@ unix("EventKit through the session bridge", () => {
     }))
     const run = createAppleRunner(helper(), {
       ...darwin,
-      bridge: createSessionBridge(bridge.socketPath),
+      bridge: createSessionBridge(bridge.socketPath, TEST_OWNER_UID),
     })
     await expect(run(request)).rejects.toMatchObject({ code: "not_found" })
   })
@@ -192,7 +196,7 @@ unix("EventKit through the session bridge", () => {
       const bridge = await fake(() => answer)
       const run = createAppleRunner(helper(), {
         ...darwin,
-        bridge: createSessionBridge(bridge.socketPath),
+        bridge: createSessionBridge(bridge.socketPath, TEST_OWNER_UID),
       })
       await expect(run(request)).rejects.toMatchObject({ code: "unavailable" })
     }
@@ -203,7 +207,7 @@ unix("EventKit through the session bridge", () => {
     const run = createAppleRunner(helper(), {
       ...darwin,
       timeoutMs: 100,
-      bridge: createSessionBridge(bridge.socketPath),
+      bridge: createSessionBridge(bridge.socketPath, TEST_OWNER_UID),
     })
     await expect(run(request)).rejects.toMatchObject({ code: "unavailable" })
   })
@@ -213,7 +217,7 @@ unix("EventKit through the session bridge", () => {
     const run = createAppleRunner(helper(), {
       ...darwin,
       timeoutMs: 300,
-      bridge: createSessionBridge(bridge.socketPath),
+      bridge: createSessionBridge(bridge.socketPath, TEST_OWNER_UID),
     })
     const held = Array.from({ length: APPLE_MAX_CONCURRENT }, () =>
       run(request).catch((e: unknown) => e)
