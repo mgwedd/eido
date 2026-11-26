@@ -71,17 +71,60 @@ const absent = (error: unknown): boolean =>
   "code" in error &&
   (error.code === "ENOENT" || error.code === "ECONNREFUSED")
 
+export type FrameReader = {
+  /** Takes the next chunk; returns why the frame is refused, or nothing to keep reading. */
+  push: (chunk: Buffer) => string | undefined
+  /** At the close: the frame body, or why the frame is refused. */
+  end: () => { body: Buffer } | { refused: string }
+}
+
+/** Collects one response frame of at most `limit` body bytes, as the socket delivers it. */
+export function frameReader(limit: number): FrameReader {
+  const chunks: Buffer[] = []
+  let received = 0
+  let expected: number | undefined
+  return {
+    push(chunk) {
+      received += chunk.length
+      chunks.push(chunk)
+      if (expected === undefined && received >= 4) {
+        expected = Buffer.concat(chunks).readUInt32BE(0)
+        if (expected === 0 || expected > limit)
+          return "session bridge frame refused"
+      }
+      if (expected !== undefined && received > 4 + expected)
+        return "session bridge sent extra bytes"
+      return undefined
+    },
+    // The bridge closes after its one response, so the frame is complete only at the close.
+    end() {
+      if (expected === undefined || received !== 4 + expected)
+        return { refused: "session bridge closed early" }
+      return { body: Buffer.concat(chunks).subarray(4) }
+    },
+  }
+}
+
+/** Parses a frame body; the caller checks the result against a schema. */
+export function parseFrameBody(body: Buffer): unknown {
+  try {
+    const parsed: unknown = JSON.parse(body.toString("utf8"))
+    return parsed
+  } catch {
+    throw new SessionBridgeError("session bridge answer is not JSON")
+  }
+}
+
 function exchange(
   socketPath: string,
   frame: Buffer,
   { timeoutMs, maxResponseBytes }: SessionBridgeCall
 ): Promise<Buffer> {
-  const limit = Math.min(maxResponseBytes, BRIDGE_MAX_RESPONSE_BYTES)
+  const reader = frameReader(
+    Math.min(maxResponseBytes, BRIDGE_MAX_RESPONSE_BYTES)
+  )
   return new Promise((resolve, reject) => {
     const socket = createConnection({ path: socketPath })
-    const chunks: Buffer[] = []
-    let received = 0
-    let expected: number | undefined
     let settled = false
     const settle = (): boolean => {
       if (settled) return false
@@ -105,21 +148,13 @@ function exchange(
       )
     )
     socket.on("data", (chunk: Buffer) => {
-      received += chunk.length
-      chunks.push(chunk)
-      if (expected === undefined && received >= 4) {
-        expected = Buffer.concat(chunks).readUInt32BE(0)
-        if (expected === 0 || expected > limit)
-          return finish(new SessionBridgeError("session bridge frame refused"))
-      }
-      if (expected !== undefined && received > 4 + expected)
-        finish(new SessionBridgeError("session bridge sent extra bytes"))
+      const refused = reader.push(chunk)
+      if (refused !== undefined) finish(new SessionBridgeError(refused))
     })
-    // The bridge closes after its one response, so the frame is complete only at the close.
     socket.on("close", () => {
-      if (expected === undefined || received !== 4 + expected)
-        return finish(new SessionBridgeError("session bridge closed early"))
-      if (settle()) resolve(Buffer.concat(chunks).subarray(4))
+      const frame = reader.end()
+      if ("refused" in frame) finish(new SessionBridgeError(frame.refused))
+      else if (settle()) resolve(frame.body)
     })
     socket.write(frame)
   })
@@ -145,17 +180,9 @@ export function createSessionBridge(socketPath: string): SessionBridge {
         throw new SessionBridgeError("session bridge path is not a socket")
       const header = Buffer.alloc(4)
       header.writeUInt32BE(body.length, 0)
-      const answer = await exchange(
-        socketPath,
-        Buffer.concat([header, body]),
-        options
+      return parseFrameBody(
+        await exchange(socketPath, Buffer.concat([header, body]), options)
       )
-      try {
-        const parsed: unknown = JSON.parse(answer.toString("utf8"))
-        return parsed
-      } catch {
-        throw new SessionBridgeError("session bridge answer is not JSON")
-      }
     },
   }
 }

@@ -9,6 +9,8 @@ import {
   SessionUnavailableError,
   bridgeStdout,
   createSessionBridge,
+  frameReader,
+  parseFrameBody,
 } from "./client"
 import {
   answeringBridge,
@@ -64,6 +66,102 @@ test("refuses a socket path that is not absolute", () => {
   )
 })
 
+// The path checks and the frame and body decoding need no listening socket, so these run on
+// every platform.
+describe("session bridge client checks", () => {
+  test("a missing socket is session_unavailable", async () => {
+    const { dir, remove } = socketDir()
+    cleanups.push(remove)
+    const error = await createSessionBridge(join(dir, "absent.sock"))
+      .call(things, call)
+      .catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(SessionUnavailableError)
+    expect(error).toMatchObject({ code: "session_unavailable" })
+  })
+
+  test("never connects to a path that is not a socket", async () => {
+    const { dir, remove } = socketDir()
+    cleanups.push(remove)
+    const file = join(dir, "bridge.sock")
+    writeFileSync(file, "")
+    await expect(createSessionBridge(file).call(things, call)).rejects.toThrow(
+      "session bridge path is not a socket"
+    )
+  })
+
+  test("refuses a request over the bridge's 8 MiB limit before looking at the socket", async () => {
+    const { dir, remove } = socketDir()
+    cleanups.push(remove)
+    const big = {
+      op: "file",
+      request: "x".repeat(BRIDGE_MAX_REQUEST_BYTES),
+    } as const
+    // The path is absent: had the size check come later, this would be session_unavailable.
+    await expect(
+      createSessionBridge(join(dir, "absent.sock")).call(big, call)
+    ).rejects.toThrow("session bridge request too large")
+  })
+
+  const read = (chunks: Buffer[], limit = 16) => {
+    const reader = frameReader(limit)
+    for (const chunk of chunks) {
+      const refused = reader.push(chunk)
+      if (refused !== undefined) return refused
+    }
+    const frame = reader.end()
+    return "refused" in frame ? frame.refused : frame.body.toString("utf8")
+  }
+
+  test("reads a frame whose header and body arrive split across chunks", () => {
+    const whole = frame({ a: 1 })
+    expect(
+      read([whole.subarray(0, 2), whole.subarray(2, 5), whole.subarray(5)])
+    ).toBe('{"a":1}')
+  })
+
+  test("accepts a body exactly at the limit", () => {
+    expect(read([frame("x".repeat(14))], 16)).toBe('"' + "x".repeat(14) + '"')
+  })
+
+  test.each([
+    [
+      "a zero length",
+      [Buffer.from([0, 0, 0, 0])],
+      "session bridge frame refused",
+    ],
+    [
+      "a length over the limit",
+      [Buffer.from([0, 0, 0, 17])],
+      "session bridge frame refused",
+    ],
+    [
+      "bytes after the frame",
+      [frame({ ok: true }), Buffer.from("x")],
+      "session bridge sent extra bytes",
+    ],
+    [
+      "a close inside the body",
+      [frame({ ok: true }).subarray(0, 6)],
+      "session bridge closed early",
+    ],
+    [
+      "a close inside the header",
+      [Buffer.from([0, 0])],
+      "session bridge closed early",
+    ],
+    ["a close before any byte", [], "session bridge closed early"],
+  ])("refuses %s", (_name, chunks, message) => {
+    expect(read(chunks)).toBe(message)
+  })
+
+  test("parses a body as JSON and refuses one that is not", () => {
+    expect(parseFrameBody(Buffer.from('{"ok":true}'))).toEqual({ ok: true })
+    expect(() => parseFrameBody(Buffer.from("{no"))).toThrow(
+      "session bridge answer is not JSON"
+    )
+  })
+})
+
 unix("session bridge client", () => {
   test("sends one framed request and returns the framed answer parsed", async () => {
     const bridge = await fake(() => ({ json: { ok: true, result: [1, "é"] } }))
@@ -77,31 +175,11 @@ unix("session bridge client", () => {
     ])
   })
 
-  test("a missing socket is session_unavailable", async () => {
-    const { dir, remove } = socketDir()
-    cleanups.push(remove)
-    const error = await createSessionBridge(join(dir, "absent.sock"))
-      .call(things, call)
-      .catch((e: unknown) => e)
-    expect(error).toBeInstanceOf(SessionUnavailableError)
-    expect(error).toMatchObject({ code: "session_unavailable" })
-  })
-
   test("a socket that refuses the connection is session_unavailable", async () => {
     const error = await createSessionBridge(await staleSocket())
       .call(things, call)
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SessionUnavailableError)
-  })
-
-  test("never connects to a path that is not a socket", async () => {
-    const { dir, remove } = socketDir()
-    cleanups.push(remove)
-    const file = join(dir, "bridge.sock")
-    writeFileSync(file, "")
-    await expect(createSessionBridge(file).call(things, call)).rejects.toThrow(
-      "session bridge path is not a socket"
-    )
   })
 
   test("an unreadable path is a bridge failure, not a missing session", async () => {
@@ -119,33 +197,11 @@ unix("session bridge client", () => {
     })
   })
 
-  test("refuses to send a request over the bridge's 8 MiB limit", async () => {
-    const bridge = await fake(() => ({ json: { ok: true } }))
-    const big = {
-      op: "file",
-      request: "x".repeat(BRIDGE_MAX_REQUEST_BYTES),
-    } as const
-    await expect(
-      createSessionBridge(bridge.socketPath).call(big, call)
-    ).rejects.toThrow("session bridge request too large")
-    expect(bridge.connections()).toBe(0)
-  })
-
   test.each([
     [
-      "a zero length",
+      "a refused header",
       Buffer.from([0, 0, 0, 0]),
       "session bridge frame refused",
-    ],
-    [
-      "a length over the call's cap",
-      Buffer.from([0, 0, 4, 1]),
-      "session bridge frame refused",
-    ],
-    [
-      "bytes after the frame",
-      Buffer.concat([frame({ ok: true }), Buffer.from("x")]),
-      "session bridge sent extra bytes",
     ],
     [
       "a close inside the body",
@@ -153,16 +209,11 @@ unix("session bridge client", () => {
       "session bridge closed early",
     ],
     [
-      "a close inside the header",
-      Buffer.from([0, 0]),
-      "session bridge closed early",
-    ],
-    [
       "a body that is not JSON",
       Buffer.concat([Buffer.from([0, 0, 0, 3]), Buffer.from("{no")]),
       "session bridge answer is not JSON",
     ],
-  ])("refuses %s", async (_name, raw, message) => {
+  ])("a frame with %s is a bridge failure", async (_name, raw, message) => {
     const bridge = await fake(() => ({ raw }))
     const error = await createSessionBridge(bridge.socketPath)
       .call(things, call)

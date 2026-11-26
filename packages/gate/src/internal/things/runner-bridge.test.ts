@@ -115,19 +115,6 @@ unix("Things through the session bridge", () => {
     ])
   })
 
-  test("a missing socket is session_unavailable and nothing is spawned", async () => {
-    const { dir, remove } = socketDir()
-    cleanups.push(remove)
-    const run = bridgeThingsRunner(
-      createSessionBridge(join(dir, "absent.sock"))
-    )
-    await expect(run("list-areas")).rejects.toMatchObject({
-      name: "ThingsError",
-      code: "session_unavailable",
-    })
-    expect(mocked.spawn).not.toHaveBeenCalled()
-  })
-
   test("a refused connection is session_unavailable and nothing is spawned", async () => {
     const { dir, remove } = socketDir()
     cleanups.push(remove)
@@ -153,8 +140,22 @@ unix("Things through the session bridge", () => {
   })
 })
 
-// What the runner does with an answer needs no socket, so these run on every platform.
+// An absent socket and what the runner does with an answer need no listener, so these run
+// on every platform.
 describe("Things answers from the session bridge", () => {
+  test("a missing socket is session_unavailable and nothing is spawned", async () => {
+    const { dir, remove } = socketDir()
+    cleanups.push(remove)
+    const run = bridgeThingsRunner(
+      createSessionBridge(join(dir, "absent.sock"))
+    )
+    await expect(run("list-areas")).rejects.toMatchObject({
+      name: "ThingsError",
+      code: "session_unavailable",
+    })
+    expect(mocked.spawn).not.toHaveBeenCalled()
+  })
+
   const answered = (answer: unknown) =>
     bridgeThingsRunner(answeringBridge(answer))
   const stdoutOf = (bytes: Buffer) => ({

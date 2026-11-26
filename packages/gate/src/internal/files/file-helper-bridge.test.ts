@@ -141,17 +141,6 @@ unix("file helper through the session bridge", () => {
     expect(mocked.spawn).not.toHaveBeenCalled()
   })
 
-  test("a missing socket is session_unavailable and nothing is spawned", async () => {
-    const { dir: parent, remove } = socketDir()
-    cleanups.push(remove)
-    const error = await fileHelper(
-      pin,
-      createSessionBridge(join(parent, "absent.sock"))
-    )(identify).catch((e: unknown) => e)
-    expect(error).toBeInstanceOf(SessionUnavailableError)
-    expect(mocked.spawn).not.toHaveBeenCalled()
-  })
-
   test("a refused connection is session_unavailable and nothing is spawned", async () => {
     const { dir: parent, remove } = socketDir()
     cleanups.push(remove)
@@ -180,8 +169,20 @@ unix("file helper through the session bridge", () => {
   })
 })
 
-// What the helper does with an answer needs no socket, so these run on every platform.
+// An absent socket and what the helper does with an answer need no listener, so these run
+// on every platform.
 describe("file helper answers from the session bridge", () => {
+  test("a missing socket is session_unavailable and nothing is spawned", async () => {
+    const { dir: parent, remove } = socketDir()
+    cleanups.push(remove)
+    const error = await fileHelper(
+      pin,
+      createSessionBridge(join(parent, "absent.sock"))
+    )(identify).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(SessionUnavailableError)
+    expect(mocked.spawn).not.toHaveBeenCalled()
+  })
+
   const stdoutOf = (text: string) => ({
     ok: true,
     result: { stdoutBase64: Buffer.from(text, "utf8").toString("base64") },
