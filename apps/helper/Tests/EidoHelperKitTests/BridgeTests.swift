@@ -644,6 +644,25 @@ final class BridgeTests: XCTestCase {
     XCTAssertEqual(runner.calls, [])
   }
 
+  @MainActor func testACopyWithASecondLinkIsNotRun() async throws {
+    let handler = try makeHandler()
+    let copy = try XCTUnwrap(installed).path
+    // A second name lets the copy be changed through a path the bridge does not check.
+    XCTAssertEqual(link(copy, directory + "/copies/x"), 0)
+    let response = try decode(await handler.handle(try identifyRequest()))
+    XCTAssertEqual(response["code"] as? String, "unavailable")
+    XCTAssertEqual(runner.calls, [])
+  }
+
+  @MainActor func testACopyMadeWritableIsNotRunEvenWithItsBytesUnchanged() async throws {
+    let handler = try makeHandler()
+    let copy = try XCTUnwrap(installed).path
+    XCTAssertEqual(chmod(copy, 0o700), 0)
+    let response = try decode(await handler.handle(try identifyRequest()))
+    XCTAssertEqual(response["code"] as? String, "unavailable")
+    XCTAssertEqual(runner.calls, [])
+  }
+
   @MainActor func testAFileRequestPinnedToAnotherHelperIsRefusedBeforeItRuns() async throws {
     let handler = try makeHandler()
     let request: [String: Any] = ["op": "identify", "path": approved.path]
@@ -976,6 +995,45 @@ final class BridgeTests: XCTestCase {
     XCTAssertTrue(PinnedExecutable.ancestorsAreSafe(shared + "/copies", owner: geteuid()))
     // An ancestor owned by someone other than root or the owner is unsafe.
     XCTAssertFalse(PinnedExecutable.ancestorsAreSafe(base + "/copies", owner: geteuid() + 1))
+    // A symbolic link on the way is not a directory.
+    XCTAssertEqual(symlink(shared, base + "/via"), 0)
+    XCTAssertFalse(PinnedExecutable.ancestorsAreSafe(base + "/via/copies", owner: geteuid()))
+  }
+
+  func testInstallRefusesACopyDirectoryUnderAnAncestorOthersCanWrite() throws {
+    let source = directory + "/file-helper"
+    try fileHelperBytes.write(to: URL(fileURLWithPath: source))
+    let shared = try copyDirectory(directory, "shared")
+    let copies = try copyDirectory(shared)
+    XCTAssertEqual(chmod(shared, 0o777), 0)
+    // Reached directly, and through a symbolic link to the shared directory: the check is on
+    // the canonical path, so the link does not hide the writable ancestor.
+    XCTAssertEqual(symlink(shared, directory + "/via"), 0)
+    for parent in [copies, directory + "/via/copies"] {
+      XCTAssertThrowsError(
+        try PinnedExecutable.install(source: source, sha256: fileHelperSHA, parent: parent), parent
+      ) { XCTAssertEqual($0 as? BridgeStartError, .fileHelperCopyUnsafe, parent) }
+    }
+    XCTAssertEqual(entries(copies), [])
+    // Sticky, like /tmp: others cannot rename what they do not own, so the copy is made.
+    XCTAssertEqual(chmod(shared, 0o1777), 0)
+    let copy = try PinnedExecutable.install(
+      source: source, sha256: fileHelperSHA, parent: directory + "/via/copies")
+    installed = copy
+    XCTAssertEqual(copy.path, try canonical(copies) + "/" + entries(copies)[0] + "/file-helper")
+  }
+
+  func testTheCopyDirectoryMustBeOnALocalVolumeThatHonoursOwnershipAndAllowsExec() throws {
+    let local = UInt32(MNT_LOCAL)
+    XCTAssertTrue(PinnedExecutable.volumeIsSafe(flags: local | UInt32(MNT_JOURNALED)))
+    XCTAssertFalse(PinnedExecutable.volumeIsSafe(flags: 0), "network volume")
+    XCTAssertFalse(
+      PinnedExecutable.volumeIsSafe(flags: local | UInt32(MNT_IGNORE_OWNERSHIP)), "external disk")
+    XCTAssertFalse(PinnedExecutable.volumeIsSafe(flags: local | UInt32(MNT_NOEXEC)), "noexec")
+    // The default copy directory's volume passes.
+    var volume = statfs()
+    XCTAssertEqual(statfs(try XCTUnwrap(PinnedExecutable.defaultParent()), &volume), 0)
+    XCTAssertTrue(PinnedExecutable.volumeIsSafe(flags: volume.f_flags))
   }
 
   func testTheDefaultCopyDirectoryIsTheUsersCacheDirectory() throws {

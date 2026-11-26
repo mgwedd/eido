@@ -464,7 +464,10 @@ component; replacing it after start changes nothing until the next start. The
 copy directory must be a directory (not a symbolic link) owned by the bridge's
 user with no group or other write bit, and every directory above it must be owned
 by root or that user and be writable by no one else unless it is sticky (as
-`/private/tmp` is). Otherwise the start fails with `file_helper_copy_unsafe`; a
+`/private/tmp` is). It must be on a local volume that honours ownership and
+allows exec: not a network volume, not `noexec`, and not an external disk with
+"Ignore ownership on this volume" set (the default for external disks), where
+every local user counts as the owner. Otherwise the start fails with `file_helper_copy_unsafe`; a
 missing copy directory is `file_helper_copy_failed`. The default cache directory
 under `/var/folders` meets this.
 

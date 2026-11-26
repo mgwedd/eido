@@ -54,8 +54,9 @@ public final class PinnedExecutable: @unchecked Sendable {
   /// - `source` is opened once without following a final symbolic link and must be a regular
   ///   file of at most `sizeLimit` bytes whose SHA-256 is the pin, or `fileHelperMismatch`.
   /// - `parent` must be a directory (not a symbolic link) owned by `owner` with no group or
-  ///   other write bit, and every directory above it must be owned by root or `owner` and be
-  ///   writable by no one else unless it is sticky, or `fileHelperCopyUnsafe`.
+  ///   other write bit, on a local volume that honours ownership and allows exec, and every
+  ///   directory above it must be owned by root or `owner` and be writable by no one else
+  ///   unless it is sticky, or `fileHelperCopyUnsafe`.
   /// - Private directories a previous bridge left under `parent` are removed first, unless
   ///   a running bridge still holds them.
   /// - Any other failure, including a copy that does not read back with the pin, is
@@ -156,11 +157,22 @@ public final class PinnedExecutable: @unchecked Sendable {
         ? BridgeStartError.fileHelperCopyUnsafe : BridgeStartError.fileHelperCopyFailed
     }
     var info = stat()
-    guard fstat(fd, &info) == 0, info.st_uid == owner, info.st_mode & 0o022 == 0 else {
+    var volume = statfs()
+    guard fstat(fd, &info) == 0, info.st_uid == owner, info.st_mode & 0o022 == 0,
+      fstatfs(fd, &volume) == 0, volumeIsSafe(flags: volume.f_flags)
+    else {
       close(fd)
       throw BridgeStartError.fileHelperCopyUnsafe
     }
     return fd
+  }
+
+  /// The copy directory's volume is local, honours ownership, and allows exec. On a volume
+  /// that ignores ownership (an external disk by default) every local user counts as the
+  /// owner, so the owner and mode checks would pass while another user could swap the copy.
+  static func volumeIsSafe(flags: UInt32) -> Bool {
+    flags & UInt32(MNT_LOCAL) != 0 && flags & UInt32(MNT_IGNORE_OWNERSHIP) == 0
+      && flags & UInt32(MNT_NOEXEC) == 0
   }
 
   /// Every directory above `canonical` (from `/` down) is a directory, not a link, owned by
@@ -187,7 +199,7 @@ public final class PinnedExecutable: @unchecked Sendable {
   /// Removes private directories under `parentFD` that no running bridge holds. A directory
   /// another bridge has locked is left alone; anything that cannot be removed stays.
   private static func removeStale(in parentFD: Int32) {
-    let listing = dup(parentFD)
+    let listing = fcntl(parentFD, F_DUPFD_CLOEXEC, 0)
     guard listing >= 0, let dir = fdopendir(listing) else {
       if listing >= 0 { close(listing) }
       return
