@@ -161,7 +161,7 @@ In split mode `stack:setup`, `stack:bootstrap` and `stack:gate` refuse, because 
    sudo -u _eidoparse cat "/Library/Application Support/Eido/data/eido-data.db"        # Permission denied
    ```
 
-7. The live isolation script (`docs/isolation-tests.md`). Run it from the app copy, which both users can read:
+7. The live isolation script (`docs/isolation-tests.md`). Run it from the app copy, which the gate, data-plane and parser users can all read:
 
    ```sh
    cd "/Library/Application Support/Eido/app"
@@ -173,17 +173,28 @@ In split mode `stack:setup`, `stack:bootstrap` and `stack:gate` refuse, because 
      --gate-keychain "/Library/Application Support/Eido/home/gate/Library/Keychains/eido/eido.keychain-db" \
      --proxy-port <gate egress proxy port> --llama-port <llama-server port> \
      --parser-profile "/Library/Application Support/Eido/policy/parser.sb" \
+     --parser-socket "/Library/Application Support/Eido/parser-run/parser.sock" \
+     --data-db "/Library/Application Support/Eido/data/eido-data.db" \
      --data-profile "/Library/Application Support/Eido/policy/core.sb" \
      --public-host <a public hostname> --public-ip <a public IPv4 address>
    ```
 
-   With `--data-profile` the script runs every data-plane probe (except `parser`, which has its own profile) as `_eidodata` under `sandbox-exec -f core.sb`, as the data plane runs. DNS goes through mDNSResponder, which per-user pf cannot see, so only `core.sb` denies it: without the flag the `dns` probe reports reached. Every probe must pass.
+   With `--data-profile` the script runs every data-plane probe as `_eidodata` under `sandbox-exec -f core.sb`, as the data plane runs, except the one that delivers a parse job. DNS goes through mDNSResponder, which per-user pf cannot see, so only `core.sb` denies it: without the flag the `dns` probe reports reached.
+
+   The parser probes do not wrap anything in `parser.sb` by hand. The script reads the installed `parser.sb` as text (`--parser-profile`) and starts a probe broker, the production broker, as `_eidoparse` under that profile on a probe socket next to `parser.sock` in `parser-run`. It then sends one parse job per target from `_eidodata`, and the broker starts the parse child as the daemon does. `--parser-socket` is the daemon's `parser.sock`: the script checks that `_eidodata` can connect to it, and the profile must name it exactly once. `--data-db` is `eido-data.db`: `_eidodata` must be able to open it, and the parse child must not. The data and parser users must be able to read the app copy and Node. Every probe must pass.
 
 8. Reboot, then repeat steps 4, 5 and 7.
 
 ## Approved file roots
 
-The session bridge reaches only the file roots the owner approved (#865). The owner keeps the list in a JSON file they own, mode `600`, and the bridge reads it once at start from `--file-roots <absolute path>`; the format is under "Approved file roots" in [apps/helper/README.md](../apps/helper/README.md). Without the flag, or with an empty list, every file op from the gate is refused. The bridge refuses to start on a list that is group or other writable, not owned by the owner, a symbolic link, or malformed. After changing the list, restart the bridge. The bridge LaunchAgent (#827) passes the flag.
+The session bridge reaches only the file roots the owner approved (#865). The owner keeps the list in a JSON file they own, mode `600`, and the bridge reads it once at start from `--file-roots <absolute path>`; the format is under "Approved file roots" in [apps/helper/README.md](../apps/helper/README.md). Without the flag, or with an empty list, every file op from the gate is refused. The bridge refuses to start on a list that is group or other writable, not owned by the owner, a symbolic link, or malformed. After changing the list, restart the bridge. The bridge LaunchAgent (#827, not yet merged) will pass the flag; until it does, start the bridge with `--file-roots` yourself.
+
+To approve a new root, in this order:
+
+1. Get the directory's canonical path. `realpath <dir>` resolves symbolic links, and the path must be spelled in the case it has on disk, because the bridge compares it with the path the OS reports for the opened directory. Get its device and inode with `stat -f '%d %i' <canonical path>`; the list needs both.
+2. Add `{"path": "<canonical path>", "dev": "<device>", "ino": "<inode>"}` to the list file, keeping its mode `600`.
+3. Restart the bridge, which reads the list only at start.
+4. Approve the folder in the web UI. The gate's request for a root the list does not name is refused with `root_not_approved`.
 
 ## Back up
 
