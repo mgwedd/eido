@@ -249,7 +249,9 @@ bridge, in this order:
    [The file helper's private copy](#the-file-helpers-private-copy));
 4. reads the owner's approved file roots from `--file-roots` (see
    [Approved file roots](#approved-file-roots)). Without the flag no root is
-   approved and every `file` op is refused;
+   approved and every `file` op is refused; the bridge then writes the notice
+   `file_roots_absent` to stderr, or `file_roots_empty` for a list with no
+   roots, and goes on starting;
 5. binds the socket with mode `0600`. A stale socket at the path is replaced; a
    socket that still accepts connections (another bridge) or any other kind of
    file there is refused.
@@ -417,21 +419,39 @@ from `--file-roots`:
 
 - `path` is absolute and canonical: no symbolic link anywhere in it, no empty,
   `.` or `..` component, no trailing `/`, under 1024 bytes. A path is listed at
-  most once.
+  most once. Get it with `realpath <dir>` (for example `/tmp` is
+  `/private/tmp`), and keep the case and Unicode normalization the directory has
+  on disk: paths are compared byte for byte, so `café` written with a combining
+  accent is not the same root as `café` with a precomposed one.
 - `dev` and `ino` are the directory's device and inode in decimal, with no
   leading zeros, as `stat -f '%d %i' <path>` prints them and as the file helper's
   `identify` returns them on macOS. A root that is removed and created again has
   a new inode, so it must be approved again.
-- Keys other than `roots`, `path`, `dev` and `ino` are refused. `{"roots":[]}`
-  approves nothing.
+- Keys other than `roots`, `path`, `dev` and `ino` are refused. A key repeated
+  in one object keeps its first value. `{"roots":[]}` approves nothing.
 
-The file must be a regular file, not a symbolic link, owned by the user the
-bridge runs as, with no group or other write bit (`chmod 600` is the intent).
-Its ownership and mode are read from the same open descriptor the list is read
-from. A list that fails those checks stops the start with `file_roots_unsafe`; a
-missing, unreadable, malformed, or over-1-MiB list stops it with
-`file_roots_invalid`. A change to the list takes effect when the bridge is
-restarted. The LaunchAgent in #827 passes the flag.
+`--file-roots` must be an absolute path to the file. The bridge resolves the
+file's parent directory with `realpath`, then opens `/` and each directory of
+that resolved path one at a time without following symbolic links, and opens
+the file itself the same way. Each directory must be owned by root or by the
+user the bridge runs as, have no group or other write bit unless it is sticky
+(as `/tmp` is), and have no access control list entry that allows a write. The
+file must be a regular file with one hard link, owned by the user the bridge
+runs as, with no group or other write bit (`chmod 600` is the intent) and no
+access control list entry that allows a write; deny-only entries are accepted.
+Its type, links, ownership, mode and ACL are read from the same open descriptor
+the list is read from. A list that fails those checks stops the start with
+`file_roots_unsafe`; a relative path, a missing, unreadable, malformed, or
+over-1-MiB list stops it with `file_roots_invalid`. A change to the list takes
+effect when the bridge is restarted. The LaunchAgent in #827 will pass the flag.
+
+To approve a new root:
+
+1. add its entry to the list;
+2. restart the bridge;
+3. approve the folder in the web UI. The gate identifies the folder through the
+   bridge, and the bridge identifies only a listed root, so until steps 1 and 2
+   are done the gate answers `root_not_approved` (422) and stores nothing.
 
 What the check closes, and what it does not:
 
@@ -442,10 +462,14 @@ What the check closes, and what it does not:
 - The approval is by path, device and inode. If an approved directory is deleted
   and the file system later reuses its inode number for a new directory at the
   same path, the new directory is admitted.
-- The parent directories of the list file are not checked. Opening without
-  following links and the owner check refuse a list replaced by another user, but
-  a process running as the owner can change the list; it already has the owner's
-  files.
+- The identity is the device and inode, not the volume. Removable and
+  remountable volumes are not told apart: another volume mounted at the same path
+  whose directory has the same device and inode numbers is admitted. No volume
+  UUID is checked (decision in #897).
+- Another user cannot replace or edit the list: every directory to it and the
+  file itself are checked for ownership, write bits, ACLs and extra hard links.
+  A process running as the owner can still change the list; it already has the
+  owner's files.
 
 ### The file helper's private copy
 

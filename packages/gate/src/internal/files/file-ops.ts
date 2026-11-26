@@ -7,6 +7,7 @@ import type {
 import { append } from "../audit"
 import { payloadHash } from "../canonical"
 import { outcomeUnknown, sentNothing } from "../session-bridge/client"
+import { HostRootNotApproved } from "./file-helper"
 import type { FileHelper } from "./file-helper"
 import { approvedFileRoot } from "./file-roots"
 
@@ -73,6 +74,9 @@ async function audited(
   try {
     reply = await helper(build(root))
   } catch (error) {
+    // The host's own approved list refused the root: the same outcome as the gate's list.
+    if (error instanceof HostRootNotApproved)
+      return finish({ ok: false, code: "root_not_approved" })
     return finish({
       ok: false,
       code: sentNothing(error)

@@ -6,6 +6,15 @@ import XCTest
 
 /// The owner's approved file roots list (#865): its format, the file's ownership and mode,
 /// and the live check of each root. Every path is a synthetic temporary directory.
+/// A root named "café" in NFC, made with `mkdir` so the bytes on disk are the ones given
+/// (`FileManager` would store the name decomposed).
+func composedRoot(_ base: String) throws -> ApprovedRoot {
+  let path = try canonical(base) + "/caf\u{e9}"
+  XCTAssertEqual(mkdir(path, 0o700), 0)
+  let (dev, ino) = try identity(path)
+  return ApprovedRoot(path: path, dev: dev, ino: ino)
+}
+
 final class FileRootsTests: XCTestCase {
   var directory = ""
 
@@ -156,5 +165,191 @@ final class FileRootsTests: XCTestCase {
       let roots = ApprovedRoots(roots: [entry])
       XCTAssertFalse(roots.admits(.root(path: entry.path, dev: entry.dev, ino: entry.ino)), entry.path)
     }
+  }
+
+  // MARK: Byte-wise paths
+
+  func testRefusesAPathThatIsOnlyUnicodeEquivalentToTheApprovedOne() throws {
+    let root = try composedRoot(directory)
+    let decomposed = directory + "/cafe\u{301}"  // NFD: the same text, other bytes
+    let roots = ApprovedRoots(roots: [root])
+    XCTAssertTrue(roots.admits(.root(path: root.path, dev: root.dev, ino: root.ino)))
+    XCTAssertTrue(roots.admits(.identify(path: root.path)))
+    XCTAssertFalse(roots.admits(.root(path: decomposed, dev: root.dev, ino: root.ino)))
+    XCTAssertFalse(roots.admits(.identify(path: decomposed)))
+    // Listed as NFD while the name on disk is NFC: the list must match the disk's bytes.
+    let listedDecomposed = ApprovedRoots(roots: [ApprovedRoot(path: decomposed, dev: root.dev, ino: root.ino)])
+    XCTAssertFalse(listedDecomposed.admits(.identify(path: decomposed)))
+  }
+
+  func testParseKeepsByteDifferentPathsApart() throws {
+    let text = #"{"roots":[{"path":"/caf\u00e9","dev":"1","ino":"2"},{"path":"/cafe\u0301","dev":"1","ino":"2"}]}"#
+    XCTAssertEqual(
+      try ApprovedRoots.parse(Data(text.utf8)).roots.map { Array($0.path.utf8) },
+      [Array("/caf\u{e9}".utf8), Array("/cafe\u{301}".utf8)])
+  }
+
+  // MARK: The list file's links, parents and ACLs
+
+  func chmodACL(_ entry: String, _ path: String) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/chmod")
+    process.arguments = ["+a", entry, path]
+    try process.run()
+    process.waitUntilExit()
+    XCTAssertEqual(process.terminationStatus, 0, "chmod +a \(entry)")
+  }
+
+  func testLoadRefusesAListWithASecondHardLink() throws {
+    let path = try list(#"{"roots":[]}"#)
+    XCTAssertEqual(link(path, directory + "/second.json"), 0)
+    assertRefused(try ApprovedRoots.load(path: path), .fileRootsUnsafe)
+  }
+
+  func testLoadRefusesAListInAGroupWritableDirectory() throws {
+    let parent = directory + "/shared"
+    try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: false)
+    let path = parent + "/roots.json"
+    try Data(#"{"roots":[]}"#.utf8).write(to: URL(fileURLWithPath: path))
+    XCTAssertEqual(chmod(path, 0o600), 0)
+    XCTAssertEqual(chmod(parent, 0o700), 0)
+    XCTAssertEqual(try ApprovedRoots.load(path: path), ApprovedRoots.none)
+    XCTAssertEqual(chmod(parent, 0o770), 0)
+    assertRefused(try ApprovedRoots.load(path: path), .fileRootsUnsafe)
+  }
+
+  func testLoadChecksTheDirectoriesALinkedParentLeadsTo() throws {
+    let path = try list(#"{"roots":[]}"#)
+    let link = directory + "/linked"
+    try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: directory)
+    XCTAssertEqual(try ApprovedRoots.load(path: link + "/roots.json"), ApprovedRoots.none)
+    XCTAssertEqual(try ApprovedRoots.load(path: path), ApprovedRoots.none)
+    // The link's target is where the list is read from, so its mode is what counts.
+    XCTAssertEqual(chmod(directory, 0o770), 0)
+    defer { chmod(directory, 0o700) }
+    assertRefused(try ApprovedRoots.load(path: link + "/roots.json"), .fileRootsUnsafe)
+  }
+
+  func testLoadRefusesARelativePathOrNoFileName() throws {
+    _ = try list(#"{"roots":[]}"#)
+    for path in ["roots.json", "", directory + "/", directory + "/.", directory + "/.."] {
+      assertRefused(try ApprovedRoots.load(path: path), .fileRootsInvalid, path)
+    }
+  }
+
+  func testLoadRefusesAListWithAnACLThatGrantsAWrite() throws {
+    let path = try list(#"{"roots":[]}"#)
+    try chmodACL("everyone allow write", path)
+    assertRefused(try ApprovedRoots.load(path: path), .fileRootsUnsafe)
+  }
+
+  func testLoadRefusesAListInADirectoryWithAnACLThatGrantsAWrite() throws {
+    let path = try list(#"{"roots":[]}"#)
+    try chmodACL("everyone allow add_file", directory)
+    assertRefused(try ApprovedRoots.load(path: path), .fileRootsUnsafe)
+  }
+
+  func testLoadReadsAListWithADenyOnlyACL() throws {
+    let path = try list(#"{"roots":[]}"#)
+    try chmodACL("everyone deny write,delete", path)
+    try chmodACL("everyone deny delete_child", directory)
+    XCTAssertEqual(try ApprovedRoots.load(path: path), ApprovedRoots.none)
+  }
+
+  func testDirectoryModeAllowsOnlyTheOwnerOrRootAndASharedDirectoryIfSticky() {
+    func info(uid: uid_t, mode: mode_t) -> stat {
+      var value = stat()
+      value.st_uid = uid
+      value.st_mode = mode
+      return value
+    }
+    let owner: uid_t = 501
+    XCTAssertTrue(ApprovedRoots.directoryModeIsSafe(info(uid: owner, mode: S_IFDIR | 0o755), owner: owner))
+    XCTAssertTrue(ApprovedRoots.directoryModeIsSafe(info(uid: 0, mode: S_IFDIR | 0o755), owner: owner))
+    XCTAssertTrue(
+      ApprovedRoots.directoryModeIsSafe(info(uid: 0, mode: S_IFDIR | S_ISVTX | 0o777), owner: owner))
+    XCTAssertFalse(ApprovedRoots.directoryModeIsSafe(info(uid: 502, mode: S_IFDIR | 0o755), owner: owner))
+    XCTAssertFalse(ApprovedRoots.directoryModeIsSafe(info(uid: owner, mode: S_IFDIR | 0o775), owner: owner))
+    XCTAssertFalse(ApprovedRoots.directoryModeIsSafe(info(uid: owner, mode: S_IFDIR | 0o757), owner: owner))
+    XCTAssertFalse(ApprovedRoots.directoryModeIsSafe(info(uid: owner, mode: S_IFREG | 0o700), owner: owner))
+  }
+
+  // MARK: Start notice
+
+  func testStartWithNoApprovedRootWritesANotice() throws {
+    var notices: [String] = []
+    XCTAssertEqual(try ApprovedRoots.atStart(nil) { notices.append($0) }, ApprovedRoots.none)
+    XCTAssertEqual(notices, ["file_roots_absent"])
+    notices = []
+    let empty = try list(#"{"roots":[]}"#)
+    XCTAssertEqual(try ApprovedRoots.atStart(empty) { notices.append($0) }, ApprovedRoots.none)
+    XCTAssertEqual(notices, ["file_roots_empty"])
+    notices = []
+    let one = try list(#"{"roots":[{"path":"/Volumes/Synthetic","dev":"1","ino":"2"}]}"#)
+    XCTAssertEqual(try ApprovedRoots.atStart(one) { notices.append($0) }.roots.count, 1)
+    XCTAssertEqual(notices, [])
+  }
+
+  func testStartStopsOnAnUnsafeList() throws {
+    let path = try list(#"{"roots":[]}"#, mode: 0o620)
+    assertRefused(try ApprovedRoots.atStart(path) { _ in }, .fileRootsUnsafe)
+  }
+
+  // MARK: Target by op
+
+  func testTargetIsChosenByTheOp() throws {
+    let root = ["path": "/Volumes/Synthetic", "dev": "1", "ino": "2", "trashDir": ".t"]
+    XCTAssertEqual(
+      try FileOps.target("identify", ["op": "identify", "path": "/Volumes/Synthetic"]),
+      .identify(path: "/Volumes/Synthetic"))
+    XCTAssertEqual(
+      try FileOps.target("list", ["op": "list", "root": root, "path": ""]),
+      .root(path: "/Volumes/Synthetic", dev: "1", ino: "2"))
+    let refused: [(String, [String: Any])] = [
+      ("list", ["op": "list", "path": "/Volumes/Synthetic"]),
+      ("read", ["op": "read", "root": root.filter { $0.key != "ino" }, "path": "/Volumes/Synthetic"]),
+      ("read", ["op": "read", "root": "/Volumes/Synthetic", "path": "/Volumes/Synthetic"]),
+      ("identify", ["op": "identify", "root": root]),
+    ]
+    for (op, fields) in refused {
+      XCTAssertThrowsError(try FileOps.target(op, fields), op) {
+        XCTAssertEqual($0 as? BridgeFailure, .invalidRequest, op)
+      }
+    }
+  }
+}
+
+extension BridgeTests {
+  @MainActor func testFileOpWithAMalformedRootIsRefusedBeforeTheHelperRuns() async throws {
+    let handler = try makeHandler()
+    let requests: [[String: Any]] = [
+      ["op": "list", "path": approved.path],
+      ["op": "list", "root": root.filter { $0.key != "ino" }, "path": ""],
+      ["op": "list", "root": approved.path, "path": ""],
+      ["op": "read", "root": ["path": approved.path], "path": "a", "maxBytes": 1],
+    ]
+    for request in requests {
+      let response = try await fileOp(handler, request)
+      XCTAssertEqual(response["code"] as? String, "invalid_request", "\(request)")
+    }
+    XCTAssertEqual(runner.calls, [])
+  }
+
+  @MainActor func testFileOpOnAUnicodeEquivalentPathIsNotApproved() async throws {
+    let nfc = try composedRoot(directory)
+    let handler = try makeHandler(roots: ApprovedRoots(roots: [nfc]))
+    let decomposed = try canonical(directory) + "/cafe\u{301}"
+    let requests: [[String: Any]] = [
+      ["op": "identify", "path": decomposed],
+      [
+        "op": "list", "path": "",
+        "root": ["path": decomposed, "dev": nfc.dev, "ino": nfc.ino, "trashDir": ".eido-trash"],
+      ],
+    ]
+    for request in requests {
+      let response = try await fileOp(handler, request)
+      XCTAssertEqual(response["code"] as? String, "root_not_approved", "\(request)")
+    }
+    XCTAssertEqual(runner.calls, [])
   }
 }

@@ -4,6 +4,7 @@ import { apiError } from "./http"
 import type { GateRequest, Reply } from "./http"
 import {
   changedFileRoot,
+  FileRootNotApproved,
   FileRootUnidentified,
   prepareFileRoots,
   setFileRoots,
@@ -37,10 +38,21 @@ async function readJson(
   }
 }
 
+/** The session bridge refused the folder: it is not on the host's approved file roots list. */
+function notApproved(rootId: string): Reply {
+  const body: GateApiError = {
+    code: "root_not_approved",
+    rootId,
+    message: "this folder is not on the host's approved list",
+  }
+  return { status: 422, body }
+}
+
 /**
  * Prepare: captures each requested root's canonical path and identity with the gate-side helper
  * and returns them with the challenge. The caller's paths are never echoed back. A root the
- * helper cannot identify is refused as `root_missing`, naming the request's id for it.
+ * helper cannot identify is refused as `root_missing`, naming the request's id for it, and one
+ * the host's approved list does not hold as `root_not_approved`.
  */
 export async function prepareFileRootsRoute(
   request: GateRequest,
@@ -73,6 +85,7 @@ export async function prepareFileRootsRoute(
       },
     }
   } catch (error) {
+    if (error instanceof FileRootNotApproved) return notApproved(error.rootId)
     if (error instanceof FileRootUnidentified) {
       // The request's own id only: never the path or the helper's text (ADR 0006).
       const body: GateApiError = {
@@ -122,7 +135,8 @@ export async function completeFileRootsRoute(
   let changed: string | undefined
   try {
     changed = await changedFileRoot(state.fileHelper, roots.value)
-  } catch {
+  } catch (error) {
+    if (error instanceof FileRootNotApproved) return notApproved(error.rootId)
     return apiError(
       503,
       "unavailable",

@@ -5,6 +5,7 @@ import { openControlDb } from "./control-db"
 import { prepareControlApproval } from "./control-approvals"
 import { fileRootRoute } from "./file-root-routes"
 import type { GateRequest } from "./http"
+import { HostRootNotApproved } from "./files/file-helper"
 import type { FileHelper } from "./files/file-helper"
 import { controlAuthorization, WEBAUTHN } from "./test-fixtures"
 import { approvedFileRoot, prepareFileRoots } from "./files/file-roots"
@@ -202,6 +203,34 @@ describe("file root control routes", () => {
       db.close()
     }
   )
+
+  it("names a root the host's list no longer holds at complete as root_not_approved, and stores nothing", async () => {
+    const db = openControlDb(":memory:")
+    const prepared = await prepareFileRoots(db, helper, REQUEST)
+    const auth = controlAuthorization(db, prepared)
+    const reply = await fileRootRoute(
+      request("POST", "/file-roots/complete", {
+        roots: ROOTS,
+        authorization: auth.request,
+      }),
+      {
+        db,
+        webAuthn: WEBAUTHN,
+        fileHelper: () => Promise.reject(new HostRootNotApproved()),
+      }
+    )
+    expect(reply).toEqual({
+      status: 422,
+      body: {
+        code: "root_not_approved",
+        rootId: "docs",
+        message: "this folder is not on the host's approved list",
+      },
+    })
+    expect(validateGateApiError(reply?.body).ok).toBe(true)
+    expect(approvedFileRoot(db, "docs")).toBeUndefined()
+    db.close()
+  })
 
   it("re-identifies every root at complete and names the one gone since prepare", async () => {
     const db = openControlDb(":memory:")
