@@ -17,6 +17,10 @@ import {
   loggedText,
 } from "../test-fixtures"
 import type { Setup } from "../test-fixtures"
+import {
+  SessionBridgeOutcomeUnknownError,
+  SessionUnavailableError,
+} from "../session-bridge/client"
 import type { FileHelper } from "./file-helper"
 import { listDisk } from "./disk-listing-double"
 
@@ -504,6 +508,153 @@ describe("native file executor lifecycle", () => {
     release?.()
     expect((await first).ok).toBe(true)
     expect(f.helper).toHaveBeenCalledTimes(1)
+  })
+
+  // fileHelper (file-helper.ts) rethrows SessionUnavailableError and wraps every other bridge
+  // error in its own "file helper failed", keeping the cause.
+  const helperFailed = (cause: Error) =>
+    new Error("file helper failed", { cause })
+  const attemptRows = (f: { db: Setup["db"] }, id: string) =>
+    f.db
+      .prepare("SELECT direction FROM execution_attempts WHERE intent_id=?")
+      .all(id)
+      .map((row) => row["direction"])
+
+  it("keeps the attempt when the bridge was not reached, then executes once it is", async () => {
+    const f = await fixture()
+    const p = f.proposal(automatic[0])
+    f.helper.mockRejectedValueOnce(new SessionUnavailableError())
+    expect(await f.executor.execute(p.intentId)).toEqual({
+      ok: false,
+      code: "session_unavailable",
+    })
+    expect(attemptRows(f, p.intentId)).toEqual([])
+    expect(f.disk.has("new.txt")).toBe(false)
+    expect((await f.executor.execute(p.intentId)).ok).toBe(true)
+    expect(f.disk.get("new.txt")).toBe(content)
+    expect(
+      auditRows(f.db)
+        .map((row) => row.action)
+        .filter((action) => action.startsWith("execute"))
+    ).toEqual([
+      // The claimed start stays in the append-only log; the refusal releases the claim.
+      "execute.started",
+      "execute.refused.session_unavailable",
+      "execute.started",
+      "execute",
+    ])
+    expect(verifyChain(f.db).ok).toBe(true)
+  })
+
+  it("records a file write that timed out after sending as outcome unknown and never retries it", async () => {
+    const f = await fixture()
+    const p = f.proposal(automatic[0])
+    f.helper.mockRejectedValueOnce(
+      helperFailed(new SessionBridgeOutcomeUnknownError())
+    )
+    expect(await f.executor.execute(p.intentId)).toEqual({
+      ok: false,
+      code: "outcome_unknown",
+    })
+    expect(attemptRows(f, p.intentId)).toEqual(["execute"])
+    expect(await f.executor.execute(p.intentId)).toEqual({
+      ok: false,
+      code: "outcome_unresolved",
+    })
+    expect(f.helper).toHaveBeenCalledTimes(1)
+    expect(
+      auditRows(f.db).some((row) => row.action.startsWith("execute.failed"))
+    ).toBe(false)
+  })
+
+  it.each([
+    [
+      "the listing before a restore",
+      "list",
+      ["trash", "list", "list", "restore"],
+    ],
+    [
+      "the restore itself",
+      "restore",
+      ["trash", "list", "restore", "list", "restore"],
+    ],
+  ] as const)(
+    "keeps the Undo when %s finds the bridge unreachable",
+    async (_name, failing, ops) => {
+      const f = await fixture()
+      const p = f.proposal({
+        kind: "file.delete",
+        args: { root: "docs", path: "a.txt" },
+      })
+      f.approve(p.intentId)
+      await f.executor.execute(p.intentId)
+      const implementation = f.helper.getMockImplementation()
+      if (!implementation) throw new Error("missing helper")
+      let down = true
+      f.helper.mockImplementation((request) =>
+        down && request.op === failing
+          ? Promise.reject(new SessionUnavailableError())
+          : implementation(request)
+      )
+      expect(await f.executor.undo(p.intentId)).toEqual({
+        ok: false,
+        code: "session_unavailable",
+      })
+      expect(attemptRows(f, p.intentId)).toEqual(["execute"])
+      down = false
+      expect((await f.executor.undo(p.intentId)).ok).toBe(true)
+      expect(f.disk).toEqual(new Map([["a.txt", content]]))
+      expect(f.helper.mock.calls.map(([request]) => request.op)).toEqual(ops)
+      expect(auditActions(f).slice(0, -2)).toEqual(
+        failing === "list"
+          ? ["undo.refused.session_unavailable"]
+          : ["undo.started", "undo.refused.session_unavailable"]
+      )
+    }
+  )
+
+  it("keeps a create's Undo when the read-back finds the bridge unreachable", async () => {
+    const f = await fixture()
+    const p = f.proposal(automatic[0])
+    await f.executor.execute(p.intentId)
+    f.helper.mockRejectedValueOnce(new SessionUnavailableError())
+    expect(await f.executor.undo(p.intentId)).toEqual({
+      ok: false,
+      code: "session_unavailable",
+    })
+    expect(f.disk.get("new.txt")).toBe(content)
+    expect((await f.executor.undo(p.intentId)).ok).toBe(true)
+    expect(f.disk.has("new.txt")).toBe(false)
+  })
+
+  it("records a restore that timed out after sending as outcome unknown and never retries it", async () => {
+    const f = await fixture()
+    const p = f.proposal({
+      kind: "file.delete",
+      args: { root: "docs", path: "a.txt" },
+    })
+    f.approve(p.intentId)
+    await f.executor.execute(p.intentId)
+    const implementation = f.helper.getMockImplementation()
+    if (!implementation) throw new Error("missing helper")
+    f.helper.mockImplementation((request) =>
+      request.op === "restore"
+        ? Promise.reject(helperFailed(new SessionBridgeOutcomeUnknownError()))
+        : implementation(request)
+    )
+    expect(await f.executor.undo(p.intentId)).toEqual({
+      ok: false,
+      code: "outcome_unknown",
+    })
+    expect(await f.executor.undo(p.intentId)).toEqual({
+      ok: false,
+      code: "outcome_unresolved",
+    })
+    expect(auditActions(f)).toEqual([
+      "undo.started",
+      "undo.outcome_unknown",
+      "undo.refused.outcome_unresolved",
+    ])
   })
 
   it("an uncertain native failure is not retried or logged verbatim", async () => {
