@@ -39,9 +39,17 @@ the gate shuts down. A gate started with the Keychain already locked still start
 retry verifies, it logs `control_checkpoint_verified`, loads the policy and logs `policy_loaded`
 with `overlayErrors` (a count), then reads the profile-audit and Web Push keys. A failed policy load
 logs `policy_load_failed` and policy reads stay denied. A secret that still cannot be read logs
-`profile_audit_unavailable` or `push_unavailable`, and policy reads keep working. Mid-run lock
-detection is #878: the recovery above covers a Keychain that locks while the gate runs, and that
-lock is noticed only at the next control change.
+`profile_audit_unavailable` or `push_unavailable`, and policy reads keep working.
+
+A Keychain that locks while the gate runs is noticed at the next secret read from the Keychain
+vault. That read (`openVault` in `main.ts`, `reportingLocks` in `vault.ts`) calls
+`reportKeychainLocked`: a verified checkpoint moves into `keychain_locked`, logs
+`control_checkpoint_denied` with that reason, and starts the retry above. A denial already in place
+is kept, so a lock does not replace `store_malformed` or any other reason. Two audit rows mark the
+move, one each way and none per retry: `control.keychain_locked` when the checkpoint enters the
+lock (also when the gate starts locked), and `control.keychain_lock_cleared` when the retry leaves
+it, with the reason `verified` or the new denial. Each row carries a hash of the reason only. A
+locked vault on another keychain can flap the checkpoint and the audit log (#919).
 
 ## Inspect (read-only, safe while the gate runs)
 
