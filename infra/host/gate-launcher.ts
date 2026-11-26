@@ -128,6 +128,8 @@ export function launchedGate(gate: DaemonSpec, launcher: string): DaemonSpec {
 /** Writes the launcher root-owned and read-only after the app copy is in place. */
 export function launcherSteps(path: string, script: string): Step[] {
   return [
+    // tee, chown and chmod follow a symlink; removing the path first means they write a new file.
+    { argv: ["/bin/rm", "-f", path] },
     { argv: ["/usr/bin/tee", path], stdin: script },
     { argv: ["/usr/sbin/chown", "root:wheel", path] },
     { argv: ["/bin/chmod", LAUNCHER_MODE.toString(8).padStart(4, "0"), path] },

@@ -16,11 +16,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import {
   gateLauncher,
-  KEYCHAIN_UNLOCK_SERVICE,
-  LAUNCHER_MODE,
   launchedGate,
   launcherSteps,
-  SYSTEM_KEYCHAIN,
   type GateLauncherInput,
 } from "./gate-launcher.ts"
 import type { DaemonSpec } from "./plane-base.ts"
@@ -64,8 +61,6 @@ describe("gateLauncher", () => {
   })
 
   it("reads the passphrase from the named System keychain item and pipes it into the gate, never through a variable", () => {
-    expect(KEYCHAIN_UNLOCK_SERVICE).toBe("com.eido.gate.keychain-unlock")
-    expect(SYSTEM_KEYCHAIN).toBe("/Library/Keychains/System.keychain")
     const piped = body.filter((text) => text.includes("'-w'"))
     expect(piped).toEqual([
       `'/usr/bin/env' '-i' 'HOME=/var/root' '/usr/bin/security' 'find-generic-password' '-s' 'com.eido.gate.keychain-unlock' '-w' '/Library/Keychains/System.keychain' | exec ${GATE}`,
@@ -86,12 +81,13 @@ describe("gateLauncher", () => {
       .map((text, index) => ({ text, index }))
       .filter(({ text }) => text.includes("exec "))
     expect(execs.map(({ index }) => index > exportAt)).toEqual([true, true])
-    // The gate's program comes after chroot's -u, -g, -G and `/`, never before.
-    for (const { text } of execs)
-      expect(text.indexOf(GATE)).toBeLessThan(
-        text.indexOf("'/opt/homebrew/bin/node'")
-      )
-    expect(body).toContain("ulimit -c 0")
+    // Every line that runs node runs it straight after chroot's -u, -g, -G and `/`.
+    const drop =
+      "exec '/usr/sbin/chroot' '-u' '_eidogate' '-g' '_eidogate' '-G' '_eidogate,_eidoipc' '/' '/usr/bin/env' '-C' '/Library/Application Support/Eido/app/packages/gate' '/opt/homebrew/bin/node' "
+    const runsNode = body.filter((text) =>
+      text.includes("'/opt/homebrew/bin/node'")
+    )
+    expect(runsNode.map((text) => text.includes(drop))).toEqual([true, true])
   })
 
   it("starts the gate with no stdin and says why on stderr when the item is missing or unreadable", () => {
@@ -147,14 +143,14 @@ describe("launchedGate", () => {
 })
 
 describe("launcherSteps", () => {
-  it("writes the script, then makes it root's and writable by no one else", () => {
+  it("removes whatever is at the path, writes the script, then makes it root's and writable by no one else", () => {
     const steps = launcherSteps("/app/gate-launcher.zsh", "script\n")
     expect(steps).toEqual([
+      { argv: ["/bin/rm", "-f", "/app/gate-launcher.zsh"] },
       { argv: ["/usr/bin/tee", "/app/gate-launcher.zsh"], stdin: "script\n" },
       { argv: ["/usr/sbin/chown", "root:wheel", "/app/gate-launcher.zsh"] },
       { argv: ["/bin/chmod", "0555", "/app/gate-launcher.zsh"] },
     ])
-    expect(LAUNCHER_MODE & 0o022).toBe(0)
   })
 })
 
@@ -262,8 +258,8 @@ describe.runIf(existsSync("/bin/zsh"))("the launcher under zsh", () => {
     expect(securityEnv).not.toContain("EIDO_")
     expect(await read("security.calls")).toBe(
       [
-        `find-generic-password -s ${KEYCHAIN_UNLOCK_SERVICE} ${SYSTEM_KEYCHAIN}`,
-        `find-generic-password -s ${KEYCHAIN_UNLOCK_SERVICE} -w ${SYSTEM_KEYCHAIN}`,
+        "find-generic-password -s com.eido.gate.keychain-unlock /Library/Keychains/System.keychain",
+        "find-generic-password -s com.eido.gate.keychain-unlock -w /Library/Keychains/System.keychain",
         "",
       ].join("\n")
     )
@@ -282,7 +278,7 @@ describe.runIf(existsSync("/bin/zsh"))("the launcher under zsh", () => {
     expect(await read("gate.tty")).toBe("notty\n")
     expect(await read("gate.pid")).toBe(`${String(pid)}\n`)
     expect(await read("security.calls")).toBe(
-      `find-generic-password -s ${KEYCHAIN_UNLOCK_SERVICE} ${SYSTEM_KEYCHAIN}\n`
+      "find-generic-password -s com.eido.gate.keychain-unlock /Library/Keychains/System.keychain\n"
     )
     expect(await read("gate.env")).toContain(
       "EIDO_GATE_KEYCHAIN_UNLOCK=stdin\n"

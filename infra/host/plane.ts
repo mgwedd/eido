@@ -572,6 +572,7 @@ export function planeServices(input: PlaneInput): PlaneServices {
 const DSCL = "/usr/bin/dscl"
 const CHOWN = "/usr/sbin/chown"
 const CHMOD = "/bin/chmod"
+const FIND = "/usr/bin/find"
 const LAUNCHCTL = "/bin/launchctl"
 const PFCTL = "/sbin/pfctl"
 
@@ -582,6 +583,54 @@ function dir(path: string, owner: string, group: string, mode: number): Step[] {
     { argv: ["/bin/mkdir", "-p", path] },
     { argv: [CHOWN, `${owner}:${group}`, path] },
     { argv: [CHMOD, octal(mode), path] },
+  ]
+}
+
+/**
+ * Takes back a log directory an earlier generator gave to a service user. Run after the
+ * directory itself is root's, so its entries can no longer change. A symlink, a hard link or
+ * anything else that is not a plain file may have been planted there and is removed; plain
+ * files are made root's and readable by admins only.
+ */
+function rootOwnedLogs(path: string): Step[] {
+  const entries = [FIND, path, "-mindepth", "1", "-maxdepth", "1"]
+  return [
+    {
+      argv: [
+        ...entries,
+        "(",
+        "!",
+        "-type",
+        "f",
+        "-o",
+        "-links",
+        "+1",
+        ")",
+        "-exec",
+        "/bin/rm",
+        "-rf",
+        "{}",
+        "+",
+      ],
+    },
+    {
+      argv: [
+        ...entries,
+        "-type",
+        "f",
+        "-exec",
+        CHOWN,
+        "-h",
+        "root:admin",
+        "{}",
+        "+",
+        "-exec",
+        CHMOD,
+        "0640",
+        "{}",
+        "+",
+      ],
+    },
   ]
 }
 
@@ -696,6 +745,8 @@ export function applySteps(input: PlaneInput): Step[] {
     "--exclude=*.db",
     "--exclude=*.db-wal",
     "--exclude=*.db-shm",
+    // Written below, never copied from the checkout or deleted by --delete (#823).
+    `--exclude=/${LAUNCHER_FILE}`,
   ]
   return [
     ...group(gate, ids.gateGid, "Eido gate"),
@@ -736,7 +787,11 @@ export function applySteps(input: PlaneInput): Step[] {
     ...dir(layout.policyDir, "root", "wheel", 0o755),
     ...dir(layout.app, "root", "wheel", 0o755),
     ...dir(layout.logs.root, "root", "wheel", 0o755),
-    ...dir(layout.logs.gate, gate, "admin", 0o750),
+    // Root's, not the gate's: launchd opens the gate's logs as root (#823), so a gate that could
+    // swap one for a link would get root appending to any file. The gate writes them only
+    // through the descriptors launchd hands it.
+    ...dir(layout.logs.gate, "root", "admin", 0o750),
+    ...rootOwnedLogs(layout.logs.gate),
     ...dir(layout.logs.data, data, "admin", 0o750),
     ...dir(layout.logs.pf, "root", "wheel", 0o755),
     ...parserDirs(layout.parser, data).flatMap((d) =>
