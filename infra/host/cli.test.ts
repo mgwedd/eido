@@ -75,7 +75,7 @@ describe("host check", () => {
     const h = harness({})
     expect(await main(["plane"], h.deps)).toBe(2)
     expect(h.err).toEqual([
-      "usage: host plane <plan|remove> [--owner <user>] [--node <path>] [--checkout <dir>] [--first-id <n>] [--egress-port <port>]",
+      "usage: host plane <plan|remove> [--owner <user>] [--node <path>] [--checkout <dir>] [--first-id <n>] [--egress-port <port>] [--bridge-helper <path> --bridge-file-helper <path> --bridge-file-helper-sha256 <hex> --bridge-file-roots <path>]",
     ])
   })
 })
