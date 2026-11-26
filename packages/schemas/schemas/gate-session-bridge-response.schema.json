@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "GateSessionBridgeResponse",
-  "description": "The session bridge's answer to a things or file op (apps/helper/README.md, #826). ok true carries the child's stdout as base64; the gate decodes it and applies the same limits and parsing as when it runs the child itself. ok false carries a bridge code. The gate caps the whole frame at 24 MiB before parsing, so stdoutBase64 has no length limit of its own. An eventkit op answers with a GateAppleResponse instead.",
+  "description": "The session bridge's answer to a things or file op (apps/helper/README.md, #826). ok true carries the child's stdout as base64; the gate decodes it and applies the same limits and parsing as when it runs the child itself. ok false carries a bridge code; root_not_approved means a file op named a folder (or an identify path) that is not on the host's approved file roots list, or whose directory is no longer the one listed. The gate caps the whole frame at 24 MiB before parsing, so stdoutBase64 has no length limit of its own. An eventkit op answers with a GateAppleResponse instead.",
   "oneOf": [
     {
       "type": "object",
@@ -30,6 +30,7 @@
             "unknown_script",
             "frame_too_large",
             "automation_denied",
+            "root_not_approved",
             "unavailable"
           ]
         }

@@ -11,6 +11,7 @@ import type {
 } from "@eido/schemas"
 import {
   BRIDGE_MAX_RESPONSE_BYTES,
+  SessionBridgeRefusal,
   SessionUnavailableError,
   bridgeStdout,
 } from "../session-bridge/client"
@@ -27,6 +28,17 @@ const TIMEOUT_MS = 30_000
 /** The bridge's own 30-second helper limit, plus time to connect and frame the answer. */
 const BRIDGE_TIMEOUT_MS = TIMEOUT_MS + 5_000
 const failed = () => new Error("file helper failed")
+
+/**
+ * The session bridge refused the request's folder: it is not on the host's approved file roots
+ * list, or the directory there is no longer the one listed. Nothing ran.
+ */
+export class HostRootNotApproved extends Error {
+  constructor() {
+    super("the host has not approved this folder")
+    this.name = "HostRootNotApproved"
+  }
+}
 
 /** The helper's stdout, one JSON line, schema-checked and never cast. */
 function parseReply(stdout: Buffer): GateFileHelperResponse {
@@ -122,6 +134,11 @@ async function viaBridge(
     )
   } catch (error) {
     if (error instanceof SessionUnavailableError) throw error
+    if (
+      error instanceof SessionBridgeRefusal &&
+      error.code === "root_not_approved"
+    )
+      throw new HostRootNotApproved()
     throw failed()
   }
   if (stdout.length > limit) throw failed()

@@ -18,6 +18,7 @@ describe("the session bridge's stdout answer (#826)", () => {
       "unknown_script",
       "frame_too_large",
       "automation_denied",
+      "root_not_approved",
       "unavailable",
     ])
       expect(validateGateSessionBridgeResponse({ ok: false, code }).ok).toBe(
