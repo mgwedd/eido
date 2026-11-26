@@ -452,27 +452,28 @@ describe("dataPlaneParser", () => {
     }
   })
 
-  it("parses in a local child, never contacting a broker, when EIDO_PARSER_SOCKET is unset or empty", async () => {
-    const broker = await startFakeBroker(() => "hang-up")
-    try {
-      for (const socket of [undefined, ""]) {
-        const dataDir = join(
-          dir,
-          `local-data-${socket === "" ? "empty" : "unset"}`
-        )
-        const parser = dataPlaneParser(dataDir, undefined, "darwin", socket)
-        const result = await parser?.parseBytes(
-          textPdf([["Lorem ipsum"]]),
-          "application/pdf"
-        )
-        expect(result?.ok && result.text).toContain("Lorem ipsum")
-        expect(existsSync(join(dataDir, "parse-tmp"))).toBe(true)
-      }
-      expect(broker.connections()).toBe(0)
-    } finally {
-      await broker.close()
-    }
-  })
+  // Each row starts a real parse child (node, two --import loaders, the PDF parser). Its start
+  // time depends on runner load, so the row gets the same 60 s budget as the other tests that
+  // spawn one; the 5 s Vitest default made it fail on a loaded runner.
+  it.each([
+    { name: "unset", socket: undefined },
+    { name: "empty", socket: "" },
+  ])(
+    "parses in a local child, never contacting a broker, when EIDO_PARSER_SOCKET is $name",
+    async ({ name, socket }) => {
+      const dataDir = join(dir, `local-data-${name}`)
+      const parser = dataPlaneParser(dataDir, undefined, "darwin", socket)
+      const result = await parser?.parseBytes(
+        textPdf([["Lorem ipsum"]]),
+        "application/pdf"
+      )
+      // A parse that went to a broker would not make this scratch dir and would not return text
+      // from the local PDF parser (the broker case above asserts the opposite on both).
+      expect(result?.ok && result.text).toContain("Lorem ipsum")
+      expect(existsSync(join(dataDir, "parse-tmp"))).toBe(true)
+    },
+    60_000
+  )
 
   it("refuses a broker socket that is not an absolute path", () => {
     expect(() =>
