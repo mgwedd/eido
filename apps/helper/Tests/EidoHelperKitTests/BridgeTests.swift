@@ -59,6 +59,24 @@ let repoScripts = URL(fileURLWithPath: #filePath)
 let fileHelperBytes = Data("synthetic-file-helper\n".utf8)
 let fileHelperSHA = "1968f26856d48d62818c6e7a4b61546df9261ecae2c7c200a25ab661f0524ba2"
 
+/// A file helper the real runner can start: it reads its request and prints `original`.
+/// `printf '#!/bin/sh\n/bin/cat > /dev/null\nprintf original\n' | shasum -a 256`
+let scriptHelperBytes = Data("#!/bin/sh\n/bin/cat > /dev/null\nprintf original\n".utf8)
+let scriptHelperSHA = "f9c9edfbee1f8bf94bac4e2813af36f81a1b21d8fb83c1ed8dc29ca8e5a68608"
+
+/// Makes an owner-only directory for private copies under `base`.
+func copyDirectory(_ base: String, _ name: String = "copies") throws -> String {
+  let path = base + "/" + name
+  try FileManager.default.createDirectory(
+    atPath: path, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+  return path
+}
+
+/// The names under `path`, sorted; empty when it cannot be listed.
+func entries(_ path: String) -> [String] {
+  ((try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []).sorted()
+}
+
 func shortTempDirectory() throws -> String {
   // sun_path holds 104 bytes, so socket tests use a short directory under /tmp.
   var template = Array("/tmp/eido-bridge-XXXXXX".utf8CString)
@@ -190,15 +208,23 @@ final class BridgeTests: XCTestCase {
   /// The one root the owner approved, a real directory under `directory`.
   var approved = ApprovedRoot(path: "", dev: "", ino: "")
   var root: [String: Any] = [:]
+  /// The private copy `makeHandler` installed, so a test can find and change it.
+  var installed: PinnedExecutable?
 
   override func setUpWithError() throws {
     directory = try shortTempDirectory()
+    installed = nil
     runner = RecordingRunner()
     approved = try approvedRoot(directory, "root")
     root = ["path": approved.path, "dev": approved.dev, "ino": approved.ino, "trashDir": ".eido-trash"]
   }
 
   override func tearDownWithError() throws {
+    installed?.remove()
+    // A copy is 0500 in a 0700 directory, so restore write access before removing it.
+    _ = try? FileManager.default.subpathsOfDirectory(atPath: directory).map {
+      chmod(directory + "/" + $0, 0o700)
+    }
     try? FileManager.default.removeItem(atPath: directory)
   }
 
@@ -208,9 +234,12 @@ final class BridgeTests: XCTestCase {
     let store = store ?? FakeStore()
     let helper = directory + "/file-helper"
     try fileHelperBytes.write(to: URL(fileURLWithPath: helper))
+    let copy = try PinnedExecutable.install(
+      source: helper, sha256: fileHelperSHA, parent: try copyDirectory(directory))
+    installed = copy
     return BridgeHandler(
       scripts: try ThingsScripts.load(directory: repoScripts),
-      fileHelper: PinnedExecutable(path: helper, sha256: fileHelperSHA),
+      fileHelper: copy,
       roots: roots ?? ApprovedRoots(roots: [approved]), runner: runner, store: { store })
   }
 
@@ -510,9 +539,13 @@ final class BridgeTests: XCTestCase {
       runner.calls,
       [
         .init(
-          executable: directory + "/file-helper", arguments: [], environment: [:],
+          executable: try XCTUnwrap(installed).path, arguments: [], environment: [:],
           stdin: Data(expected.utf8), outputLimit: 12 * 1024 * 1024, timeout: 30)
       ])
+    // The path run is the private copy, not `--file-helper`.
+    let copies = try canonical(directory) + "/copies/"
+    XCTAssertTrue(try XCTUnwrap(runner.calls.first).executable.hasPrefix(copies + "eido-file-helper."))
+    XCTAssertTrue(try XCTUnwrap(runner.calls.first).executable.hasSuffix("/file-helper"))
   }
 
   @MainActor func testFileOpOutputLimitsFollowTheGate() async throws {
@@ -573,16 +606,89 @@ final class BridgeTests: XCTestCase {
     XCTAssertEqual(runner.calls, [])
   }
 
-  @MainActor func testChangedFileHelperIsNotRun() async throws {
+  func identifyRequest() throws -> Data {
+    try JSONSerialization.data(withJSONObject: [
+      "op": "file", "request": ["op": "identify", "path": approved.path],
+    ])
+  }
+
+  @MainActor func testReplacingTheOriginalAfterStartDoesNotChangeWhatRuns() async throws {
     let handler = try makeHandler()
     try Data("replaced\n".utf8).write(to: URL(fileURLWithPath: directory + "/file-helper"))
-    let response = try decode(
-      await handler.handle(
-        try JSONSerialization.data(withJSONObject: [
-          "op": "file", "request": ["op": "identify", "path": approved.path],
-        ])))
+    let response = try decode(await handler.handle(try identifyRequest()))
+    XCTAssertEqual(response["ok"] as? Bool, true)
+    XCTAssertEqual(runner.calls.map(\.executable), [try XCTUnwrap(installed).path])
+  }
+
+  @MainActor func testAChangedCopyIsNotRun() async throws {
+    let handler = try makeHandler()
+    let copy = try XCTUnwrap(installed).path
+    chmod(copy, 0o700)
+    try Data("replaced\n".utf8).write(to: URL(fileURLWithPath: copy))
+    chmod(copy, 0o500)
+    let response = try decode(await handler.handle(try identifyRequest()))
     XCTAssertEqual(response["code"] as? String, "unavailable")
     XCTAssertEqual(runner.calls, [])
+  }
+
+  @MainActor func testACopySwappedForAnotherFileIsNotRun() async throws {
+    let handler = try makeHandler()
+    let copy = try XCTUnwrap(installed).path
+    // The same bytes and mode in a new inode, as a rename over the copy would leave.
+    let other = copy + ".new"
+    try fileHelperBytes.write(to: URL(fileURLWithPath: other))
+    chmod(other, 0o500)
+    XCTAssertEqual(rename(other, copy), 0)
+    let response = try decode(await handler.handle(try identifyRequest()))
+    XCTAssertEqual(response["code"] as? String, "unavailable")
+    XCTAssertEqual(runner.calls, [])
+  }
+
+  @MainActor func testACopyWithASecondLinkIsNotRun() async throws {
+    let handler = try makeHandler()
+    let copy = try XCTUnwrap(installed).path
+    // A second name lets the copy be changed through a path the bridge does not check.
+    XCTAssertEqual(link(copy, directory + "/copies/x"), 0)
+    let response = try decode(await handler.handle(try identifyRequest()))
+    XCTAssertEqual(response["code"] as? String, "unavailable")
+    XCTAssertEqual(runner.calls, [])
+  }
+
+  @MainActor func testACopyMadeWritableIsNotRunEvenWithItsBytesUnchanged() async throws {
+    let handler = try makeHandler()
+    let copy = try XCTUnwrap(installed).path
+    XCTAssertEqual(chmod(copy, 0o700), 0)
+    let response = try decode(await handler.handle(try identifyRequest()))
+    XCTAssertEqual(response["code"] as? String, "unavailable")
+    XCTAssertEqual(runner.calls, [])
+  }
+
+  @MainActor func testAFileRequestPinnedToAnotherHelperIsRefusedBeforeItRuns() async throws {
+    let handler = try makeHandler()
+    let request: [String: Any] = ["op": "identify", "path": approved.path]
+    let other = try decode(
+      await handler.handle(
+        try JSONSerialization.data(withJSONObject: [
+          "op": "file", "request": request, "sha256": String(repeating: "0", count: 64),
+        ])))
+    XCTAssertEqual(other["code"] as? String, "unavailable")
+    XCTAssertEqual(runner.calls, [])
+    for malformed: Any in [String(repeating: "A", count: 64), "abc", 7, NSNull()] {
+      let response = try decode(
+        await handler.handle(
+          try JSONSerialization.data(withJSONObject: [
+            "op": "file", "request": request, "sha256": malformed,
+          ])))
+      XCTAssertEqual(response["code"] as? String, "invalid_request", "\(malformed)")
+    }
+    XCTAssertEqual(runner.calls, [])
+    let same = try decode(
+      await handler.handle(
+        try JSONSerialization.data(withJSONObject: [
+          "op": "file", "request": request, "sha256": fileHelperSHA,
+        ])))
+    XCTAssertEqual(same["ok"] as? Bool, true)
+    XCTAssertEqual(runner.calls.count, 1)
   }
 
   @MainActor func testFileHelperFailureIsUnavailable() async throws {
@@ -699,9 +805,11 @@ final class BridgeTests: XCTestCase {
 
   @MainActor func testStartRefusesAnUnknownUserOrAnUnpinnedHelper() throws {
     try fileHelperBytes.write(to: URL(fileURLWithPath: directory + "/file-helper"))
+    let copies = try copyDirectory(directory)
     let options = BridgeOptions(
       socket: directory + "/bridge.sock", peerUser: NSUserName(), thingsScripts: repoScripts,
-      fileHelper: directory + "/file-helper", fileHelperSHA256: fileHelperSHA)
+      fileHelper: directory + "/file-helper", fileHelperSHA256: fileHelperSHA,
+      fileHelperCopyDir: copies)
     var unknown = options
     unknown.peerUser = "eido-no-such-user"
     var unpinned = options
@@ -726,10 +834,13 @@ final class BridgeTests: XCTestCase {
     }
     var info = stat()
     XCTAssertEqual(lstat(options.socket, &info), -1, "a refused start left a socket")
+    XCTAssertEqual(entries(copies), [], "a refused start left a copy")
     let server = try startBridge(options, runner: runner) { FakeStore() }
     XCTAssertEqual(lstat(options.socket, &info), 0)
     XCTAssertEqual(server.handler.roots, ApprovedRoots.none, "no list must approve nothing")
     server.stop()
+    server.removeFileHelperCopy()
+    XCTAssertEqual(entries(copies), [])
 
     let list = directory + "/roots.json"
     try Data(
@@ -742,6 +853,196 @@ final class BridgeTests: XCTestCase {
     let withRoots = try startBridge(listed, runner: runner) { FakeStore() }
     XCTAssertEqual(withRoots.handler.roots, ApprovedRoots(roots: [approved]))
     withRoots.stop()
+    withRoots.removeFileHelperCopy()
+  }
+
+  // MARK: Private copy of the file helper (#866)
+
+  /// The bridge started through `startBridge` with the real runner: an original replaced on
+  /// disk after start is never run, and the copy made at start is.
+  @MainActor func testAReplacedOriginalIsNeverRunByTheStartedBridge() async throws {
+    let original = directory + "/file-helper"
+    try scriptHelperBytes.write(to: URL(fileURLWithPath: original))
+    chmod(original, 0o755)
+    let copies = try copyDirectory(directory)
+    let list = directory + "/roots.json"
+    try Data(
+      (#"{"roots":[{"path":""# + approved.path + #"","dev":""# + approved.dev + #"","ino":""#
+        + approved.ino + #""}]}"#).utf8
+    ).write(to: URL(fileURLWithPath: list))
+    chmod(list, 0o600)
+    let server = try startBridge(
+      BridgeOptions(
+        socket: directory + "/bridge.sock", peerUser: NSUserName(), thingsScripts: repoScripts,
+        fileHelper: original, fileHelperSHA256: scriptHelperSHA, fileRoots: list,
+        fileHelperCopyDir: copies),
+      runner: SystemProcessRunner(), store: { FakeStore() })
+    defer {
+      server.stop()
+      server.removeFileHelperCopy()
+    }
+    let marker = directory + "/replacement-ran"
+    try Data("#!/bin/sh\n/usr/bin/touch \(marker)\nprintf replacement\n".utf8)
+      .write(to: URL(fileURLWithPath: original))
+    let response = try decode(
+      try body(of: await exchange(directory + "/bridge.sock", try frame([
+        "op": "file", "request": ["op": "identify", "path": approved.path],
+      ]))))
+    let result = try XCTUnwrap(response["result"] as? [String: Any])
+    XCTAssertEqual(
+      Data(base64Encoded: try XCTUnwrap(result["stdoutBase64"] as? String)), Data("original".utf8))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: marker), "the replaced original ran")
+  }
+
+  func testTheCopyIsOwnerOnlyAndHoldsThePinnedBytes() throws {
+    try fileHelperBytes.write(to: URL(fileURLWithPath: directory + "/file-helper"))
+    let copies = try copyDirectory(directory)
+    let copy = try PinnedExecutable.install(
+      source: directory + "/file-helper", sha256: fileHelperSHA, parent: copies)
+    defer { copy.remove() }
+    let names = entries(copies)
+    XCTAssertEqual(names.count, 1)
+    let name = try XCTUnwrap(names.first)
+    XCTAssertTrue(name.hasPrefix("eido-file-helper."))
+    XCTAssertEqual(copy.path, try canonical(copies) + "/" + name + "/file-helper")
+    let folder = try FileManager.default.attributesOfItem(atPath: copies + "/" + name)
+    XCTAssertEqual((folder[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+    let file = try FileManager.default.attributesOfItem(atPath: copy.path)
+    XCTAssertEqual((file[.posixPermissions] as? NSNumber)?.intValue, 0o500)
+    XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: copy.path)), fileHelperBytes)
+    XCTAssertEqual(copy.verified(), copy.path)
+    copy.remove()
+    XCTAssertEqual(entries(copies), [])
+    XCTAssertNil(copy.verified())
+  }
+
+  func testStaleCopiesAreRemovedAndALiveOneIsKept() throws {
+    try fileHelperBytes.write(to: URL(fileURLWithPath: directory + "/file-helper"))
+    let copies = try copyDirectory(directory)
+    // Left by a bridge that did not stop: a directory nobody holds, with a copy in it, and a
+    // stray file with the prefix.
+    let stale = copies + "/eido-file-helper.0123456789abcdef"
+    try FileManager.default.createDirectory(atPath: stale, withIntermediateDirectories: false)
+    try fileHelperBytes.write(to: URL(fileURLWithPath: stale + "/file-helper"))
+    try Data().write(to: URL(fileURLWithPath: copies + "/eido-file-helper.stray"))
+    try Data().write(to: URL(fileURLWithPath: copies + "/unrelated"))
+    let live = try PinnedExecutable.install(
+      source: directory + "/file-helper", sha256: fileHelperSHA, parent: copies)
+    defer { live.remove() }
+    XCTAssertEqual(entries(copies).filter { $0.hasPrefix("eido-file-helper.") }.count, 1)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: stale))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: copies + "/unrelated"))
+    // A second bridge starting while the first runs leaves the first one's copy in place.
+    let second = try PinnedExecutable.install(
+      source: directory + "/file-helper", sha256: fileHelperSHA, parent: copies)
+    defer { second.remove() }
+    XCTAssertEqual(live.verified(), live.path)
+    XCTAssertEqual(second.verified(), second.path)
+    XCTAssertNotEqual(live.path, second.path)
+  }
+
+  func testInstallRefusesAnUnsafeOrMissingCopyDirectoryOrAnUnpinnedSource() throws {
+    let source = directory + "/file-helper"
+    try fileHelperBytes.write(to: URL(fileURLWithPath: source))
+    let open = try copyDirectory(directory, "open")
+    chmod(open, 0o777)
+    let groupWritable = try copyDirectory(directory, "group")
+    chmod(groupWritable, 0o770)
+    let real = try copyDirectory(directory, "real")
+    XCTAssertEqual(symlink(real, directory + "/link"), 0)
+    let file = directory + "/plain"
+    try Data().write(to: URL(fileURLWithPath: file))
+    let refused: [(String, BridgeStartError)] = [
+      (open, .fileHelperCopyUnsafe), (groupWritable, .fileHelperCopyUnsafe),
+      (directory + "/link", .fileHelperCopyUnsafe), (file, .fileHelperCopyUnsafe),
+      (directory + "/missing", .fileHelperCopyFailed),
+    ]
+    for (parent, code) in refused {
+      XCTAssertThrowsError(
+        try PinnedExecutable.install(source: source, sha256: fileHelperSHA, parent: parent), parent
+      ) { XCTAssertEqual($0 as? BridgeStartError, code, parent) }
+    }
+    XCTAssertEqual(entries(real), [], "nothing was made through the link")
+    // A copy directory another user owns is unsafe, whatever its mode.
+    XCTAssertThrowsError(
+      try PinnedExecutable.install(
+        source: source, sha256: fileHelperSHA, parent: real, owner: geteuid() + 1)
+    ) { XCTAssertEqual($0 as? BridgeStartError, .fileHelperCopyUnsafe) }
+    XCTAssertEqual(entries(real), [])
+    // The source is read without following a final link, and must have the pinned bytes.
+    XCTAssertEqual(symlink(source, directory + "/helper-link"), 0)
+    for (path, sha) in [
+      (directory + "/helper-link", fileHelperSHA), (source, String(repeating: "0", count: 64)),
+      (directory, fileHelperSHA),
+    ] {
+      XCTAssertThrowsError(try PinnedExecutable.install(source: path, sha256: sha, parent: real)) {
+        XCTAssertEqual($0 as? BridgeStartError, .fileHelperMismatch, path)
+      }
+    }
+    XCTAssertEqual(entries(real), [])
+  }
+
+  func testAncestorsMustBeWritableOnlyByRootOrTheOwner() throws {
+    let base = try canonical(directory)
+    XCTAssertTrue(PinnedExecutable.ancestorsAreSafe(base + "/copies", owner: geteuid()))
+    let shared = base + "/shared"
+    try FileManager.default.createDirectory(atPath: shared + "/copies", withIntermediateDirectories: true)
+    chmod(shared, 0o777)
+    defer { chmod(shared, 0o700) }
+    XCTAssertFalse(PinnedExecutable.ancestorsAreSafe(shared + "/copies", owner: geteuid()))
+    // Sticky, like /tmp, is safe: others cannot rename what they do not own.
+    chmod(shared, 0o1777)
+    XCTAssertTrue(PinnedExecutable.ancestorsAreSafe(shared + "/copies", owner: geteuid()))
+    // An ancestor owned by someone other than root or the owner is unsafe.
+    XCTAssertFalse(PinnedExecutable.ancestorsAreSafe(base + "/copies", owner: geteuid() + 1))
+    // A symbolic link on the way is not a directory.
+    XCTAssertEqual(symlink(shared, base + "/via"), 0)
+    XCTAssertFalse(PinnedExecutable.ancestorsAreSafe(base + "/via/copies", owner: geteuid()))
+  }
+
+  func testInstallRefusesACopyDirectoryUnderAnAncestorOthersCanWrite() throws {
+    let source = directory + "/file-helper"
+    try fileHelperBytes.write(to: URL(fileURLWithPath: source))
+    let shared = try copyDirectory(directory, "shared")
+    let copies = try copyDirectory(shared)
+    XCTAssertEqual(chmod(shared, 0o777), 0)
+    // Reached directly, and through a symbolic link to the shared directory: the check is on
+    // the canonical path, so the link does not hide the writable ancestor.
+    XCTAssertEqual(symlink(shared, directory + "/via"), 0)
+    for parent in [copies, directory + "/via/copies"] {
+      XCTAssertThrowsError(
+        try PinnedExecutable.install(source: source, sha256: fileHelperSHA, parent: parent), parent
+      ) { XCTAssertEqual($0 as? BridgeStartError, .fileHelperCopyUnsafe, parent) }
+    }
+    XCTAssertEqual(entries(copies), [])
+    // Sticky, like /tmp: others cannot rename what they do not own, so the copy is made.
+    XCTAssertEqual(chmod(shared, 0o1777), 0)
+    let copy = try PinnedExecutable.install(
+      source: source, sha256: fileHelperSHA, parent: directory + "/via/copies")
+    installed = copy
+    XCTAssertEqual(copy.path, try canonical(copies) + "/" + entries(copies)[0] + "/file-helper")
+  }
+
+  func testTheCopyDirectoryMustBeOnALocalVolumeThatHonoursOwnershipAndAllowsExec() throws {
+    let local = UInt32(MNT_LOCAL)
+    XCTAssertTrue(PinnedExecutable.volumeIsSafe(flags: local | UInt32(MNT_JOURNALED)))
+    XCTAssertFalse(PinnedExecutable.volumeIsSafe(flags: 0), "network volume")
+    XCTAssertFalse(
+      PinnedExecutable.volumeIsSafe(flags: local | UInt32(MNT_IGNORE_OWNERSHIP)), "external disk")
+    XCTAssertFalse(PinnedExecutable.volumeIsSafe(flags: local | UInt32(MNT_NOEXEC)), "noexec")
+    // The default copy directory's volume passes.
+    var volume = statfs()
+    XCTAssertEqual(statfs(try XCTUnwrap(PinnedExecutable.defaultParent()), &volume), 0)
+    XCTAssertTrue(PinnedExecutable.volumeIsSafe(flags: volume.f_flags))
+  }
+
+  func testTheDefaultCopyDirectoryIsTheUsersCacheDirectory() throws {
+    let parent = try XCTUnwrap(PinnedExecutable.defaultParent())
+    XCTAssertTrue(parent.hasSuffix("/C"), parent)
+    XCTAssertFalse(parent.hasSuffix("/"))
+    var info = stat()
+    XCTAssertEqual(lstat(parent, &info), 0)
+    XCTAssertEqual(info.st_uid, geteuid())
   }
 
   @MainActor func testStartRefusesALiveSocketAndStopLeavesAReplacementInPlace() async throws {
@@ -852,6 +1153,12 @@ final class BridgeTests: XCTestCase {
         BridgeOptions(
           socket: "/tmp/s", peerUser: "_eidogate", thingsScripts: "/opt/t", fileHelper: "/opt/f",
           fileHelperSHA256: sha, fileRoots: "/opt/r.json")))
+    XCTAssertEqual(
+      HelperMode.parse(bridge + ["--file-helper-copy-dir", "/opt/c"]),
+      .bridge(
+        BridgeOptions(
+          socket: "/tmp/s", peerUser: "_eidogate", thingsScripts: "/opt/t", fileHelper: "/opt/f",
+          fileHelperSHA256: sha, fileHelperCopyDir: "/opt/c")))
     var relative = bridge
     relative[2] = "s.sock"
     var badSHA = bridge
@@ -869,6 +1176,8 @@ final class BridgeTests: XCTestCase {
       bridge + ["--file-roots", "r.json"],
       bridge + ["--file-roots", "/opt/r.json", "--file-roots", "/opt/q.json"],
       bridge + ["--file-roots"],
+      bridge + ["--file-helper-copy-dir", "c"],
+      bridge + ["--file-helper-copy-dir", "/opt/c", "--file-helper-copy-dir", "/opt/d"],
     ]
     for arguments in refused {
       XCTAssertNil(HelperMode.parse(arguments), "\(arguments)")
@@ -1000,10 +1309,11 @@ final class HelperProcessTests: XCTestCase {
       [
         try executable(), "--bridge", "--socket", socket, "--peer-user", NSUserName(),
         "--things-scripts", repoScripts, "--file-helper", helper, "--file-helper-sha256",
-        fileHelperSHA,
+        fileHelperSHA, "--file-helper-copy-dir", try copyDirectory(directory),
       ])
     defer { kill(pid, SIGKILL) }
     XCTAssertTrue(waitUntil(5) { FileManager.default.fileExists(atPath: socket) }, "bridge did not start")
+    XCTAssertEqual(entries(directory + "/copies").count, 1, "no private copy made")
     usleep(500_000)
     XCTAssertTrue(alive(pid), "bridge exited with its parent")
     // A refused op proves the bridge serves without running anything.
@@ -1013,6 +1323,7 @@ final class HelperProcessTests: XCTestCase {
     XCTAssertEqual(kill(pid, SIGTERM), 0)
     XCTAssertTrue(waitUntil(5) { !alive(pid) }, "bridge ignored SIGTERM")
     XCTAssertFalse(FileManager.default.fileExists(atPath: socket), "socket left after SIGTERM")
+    XCTAssertEqual(entries(directory + "/copies"), [], "private copy left after SIGTERM")
   }
 
   func testUnknownArgumentsExitOneWithInvalidRequest() throws {
@@ -1041,6 +1352,7 @@ final class HelperProcessTests: XCTestCase {
       "--bridge", "--socket", directory + "/bridge.sock", "--peer-user", NSUserName(),
       "--things-scripts", repoScripts, "--file-helper", directory + "/file-helper",
       "--file-helper-sha256", String(repeating: "0", count: 64),
+      "--file-helper-copy-dir", try copyDirectory(directory),
     ]
     let errors = Pipe()
     process.standardError = errors
@@ -1064,6 +1376,7 @@ final class HelperProcessTests: XCTestCase {
       "--bridge", "--socket", directory + "/bridge.sock", "--peer-user", NSUserName(),
       "--things-scripts", repoScripts, "--file-helper", directory + "/file-helper",
       "--file-helper-sha256", fileHelperSHA, "--file-roots", list,
+      "--file-helper-copy-dir", try copyDirectory(directory),
     ]
     let errors = Pipe()
     process.standardError = errors
@@ -1075,5 +1388,6 @@ final class HelperProcessTests: XCTestCase {
       String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
       "file_roots_unsafe\n")
     XCTAssertFalse(FileManager.default.fileExists(atPath: directory + "/bridge.sock"))
+    XCTAssertEqual(entries(directory + "/copies"), [], "a refused start left a copy")
   }
 }

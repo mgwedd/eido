@@ -231,10 +231,12 @@ eido-helper --bridge \
   --things-scripts <absolute directory> \
   --file-helper <absolute path> \
   --file-helper-sha256 <lowercase hex> \
-  [--file-roots <absolute path>]
+  [--file-roots <absolute path>] \
+  [--file-helper-copy-dir <absolute directory>]
 ```
 
-Each flag is given once, in any order. All but `--file-roots` are required;
+Each flag is given once, in any order. All but `--file-roots` and
+`--file-helper-copy-dir` are required;
 anything else writes `invalid_request` to stdout and exits 1. At start the
 bridge, in this order:
 
@@ -242,7 +244,9 @@ bridge, in this order:
 2. reads every Things script in the table below from `--things-scripts`, checks
    each file's SHA-256 against the hash built into the bridge, and keeps the
    checked bytes in memory;
-3. hashes `--file-helper` and compares it with `--file-helper-sha256`;
+3. reads `--file-helper` once and checks its SHA-256 against
+   `--file-helper-sha256`, then runs from a private copy of those bytes (see
+   [The file helper's private copy](#the-file-helpers-private-copy));
 4. reads the owner's approved file roots from `--file-roots` (see
    [Approved file roots](#approved-file-roots)). Without the flag no root is
    approved and every `file` op is refused;
@@ -252,10 +256,13 @@ bridge, in this order:
 
 Any failure stops the start before the socket exists: the bridge writes one code
 to stderr (`peer_user_unknown`, `things_scripts_mismatch`, `file_helper_mismatch`,
-`file_roots_unsafe`, `file_roots_invalid`, or `socket_failed`) and exits 1. It never serves with a partial table. It does not
+`file_helper_copy_unsafe`, `file_helper_copy_failed`, `file_roots_unsafe`,
+`file_roots_invalid`, or `socket_failed`) and exits 1, leaving no socket and no
+private copy behind. It never serves with a partial table. It does not
 watch its parent (launchd). SIGTERM or SIGINT stops accepting and removes the
 socket (unless another bridge has since replaced it), lets accepted requests
-finish for up to 15 seconds (inside launchd's 20-second exit timeout), and exits 0. Request mode is unchanged and still exits when the gate exits.
+finish for up to 15 seconds (inside launchd's 20-second exit timeout), deletes
+its private copy of the file helper, and exits 0. Request mode is unchanged and still exits when the gate exits.
 
 The socket's `0600` mode admits only the owner at the file system; the LaunchAgent
 work in #827 grants the gate user access. The bridge creates a new socket file on
@@ -352,13 +359,22 @@ in `.`. Paths are 1 to 4096 Unicode scalars, `trashName` 1 to 255,
 1 to 8388608. An op outside the table is `unknown_op`; a missing, extra, or
 invalid field is `invalid_request`. The bridge rebuilds the request from these
 fields alone, serializes it with sorted keys, and writes it to the helper's stdin.
-The helper runs with no arguments and an empty environment, after its SHA-256 is
-checked again against the pin (a changed binary is `unavailable` and never runs),
+The bridge runs only its private copy of the helper (never `--file-helper`
+itself), with no arguments and an empty environment, after checking that the
+copy is still the file it made at start and still has the pinned SHA-256 (a
+changed copy is `unavailable` and never runs),
 with a 30-second limit and the gate's stdout limits (12 MiB for `read`, 512 KiB
 for `list`, 64 KiB otherwise). Exit 0 returns
 `{"ok":true,"result":{"stdoutBase64":"..."}}` with the helper's own JSON response
 inside; anything else is `unavailable`. The helper confines every path to the
 root, as it does for the gate today.
+
+The request may also carry `"sha256"`, the file helper's SHA-256 the caller
+pinned: `{"op":"file","request":{...},"sha256":"<64 lowercase hex>"}`. A value
+other than the bridge's own `--file-helper-sha256` is `unavailable`, refused
+before the roots check and without starting anything; a value that is not 64
+lowercase hex digits is `invalid_request`. Without the field the bridge runs its
+own pinned helper, as before.
 
 Before any of that, the request's `root` must be one the owner approved: its
 `path`, `dev` and `ino` must equal one entry in the approved list, and the
@@ -418,6 +434,55 @@ What the check closes, and what it does not:
   a process running as the owner can change the list; it already has the owner's
   files.
 
+### The file helper's private copy
+
+The bridge never runs the binary at `--file-helper`. At start it opens that path
+once, without following a symbolic link at its last component, requires a
+regular file of at most 256 MiB, reads it and checks the bytes against
+`--file-helper-sha256` (`file_helper_mismatch` otherwise). It then:
+
+1. opens the copy directory (`--file-helper-copy-dir`, or the user's cache
+   directory from `confstr(_CS_DARWIN_USER_CACHE_DIR)` when the flag is absent)
+   without following a symbolic link;
+2. removes private directories (`eido-file-helper.*`) a bridge that did not stop
+   cleanly left there. A directory another running bridge still holds (an
+   exclusive `flock`) is kept;
+3. creates a new directory `eido-file-helper.<random>` with mode `0700` and
+   holds its lock for the life of the bridge;
+4. creates `file-helper` in it exclusively (`O_CREAT | O_EXCL`, no symbolic link
+   followed), writes the bytes it hashed in memory, and sets mode `0500`;
+5. reads the copy back through a new descriptor and checks it against the pin
+   again (`file_helper_copy_failed` otherwise).
+
+Before every `file` op the copy is opened again and must be the same file
+(device and inode), with one link, owner and mode `0500`, and the pinned
+SHA-256; otherwise the op is `unavailable` and nothing runs.
+
+**Location requirements.** The original `--file-helper` needs only to be a
+regular file the bridge's user can read, not a symbolic link at its last
+component; replacing it after start changes nothing until the next start. The
+copy directory must be a directory (not a symbolic link) owned by the bridge's
+user with no group or other write bit, and every directory above it must be owned
+by root or that user and be writable by no one else unless it is sticky (as
+`/private/tmp` is). It must be on a local volume that honours ownership and
+allows exec: not a network volume, not `noexec`, and not an external disk with
+"Ignore ownership on this volume" set (the default for external disks), where
+every local user counts as the owner. Otherwise the start fails with `file_helper_copy_unsafe`; a
+missing copy directory is `file_helper_copy_failed`. The default cache directory
+under `/var/folders` meets this.
+
+**What this closes.** A binary replaced or changed at `--file-helper` after start
+is never run. There is no gap between the check and the copy: the bytes hashed are
+the bytes written. No other user can create, replace, or rename the copy or its
+directory.
+
+**What remains.** A process running as the bridge's own user (or root) can still
+change the copy between the check before a run and the `exec`, since macOS has no
+`fexecve`; such a process can already act as the owner. ACLs on the copy
+directory are not checked, only owner and mode bits. The gate's own file helper
+runner (`packages/gate`) still hashes and then runs by path; that is #903. The gate does not yet send its pin on file requests
+(#904).
+
 ### Errors
 
 Failure is `{"ok":false,"code":"..."}` and never echoes request values, paths, or
@@ -429,7 +494,9 @@ also carry the request-mode codes. A refused request ends only its own connectio
 
 The tests use socket pairs and sockets under `/tmp` in the test user's own
 account, a fake EventKit store, and a recording double in place of `osascript` and
-the file helper. Approved roots are synthetic temporary directories. They do not
+the file helper, except one test that starts the bridge with the real process
+runner and a synthetic shell-script helper to show a replaced original never
+runs. Approved roots and copy directories are synthetic temporary directories. They do not
 show the uid the bridge sees when `_eidogate`
 connects through the #827 ACL, which app macOS credits with the Automation and
 EventKit grants when launchd starts the bridge, or how the bridge behaves while

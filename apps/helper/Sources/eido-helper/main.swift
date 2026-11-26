@@ -67,6 +67,7 @@ import Foundation
         server.stop()
         DispatchQueue.global().async {
           _ = server.waitForConnections(timeout: drainSeconds)
+          server.removeFileHelperCopy()
           exit(0)
         }
       }
