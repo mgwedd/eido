@@ -7,7 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Intent } from "@eido/schemas"
 import { issueNonce, verifyApproval } from "./approvals"
 import type { ApprovalRequest } from "./approvals"
-import { getPinnedManifest, pinManifest, prepareManifestPin } from "./connectors"
+import {
+  getPinnedManifest,
+  pinManifest,
+  prepareManifestPin,
+} from "./connectors"
 import type {
   ControlAuthorization,
   PreparedControlApproval,
@@ -72,8 +76,7 @@ afterEach(() => {
 
 /** A schedule that records each request and runs it only when the test says so. */
 function manualSchedule() {
-  const pending: { run: () => void; delayMs: number; cancelled: boolean }[] =
-    []
+  const pending: { run: () => void; delayMs: number; cancelled: boolean }[] = []
   const schedule: RetrySchedule = (run, delayMs) => {
     const entry = { run, delayMs, cancelled: false }
     pending.push(entry)
@@ -269,9 +272,7 @@ describe("an unreadable store", () => {
     const timer = manualSchedule()
     const { db, guard } = start({ schedule: timer.schedule })
     expect(guard.denied()).toBe("store_unreadable")
-    expect(denial(() => getPinnedManifest(db, "mail"))).toBe(
-      "store_unreadable"
-    )
+    expect(denial(() => getPinnedManifest(db, "mail"))).toBe("store_unreadable")
     expect(timer.pending).toEqual([])
     // Even once the store reads again, this gate stays denied.
     store.failLoads = false
@@ -340,8 +341,7 @@ describe("retry back-off", () => {
     expect(
       [0, 1, 2, 3, 4, 5, 6, 7, 20].map((attempt) => lockedRetryDelay(attempt))
     ).toEqual([
-      5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000,
-      300_000,
+      5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000, 300_000,
     ])
     expect(LOCKED_RETRY_MAX_MS).toBe(300_000)
   })

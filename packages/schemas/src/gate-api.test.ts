@@ -956,9 +956,9 @@ describe("control-state denial reason", () => {
 
 describe("keychain helper result", () => {
   test("carries the locked flag only as true", () => {
-    expect(validateGateKeychainResult({ status: -25308, locked: true })).toEqual(
-      { ok: true, value: { status: -25308, locked: true } }
-    )
+    expect(
+      validateGateKeychainResult({ status: -25308, locked: true })
+    ).toEqual({ ok: true, value: { status: -25308, locked: true } })
     expect(
       errorsOf(validateGateKeychainResult({ status: -25308, locked: false }))
     ).toHaveLength(1)

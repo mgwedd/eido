@@ -220,7 +220,11 @@ describe.skipIf(process.platform !== "darwin")(
       const account = vaultKeyId(KEY)
       await f.vault.set(KEY, "synthetic-lock-status")
       expect(
-        await runKeychainCommand({ operation: "get", path: f.path, account: "absent" })
+        await runKeychainCommand({
+          operation: "get",
+          path: f.path,
+          account: "absent",
+        })
       ).toEqual({ status: -25300 })
       expect(await nativeFixture({ ...f, operation: "lock" })).toBe("0")
       for (const command of [
