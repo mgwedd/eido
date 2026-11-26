@@ -167,10 +167,12 @@ describe("connection options", () => {
 describe("certificate pinning against an implicit-TLS fake Bridge", () => {
   let pinned: ReturnType<typeof createTestCertificate>
   let other: ReturnType<typeof createTestCertificate>
+  // createTestCertificate runs openssl synchronously, twice here. On a loaded windows-latest
+  // runner that exceeded Vitest's 10 s hook default (#898); the budget bounds a hang, not a speed.
   beforeAll(() => {
     pinned = createTestCertificate()
     other = createTestCertificate()
-  })
+  }, 60_000)
   afterAll(() => {
     pinned.cleanup()
     other.cleanup()
@@ -236,10 +238,12 @@ describe("certificate pinning against an implicit-TLS fake Bridge", () => {
 describe("certificate pinning against a STARTTLS fake Bridge", () => {
   let pinned: ReturnType<typeof createTestCertificate>
   let other: ReturnType<typeof createTestCertificate>
+  // createTestCertificate runs openssl synchronously, twice here. On a loaded windows-latest
+  // runner that exceeded Vitest's 10 s hook default (#898); the budget bounds a hang, not a speed.
   beforeAll(() => {
     pinned = createTestCertificate()
     other = createTestCertificate()
-  })
+  }, 60_000)
   afterAll(() => {
     pinned.cleanup()
     other.cleanup()
