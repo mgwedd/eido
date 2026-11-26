@@ -17,9 +17,9 @@ import {
   frame,
   socketDir,
   startFakeSessionBridge,
-} from "./fake-session-bridge"
+} from "./fake-session-bridge.test-support"
 import type { SessionBridgeRequest } from "./client"
-import type { FakeAnswer } from "./fake-session-bridge"
+import type { FakeAnswer } from "./fake-session-bridge.test-support"
 
 // Unix sockets and the plane split are macOS-only (#781); the gate on Windows never has a
 // session bridge, so the socket tests do not run there. Answer handling runs everywhere.

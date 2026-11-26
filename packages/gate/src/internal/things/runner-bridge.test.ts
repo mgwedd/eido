@@ -8,8 +8,8 @@ import {
   answeringBridge,
   socketDir,
   startFakeSessionBridge,
-} from "../session-bridge/fake-session-bridge"
-import type { FakeAnswer } from "../session-bridge/fake-session-bridge"
+} from "../session-bridge/fake-session-bridge.test-support"
+import type { FakeAnswer } from "../session-bridge/fake-session-bridge.test-support"
 import { createThingsReads } from "./things-adapter"
 import {
   MAX_OUTPUT_BYTES,

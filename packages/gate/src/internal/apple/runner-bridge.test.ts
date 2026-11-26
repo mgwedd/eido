@@ -15,8 +15,8 @@ import { createSessionBridge } from "../session-bridge/client"
 import {
   socketDir,
   startFakeSessionBridge,
-} from "../session-bridge/fake-session-bridge"
-import type { FakeAnswer } from "../session-bridge/fake-session-bridge"
+} from "../session-bridge/fake-session-bridge.test-support"
+import type { FakeAnswer } from "../session-bridge/fake-session-bridge.test-support"
 import {
   APPLE_MAX_BYTES,
   APPLE_MAX_CONCURRENT,

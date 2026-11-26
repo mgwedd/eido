@@ -22,8 +22,8 @@ import {
   answeringBridge,
   socketDir,
   startFakeSessionBridge,
-} from "../session-bridge/fake-session-bridge"
-import type { FakeAnswer } from "../session-bridge/fake-session-bridge"
+} from "../session-bridge/fake-session-bridge.test-support"
+import type { FakeAnswer } from "../session-bridge/fake-session-bridge.test-support"
 import { signedFileRoots } from "../test-fixtures"
 import { fileHelper } from "./file-helper"
 import { createFile } from "./file-ops"
