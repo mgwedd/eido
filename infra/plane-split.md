@@ -48,12 +48,7 @@ sudo sh ~/eido-plane.sh
 
 If the uids or gids are taken, the plan stops and names the account that holds them. Pass a free `--first-id` (401 to 496).
 
-Create the gate keychain once, as the gate user, with a passphrase you keep in your password manager:
-
-```sh
-sudo -u _eidogate security create-keychain -P \
-  "/Library/Application Support/Eido/home/gate/Library/Keychains/eido/eido.keychain-db"
-```
+Then create the gate keychain and its unlock item with `host keychain set` (see "Set and rotate the gate keychain passphrase" below).
 
 ## Gate keychain unlock at start
 
@@ -68,9 +63,29 @@ Because launchd runs the job as root, it opens `gate.out.log` and `gate.err.log`
 
 If the item is missing or root cannot read it, the launcher writes `eido gate launcher: the System keychain item com.eido.gate.keychain-unlock is missing or unreadable; starting the gate with no passphrase, so it stays locked` to `gate.err.log` and starts the gate with empty stdin. The gate then refuses the empty passphrase and reports itself locked (#822).
 
-The item holds the passphrase you gave `create-keychain` above. Setting and rotating it is #824. Store it as plain text: `security find-generic-password -w` prints data that is not printable as hex, and the gate would get the hex.
+The item holds the gate keychain passphrase as plain text, written by `host keychain` below. `security find-generic-password -w` prints data that is not printable as hex, and the gate would get the hex, so the script accepts printable ASCII only.
 
 Live check (owner, after the item is set; e2e in #811): reboot, do not log in, then check that `gate.err.log` has no launcher message and the gate reads a synthetic token.
+
+## Set and rotate the gate keychain passphrase
+
+`host keychain <set|rotate|repair>` prints a zsh script and changes nothing (#824). Read it, then run it with `sudo zsh -f`. Run the generator as yourself: it takes the paths from the plane layout and refuses root.
+
+```sh
+cd ~/dev/eido
+node --import ./infra/ts-hooks.ts infra/host/bin.ts keychain set > ~/eido-keychain.zsh
+less ~/eido-keychain.zsh
+sudo zsh -f ~/eido-keychain.zsh
+rm ~/eido-keychain.zsh
+```
+
+The script asks for the passphrase at its own hidden prompt, `New gate keychain passphrase:` (repair: `Gate keychain passphrase (from your password manager):`), then `Type it again:`. It hands the passphrase to `security` on stdin only, so it is never in an argument, the environment, the shell history or a file. Save it in your password manager first. It must be 1 to 256 printable ASCII characters.
+
+- `set`, once, after the plan: checks that the keychain does not exist yet and the item is absent, creates `eido.keychain-db` as `_eidogate`, makes it mode 0600, turns auto-lock off, writes the item `com.eido.gate.keychain-unlock` to the System keychain as root, and restarts the gate (`launchctl kickstart -k system/com.eido.plane.gate`).
+- `rotate`: reads the current passphrase from the item, asks for a new one, changes the keychain password first, then the item, then restarts the gate. If the item cannot be written, it changes the keychain password back, so both still hold the old passphrase.
+- `repair`: for a lost or stale item. It checks the passphrase you type against the keychain (a change to the same password, which fails on a wrong one), then writes the item and restarts the gate.
+
+After each run, `/Library/Application Support/Eido/gate/gate.log` gets `keychain_unlocked` when the gate unlocked the keychain, or `keychain_unlock_failed` with a reason. Every failure message says what state the run left and what to run next. Recovery for each half-done state, and what it means that root can read the item, are in `infra/keychain-vault.md`, "Gate keychain passphrase". The live run (set and rotate once, the gate unlocks after each) is #811.
 
 ## Run web and the supervisor beside the plane
 
@@ -198,6 +213,5 @@ To go back to the single-user stack, remove the `EIDO_STACK_PLANE=split` line fr
 - #777: the isolation script's data-plane probes under `core.sb`.
 - #811: the live checks for the parser user: the nested sandbox, pf `user` rules for a third uid on loopback, DNS under `parser.sb`, and no reach from a parse child to the proxy or llama-server.
 - #822: the gate reports locked when it starts without a passphrase.
-- #824: setting and rotating the `com.eido.gate.keychain-unlock` item.
 - #781: Things, EventKit and file-root writes from the gate user.
 - #783: the supervisor socket in a directory of its own.
