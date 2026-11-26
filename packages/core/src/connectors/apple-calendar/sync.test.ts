@@ -53,6 +53,8 @@ function event(overrides: Partial<AppleEvent> = {}): AppleEvent {
     location: "Room ipsum",
     notes: "Dolor sit amet",
     modifiedAt: "2026-11-30T10:00:00Z",
+    hasAttendees: false,
+    recurring: false,
     ...overrides,
   }
 }

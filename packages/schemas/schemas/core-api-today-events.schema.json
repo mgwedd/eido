@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CoreApiTodayEvents",
+  "description": "The current Apple Calendar events that overlap the owner's local calendar day, earliest start first. Events of retired, excluded or disabled calendars are never listed. `date` is the local day in `timezone`; `start` and `end` are the event's instants as stored. An all-day event has `allDay` true.",
+  "type": "object",
+  "properties": {
+    "timezone": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "title": "CoreApiTodayEvent",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "start": {
+            "type": "string",
+            "minLength": 1
+          },
+          "end": {
+            "type": "string",
+            "minLength": 1
+          },
+          "allDay": {
+            "type": "boolean"
+          }
+        },
+        "required": ["id", "title", "start", "end", "allDay"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["timezone", "date", "events"],
+  "additionalProperties": false
+}
