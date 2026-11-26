@@ -1,6 +1,4 @@
 import { spawn } from "node:child_process"
-import { createHash } from "node:crypto"
-import { readFile } from "node:fs/promises"
 import {
   validateGateFileHelperRequest,
   validateGateFileHelperResponse,
@@ -16,6 +14,7 @@ import {
   bridgeTimeout,
 } from "../session-bridge/client"
 import type { SessionBridge } from "../session-bridge/client"
+import type { FileHelperCopy } from "./file-helper-copy"
 
 /** The installed helper binary and the SHA-256 it must have (ADR 0006). */
 export type FileHelperConfig = { path: string; sha256: string }
@@ -43,17 +42,14 @@ function parseReply(stdout: Buffer): GateFileHelperResponse {
   return checked.value
 }
 
-/** Refuses a binary whose bytes differ from the pinned hash, before anything runs. */
-async function checkPin(config: FileHelperConfig): Promise<void> {
-  if (!/^[0-9a-f]{64}$/.test(config.sha256)) throw failed()
-  let bytes: Buffer
-  try {
-    bytes = await readFile(config.path)
-  } catch {
-    throw failed()
-  }
-  if (createHash("sha256").update(bytes).digest("hex") !== config.sha256)
-    throw new Error("file helper does not match its pinned hash")
+/**
+ * The private copy's path once it is still the file made at start with the pinned bytes
+ * (#903). A changed, swapped or removed copy is refused before anything runs.
+ */
+async function verifiedCopy(copy: FileHelperCopy): Promise<string> {
+  const path = await copy.verified()
+  if (path === undefined) throw failed()
+  return path
 }
 
 function run(
@@ -132,24 +128,31 @@ async function viaBridge(
 }
 
 /**
- * Runs one request per helper process; the reply is schema-checked, never cast. With `bridge`
- * the helper runs in the owner's session, after the same pin check here.
+ * Runs one request per helper process, from the gate's private copy of the pinned helper
+ * (`installFileHelperCopy`), never from the configured path; the reply is schema-checked, never
+ * cast. With `bridge` the helper runs in the owner's session, after the same copy check here and
+ * a check that the configured path, which the bridge runs, still has the pinned bytes.
  */
 export function fileHelper(
-  config: FileHelperConfig,
+  copy: FileHelperCopy,
   bridge?: SessionBridge
 ): FileHelper {
   return async (request) => {
     const checked = validateGateFileHelperRequest(request)
     if (!checked.ok) throw failed()
-    await checkPin(config)
+    const path = await verifiedCopy(copy)
     const limit =
       checked.value.op === "read"
         ? 12 * 1024 * 1024
         : checked.value.op === "list"
           ? 512 * 1024
           : MAX_REPLY_BYTES
-    if (bridge !== undefined) return viaBridge(bridge, checked.value, limit)
-    return run(config.path, JSON.stringify(checked.value), limit)
+    if (bridge !== undefined) {
+      // The bridge runs the configured path, so its bytes are checked on every request as well.
+      if (!(await copy.sourceMatches()))
+        throw new Error("file helper does not match its pinned hash")
+      return viaBridge(bridge, checked.value, limit)
+    }
+    return run(path, JSON.stringify(checked.value), limit)
   }
 }

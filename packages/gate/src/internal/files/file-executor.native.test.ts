@@ -35,6 +35,7 @@ import { runGate } from "../../main"
 import { runningGate } from "../runtime"
 import { createIntentClient, createFileClient } from "../client"
 import { fileHelper } from "./file-helper"
+import { installFileHelperCopy } from "./file-helper-copy"
 import { prepareFileRoots, setFileRoots } from "./file-roots"
 
 // CI's three-platform helper job supplies a binary built from the pinned Rust toolchain.
@@ -58,10 +59,17 @@ describe.skipIf(binary === undefined)("native file intent execution", () => {
     const root = join(base, "docs")
     mkdirSync(join(root, "archive"), { recursive: true })
     const path = binary ?? ""
-    const helper = fileHelper({
-      path,
-      sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
-    })
+    const copies = join(base, "helper")
+    mkdirSync(copies, { mode: 0o700 })
+    const helper = fileHelper(
+      await installFileHelperCopy(
+        {
+          path,
+          sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
+        },
+        copies
+      )
+    )
     const prepared = await prepareFileRoots(s.db, helper, {
       roots: [{ id: "docs", path: root, trashDir: ".eido-trash" }],
     })
@@ -122,9 +130,11 @@ describe.skipIf(binary === undefined)("native file intent execution", () => {
     try {
       const db = runningGate().db
       signedPin(db, manifest("files", FILE_OPS))
+      const copies = join(base, "helper")
+      mkdirSync(copies, { mode: 0o700 })
       const prepared = await prepareFileRoots(
         db,
-        fileHelper(config.fileHelper),
+        fileHelper(await installFileHelperCopy(config.fileHelper, copies)),
         { roots: [{ id: "docs", path: root, trashDir: ".eido-trash" }] }
       )
       const roots: unknown = JSON.parse(prepared.payload)

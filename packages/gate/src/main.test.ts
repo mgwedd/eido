@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto"
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -553,6 +556,39 @@ describe("runGate", () => {
     expect(() => runningGate()).toThrow("the gate is not started")
     const again = await runGate(config())
     await again.close()
+  }, 60_000)
+
+  it("runs the file helper from a private copy in the data directory, removed at stop and after a failed start", async () => {
+    const source = join(realpathSync.native(dir), "eido-file-helper")
+    writeFileSync(source, "synthetic helper bytes", { mode: 0o700 })
+    const fileHelper = {
+      path: source,
+      sha256: createHash("sha256")
+        .update("synthetic helper bytes")
+        .digest("hex"),
+    }
+    const copies = (dataDir: string) =>
+      readdirSync(dataDir).filter((name) =>
+        name.startsWith("eido-file-helper.")
+      )
+    const c = { ...config(), fileHelper }
+    mkdirSync(c.dataDir, { recursive: true, mode: 0o700 })
+    const stale = "eido-file-helper.0123456789abcdef"
+    mkdirSync(join(c.dataDir, stale), { mode: 0o700 })
+    const gate = await runGate(c)
+    const running = copies(c.dataDir)
+    expect(running).toHaveLength(1)
+    expect(running).not.toContain(stale)
+    expect(
+      readFileSync(join(c.dataDir, running[0] ?? "", "file-helper"), "utf8")
+    ).toBe("synthetic helper bytes")
+    await gate.close()
+    expect(copies(c.dataDir)).toEqual([])
+
+    await expect(
+      runGate({ ...c, controlSocketPath: join(dir, "missing", "c.sock") })
+    ).rejects.toThrow()
+    expect(copies(c.dataDir)).toEqual([])
   }, 60_000)
 
   it("serves the phone listener on loopback TCP, by Host, below its base path", async () => {
