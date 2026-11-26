@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateControlDenyReason",
+  "description": "Why the gate denies every authority read: the control state could not be verified against the protected checkpoint. keychain_locked is the only reason the gate leaves on its own, once a retried checkpoint load verifies.",
+  "enum": [
+    "uninitialized",
+    "keychain_locked",
+    "store_unreadable",
+    "store_malformed",
+    "reverify_failed",
+    "control_state_mismatch",
+    "stale_generation",
+    "checkpoint_write_failed",
+    "second_instance",
+    "unsupported_transaction",
+    "unsigned_control_change"
+  ]
+}

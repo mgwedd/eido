@@ -3,6 +3,7 @@ import { lstatSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { validateGateKeychainResult } from "@eido/schemas"
 import type { GateKeychainResult } from "@eido/schemas"
+import { ControlStoreLockedError } from "../control-checkpoint"
 import type { ControlStore } from "../control-checkpoint"
 import { KEYCHAIN_SCRIPT } from "./keychain-bridge"
 import type { KeychainCommand } from "./keychain-bridge"
@@ -87,6 +88,10 @@ export class KeychainControlStore implements ControlStore {
       path: this.path,
       account: ACCOUNT,
     })
+    // Only the helper's locked flag, read from the keychain's own status, counts as locked; a
+    // locked keychain may report the item as not found.
+    if (result.status !== 0 && result.locked === true)
+      throw new ControlStoreLockedError()
     if (result.status === NOT_FOUND) return undefined
     if (result.status !== 0 || result.data === undefined)
       throw new Error("control checkpoint could not be read")

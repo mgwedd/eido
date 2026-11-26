@@ -9,6 +9,10 @@
     "unlock": {
       "description": "The outcome of an unlock request: unlocked with auto-lock off, or still locked because the passphrase was rejected. Absent on every other request and on any other failure.",
       "enum": ["unlocked", "locked"]
+    },
+    "locked": {
+      "description": "Present on a failed item request when the keychain reported itself locked (its unlocked status bit clear). Absent on success and on every other failure.",
+      "const": true
     }
   },
   "required": ["status"],

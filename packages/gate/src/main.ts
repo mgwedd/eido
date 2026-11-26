@@ -44,7 +44,7 @@ import {
   listenTcp,
   loopbackHost,
 } from "./internal/http"
-import type { Handler, LoopbackHost } from "./internal/http"
+import type { Handler, Log, LoopbackHost } from "./internal/http"
 import { fileLog } from "./internal/log"
 import { defaultBackupStampPath } from "./internal/backup-status"
 import { phoneHandler } from "./internal/phone-routes"
@@ -83,6 +83,7 @@ import { attachControlCheckpoint } from "./internal/control-checkpoint"
 import type {
   ControlCheckpoint,
   ControlStore,
+  DenyReason,
 } from "./internal/control-checkpoint"
 import { KeychainControlStore } from "./internal/vault/keychain-checkpoint"
 import {
@@ -591,6 +592,7 @@ export async function runGate(
     checkpoint = attachControlCheckpoint(db, {
       store: controlStoreFactory(config.controlCheckpoint.keychainPath),
       lockPath: config.controlCheckpoint.lockPath,
+      onChange: logCheckpointChange(log),
     })
     const denied = checkpoint.denied()
     if (denied !== undefined)
@@ -912,6 +914,19 @@ export async function runGate(
       db.close()
       log("stopped")
     },
+  }
+}
+
+/**
+ * Logs each move of the control-state denial after start (a locked keychain is loaded again on a
+ * timer): fixed event names and the reason only, never record contents.
+ */
+export function logCheckpointChange(
+  log: Log
+): (denied: DenyReason | undefined) => void {
+  return (denied) => {
+    if (denied === undefined) log("control_checkpoint_verified")
+    else log("control_checkpoint_denied", { reason: denied })
   }
 }
 
