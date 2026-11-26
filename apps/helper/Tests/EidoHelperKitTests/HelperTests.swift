@@ -6,7 +6,7 @@ import XCTest
 @MainActor final class FakeStore: CalendarStore {
   var allowed = true
   var lists = [CalendarValue(id: "calendar-1", title: "Synthetic", writable: true)]
-  var eventRows: [String: StoredEvent] = [:]
+  var eventRows: [String: EventValue] = [:]
   var reminderRows: [String: ReminderValue] = [:]
   var writes = 0
   var calendarReads = 0
@@ -25,18 +25,18 @@ import XCTest
   func events(calendarId: String, start: Date, end: Date) throws -> [EventValue] {
     requestedStart = start
     requestedEnd = end
-    return eventRows.values.map(\.value).filter { $0.calendarId == calendarId }
+    return eventRows.values.filter { $0.calendarId == calendarId }.sorted { $0.id < $1.id }
   }
   func reminders(listId: String) async throws -> [ReminderValue] {
     reminderRows.values.filter { $0.listId == listId }
   }
-  func event(id: String) throws -> StoredEvent? { eventRows[id] }
+  func event(id: String) throws -> EventValue? { eventRows[id] }
   func reminder(id: String) throws -> ReminderValue? { reminderRows[id] }
   func saveEvent(_ value: EventValue, existingId: String?) throws -> String {
     writes += 1
     var saved = value
     saved.id = existingId ?? "created-event"
-    eventRows[saved.id] = StoredEvent(value: saved, recurring: false)
+    eventRows[saved.id] = saved
     return saved.id
   }
   func saveReminder(_ value: ReminderValue, existingId: String?) throws -> String {
@@ -72,10 +72,13 @@ final class HelperTests: XCTestCase {
     XCTAssertEqual(result["code"] as? String, code, file: file, line: line)
     XCTAssertEqual(Set(result.keys), ["ok", "code"], file: file, line: line)
   }
-  private func event(_ id: String = "event-1") -> EventValue {
+  private func event(
+    _ id: String = "event-1", hasAttendees: Bool = false, recurring: Bool = false
+  ) -> EventValue {
     EventValue(
       id: id, calendarId: "calendar-1", title: "Original", start: start, end: end, allDay: false,
-      location: "Old location", notes: "Old note", modifiedAt: nil)
+      location: "Old location", notes: "Old note", modifiedAt: nil, hasAttendees: hasAttendees,
+      recurring: recurring)
   }
   private func reminder(_ id: String, completed: Bool = false, completedAt: String? = nil)
     -> ReminderValue
@@ -253,23 +256,47 @@ final class HelperTests: XCTestCase {
     let service = HelperService(store: store)
     let created = try object(await service.handle(try request("create_event", eventArgs())))
     XCTAssertEqual((created["result"] as? [String: Any])?["id"] as? String, "created-event")
-    XCTAssertEqual(store.eventRows["created-event"]?.value.title, "Changed")
-    store.eventRows["event-1"] = StoredEvent(value: event(), recurring: false)
+    XCTAssertEqual(store.eventRows["created-event"]?.title, "Changed")
+    store.eventRows["event-1"] = event()
     var args = eventArgs()
     args["id"] = "event-1"
     args["title"] = "Replacement"
     let updated = try object(await service.handle(try request("update_event", args)))
     XCTAssertEqual(updated["ok"] as? Bool, true)
-    XCTAssertEqual(store.eventRows["event-1"]?.value.title, "Replacement")
-    XCTAssertNil(store.eventRows["event-1"]?.value.notes)
-    XCTAssertNil(store.eventRows["event-1"]?.value.location)
+    XCTAssertEqual(store.eventRows["event-1"]?.title, "Replacement")
+    XCTAssertNil(store.eventRows["event-1"]?.notes)
+    XCTAssertNil(store.eventRows["event-1"]?.location)
     XCTAssertEqual(store.writes, 2)
+  }
+
+  @MainActor func testEventReadReportsAttendeeAndSeriesFlagsPerEvent() async throws {
+    let store = FakeStore()
+    store.eventRows = [
+      "plain": event("plain"),
+      "guests": event("guests", hasAttendees: true),
+      "series": event("series", recurring: true),
+      "both": event("both", hasAttendees: true, recurring: true),
+    ]
+    let result = try await read(
+      HelperService(store: store), "list_events",
+      ["calendarId": "calendar-1", "start": start, "end": end])
+    let rows = try XCTUnwrap(result["events"] as? [[String: Any]])
+    var flags: [String: [Bool?]] = [:]
+    for row in rows {
+      flags[try XCTUnwrap(row["id"] as? String)] = [
+        row["hasAttendees"] as? Bool, row["recurring"] as? Bool,
+      ]
+    }
+    XCTAssertEqual(flags["plain"], [false, false])
+    XCTAssertEqual(flags["guests"], [true, false])
+    XCTAssertEqual(flags["series"], [false, true])
+    XCTAssertEqual(flags["both"], [true, true])
   }
 
   @MainActor func testRecurringEventAndReadOnlyOriginRefused() async throws {
     let store = FakeStore()
     let service = HelperService(store: store)
-    store.eventRows["event-1"] = StoredEvent(value: event(), recurring: true)
+    store.eventRows["event-1"] = event(recurring: true)
     var args = eventArgs()
     args["id"] = "event-1"
     try assertFailure(await service.handle(try request("update_event", args)), "unsupported_event")
@@ -277,7 +304,7 @@ final class HelperTests: XCTestCase {
     try assertFailure(await service.handle(try request("update_event", args)), "unsupported_event")
     var original = event()
     original.calendarId = "read-only"
-    store.eventRows["event-1"] = StoredEvent(value: original, recurring: false)
+    store.eventRows["event-1"] = original
     store.lists.append(CalendarValue(id: "read-only", title: "Read only", writable: false))
     args["id"] = "event-1"
     args["calendarId"] = "read-only"
@@ -289,16 +316,16 @@ final class HelperTests: XCTestCase {
     let store = FakeStore()
     let service = HelperService(store: store)
     store.lists.append(CalendarValue(id: "calendar-2", title: "Other", writable: true))
-    store.eventRows["event-1"] = StoredEvent(value: event(), recurring: false)
+    store.eventRows["event-1"] = event()
     var args = eventArgs()
     args["id"] = "event-1"
     args["calendarId"] = "calendar-2"
     try assertFailure(await service.handle(try request("update_event", args)), "unsupported_event")
-    store.eventRows["event-1"] = StoredEvent(value: event(), recurring: false, hasAttendees: true)
+    store.eventRows["event-1"] = event(hasAttendees: true)
     args["calendarId"] = "calendar-1"
     try assertFailure(await service.handle(try request("update_event", args)), "unsupported_event")
     XCTAssertEqual(store.writes, 0)
-    XCTAssertEqual(store.eventRows["event-1"]?.value.title, "Original")
+    XCTAssertEqual(store.eventRows["event-1"]?.title, "Original")
   }
 
   func testSingleEventWithOccurrenceDateIsNotRecurring() {
@@ -335,7 +362,7 @@ final class HelperTests: XCTestCase {
     let calendars = try object(await service.handle(try request("list_reminder_lists")))
     let values = (calendars["result"] as? [String: Any])?["calendars"] as? [[String: Any]]
     XCTAssertEqual(values?.first?["id"] as? String, "calendar-1")
-    store.eventRows["event-1"] = StoredEvent(value: event(), recurring: false)
+    store.eventRows["event-1"] = event()
     let events = try object(
       await service.handle(
         try request("list_events", ["calendarId": "calendar-1", "start": start, "end": end])))
@@ -375,9 +402,9 @@ final class HelperTests: XCTestCase {
     var badDate = event("event-date")
     badDate.modifiedAt = "yesterday"
     store.eventRows = [
-      "event-1": StoredEvent(value: event(), recurring: false),
-      "event-nul": StoredEvent(value: nul, recurring: false),
-      "event-date": StoredEvent(value: badDate, recurring: false),
+      "event-1": event(),
+      "event-nul": nul,
+      "event-date": badDate,
     ]
     let events = try await read(
       service, "list_events", ["calendarId": "calendar-1", "start": start, "end": end])

@@ -321,6 +321,13 @@ final class BridgeTests: XCTestCase {
   @MainActor func testEventKitOpsMatchRequestMode() async throws {
     let bridged = FakeStore()
     let direct = FakeStore()
+    let series = EventValue(
+      id: "recurrence:event-9:2026-01-16T09:00:00.000Z", calendarId: "calendar-1",
+      title: "Synthetic series", start: "2026-01-16T09:00:00.000Z",
+      end: "2026-01-16T10:00:00.000Z", allDay: false, location: nil, notes: nil, modifiedAt: nil,
+      hasAttendees: true, recurring: true)
+    bridged.eventRows[series.id] = series
+    direct.eventRows[series.id] = series
     let (server, path) = try startServer(handler: try makeHandler(store: bridged))
     defer { server.stop() }
     let requests: [[String: Any]] = [
@@ -330,6 +337,12 @@ final class BridgeTests: XCTestCase {
         "args": [
           "calendarId": "calendar-1", "title": "Synthetic event",
           "start": "2026-01-15T09:00:00Z", "end": "2026-01-15T10:00:00Z", "allDay": false,
+        ],
+      ],
+      [
+        "operation": "list_events",
+        "args": [
+          "calendarId": "calendar-1", "start": "2026-01-01T00:00:00Z", "end": "2026-02-01T00:00:00Z",
         ],
       ],
       ["operation": "list_calendars", "args": ["extra": true]],

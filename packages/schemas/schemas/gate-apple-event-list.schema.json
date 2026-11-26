@@ -63,6 +63,14 @@
               }
             ]
           },
+          "hasAttendees": {
+            "type": "boolean",
+            "description": "The event has attendees. The Helper refuses update_event for it."
+          },
+          "recurring": {
+            "type": "boolean",
+            "description": "The event belongs to a series: it has recurrence rules or is a detached occurrence. Its id carries the recurrence: prefix. The Helper refuses update_event for it."
+          },
           "modifiedAt": {
             "oneOf": [
               {
@@ -86,7 +94,9 @@
           "allDay",
           "location",
           "notes",
-          "modifiedAt"
+          "modifiedAt",
+          "hasAttendees",
+          "recurring"
         ],
         "additionalProperties": false
       }
