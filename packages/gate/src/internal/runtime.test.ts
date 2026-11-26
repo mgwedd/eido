@@ -1,13 +1,26 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { createHash } from "node:crypto"
-import { chmodSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { auditRows, sample } from "./test-fixtures"
 import { payloadHash } from "./canonical"
-import { intentTier, kindTier, preparePolicyChange } from "./policy"
+import {
+  ControlStateError,
+  MemoryControlStore,
+  attachControlCheckpoint,
+} from "./control-checkpoint"
+import type { ControlCheckpoint, RetrySchedule } from "./control-checkpoint"
+import {
+  SHIPPED_DEFAULT_PATH,
+  intentTier,
+  kindTier,
+  preparePolicyChange,
+} from "./policy"
 import {
   applyPolicyOverrides,
+  policyPending,
   reloadPolicy,
+  resumeGate,
   runningGate,
   startGate,
   stopGate,
@@ -16,6 +29,7 @@ import { WEBAUTHN, controlAuthorization, setup } from "./test-fixtures"
 import type { Setup } from "./test-fixtures"
 
 let current: Setup | undefined
+let checkpoint: ControlCheckpoint | undefined
 
 function started(): Setup {
   current = setup()
@@ -25,6 +39,8 @@ function started(): Setup {
 
 afterEach(() => {
   stopGate()
+  checkpoint?.close()
+  checkpoint = undefined
   current?.cleanup()
   current = undefined
 })
@@ -277,5 +293,99 @@ describe("the running gate", () => {
     expect(
       auditRows(s.db).some((row) => row.action === "owner_config.rejected")
     ).toBe(true)
+  })
+})
+
+/** Reads the denial reason a call throws; fails the test when it does not throw one. */
+function deniedReason(read: () => unknown): string {
+  try {
+    read()
+  } catch (error) {
+    if (error instanceof ControlStateError) return error.reason
+    throw error
+  }
+  throw new Error("expected a control-state denial")
+}
+
+describe("a gate started with the control checkpoint locked (#870)", () => {
+  // A database with no control state verifies by initialising the store once it unlocks.
+  function lockedStart(store: MemoryControlStore) {
+    const s = setup([])
+    current = s
+    const retries: (() => void)[] = []
+    const schedule: RetrySchedule = (run) => {
+      retries.push(run)
+      return () => undefined
+    }
+    checkpoint = attachControlCheckpoint(s.db, { store, schedule })
+    const shippedPath = join(s.dataDir, "permissions.default.json")
+    copyFileSync(SHIPPED_DEFAULT_PATH, shippedPath)
+    const options = { ...s.options, shippedPath }
+    return { s, options, retries }
+  }
+
+  it("starts without a policy and denies every policy read as keychain_locked", () => {
+    const store = new MemoryControlStore()
+    store.locked = true
+    const { s, options } = lockedStart(store)
+    expect(startGate(s.db, options, WEBAUTHN)).toEqual([])
+    expect(policyPending()).toBe(true)
+    expect(runningGate().webAuthn).toEqual(WEBAUTHN)
+    expect(deniedReason(() => runningGate().policy)).toBe("keychain_locked")
+    expect(deniedReason(() => reloadPolicy())).toBe("keychain_locked")
+  })
+
+  it("loads the policy once the checkpoint verifies, and only once", () => {
+    const store = new MemoryControlStore()
+    store.locked = true
+    const { s, options, retries } = lockedStart(store)
+    startGate(s.db, options, WEBAUTHN)
+    store.locked = false
+    retries[0]?.()
+    expect(checkpoint?.denied()).toBeUndefined()
+    // Verified, but not loaded yet: the read still refuses until resumeGate runs.
+    expect(deniedReason(() => runningGate().policy)).toBe("keychain_locked")
+    expect(resumeGate()).toEqual([])
+    expect(policyPending()).toBe(false)
+    expect(runningGate().policy.allowedRoots).toEqual(s.options.allowedRoots)
+    expect(() => resumeGate()).toThrow("the gate already has its policy")
+  })
+
+  it("stays without a policy when the load after verification fails, and loads on a later try", () => {
+    const store = new MemoryControlStore()
+    store.locked = true
+    const { s, options, retries } = lockedStart(store)
+    startGate(s.db, options, WEBAUTHN)
+    store.locked = false
+    retries[0]?.()
+    writeFileSync(options.shippedPath, "{")
+    expect(() => resumeGate()).toThrow(SyntaxError)
+    expect(policyPending()).toBe(true)
+    expect(() => runningGate().policy).toThrow(SyntaxError)
+    copyFileSync(SHIPPED_DEFAULT_PATH, options.shippedPath)
+    expect(resumeGate()).toEqual([])
+    expect(policyPending()).toBe(false)
+  })
+
+  it("still refuses to start for every other denial", () => {
+    const store = new MemoryControlStore()
+    store.failLoads = true
+    const { s, options } = lockedStart(store)
+    expect(deniedReason(() => startGate(s.db, options, WEBAUTHN))).toBe(
+      "store_unreadable"
+    )
+    expect(() => runningGate()).toThrow("the gate is not started")
+  })
+
+  it("denies with the checkpoint's new reason when the unlocked store does not verify", () => {
+    const store = new MemoryControlStore()
+    store.locked = true
+    const { s, options, retries } = lockedStart(store)
+    startGate(s.db, options, WEBAUTHN)
+    store.locked = false
+    store.value = "not a record"
+    retries[0]?.()
+    expect(deniedReason(() => runningGate().policy)).toBe("store_malformed")
+    expect(deniedReason(() => resumeGate())).toBe("store_malformed")
   })
 })
