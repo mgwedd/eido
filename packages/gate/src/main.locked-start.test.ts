@@ -217,7 +217,7 @@ describe("runGate with the control checkpoint locked (#870)", () => {
 describe("finishLockedStart (#870)", () => {
   const steps = (pending: boolean) => ({
     pending: () => pending,
-    resume: vi.fn(() => []),
+    resume: vi.fn((): string[] => []),
     prepare: vi.fn(() => Promise.resolve()),
     log: vi.fn(),
   })
@@ -228,6 +228,17 @@ describe("finishLockedStart (#870)", () => {
     expect(s.resume).not.toHaveBeenCalled()
     expect(s.prepare).not.toHaveBeenCalled()
     expect(s.log).not.toHaveBeenCalled()
+  })
+
+  it("logs the overlay error count of the resumed policy, then prepares the secrets", () => {
+    const s = steps(true)
+    s.resume.mockImplementation(() => [
+      "overlay entry 1 is invalid",
+      "overlay entry 2 is invalid",
+    ])
+    finishLockedStart(s)
+    expect(s.log.mock.calls).toEqual([["policy_loaded", { overlayErrors: 2 }]])
+    expect(s.prepare).toHaveBeenCalledOnce()
   })
 
   it("logs a failed load and leaves push alone", () => {

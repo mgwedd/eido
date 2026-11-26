@@ -992,13 +992,15 @@ export function finishLockedStart(steps: {
   log: Log
 }): void {
   if (!steps.pending()) return
+  let overlayErrors: string[]
   try {
-    steps.resume()
+    overlayErrors = steps.resume()
   } catch {
     steps.log("policy_load_failed")
     return
   }
-  steps.log("policy_loaded")
+  // The count only, as `started` logs it for a normal start.
+  steps.log("policy_loaded", { overlayErrors: overlayErrors.length })
   steps.prepare().catch(() => {
     steps.log("push_unavailable")
   })
