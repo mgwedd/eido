@@ -299,6 +299,35 @@ export function vaultConfig(
   return undefined
 }
 
+/**
+ * Refuses a config whose vaults name a keychain other than the control checkpoint's (#919). A
+ * locked vault read moves the checkpoint into keychain_locked, and only the checkpoint's own load
+ * clears it; a vault on another keychain could stay locked while that load verifies, so every
+ * read would deny the gate and every retry clear it again. `gateConfig` always gives every vault
+ * the checkpoint's keychain, so only a hand-built config can fail here.
+ */
+export function assertOneKeychain(config: GateConfig): void {
+  const checkpoint = config.controlCheckpoint
+  if (checkpoint === undefined) return
+  const vaults = [
+    config.vault,
+    config.profileAudit?.vault,
+    config.push?.vault,
+    config.bridge?.vault,
+    config.gmail?.vault,
+    config.egress?.vault,
+  ]
+  if (
+    vaults.some(
+      (vault) =>
+        vault?.kind === "keychain" && vault.path !== checkpoint.keychainPath
+    )
+  )
+    throw new Error(
+      "every gate vault must use the control checkpoint's keychain"
+    )
+}
+
 export function createVault(config: VaultConfig): Vault {
   return config.kind === "keychain"
     ? new KeychainVault({ path: config.path })
@@ -583,6 +612,7 @@ export async function runGate(
     unlockFromStdin(path, process.stdin),
   retrySchedule?: RetrySchedule
 ): Promise<RunningGate> {
+  assertOneKeychain(config)
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
   const log = fileLog(join(config.dataDir, GATE_LOG_FILE))
   // Before anything opens the vault or the control checkpoint. A rejected passphrase stops the
@@ -631,6 +661,8 @@ export async function runGate(
   }
   // A secret read that finds the keychain locked moves the checkpoint into keychain_locked and
   // starts its retry, so a keychain that locks while the gate runs is noticed and recovers (#878).
+  // Every vault is on the checkpoint's keychain (assertOneKeychain), so the retry's own load
+  // stays locked while any vault's does and the checkpoint cannot flap (#919).
   const openVault = (vault: VaultConfig): Vault =>
     reportingLocks(vaultFactory(vault), () => {
       reportKeychainLocked(db)
