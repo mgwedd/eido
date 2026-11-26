@@ -165,9 +165,7 @@ unix("file helper through the session bridge", () => {
         Promise.resolve({
           ok: true,
           text: JSON.stringify({
-            roots: [
-              { id: "docs", path: DOCS.path, trashDir: DOCS.trashDir },
-            ],
+            roots: [{ id: "docs", path: DOCS.path, trashDir: DOCS.trashDir }],
           }),
         }),
     }
