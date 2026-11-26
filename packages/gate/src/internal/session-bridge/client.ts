@@ -53,7 +53,11 @@ export class SessionUnavailableError extends Error {
   }
 }
 
-/** The bridge was reached but the exchange failed: a timeout, a bad frame or a bad answer. */
+/**
+ * The bridge call failed before the request was sent, for a reason other than an absent
+ * bridge: a path that is not a socket, an unreadable path, or a request over the limit. Its
+ * subclass `SessionBridgeOutcomeUnknownError` covers every failure after the request was sent.
+ */
 export class SessionBridgeError extends Error {
   constructor(message: string) {
     super(message)
@@ -62,12 +66,15 @@ export class SessionBridgeError extends Error {
 }
 
 /**
- * The request frame was written and the gate gave up waiting for the answer: the bridge may
- * still have run it. The executor records the outcome as unknown, never as a clean failure.
+ * The request frame was written and no answer proves what happened (#912): the deadline
+ * passed, the connection failed or closed early, or the answer was a bad frame, not JSON or
+ * outside the schema. The bridge may have run the request. The executor records the outcome
+ * as unknown, never as a clean failure. Only a schema-valid answer (a result or one of the
+ * bridge's own codes) proves either outcome.
  */
 export class SessionBridgeOutcomeUnknownError extends SessionBridgeError {
-  constructor() {
-    super("session bridge timed out after the request was sent")
+  constructor(message = "session bridge timed out after the request was sent") {
+    super(message)
     this.name = "SessionBridgeOutcomeUnknownError"
   }
 }
@@ -167,8 +174,28 @@ export function parseFrameBody(body: Buffer): unknown {
     const parsed: unknown = JSON.parse(body.toString("utf8"))
     return parsed
   } catch {
-    throw new SessionBridgeError("session bridge answer is not JSON")
+    throw new SessionBridgeOutcomeUnknownError(
+      "session bridge answer is not JSON"
+    )
   }
+}
+
+/**
+ * Why the connection failed (#912): before it opened nothing was written, so an absent or
+ * refusing bridge is unavailable and anything else a plain failure. Once it opened the request
+ * may have been written and run, so any failure, a reset included, is an unknown outcome.
+ */
+export function connectionError(
+  sent: boolean,
+  error: unknown
+): SessionUnavailableError | SessionBridgeError {
+  if (sent)
+    return new SessionBridgeOutcomeUnknownError(
+      "session bridge connection failed after the request was sent"
+    )
+  return absent(error)
+    ? new SessionUnavailableError()
+    : new SessionBridgeError("session bridge connection failed")
 }
 
 /**
@@ -211,20 +238,18 @@ function exchange(
       sent = true
       socket.write(frame)
     })
-    socket.on("error", (error) =>
-      finish(
-        !sent && absent(error)
-          ? new SessionUnavailableError()
-          : new SessionBridgeError("session bridge connection failed")
-      )
-    )
+    socket.on("error", (error) => finish(connectionError(sent, error)))
+    // Data and a close without an error come only after the connection opened, so after the
+    // request may have been written: a bad or short frame proves neither outcome.
     socket.on("data", (chunk: Buffer) => {
       const refused = reader.push(chunk)
-      if (refused !== undefined) finish(new SessionBridgeError(refused))
+      if (refused !== undefined)
+        finish(new SessionBridgeOutcomeUnknownError(refused))
     })
     socket.on("close", () => {
       const frame = reader.end()
-      if ("refused" in frame) finish(new SessionBridgeError(frame.refused))
+      if ("refused" in frame)
+        finish(new SessionBridgeOutcomeUnknownError(frame.refused))
       else if (settle()) resolve(frame.body)
     })
   })
@@ -303,12 +328,17 @@ export async function bridgeStdout(
   const checked = validateGateSessionBridgeResponse(
     await bridge.call(request, options)
   )
-  if (!checked.ok) throw new SessionBridgeError("session bridge answer refused")
+  // An answer outside the schema proves neither outcome. One of the bridge's own codes is its
+  // answer about the op, so it stays a refusal, as the direct runner's exit status would.
+  if (!checked.ok)
+    throw new SessionBridgeOutcomeUnknownError("session bridge answer refused")
   if (!checked.value.ok) throw new SessionBridgeRefusal(checked.value.code)
   const text = checked.value.result.stdoutBase64
   const bytes = Buffer.from(text, "base64")
   // Buffer.from skips characters outside the alphabet; a round trip proves there were none.
   if (bytes.toString("base64") !== text)
-    throw new SessionBridgeError("session bridge stdout is not base64")
+    throw new SessionBridgeOutcomeUnknownError(
+      "session bridge stdout is not base64"
+    )
   return bytes
 }
