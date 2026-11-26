@@ -19,6 +19,7 @@ import {
   createSessionBridge,
 } from "../session-bridge/client"
 import {
+  TEST_OWNER_UID,
   answeringBridge,
   socketDir,
   startFakeSessionBridge,
@@ -96,7 +97,7 @@ unix("file helper through the session bridge", () => {
     const bridge = await fake(() => stdout('{"ok":true,"op":"create"}\n'))
     const outcome = await createFile(
       db,
-      fileHelper(pin, createSessionBridge(bridge.socketPath)),
+      fileHelper(pin, createSessionBridge(bridge.socketPath, TEST_OWNER_UID)),
       {
         rootId: "docs",
         path: "notes/lorem.txt",
@@ -128,7 +129,7 @@ unix("file helper through the session bridge", () => {
     const bridge = await fake(() => stdout(IDENTIFIED))
     const viaBridge = await fileHelper(
       pin,
-      createSessionBridge(bridge.socketPath)
+      createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
     )(identify)
     expect(viaBridge).toEqual(await direct)
     expect(viaBridge).toEqual({
@@ -152,7 +153,7 @@ unix("file helper through the session bridge", () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     const error = await fileHelper(
       pin,
-      createSessionBridge(stale)
+      createSessionBridge(stale, TEST_OWNER_UID)
     )(identify).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SessionUnavailableError)
     expect(mocked.spawn).not.toHaveBeenCalled()
@@ -162,7 +163,7 @@ unix("file helper through the session bridge", () => {
     const bridge = await fake(() => ({ raw: Buffer.from([0, 0, 0, 0]) }))
     const error = await fileHelper(
       pin,
-      createSessionBridge(bridge.socketPath)
+      createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
     )(identify).catch((e: unknown) => e)
     expect(error).not.toBeInstanceOf(SessionUnavailableError)
     expect(error).toMatchObject({ message: "file helper failed" })
@@ -177,7 +178,7 @@ describe("file helper answers from the session bridge", () => {
     cleanups.push(remove)
     const error = await fileHelper(
       pin,
-      createSessionBridge(join(parent, "absent.sock"))
+      createSessionBridge(join(parent, "absent.sock"), TEST_OWNER_UID)
     )(identify).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SessionUnavailableError)
     expect(mocked.spawn).not.toHaveBeenCalled()
