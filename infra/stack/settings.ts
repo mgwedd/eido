@@ -78,6 +78,32 @@ const FLAG_KEYS: ReadonlySet<string> = new Set([
   "EIDO_FILES_SYNC",
 ])
 
+/** Settings core reads as one inline JSON object (not a path); core checks the object's fields. */
+const JSON_OBJECT_KEYS: ReadonlySet<string> = new Set([
+  "EIDO_REPLIES_CONFIG",
+  "EIDO_TRIAGE_CONFIG",
+])
+
+const isJsonObject = (value: string): boolean => {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return (
+      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    )
+  } catch {
+    return false
+  }
+}
+
+/** Settings core reads as a positive integer. */
+const POSITIVE_INTEGER_KEYS: ReadonlySet<string> = new Set([
+  "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
+  "EIDO_DIGEST_SECTION_TOKENS",
+])
+
+/** The 24-hour `HH:MM` core's SimpleFIN daily sync takes (`parseSyncTime`). */
+const TIME = /^([01]?\d|2[0-3]):([0-5]\d)$/
+
 /**
  * Settings the supervisor's `POST /settings` refuses. They choose where the gate's secrets
  * live or weaken its transport checks, so only the setup command (a local terminal) may write
@@ -127,6 +153,27 @@ export function settingProblem(key: string, value: string): string | undefined {
     return `${key} must be an absolute path`
   if (FLAG_KEYS.has(key) && value !== "" && value !== "0" && value !== "1")
     return `${key} must be 0 or 1`
+  if (key === "EIDO_PROTON_USERNAME" && value !== "" && !value.includes("@"))
+    return `${key} must be an address`
+  if (JSON_OBJECT_KEYS.has(key) && value !== "" && !isJsonObject(value))
+    return `${key} must be a JSON object`
+  if (key === "EIDO_SIMPLEFIN_MAX_RANGE_DAYS" && value !== "") {
+    const days = /^\d+$/.test(value) ? Number(value) : Number.NaN
+    if (!(days >= 1 && days <= 3650))
+      return `${key} must be an integer from 1 to 3650`
+  }
+  if (key === "EIDO_SIMPLEFIN_SYNC_TIME" && value !== "" && !TIME.test(value))
+    return `${key} must be a 24-hour time, HH:MM`
+  if (
+    POSITIVE_INTEGER_KEYS.has(key) &&
+    value !== "" &&
+    !(
+      /^\d+$/.test(value) &&
+      Number.isSafeInteger(Number(value)) &&
+      Number(value) >= 1
+    )
+  )
+    return `${key} must be a positive integer`
   if (key === "EIDO_STACK_PLANE") {
     try {
       planeOf({ [key]: value })

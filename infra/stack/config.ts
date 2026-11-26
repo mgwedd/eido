@@ -98,6 +98,18 @@ export const PASS_THROUGH = {
     "EIDO_LLAMA_CHAT_TEMPLATE_KWARGS",
     // Which Apple calendars core reads through the gate (#751): `*` or a comma-separated id list.
     "EIDO_APPLE_CALENDARS",
+    // The Bridge account address (not a secret; the gate holds the password). Core registers no
+    // Proton connector without it (#935).
+    "EIDO_PROTON_USERNAME",
+    // Inline JSON objects, not paths: reply obligations and the proactive card budget.
+    "EIDO_REPLIES_CONFIG",
+    "EIDO_TRIAGE_CONFIG",
+    // SimpleFIN read window in days and the local HH:MM daily sync time. They act only once
+    // EIDO_SIMPLEFIN_PROXY_URL is set, which the stack does not set outside the split plane.
+    "EIDO_SIMPLEFIN_MAX_RANGE_DAYS",
+    "EIDO_SIMPLEFIN_SYNC_TIME",
+    "EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES",
+    "EIDO_DIGEST_SECTION_TOKENS",
   ],
 } as const
 
