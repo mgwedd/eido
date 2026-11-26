@@ -1953,6 +1953,8 @@ describe("createAppleCalendarSyncRuntime", () => {
     location: null,
     notes: null,
     modifiedAt: null,
+    hasAttendees: false,
+    recurring: false,
   }
   const entities = {
     entityForAccount: () => Promise.resolve(null),
@@ -2190,6 +2192,8 @@ describe("runDataPlane Apple calendar sync", () => {
                     location: null,
                     notes: null,
                     modifiedAt: null,
+                    hasAttendees: false,
+                    recurring: false,
                   },
                 ],
               }
