@@ -79,6 +79,15 @@ function actsOnExistingTodoOnly(text: string): boolean {
   return names && !CREATION.test(text.replace(FIELD_ADD, ""))
 }
 
+/**
+ * The Apple Calendar write kind offered on the proposal path (#785). It names an event by the id and
+ * calendar id the Events block shows, so like the Things verbs above it is offered only for a
+ * calendar request and the caller drops it unless the best matching event can take it. The gate has
+ * no Apple event delete, so there is no cancel kind to offer; `apple.event_create` and the
+ * reminder kinds are not on this path.
+ */
+export const APPLE_EVENT_UPDATE_KIND = "apple.event_update"
+
 /** Money movement and permanent deletes are never offered, whatever the catalog holds. */
 const FORBIDDEN_SEGMENT =
   /^(pay|payment|payments|transfer|wire|refund|purchase|buy|charge|withdraw|deposit|expunge|purge|destroy|wipe|erase|shred)$|permanent/i
@@ -133,6 +142,8 @@ export function selectTools(
           areas.has("things") &&
           idKindNamed(tool, request.text)
         )
+      if (tool.function.name.toLowerCase() === APPLE_EVENT_UPDATE_KIND)
+        return request.task === "propose" && areas.has("calendar")
       if (isRead(tool)) return true
       if (request.task !== "propose") return false
       if (

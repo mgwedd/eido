@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { INTENT_PROMPT_TEXT, INTENT_RESULT_JSON_SCHEMA } from "@eido/schemas"
 import type { JsonSchema } from "@eido/schemas"
 import { COMPACTION_LEGEND } from "../context/compact"
+import { APPLE_EVENT_UPDATE_KIND } from "../context/tools"
 import { blockParts } from "../context/pack-store"
 import type { ContextPack } from "../context/pack-store"
 import { MATERIAL_RULES } from "../inference/fence"
@@ -53,6 +54,14 @@ export const PROPOSE_SYSTEM_PROMPT = [
  */
 export const TODO_ARG_ORDER_NOTE =
   "Write each intent's args in a fixed order: the required args first, then the optional ones in alphabetical order of their names. The reply is checked in that order, so an optional arg you skip cannot be added after a later one: decide every optional arg in that order before you move on."
+
+/**
+ * Added to the task only when `apple.event_update` is offered (#785). The kind replaces the whole
+ * event, and core, not the model, keeps the location and notes the owner did not ask to change, so
+ * the model is told to leave them out. Kept out of the stable prefix like `TODO_ARG_ORDER_NOTE`.
+ */
+export const APPLE_EVENT_UPDATE_NOTE =
+  "For apple.event_update, copy id from the uid and calendarId from the calendarId of the event in the Events block, and give title, start, end and allDay as the event should be after the change: copy every one the request does not change. Leave out location and notes unless the request changes them: they are kept as they are. A moved event keeps its length unless the request says otherwise. It cannot cancel or delete an event: when the request asks for that, answer none."
 
 /** The pack members that are messages (not attachments), with the ids an intent may use. */
 export function referableMessages(
@@ -153,6 +162,9 @@ export function buildProposalRequest(
     `Intent kinds offered for this request: ${input.kinds.length === 0 ? "(none)" : input.kinds.join(", ")}`,
     `Owner request:\n${input.request}`,
     ...((input.todos ?? []).length === 0 ? [] : [TODO_ARG_ORDER_NOTE]),
+    ...(input.kinds.includes(APPLE_EVENT_UPDATE_KIND)
+      ? [APPLE_EVENT_UPDATE_NOTE]
+      : []),
     ...(failures.length === 0 ? [] : [retryNote(failures)]),
   ]
   const content: PromptPart[] = [

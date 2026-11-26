@@ -18,6 +18,8 @@ export const MAX_EVENT_LINES = 10
 export const MAX_EVENT_TITLE_CHARS = 80
 /** The longest uid a calendar intent carries (`eventUid`). */
 const MAX_EVENT_UID_CHARS = 256
+/** The longest calendar id `apple.event_update` carries (`calendarId`). */
+const MAX_CALENDAR_ID_CHARS = 1024
 
 export interface EventLine {
   uid: string
@@ -31,6 +33,15 @@ export interface EventLine {
    * the Helper refuse `update_event` (#872). Absent for an event of another source.
    */
   appleFlags?: AppleEventFlags
+  /** An Apple event only: the calendar it belongs to, which `apple.event_update` names (#785). */
+  calendarId?: string
+  /**
+   * An Apple event only: whether `apple.event_update` may be offered for it. That needs the Helper
+   * to accept the write (attendees and recurrence known and absent), the indexed location and notes
+   * known so core can carry them, and the title, calendar id and uid reaching the model unchanged
+   * so a copy of them is the stored value. When any of it is missing the event is read-only.
+   */
+  appleUpdate?: boolean
 }
 
 export interface MatchingEvents {
@@ -75,8 +86,8 @@ function aboutThePast(request: string): boolean {
 // Live event heads whose uid an intent can carry. Matching titles against the request stays in
 // JavaScript: SQLite's lower() and LIKE fold ASCII only, so a word filter in SQL would miss
 // titles in other scripts.
-const LIVE_EVENTS = `SELECT f.event_id, f.source, f.start_at, f.end_at, f.all_day, f.has_attendees, f.recurring,
-    t.title
+const LIVE_EVENTS = `SELECT f.event_id, f.source, f.calendar_id, f.start_at, f.end_at, f.all_day, f.has_attendees,
+    f.recurring, f.details_known, t.title
   FROM document_heads h
   JOIN calendar_event_facts f ON f.sha256 = h.sha256 AND f.source = h.source
   JOIN document_text t ON t.sha256 = h.sha256
@@ -118,6 +129,16 @@ export function listMatchingEvents(
       const start = String(row["start_at"])
       const end = String(row["end_at"])
       const source = String(row["source"])
+      const shown = title
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, MAX_EVENT_TITLE_CHARS)
+      const isApple = source === APPLE_CALENDAR_CONNECTOR
+      const calendarId = String(row["calendar_id"])
+      const flags = appleEventFlagsOf({
+        has_attendees: row["has_attendees"],
+        recurring: row["recurring"],
+      })
       return [
         {
           score: shared,
@@ -126,20 +147,24 @@ export function listMatchingEvents(
           upcoming: Date.parse(end) >= now.getTime(),
           line: {
             uid,
-            title: title
-              .replace(/\s+/g, " ")
-              .trim()
-              .slice(0, MAX_EVENT_TITLE_CHARS),
+            title: shown,
             start,
             end,
             allDay: row["all_day"] === 1,
             source,
-            ...(source === APPLE_CALENDAR_CONNECTOR
+            ...(isApple
               ? {
-                  appleFlags: appleEventFlagsOf({
-                    has_attendees: row["has_attendees"],
-                    recurring: row["recurring"],
-                  }),
+                  appleFlags: flags,
+                  calendarId,
+                  appleUpdate:
+                    flags.known &&
+                    !flags.hasAttendees &&
+                    !flags.recurring &&
+                    row["details_known"] === 1 &&
+                    shown === title &&
+                    normalizeMaterial(title) === title &&
+                    normalizeMaterial(calendarId) === calendarId &&
+                    calendarId.length <= MAX_CALENDAR_ID_CHARS,
                 }
               : {}),
           },
@@ -175,15 +200,26 @@ export function listMatchingEvents(
 /**
  * The Events block as prompt parts: a header, then one line per event, inside the pack's data
  * fence. An Apple Calendar event is marked read-only: `calendar.edit` and `calendar.delete` are
- * Proton invitation operations and refuse its uid. No events render nothing.
+ * Proton invitation operations and refuse its uid. With `appleUpdate` set (the caller offers
+ * `apple.event_update`), an Apple event that `appleUpdate` allows instead shows the calendar id the
+ * intent names. No events render nothing.
  */
 export function renderEventsBlock(
-  list: Pick<MatchingEvents, "events" | "matched">
+  list: Pick<MatchingEvents, "events" | "matched">,
+  options: { appleUpdate?: boolean } = {}
 ): PromptPart[] {
   if (list.events.length === 0) return []
+  const apple = (e: EventLine): string => {
+    if (e.source !== APPLE_CALENDAR_CONNECTOR) return ""
+    return options.appleUpdate === true &&
+      e.appleUpdate === true &&
+      e.calendarId !== undefined
+      ? ` | calendarId=${e.calendarId}`
+      : " | read-only"
+  }
   const lines = list.events.map(
     (e) =>
-      `- uid=${e.uid} | ${e.title} | ${e.start} to ${e.end}${e.allDay ? " | all-day" : ""} | source=${e.source}${e.source === APPLE_CALENDAR_CONNECTOR ? " | read-only" : ""}`
+      `- uid=${e.uid} | ${e.title} | ${e.start} to ${e.end}${e.allDay ? " | all-day" : ""} | source=${e.source}${apple(e)}`
   )
   const header = `## Events (${String(list.events.length)} of ${String(list.matched)} match)`
   return [

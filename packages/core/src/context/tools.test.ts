@@ -104,6 +104,18 @@ describe("selectTools", () => {
     ).toEqual([])
   })
 
+  test("apple.event_update is offered for a calendar propose request only; no other Apple kind is", () => {
+    const apple = (text: string, task: "ask" | "propose") =>
+      names(selectTools({ text, task }, CATALOG)).filter((n) =>
+        n.startsWith("apple.")
+      )
+    expect(apple("move the dentist appointment to friday", "propose")).toEqual([
+      "apple.event_update",
+    ])
+    expect(apple("move the dentist appointment to friday", "ask")).toEqual([])
+    expect(apple("archive the invoice emails", "propose")).toEqual([])
+  })
+
   test("a gate-derived restore intent is never offered to the model", () => {
     expect(
       names(

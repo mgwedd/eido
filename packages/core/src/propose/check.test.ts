@@ -1,5 +1,7 @@
+import type { Intent } from "@eido/schemas"
 import { describe, expect, test } from "vitest"
-import { checkReply } from "./check"
+import { carryAppleDetails, checkReply } from "./check"
+import type { AppleUpdateTarget } from "./check"
 
 const context = {
   kinds: new Set(["email.forward", "email.draft"]),
@@ -244,5 +246,140 @@ describe("checkReply Apple events", () => {
         },
       ],
     })
+  })
+})
+
+describe("checkReply Apple event updates", () => {
+  const TARGET: AppleUpdateTarget = {
+    id: "apple-dentist",
+    calendarId: "cal-1",
+    location: "Lorem Street 1",
+    notes: null,
+  }
+  const update = (args: Record<string, unknown>) => ({
+    kind: "apple.event_update",
+    args: {
+      id: "apple-dentist",
+      calendarId: "cal-1",
+      title: "Dentist checkup",
+      start: "2030-05-03T09:00:00.000Z",
+      end: "2030-05-03T10:00:00.000Z",
+      allDay: false,
+      ...args,
+    },
+  })
+  const updateContext = {
+    kinds: new Set(["apple.event_update"]),
+    referable: [],
+    appleUpdates: [TARGET],
+  }
+
+  test("an update naming a listed event and its calendar passes", () => {
+    const checked = checkReply(reply(update({})), updateContext, 5)
+    expect(checked).toEqual({ ok: true, intents: [update({})] })
+  })
+
+  test("an update naming an event the block did not offer is refused", () => {
+    const checked = checkReply(
+      reply(update({ id: "apple-invented" })),
+      updateContext,
+      5
+    )
+    expect(checked).toEqual({
+      ok: false,
+      failures: [{ code: "unknown_reference", path: "$.intents[0].args.id" }],
+    })
+  })
+
+  test("an update naming a listed event in another calendar is refused", () => {
+    const checked = checkReply(
+      reply(update({ calendarId: "cal-2" })),
+      updateContext,
+      5
+    )
+    expect(checked).toEqual({
+      ok: false,
+      failures: [
+        { code: "unknown_reference", path: "$.intents[0].args.calendarId" },
+      ],
+    })
+  })
+
+  test("with no Apple event offered, every update is refused", () => {
+    const checked = checkReply(
+      reply(update({})),
+      { kinds: updateContext.kinds, referable: [] },
+      5
+    )
+    expect(checked).toEqual({
+      ok: false,
+      failures: [{ code: "unknown_reference", path: "$.intents[0].args.id" }],
+    })
+  })
+
+  test("an update of a kind that was not offered is refused as such", () => {
+    const checked = checkReply(
+      reply(update({})),
+      { ...updateContext, kinds: new Set(["email.draft"]) },
+      5
+    )
+    expect(checked).toEqual({
+      ok: false,
+      failures: [{ code: "kind_not_offered", path: "$.intents[0].kind" }],
+    })
+  })
+})
+
+describe("carryAppleDetails", () => {
+  const TARGETS: AppleUpdateTarget[] = [
+    {
+      id: "e-1",
+      calendarId: "cal-1",
+      location: "Lorem Street 1",
+      notes: "Ipsum dolor.",
+    },
+    { id: "e-2", calendarId: "cal-1", location: null, notes: null },
+  ]
+  const update = (id: string, extra: Record<string, unknown> = {}): Intent =>
+    ({
+      kind: "apple.event_update",
+      args: {
+        id,
+        calendarId: "cal-1",
+        title: "Lorem",
+        start: "2030-05-03T09:00:00.000Z",
+        end: "2030-05-03T10:00:00.000Z",
+        allDay: false,
+        ...extra,
+      },
+    }) satisfies Intent
+
+  test("the indexed location and notes fill in what the model left out", () => {
+    const carried = carryAppleDetails(update("e-1"), TARGETS)
+    expect(carried).toEqual(
+      update("e-1", { location: "Lorem Street 1", notes: "Ipsum dolor." })
+    )
+  })
+
+  test("a field the model set stays, even an empty one that clears it", () => {
+    expect(
+      carryAppleDetails(
+        update("e-1", { location: "Dolor Road 2", notes: "" }),
+        TARGETS
+      )
+    ).toEqual(update("e-1", { location: "Dolor Road 2", notes: "" }))
+  })
+
+  test("an event the calendar has no location or notes for gets neither", () => {
+    expect(carryAppleDetails(update("e-2"), TARGETS)).toEqual(update("e-2"))
+  })
+
+  test("an intent of another kind, or naming no offered event, is returned as it is", () => {
+    const delete_: Intent = {
+      kind: "calendar.delete",
+      args: { eventUid: "e-1" },
+    }
+    expect(carryAppleDetails(delete_, TARGETS)).toEqual(delete_)
+    expect(carryAppleDetails(update("e-9"), TARGETS)).toEqual(update("e-9"))
   })
 })
