@@ -5,6 +5,7 @@ import { afterEach, vi } from "vitest"
 import { QueueView } from "../components/queue-view"
 import { mailPayload, mailPrepared, mailQueued } from "./fixtures/queue"
 import { describeStates } from "./render-states"
+import { waitUntil } from "./wait-until"
 
 vi.mock("next/link", () => ({
   default: ({
@@ -96,17 +97,14 @@ const approveButton = (container: HTMLElement) =>
       !button.hasAttribute("disabled")
   )
 
-async function waitForApprove(container: HTMLElement) {
-  for (let step = 0; step < 300; step += 1) {
-    if (approveButton(container)) return
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  throw new Error("approval card did not finish loading")
-}
+const waitForApprove = (container: HTMLElement) =>
+  waitUntil(
+    () => approveButton(container) !== undefined,
+    "approval card did not finish loading"
+  )
 
-/** Signs the card and lets the stubbed passkey outcome land. */
+/** Clicks Approve and lets the stubbed passkey outcome land. The card is loaded by `settle`. */
 async function sign(container: HTMLElement) {
-  await waitForApprove(container)
   const button = approveButton(container)
   if (!(button instanceof HTMLElement)) throw new Error("no Approve button")
   await act(async () => {
@@ -122,8 +120,6 @@ const withPasskey = (outcome: () => unknown, gate?: Gate) => () => {
 
 const refused = (code: string, message: string) => () =>
   Promise.resolve({ ok: false, error: { code, message } })
-
-const settledCard = (container: HTMLElement) => waitForApprove(container)
 
 const wait = () =>
   new Promise<void>((resolve) => {
@@ -169,13 +165,14 @@ describeStates("Queue", [
   {
     state: "history failed",
     render: render({ history: "failed" }),
-    interact: settledCard,
+    settle: waitForApprove,
     role: "alert",
     message: "Could not load history from the audit log.",
   },
   {
     state: "signing",
     render: withPasskey(() => new Promise(() => {})),
+    settle: waitForApprove,
     interact: sign,
     role: "status",
     selector: "article > p[role=status]",
@@ -184,6 +181,7 @@ describeStates("Queue", [
   {
     state: "signing cancelled",
     render: withPasskey(refused("cancelled", "The prompt was dismissed.")),
+    settle: waitForApprove,
     interact: sign,
     role: "status",
     selector: "article > p[role=status]",
@@ -192,6 +190,7 @@ describeStates("Queue", [
   {
     state: "verification failed",
     render: withPasskey(refused("verification_failed", "Refused.")),
+    settle: waitForApprove,
     interact: sign,
     role: "alert",
     selector: "article > [data-slot=alert]",
@@ -201,6 +200,7 @@ describeStates("Queue", [
   {
     state: "approved",
     render: withPasskey(() => Promise.resolve({ ok: true, value: {} })),
+    settle: waitForApprove,
     interact: sign,
     role: "status",
     selector: "header + p[role=status]",
@@ -209,6 +209,7 @@ describeStates("Queue", [
   {
     state: "already decided",
     render: withPasskey(refused("already_decided", "Already decided.")),
+    settle: waitForApprove,
     interact: sign,
     role: "status",
     selector: "header + p[role=status]",

@@ -7,7 +7,7 @@ import { MemoryControlStore } from "./internal/control-checkpoint"
 import { socketAddress, WEBAUTHN } from "./internal/test-fixtures"
 import { unlockFromStdin } from "./internal/vault/keychain-unlock"
 import { InMemoryVault } from "./internal/vault/vault"
-import { GATE_LOG_FILE, gateConfig, runGate } from "./main"
+import { GATE_LOG_FILE, gateConfig, logCheckpointChange, runGate } from "./main"
 import type { GateConfig } from "./main"
 
 const PASSPHRASE = "synthetic-gate-unlock-passphrase"
@@ -187,6 +187,19 @@ describe("runGate keychain unlock (#821)", () => {
         event: "keychain_unlock_failed",
         reason: "helper",
       },
+    ])
+  })
+})
+
+describe("logCheckpointChange (#822)", () => {
+  it("logs a fixed event for a verified checkpoint and the reason alone for a denial", () => {
+    const log = vi.fn()
+    const changed = logCheckpointChange(log)
+    changed("keychain_locked")
+    changed(undefined)
+    expect(log.mock.calls).toEqual([
+      ["control_checkpoint_denied", { reason: "keychain_locked" }],
+      ["control_checkpoint_verified"],
     ])
   })
 })

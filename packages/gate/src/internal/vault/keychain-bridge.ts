@@ -15,6 +15,9 @@ export type KeychainCommand =
  * padding, lockInterval INT32_MAX}, and the read-back must show lock-on-sleep off and no timeout.
  * Once the unlock succeeded, any later failure locks the keychain again before it returns, so a
  * gate that refuses to start does not leave it unlocked.
+ * An item request that fails, item-not-found included, reports `locked` only when
+ * SecKeychainGetStatus succeeds and its unlocked bit (kSecUnlockStateStatus) is clear; any other
+ * failure is reported by status alone.
  */
 export const KEYCHAIN_SCRIPT = String.raw`
 ObjC.import('Foundation');
@@ -48,6 +51,14 @@ function relock(keychain, status) {
   $.SecKeychainLock(keychain);
   return JSON.stringify({status: status});
 }
+function itemReply(keychain, status) {
+  if (status === 0) return JSON.stringify({status: status});
+  var flags = Ref();
+  if ($.SecKeychainGetStatus(keychain, flags) === 0 && (flags[0] & 1) === 0) {
+    return JSON.stringify({status: status, locked: true});
+  }
+  return JSON.stringify({status: status});
+}
 function run() {
   try {
     var status = $.SecKeychainSetUserInteractionAllowed(false);
@@ -78,10 +89,10 @@ function run() {
       query.setObjectForKey(C($.kSecMatchLimitOne), C($.kSecMatchLimit));
       var result = Ref();
       status = $.SecItemCopyMatching(query, result);
-      if (status !== 0) return JSON.stringify({status: status});
+      if (status !== 0) return itemReply(keychain[0], status);
       return JSON.stringify({status: 0, data: ObjC.unwrap(C(result[0]).base64EncodedStringWithOptions(0))});
     }
-    if (input.operation === 'delete') return JSON.stringify({status: $.SecItemDelete(query)});
+    if (input.operation === 'delete') return itemReply(keychain[0], $.SecItemDelete(query));
     if (typeof input.data !== 'string') return JSON.stringify({status: -50});
     var data = $.NSData.alloc.initWithBase64EncodedStringOptions($.NSString.stringWithString(input.data), 0);
     var updates = $.NSMutableDictionary.alloc.init;
@@ -100,7 +111,7 @@ function run() {
         status = $.SecItemUpdate(query, updates);
       }
     }
-    return JSON.stringify({status: status});
+    return itemReply(keychain[0], status);
   } catch (_) {
     return JSON.stringify({status: -1});
   }

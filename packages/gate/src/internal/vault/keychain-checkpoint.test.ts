@@ -11,6 +11,7 @@ const mocked = vi.hoisted(() => ({
 }))
 vi.mock("node:child_process", () => ({ spawnSync: mocked.spawnSync }))
 
+import { ControlStoreLockedError } from "../control-checkpoint"
 import { KeychainControlStore, isPrivateOwnedFile } from "./keychain-checkpoint"
 
 const NOT_FOUND = -25300
@@ -76,6 +77,14 @@ describe("KeychainControlStore", () => {
       "control checkpoint encoding is invalid"
     )
   })
+
+  it.each([-25293, NOT_FOUND])(
+    "throws the locked error when the helper reports the keychain locked (status %i)",
+    (status) => {
+      mocked.spawnSync.mockReturnValue(reply({ status, locked: true }))
+      expect(() => open().load()).toThrow(ControlStoreLockedError)
+    }
+  )
 
   it("writes the item and accepts it only when it reads back identically", () => {
     const text = '{"generation":2}'

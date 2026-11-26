@@ -47,6 +47,14 @@ is confirmed off locks the keychain again. The gate refuses a keychain file plac
 directly in `~/Library/Keychains/` or `/Library/Keychains/`, so the login and
 System keychains never get auto-lock turned off.
 
+In the plane split the root launch step is `gate-launcher.zsh` in the app copy
+(`infra/host/gate-launcher.ts`). It reads the System keychain item with service
+`com.eido.gate.keychain-unlock` and pipes it into the gate's stdin, then drops to
+the gate user. A missing or unreadable item starts the gate with empty stdin, so
+it stays locked. `security find-generic-password -w` prints data that is not
+printable as hex, so the item (#824) holds the passphrase as plain text. See
+`infra/plane-split.md`, "Gate keychain unlock at start".
+
 ## Storage and boundary
 
 Each credential is a generic-password item with service `com.eido.gate.vault` and
