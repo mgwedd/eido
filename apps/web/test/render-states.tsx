@@ -2,6 +2,7 @@ import type { ReactNode } from "react"
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
+import { WAITING_TEST_TIMEOUT_MS } from "./wait-until"
 
 ;(
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -18,6 +19,12 @@ type StateCase = {
   render: () => ReactNode
   /** Stub the network for this state (optional). */
   fetch?: ProbeOutcome
+  /**
+   * Waits, outside any `act` scope, until the tree has loaded what the row needs (use `waitUntil`).
+   * It runs before `interact`. A wait must not sit in `interact`: that runs inside one `act`, which
+   * holds back the renders for fetches that settle meanwhile, so the wait would never see them.
+   */
+  settle?: (container: HTMLElement) => Promise<void>
   /** Acts on the rendered tree before the assertion, for a state reached by a user action (a click). */
   interact?: (container: HTMLElement) => Promise<void>
   /** The live region that announces the state. */
@@ -65,27 +72,32 @@ function describeStates(name: string, cases: readonly StateCase[]) {
     })
 
     for (const row of cases) {
-      test(row.state, async () => {
-        if (row.fetch) stubFetch(row.fetch)
-        await act(async () => {
-          root.render(row.render())
-          await new Promise((resolve) => setTimeout(resolve, 0))
-        })
-        if (row.interact) {
-          const interact = row.interact
+      test(
+        row.state,
+        async () => {
+          if (row.fetch) stubFetch(row.fetch)
           await act(async () => {
-            await interact(container)
+            root.render(row.render())
             await new Promise((resolve) => setTimeout(resolve, 0))
           })
-        }
-        const region = container.querySelector(
-          row.selector ?? `[role="${row.role}"]`
-        )
-        expect(region, `no element with role="${row.role}"`).not.toBeNull()
-        const text = (region?.textContent ?? "").trim()
-        if (row.message === null) expect(text).toBe("")
-        else expect(text).toBe(row.message)
-      })
+          if (row.settle) await row.settle(container)
+          if (row.interact) {
+            const interact = row.interact
+            await act(async () => {
+              await interact(container)
+              await new Promise((resolve) => setTimeout(resolve, 0))
+            })
+          }
+          const region = container.querySelector(
+            row.selector ?? `[role="${row.role}"]`
+          )
+          expect(region, `no element with role="${row.role}"`).not.toBeNull()
+          const text = (region?.textContent ?? "").trim()
+          if (row.message === null) expect(text).toBe("")
+          else expect(text).toBe(row.message)
+        },
+        WAITING_TEST_TIMEOUT_MS
+      )
     }
   })
 }

@@ -8,6 +8,7 @@ import { mailMessageSha256 } from "../lib/queue/card"
 import { FLAGGED_SHA, flaggedSignals } from "./fixtures/mail-signals"
 import { mailPayload, mailPrepared, mailQueued } from "./fixtures/queue"
 import { describeStates } from "./render-states"
+import { WAITING_TEST_TIMEOUT_MS, waitUntil } from "./wait-until"
 
 vi.mock("next/link", () => ({
   default: ({
@@ -46,18 +47,13 @@ function route(signals: Signals) {
   return fetcher
 }
 
-async function settled(container: HTMLElement) {
-  for (let step = 0; step < 50; step += 1) {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10))
-    })
+const settled = (container: HTMLElement) =>
+  waitUntil(() => {
     const approve = [...container.querySelectorAll("article button")].find(
       (button) => button.textContent?.startsWith("Approve")
     )
-    if (approve && !approve.hasAttribute("disabled")) return
-  }
-  throw new Error("approval card did not finish loading")
-}
+    return approve !== undefined && !approve.hasAttribute("disabled")
+  }, "approval card did not finish loading")
 
 const render = (signals: Signals) => () => {
   route(signals)
@@ -68,7 +64,7 @@ describeStates("Queue phishing signals", [
   {
     state: "flagged row, collapsed",
     render: render("flagged"),
-    interact: settled,
+    settle: settled,
     role: "status",
     selector: 'li [data-slot="mail-signals"] > [role="status"]',
     message: "Possible phishing · 4",
@@ -76,7 +72,7 @@ describeStates("Queue phishing signals", [
   {
     state: "flagged detail, expanded",
     render: render("flagged"),
-    interact: settled,
+    settle: settled,
     role: "status",
     selector:
       'article [data-slot="mail-signals"] [data-slot="alert"]:not([hidden])',
@@ -90,7 +86,7 @@ describeStates("Queue phishing signals", [
   {
     state: "clean row",
     render: render("clean"),
-    interact: settled,
+    settle: settled,
     role: "status",
     selector: 'li [role="status"]',
     message: null,
@@ -98,7 +94,7 @@ describeStates("Queue phishing signals", [
   {
     state: "clean detail",
     render: render("clean"),
-    interact: settled,
+    settle: settled,
     role: "status",
     selector: 'article [data-slot="card-content"] > [role="status"]',
     message: null,
@@ -147,7 +143,8 @@ describe("Queue phishing signals decisions", () => {
       } else if (signals === "clean") {
         expect(container.querySelector('[data-slot="mail-signals"]')).toBeNull()
       }
-    }
+    },
+    WAITING_TEST_TIMEOUT_MS
   )
 
   test("uses only a reply or forward target hash, rejecting invalid hashes", () => {
