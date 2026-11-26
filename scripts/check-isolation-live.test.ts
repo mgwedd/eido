@@ -26,7 +26,6 @@ import {
   parseArgs,
   parseResult,
   parseSpec,
-  parserOutcome,
   probeSudoArgs,
   reachDns,
   reachTcp,
@@ -38,6 +37,7 @@ import {
   safeCode,
   stackPaths,
 } from "./check-isolation-live.ts"
+import { PARSER_PROBE_NAMES, isParserProbeName } from "./isolation-parser.ts"
 import type {
   CanaryHost,
   Canaries,
@@ -63,6 +63,8 @@ const CONFIG: LiveConfig = {
   proxyPort: 18080,
   llamaPort: 18081,
   parserProfile: "/var/empty/parser.sb",
+  parserSocket: "/var/empty/parser-run/parser.sock",
+  dataDb: "/var/empty/data/eido-data.db",
   publicHost: "host.example.invalid",
   publicIp: "192.0.2.10",
   timeoutMs: 3000,
@@ -84,6 +86,8 @@ const RUN_DIR_FILES: StackFiles = [
   "/var/empty/eido-dev/run/.eido-isolation-canary-0011223344556677",
 ]
 
+const PROBE_SOCKET = "/var/empty/parser-run/probe-00112233445566ff.sock"
+
 const BLOCKED: ProbeResult = { ran: true, reached: false, code: "EACCES" }
 const REACHED: ProbeResult = { ran: true, reached: true, code: "OK" }
 
@@ -98,12 +102,14 @@ function stubRunner(
     teardownFails?: boolean
     dataTouchesCanary?: ProbeName
     stackFilesFail?: boolean
+    brokerFails?: boolean
   } = {}
 ) {
   const calls: Call[] = []
   const stackDirs: string[] = []
   let connections = 0
   let tornDown = 0
+  let brokersStarted = 0
   const runner: LiveRunner = {
     setup: () =>
       options.setupFails
@@ -135,6 +141,14 @@ function stubRunner(
         ? Promise.reject(Object.assign(new Error("x"), { code: "EACCES" }))
         : Promise.resolve(RUN_DIR_FILES)
     },
+    startParserBroker: () => {
+      brokersStarted += 1
+      return options.brokerFails
+        ? Promise.reject(
+            Object.assign(new Error("x"), { code: "BROKER_NOT_READY" })
+          )
+        : Promise.resolve({ socket: PROBE_SOCKET })
+    },
     connections: () => Promise.resolve(connections),
     teardown: () => {
       tornDown += 1
@@ -145,7 +159,13 @@ function stubRunner(
         : Promise.resolve()
     },
   }
-  return { runner, calls, stackDirs, tornDown: () => tornDown }
+  return {
+    runner,
+    calls,
+    stackDirs,
+    tornDown: () => tornDown,
+    brokersStarted: () => brokersStarted,
+  }
 }
 
 async function run(
@@ -182,8 +202,13 @@ describe("runLive", () => {
         "PASS control-db.control",
         "PASS control-socket (EACCES)",
         "PASS control-socket.control",
-        "PASS parser (EACCES)",
-        "PASS parser.control",
+        "PASS data-db",
+        "PASS parser-socket",
+        "PASS parser-loopback (EACCES)",
+        "PASS parser-proxy (EACCES)",
+        "PASS parser-llama (EACCES)",
+        "PASS parser-intent-socket (EACCES)",
+        "PASS parser-data-db (EACCES)",
         "SKIP supervisor-socket: no --stack-dir given",
         "SKIP run-dir-files: no --stack-dir given",
       ],
@@ -342,9 +367,27 @@ describe("runLive", () => {
       service: CANARIES.keychainService,
       digest: CANARIES.keychainDigest,
     })
-    expect(target("data", "parser")).toMatchObject({
+    expect(target("data", "data-db")).toMatchObject({ path: CONFIG.dataDb })
+    expect(target("data", "parser-socket")).toMatchObject({
+      path: CONFIG.parserSocket,
+    })
+    expect(target("data", "parser-loopback")).toMatchObject({
+      host: "127.0.0.1",
       port: 40001,
-      profile: CONFIG.parserProfile,
+    })
+    expect(target("data", "parser-proxy")).toMatchObject({
+      host: "127.0.0.1",
+      port: 18080,
+    })
+    expect(target("data", "parser-llama")).toMatchObject({
+      host: "127.0.0.1",
+      port: 18081,
+    })
+    expect(target("data", "parser-intent-socket")).toMatchObject({
+      path: CONFIG.intentSocket,
+    })
+    expect(target("data", "parser-data-db")).toMatchObject({
+      path: CONFIG.dataDb,
     })
     expect(
       stub.calls.filter((c) => c.role === "gate").map((c) => c.spec.name)
@@ -357,7 +400,6 @@ describe("runLive", () => {
       "keychain-modify",
       "control-db",
       "control-socket",
-      "parser",
     ])
   })
 
@@ -386,21 +428,82 @@ describe("runLive", () => {
       REACHED,
       "FAIL control-socket: reached as the data-plane user",
     ],
-    ["parser", REACHED, "FAIL parser: reached as the data-plane user"],
+    [
+      "parser-loopback",
+      REACHED,
+      "FAIL parser-loopback: reached from the parse child",
+    ],
+    [
+      "parser-proxy",
+      REACHED,
+      "FAIL parser-proxy: reached from the parse child",
+    ],
+    [
+      "parser-llama",
+      REACHED,
+      "FAIL parser-llama: reached from the parse child",
+    ],
+    [
+      "parser-intent-socket",
+      REACHED,
+      "FAIL parser-intent-socket: reached from the parse child",
+    ],
+    [
+      "parser-data-db",
+      REACHED,
+      "FAIL parser-data-db: reached from the parse child",
+    ],
+    [
+      "parser-proxy",
+      { ran: false, code: "PARSE_CRASHED" },
+      "FAIL parser-proxy: the probe did not run (PARSE_CRASHED)",
+    ],
+    [
+      "parser-data-db",
+      { ran: true, reached: false, code: "ENOENT" },
+      "FAIL parser-data-db: refused with ENOENT, not permission denied",
+    ],
+    [
+      "parser-intent-socket",
+      { ran: true, reached: false, code: "ECONNREFUSED" },
+      "FAIL parser-intent-socket: refused with ECONNREFUSED, not permission denied",
+    ],
+    [
+      "data-db",
+      { ran: true, reached: false, code: "ENOENT" },
+      [
+        "FAIL data-db: the data-plane user cannot reach an allowed endpoint (ENOENT)",
+        "FAIL parser-data-db: data-db did not reach the target as the data-plane user (EACCES), so the probe proves nothing",
+      ],
+    ],
+    [
+      "parser-socket",
+      { ran: true, reached: false, code: "ENOENT" },
+      "FAIL parser-socket: the data-plane user cannot reach an allowed endpoint (ENOENT)",
+    ],
     [
       "intent-socket",
       { ran: true, reached: false, code: "ENOENT" },
-      "FAIL intent-socket: the data-plane user cannot reach an allowed endpoint (ENOENT)",
+      [
+        "FAIL intent-socket: the data-plane user cannot reach an allowed endpoint (ENOENT)",
+        "FAIL parser-intent-socket: intent-socket did not reach the target as the data-plane user (EACCES), so the probe proves nothing",
+      ],
     ],
     [
       "proxy",
       { ran: true, reached: false, code: "ECONNREFUSED" },
-      "FAIL proxy: the data-plane user cannot reach an allowed endpoint (ECONNREFUSED)",
+      [
+        "FAIL proxy: the data-plane user cannot reach an allowed endpoint (ECONNREFUSED)",
+        "FAIL parser-proxy: proxy did not reach the target as the data-plane user (EACCES), so the probe proves nothing",
+      ],
     ],
     [
       "llama",
       { ran: true, reached: false, code: "ETIMEDOUT" },
-      "FAIL llama: the data-plane user cannot reach an allowed endpoint (ETIMEDOUT)",
+      [
+        "FAIL llama: the data-plane user cannot reach an allowed endpoint (ETIMEDOUT)",
+        "FAIL parser-llama: llama did not reach the target as the data-plane user (EACCES), so the probe proves nothing",
+      ],
     ],
     [
       "dns",
@@ -417,16 +520,18 @@ describe("runLive", () => {
       { ran: true, reached: false, code: "ETIMEDOUT" },
       "FAIL control-socket: refused with ETIMEDOUT, not permission denied",
     ],
-  ] satisfies [ProbeName, ProbeResult, string][])(
+  ] satisfies [ProbeName, ProbeResult, string | string[]][])(
     "exits 1 when the data probe %s gives %j",
-    async (name, result, line) => {
+    async (name, result, expected) => {
       const outcome = await run(
         stubRunner((role, n) =>
           role === "data" && n === name ? result : undefined
         )
       )
       expect(outcome.code).toBe(1)
-      expect(outcome.lines.filter((l) => l.startsWith("FAIL"))).toEqual([line])
+      expect(outcome.lines.filter((l) => l.startsWith("FAIL"))).toEqual(
+        typeof expected === "string" ? [expected] : expected
+      )
     }
   )
 
@@ -439,7 +544,6 @@ describe("runLive", () => {
     "keychain-modify",
     "control-db",
     "control-socket",
-    "parser",
   ] satisfies ProbeName[])(
     "exits 1 when the %s control fails, since the blocked result then proves nothing",
     async (name) => {
@@ -449,11 +553,81 @@ describe("runLive", () => {
         )
       )
       expect(outcome.code).toBe(1)
+      // The broker probe that leans on the loopback canary as its witness fails with it.
+      const dependents =
+        name === "loopback-canary"
+          ? [
+              "FAIL parser-loopback: loopback-canary did not reach the target as the gate user (EACCES), so the probe proves nothing",
+            ]
+          : []
       expect(outcome.lines.filter((l) => l.startsWith("FAIL"))).toEqual([
         `FAIL ${name}.control: the gate user could not do it either (EACCES), so the probe proves nothing`,
+        ...dependents,
       ])
     }
   )
+
+  test("starts the probe broker once, before the first broker probe, and sends its socket in every broker spec", async () => {
+    const stub = stubRunner()
+    await run(stub)
+    expect(stub.brokersStarted()).toBe(1)
+    const brokerSpecs = stub.calls.filter((c) => isParserProbeName(c.spec.name))
+    expect(
+      brokerSpecs.map((c) => [c.role, c.spec.name, c.spec.socket])
+    ).toEqual([
+      ["data", "parser-loopback", PROBE_SOCKET],
+      ["data", "parser-proxy", PROBE_SOCKET],
+      ["data", "parser-llama", PROBE_SOCKET],
+      ["data", "parser-intent-socket", PROBE_SOCKET],
+      ["data", "parser-data-db", PROBE_SOCKET],
+    ])
+    expect(
+      stub.calls
+        .filter((c) => !isParserProbeName(c.spec.name))
+        .every((c) => c.spec.socket === undefined)
+    ).toBe(true)
+  })
+
+  test("fails once and skips every broker probe when the probe broker does not start, leaving the others to run", async () => {
+    const stub = stubRunner(() => undefined, { brokerFails: true })
+    const outcome = await run(stub)
+    expect(outcome.code).toBe(1)
+    expect(outcome.lines.filter((l) => l.startsWith("FAIL"))).toEqual([
+      "FAIL parser-broker: the probe broker did not start (BROKER_NOT_READY)",
+    ])
+    expect(outcome.lines.filter((l) => l.startsWith("SKIP parser-"))).toEqual(
+      PARSER_PROBE_NAMES.map(
+        (name) => `SKIP ${name}: the probe broker did not start`
+      )
+    )
+    expect(outcome.lines).toContain("PASS data-db")
+    expect(stub.brokersStarted()).toBe(1)
+    expect(stub.tornDown()).toBe(1)
+  })
+
+  test("a blocked broker probe whose witness did not reach proves nothing, and fails", async () => {
+    const outcome = await run(
+      stubRunner((role, n) =>
+        role === "data" && n === "proxy" ? BLOCKED : undefined
+      )
+    )
+    expect(outcome.lines).toContain(
+      "FAIL parser-proxy: proxy did not reach the target as the data-plane user (EACCES), so the probe proves nothing"
+    )
+  })
+
+  test("a witness that did not run is no witness", async () => {
+    const outcome = await run(
+      stubRunner((role, n) =>
+        role === "data" && n === "llama"
+          ? { ran: false, code: "EXIT_1" }
+          : undefined
+      )
+    )
+    expect(outcome.lines).toContain(
+      "FAIL parser-llama: llama did not reach the target as the data-plane user (EACCES), so the probe proves nothing"
+    )
+  })
 
   test("fails a control that read the wrong content", async () => {
     const outcome = await run(
@@ -469,7 +643,7 @@ describe("runLive", () => {
     expect(outcome.code).toBe(1)
   })
 
-  test.each(["loopback-canary", "parser"] satisfies ProbeName[])(
+  test.each(["loopback-canary", "parser-loopback"] satisfies ProbeName[])(
     "fails %s when the canary listener saw the data user, whatever the probe reported",
     async (name) => {
       const outcome = await run(
@@ -628,6 +802,10 @@ describe("parseArgs", () => {
     "18081",
     "--parser-profile",
     "/var/empty/parser.sb",
+    "--parser-socket",
+    "/var/empty/parser-run/parser.sock",
+    "--data-db",
+    "/var/empty/data/eido-data.db",
     "--public-host",
     "host.example.invalid",
     "--public-ip",
@@ -668,6 +846,8 @@ describe("parseArgs", () => {
         "--control-db is required",
         "--gate-keychain is required",
         "--parser-profile is required",
+        "--parser-socket is required",
+        "--data-db is required",
         "--public-host is required",
         "--public-ip is required",
         "--proxy-port is required",
@@ -688,6 +868,14 @@ describe("parseArgs", () => {
     expect(parseArgs(set("--control-db", "gate/eido-control.db"))).toEqual({
       ok: false,
       errors: ["the controlDb path must be absolute"],
+    })
+    expect(parseArgs(set("--parser-socket", "parser.sock"))).toEqual({
+      ok: false,
+      errors: ["the parserSocket path must be absolute"],
+    })
+    expect(parseArgs(set("--data-db", "data/eido-data.db"))).toEqual({
+      ok: false,
+      errors: ["the dataDb path must be absolute"],
     })
     expect(parseArgs(set("--proxy-port", "70000"))).toEqual({
       ok: false,
@@ -734,13 +922,27 @@ describe("probeSudoArgs", () => {
       JSON.stringify(specOf("dns")),
     ])
   })
-  test("sandboxes every data-plane probe except the parser, which applies its own profile", () => {
+  test("sandboxes every direct data-plane probe, and no broker probe: the broker applies parser.sb", () => {
     for (const def of PROBES.filter((probe) => probe.subject === "data")) {
       const started = child(probeSudoArgs("data", specOf(def.name), profiled))
       expect(started[0] === "/usr/bin/sandbox-exec", def.name).toBe(
-        def.name !== "parser"
+        def.via === "direct"
       )
     }
+  })
+  test("starts a broker probe as the data user with the core hooks and no sandbox-exec", () => {
+    const spec = { ...specOf("parser-proxy"), host: "127.0.0.1", port: 18080 }
+    const args = probeSudoArgs("data", spec, profiled)
+    const started = child(args)
+    expect(args.slice(0, 4)).toEqual(["-n", "-u", "eido-data-test", "--"])
+    expect(started[0]).toBe(process.execPath)
+    expect(args).not.toContain("/usr/bin/sandbox-exec")
+    expect(started.slice(1, 3)).toEqual([
+      "--disable-warning=ExperimentalWarning",
+      "--import",
+    ])
+    expect(started[3]).toMatch(/packages\/core\/src\/ts-hooks\.ts$/)
+    expect(started.slice(-2)).toEqual(["--spec", JSON.stringify(spec)])
   })
   test("never sandboxes a gate-user control and marks it --as-gate", () => {
     for (const def of PROBES.filter((probe) => probe.control)) {
@@ -817,28 +1019,6 @@ describe("parseSpec and parseResult", () => {
       code: "BAD_OUTPUT",
     })
     expect(parseResult("PASS")).toEqual({ ran: false, code: "BAD_OUTPUT" })
-  })
-  test("counts only a connect attempt that connected as reaching the network from the parser", () => {
-    const failed = { outcome: "failed", error: "Error" }
-    expect(
-      parserOutcome({
-        attempts: [
-          { name: "fetch", ...failed },
-          { name: "net.connect", outcome: "connected", error: "" },
-          { name: "dns.lookup", ...failed },
-        ],
-      })
-    ).toEqual({ ran: true, reached: true, code: "OK" })
-    expect(
-      parserOutcome({
-        attempts: [
-          { name: "fetch", ...failed },
-          { name: "net.connect", ...failed },
-          { name: "dns.lookup", outcome: "connected", error: "" },
-        ],
-      })
-    ).toEqual({ ran: true, reached: false, code: "BLOCKED" })
-    expect(parserOutcome({})).toEqual({ ran: false, code: "NO_RESULT" })
   })
 })
 
@@ -960,16 +1140,13 @@ describe("the stack run dir", () => {
           code: "EACCES",
         })
         // runProbe is what the gate-user child runs: the same answer through the spec.
-        return runProbe(
-          {
-            name: "run-dir-files",
-            gateUser: "g",
-            dataUser: "d",
-            timeoutMs: 100,
-            paths: [locked],
-          },
-          true
-        ).then((result) =>
+        return runProbe({
+          name: "run-dir-files",
+          gateUser: "g",
+          dataUser: "d",
+          timeoutMs: 100,
+          paths: [locked],
+        }).then((result) =>
           expect(result).toEqual({ ran: true, reached: false, code: "EACCES" })
         )
       }
@@ -1101,16 +1278,13 @@ describe("attemptKeychainWrite", () => {
 
   test("a probe child given no service name reports a bad spec", async () => {
     expect(
-      await runProbe(
-        {
-          name: "keychain-modify",
-          gateUser: "g",
-          dataUser: "d",
-          timeoutMs: 10,
-          keychain: KEYCHAIN,
-        },
-        false
-      )
+      await runProbe({
+        name: "keychain-modify",
+        gateUser: "g",
+        dataUser: "d",
+        timeoutMs: 10,
+        keychain: KEYCHAIN,
+      })
     ).toEqual({ ran: false, code: "BAD_SPEC" })
   })
 })
@@ -1339,8 +1513,7 @@ describe("the probes, against a listener and files this test owns", () => {
     }
   )
 
-  // The probe child for real, as this user: the data-user path, the --as-gate refusal, and the
-  // parser control (the #43 hostile fixture without the sandbox, which must connect).
+  // The probe child for real, as this user: the data-user path and the --as-gate refusal.
   const SCRIPT = join(import.meta.dirname, "check-isolation-live.ts")
   const me = userInfo().username
   const child = (args: string[]) =>
@@ -1391,25 +1564,134 @@ describe("the probes, against a listener and files this test owns", () => {
     expect(accepted).toBe(before)
   })
 
-  test("the parser control runs the hostile fixture without the sandbox and connects", async () => {
-    const before = accepted
-    const spec: ProbeSpec = {
-      name: "parser",
-      gateUser: me,
-      dataUser: "eido-data-test",
-      timeoutMs: 2000,
-      port,
-      profile: "/var/empty/parser.sb",
+  describe.skipIf(process.platform === "win32")(
+    "a broker probe through a real probe broker, without the OS fence",
+    () => {
+      // The probe broker as this user, unsandboxed: the whole delivery path (broker client, socket,
+      // broker, parse child, grandchild) runs for real, and only what _eidoparse's sandbox and pf
+      // add is missing. So every probe must reach here, which is what the live run's witnesses
+      // and a blocked result are measured against.
+      const CORE = join(import.meta.dirname, "..", "packages", "core", "src")
+      let brokerDir = ""
+      let broker: ReturnType<typeof spawn> | undefined
+      let socket = ""
+
+      beforeAll(async () => {
+        brokerDir = mkdtempSync(join(tmpdir(), "eido-pb-"))
+        socket = join(brokerDir, "probe.sock")
+        broker = spawn(
+          process.execPath,
+          [
+            "--disable-warning=ExperimentalWarning",
+            "--import",
+            join(CORE, "ts-hooks.ts"),
+            "--import",
+            join(CORE, "parsers", "no-network.ts"),
+            join(import.meta.dirname, "isolation-parser-broker.ts"),
+            "--socket",
+            socket,
+            "--worker",
+            join(import.meta.dirname, "isolation-parser-child.ts"),
+          ],
+          { stdio: ["pipe", "pipe", "inherit"] }
+        )
+        const stdout = broker.stdout
+        if (stdout === null) throw new Error("no broker stdout")
+        const line = await new Promise<string>((resolve) =>
+          stdout.once("data", (chunk: Buffer) => resolve(chunk.toString()))
+        )
+        expect(line.trim()).toBe('{"ready":true}')
+      }, 30_000)
+
+      afterAll(() => {
+        broker?.stdin?.end()
+        rmSync(brokerDir, { recursive: true, force: true })
+      })
+
+      const viaBroker = async (
+        spec: Partial<ProbeSpec> & { name: ProbeName }
+      ) => {
+        const full: ProbeSpec = {
+          gateUser: "eido-gate-test",
+          dataUser: me,
+          timeoutMs: 2000,
+          socket,
+          ...spec,
+        }
+        const proc = spawn(
+          process.execPath,
+          [
+            "--disable-warning=ExperimentalWarning",
+            "--import",
+            join(CORE, "ts-hooks.ts"),
+            SCRIPT,
+            "probe",
+            "--spec",
+            JSON.stringify(full),
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] }
+        )
+        let stdout = ""
+        proc.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()))
+        const status = await new Promise((resolve) =>
+          proc.once("close", resolve)
+        )
+        return { status, result: parseResult(stdout.trim()) }
+      }
+
+      test("a parse child with no fence connects to the loopback canary", async () => {
+        const before = accepted
+        expect(
+          await viaBroker({ name: "parser-loopback", host: "127.0.0.1", port })
+        ).toEqual({ status: 0, result: REACHED })
+        expect(accepted).toBeGreaterThan(before)
+      }, 30_000)
+
+      test("a parse child with no fence opens a file, and a missing one is ENOENT", async () => {
+        const file = join(dir, "canary.db")
+        writeFileSync(file, "synthetic")
+        expect(await viaBroker({ name: "parser-data-db", path: file })).toEqual(
+          { status: 0, result: REACHED }
+        )
+        expect(
+          await viaBroker({
+            name: "parser-data-db",
+            path: join(dir, "none.db"),
+          })
+        ).toEqual({
+          status: 0,
+          result: { ran: true, reached: false, code: "ENOENT" },
+        })
+      }, 30_000)
+
+      test("a parse child with no fence reaches a Unix socket, and a missing one is ENOENT", async () => {
+        expect(
+          await viaBroker({ name: "parser-intent-socket", path: socketPath() })
+        ).toEqual({ status: 0, result: REACHED })
+        expect(
+          await viaBroker({
+            name: "parser-intent-socket",
+            path: join(dir, "none.sock"),
+          })
+        ).toEqual({
+          status: 0,
+          result: { ran: true, reached: false, code: "ENOENT" },
+        })
+      }, 30_000)
+
+      test("a probe with no socket in its spec reports a bad spec and sends nothing", async () => {
+        const before = accepted
+        const out = await viaBroker({
+          name: "parser-loopback",
+          host: "127.0.0.1",
+          port,
+          socket: undefined,
+        })
+        expect(out.result).toEqual({ ran: false, code: "BAD_SPEC" })
+        expect(accepted).toBe(before)
+      }, 30_000)
     }
-    const out = await child([
-      "probe",
-      "--spec",
-      JSON.stringify(spec),
-      "--as-gate",
-    ])
-    expect([out.status, parseResult(out.stdout.trim())]).toEqual([0, REACHED])
-    expect(accepted).toBeGreaterThan(before)
-  }, 30_000)
+  )
 
   test("the run names every missing flag and exits 2 before probing anything", async () => {
     const out = await child([])
