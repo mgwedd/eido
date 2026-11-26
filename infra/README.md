@@ -72,7 +72,9 @@ The web Admin page can turn start at login on and off too (#664), through the su
 
 - the stack's own overrides (`OVERRIDES` in `infra/stack/config.ts`, except `EIDO_STACK_DIR`, which says where the file lives);
 - the settings passed to the gate (`PASS_THROUGH.gate`: the VAPID subject and push window, the Gmail and Drive client ids, the Bridge settings, and the development vault);
-- the settings passed to core (`PASS_THROUGH.core`: the llama host, port and chat template arguments), the llama paths in `infra/llama/config.ts`, and `EIDO_LLAMA_MODEL`.
+- the settings passed to core (`PASS_THROUGH.core`: the llama host, port and chat template arguments, `EIDO_APPLE_CALENDARS`, `EIDO_PROTON_USERNAME` (the Bridge account address; without it core registers no Proton connector), `EIDO_REPLIES_CONFIG` and `EIDO_TRIAGE_CONFIG` (each one inline JSON object, not a path), `EIDO_SIMPLEFIN_MAX_RANGE_DAYS`, `EIDO_SIMPLEFIN_SYNC_TIME` (`HH:MM`), `EIDO_CONVERSATION_DIGEST_IDLE_TTL_MINUTES` and `EIDO_DIGEST_SECTION_TOKENS`), the llama paths in `infra/llama/config.ts`, and `EIDO_LLAMA_MODEL`.
+
+Every name in core's `DATA_PLANE_ENV` (`packages/core/src/main.ts`) has a decision in `infra/stack/config.test.ts`: the stack sets it, passes it through, or leaves it out. `EIDO_GMAIL_PROXY_URL`, `EIDO_SIMPLEFIN_PROXY_URL` and `EIDO_PARSER_SOCKET` are set only by the split plane, and `EIDO_CORE_ROLE_PUBLIC_KEY` is not set by the stack.
 
 Secrets never go in it: tokens and passwords live in the gate's vault. `infra/stack/settings.ts` is the typed store (`readStackSettings`, `getStackSetting`, `writeStackSetting`, `validateSettings`), and `infra/stack/doctor.ts` returns each check as `{ id, platforms, status, summary, fix: { action, text } }` for a setup UI to use.
 

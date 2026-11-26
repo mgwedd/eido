@@ -326,11 +326,14 @@ public final class BridgeHandler: @unchecked Sendable {
   let roots: ApprovedRoots
   let runner: ProcessRunner
   let eventKit: EventKitOps
+  let log: @Sendable (String) -> Void
 
   @MainActor public init(
     scripts: [String: Data], fileHelper: PinnedExecutable, roots: ApprovedRoots,
-    runner: ProcessRunner, store: @escaping @MainActor () -> CalendarStore
+    runner: ProcessRunner, store: @escaping @MainActor () -> CalendarStore,
+    log: @escaping @Sendable (String) -> Void = { BridgeLog.standardError($0) }
   ) {
+    self.log = log
     self.scripts = scripts
     self.fileHelper = fileHelper
     self.roots = roots
@@ -378,7 +381,15 @@ public final class BridgeHandler: @unchecked Sendable {
       let outcome = await offload { () -> ProcessOutcome? in
         // Only the private copy runs, and only while it is still the file made at start with
         // the pinned bytes.
-        guard let copy = self.fileHelper.verified() else { return nil }
+        // A copy that fails leaves one log line naming why, so a purged cache directory or a
+        // changed copy is told apart from any other `unavailable`.
+        let copy: String
+        switch self.fileHelper.verify() {
+        case .verified(let path): copy = path
+        case .failed(let reason):
+          self.log("file helper copy not run: \(reason.rawValue)")
+          return nil
+        }
         return self.runner.run(
           executable: copy, arguments: [], environment: [:], stdin: stdin,
           outputLimit: FileOps.outputLimit(op), timeout: PinnedExecutable.timeout)

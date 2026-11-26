@@ -35,6 +35,7 @@
         "$TURBO_ROOT$/packages/gate/config/**",
         "$TURBO_ROOT$/packages/schemas/vectors/**",
         "$TURBO_ROOT$/packages/core/src/api/caller-role.ts",
+        "$TURBO_ROOT$/packages/core/src/main.ts",
         "$TURBO_ROOT$/packages/ui/src/**",
         "$TURBO_ROOT$/apps/web/app/**",
         "$TURBO_ROOT$/apps/web/components/**",
