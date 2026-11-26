@@ -182,7 +182,12 @@ export interface EventSpec {
 }
 
 /** Index synthetic calendar events with their facts, as a calendar sync does. */
-export function indexEvents(db: DatabaseSync, specs: EventSpec[]): void {
+export function indexEvents(
+  db: DatabaseSync,
+  specs: EventSpec[],
+  /** The entity each event document belongs to, for a data DB, where a document needs one. */
+  entityId?: string
+): void {
   for (const spec of specs) {
     const source = spec.source ?? "apple-eventkit"
     const digest = sha(`event:${source}:${spec.uid}:${spec.title}`)
@@ -199,6 +204,7 @@ export function indexEvents(db: DatabaseSync, specs: EventSpec[]): void {
           title: spec.title,
           body: spec.title,
           occurredAt: spec.start,
+          ...(entityId === undefined ? {} : { entityId }),
         },
       ],
       heads: [{ source, sourceRef, sha256: spec.retired ? null : digest }],
