@@ -1,4 +1,4 @@
-import { renameSync, writeFileSync } from "node:fs"
+import { chmodSync, lstatSync, renameSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { join } from "node:path"
 import { afterEach, describe, expect, test } from "vitest"
@@ -13,12 +13,14 @@ import {
   parseFrameBody,
 } from "./client"
 import {
+  TEST_OWNER_UID,
   answeringBridge,
   frame,
   socketDir,
   startFakeSessionBridge,
 } from "./fake-session-bridge.test-support"
 import type { SessionBridgeRequest } from "./client"
+import type { Lstat } from "../trusted-ancestors"
 import type { FakeAnswer } from "./fake-session-bridge.test-support"
 
 // Unix sockets and the plane split are macOS-only (#781); the gate on Windows never has a
@@ -61,7 +63,7 @@ const things: Extract<SessionBridgeRequest, { op: "things" }> = {
 }
 
 test("refuses a socket path that is not absolute", () => {
-  expect(() => createSessionBridge("run/bridge.sock")).toThrow(
+  expect(() => createSessionBridge("run/bridge.sock", TEST_OWNER_UID)).toThrow(
     "EIDO_SESSION_BRIDGE_SOCKET must be an absolute path"
   )
 })
@@ -72,7 +74,10 @@ describe("session bridge client checks", () => {
   test("a missing socket is session_unavailable", async () => {
     const { dir, remove } = socketDir()
     cleanups.push(remove)
-    const error = await createSessionBridge(join(dir, "absent.sock"))
+    const error = await createSessionBridge(
+      join(dir, "absent.sock"),
+      TEST_OWNER_UID
+    )
       .call(things, call)
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SessionUnavailableError)
@@ -84,9 +89,32 @@ describe("session bridge client checks", () => {
     cleanups.push(remove)
     const file = join(dir, "bridge.sock")
     writeFileSync(file, "")
-    await expect(createSessionBridge(file).call(things, call)).rejects.toThrow(
-      "session bridge path is not a socket"
+    await expect(
+      createSessionBridge(file, TEST_OWNER_UID).call(things, call)
+    ).rejects.toThrow("session bridge path is not a socket")
+  })
+
+  test("a socket another uid owns is session_unavailable, not a missing session", async () => {
+    // A double reports a socket owned by someone else; had the owner check been skipped, the
+    // connect to this absent path would fail with the plain "unavailable" message instead.
+    const lstat: Lstat = (path) => ({
+      uid: path.endsWith(".sock") ? TEST_OWNER_UID + 1 : 0,
+      mode: 0o755,
+      isDirectory: () => !path.endsWith(".sock"),
+      isSocket: () => path.endsWith(".sock"),
+    })
+    const error = await createSessionBridge(
+      "/srv/run/bridge.sock",
+      TEST_OWNER_UID,
+      lstat
     )
+      .call(things, call)
+      .catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(SessionUnavailableError)
+    expect(error).toMatchObject({
+      code: "session_unavailable",
+      message: "session bridge socket is not the owner's",
+    })
   })
 
   test("refuses a request over the bridge's 8 MiB limit before looking at the socket", async () => {
@@ -98,7 +126,10 @@ describe("session bridge client checks", () => {
     } as const
     // The path is absent: had the size check come later, this would be session_unavailable.
     await expect(
-      createSessionBridge(join(dir, "absent.sock")).call(big, call)
+      createSessionBridge(join(dir, "absent.sock"), TEST_OWNER_UID).call(
+        big,
+        call
+      )
     ).rejects.toThrow("session bridge request too large")
   })
 
@@ -165,18 +196,61 @@ describe("session bridge client checks", () => {
 unix("session bridge client", () => {
   test("sends one framed request and returns the framed answer parsed", async () => {
     const bridge = await fake(() => ({ json: { ok: true, result: [1, "é"] } }))
-    const answer = await createSessionBridge(bridge.socketPath).call(
-      things,
-      call
-    )
+    const answer = await createSessionBridge(
+      bridge.socketPath,
+      TEST_OWNER_UID
+    ).call(things, call)
     expect(answer).toEqual({ ok: true, result: [1, "é"] })
     expect(bridge.requests).toEqual([
       { op: "things", script: "list-areas", sha256: "a".repeat(64), argv: [] },
     ])
   })
 
+  test("a socket replaced after start by another uid's is refused before any byte is sent", async () => {
+    const bridge = await fake(() => ({ json: { ok: true } }))
+    let replaced = false
+    // Real ownership never changes in tests: after the swap, the double reports the socket
+    // at the same path as another uid's, everything else as the real tree has it.
+    const lstat: Lstat = (path) => {
+      const stat = lstatSync(path)
+      if (!replaced || path !== bridge.socketPath) return stat
+      return {
+        uid: TEST_OWNER_UID + 1,
+        mode: stat.mode,
+        isDirectory: () => stat.isDirectory(),
+        isSocket: () => stat.isSocket(),
+      }
+    }
+    const client = createSessionBridge(bridge.socketPath, TEST_OWNER_UID, lstat)
+    expect(await client.call(things, call)).toEqual({ ok: true })
+    replaced = true
+    const error = await client.call(things, call).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(SessionUnavailableError)
+    expect(error).toMatchObject({ code: "session_unavailable" })
+    expect(bridge.connections()).toBe(1)
+    expect(bridge.requests).toHaveLength(1)
+  })
+
+  test("a socket or directory made group-writable after start is refused before connecting", async () => {
+    const bridge = await fake(() => ({ json: { ok: true } }))
+    const client = createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
+    expect(await client.call(things, call)).toEqual({ ok: true })
+    chmodSync(bridge.socketPath, 0o660)
+    await expect(client.call(things, call)).rejects.toMatchObject({
+      code: "session_unavailable",
+    })
+    chmodSync(bridge.socketPath, 0o600)
+    const dir = join(bridge.socketPath, "..")
+    chmodSync(dir, 0o770)
+    cleanups.push(() => chmodSync(dir, 0o700))
+    await expect(client.call(things, call)).rejects.toMatchObject({
+      code: "session_unavailable",
+    })
+    expect(bridge.connections()).toBe(1)
+  })
+
   test("a socket that refuses the connection is session_unavailable", async () => {
-    const error = await createSessionBridge(await staleSocket())
+    const error = await createSessionBridge(await staleSocket(), TEST_OWNER_UID)
       .call(things, call)
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SessionUnavailableError)
@@ -188,7 +262,10 @@ unix("session bridge client", () => {
     const file = join(dir, "file")
     writeFileSync(file, "")
     // lstat through a regular file as if it were a directory fails with ENOTDIR.
-    const error = await createSessionBridge(join(file, "bridge.sock"))
+    const error = await createSessionBridge(
+      join(file, "bridge.sock"),
+      TEST_OWNER_UID
+    )
       .call(things, call)
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SessionBridgeError)
@@ -215,7 +292,7 @@ unix("session bridge client", () => {
     ],
   ])("a frame with %s is a bridge failure", async (_name, raw, message) => {
     const bridge = await fake(() => ({ raw }))
-    const error = await createSessionBridge(bridge.socketPath)
+    const error = await createSessionBridge(bridge.socketPath, TEST_OWNER_UID)
       .call(things, call)
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SessionBridgeError)
@@ -225,7 +302,7 @@ unix("session bridge client", () => {
   test("gives up at the deadline when the bridge never answers", async () => {
     const bridge = await fake(() => ({ hang: true }))
     await expect(
-      createSessionBridge(bridge.socketPath).call(things, {
+      createSessionBridge(bridge.socketPath, TEST_OWNER_UID).call(things, {
         timeoutMs: 100,
         maxResponseBytes: 1024,
       })
@@ -239,10 +316,11 @@ unix("session bridge client", () => {
     // Like the bridge's ninth concurrent connection: closed with no response.
     const server = createServer((socket) => socket.destroy())
     await new Promise<void>((resolve) => server.listen(path, resolve))
+    chmodSync(path, 0o600)
     cleanups.push(
       () => new Promise<void>((resolve) => server.close(() => resolve()))
     )
-    const error = await createSessionBridge(path)
+    const error = await createSessionBridge(path, TEST_OWNER_UID)
       .call(things, call)
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SessionBridgeError)

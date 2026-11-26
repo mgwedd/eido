@@ -46,6 +46,10 @@ import {
 } from "./internal/client"
 import { runningGate } from "./internal/runtime"
 import {
+  TEST_OWNER_UID,
+  socketDir,
+} from "./internal/session-bridge/fake-session-bridge.test-support"
+import {
   CALENDAR_OPS,
   MAIL_OPS,
   OWNER,
@@ -344,21 +348,40 @@ describe("gateConfig", () => {
     ).toThrow("EIDO_GATE_SUPERVISOR_SOCKET must be an absolute path")
   })
 
-  it("reads the session bridge socket when it is set, and refuses a relative path", () => {
-    expect(gateConfig(BASE)).not.toHaveProperty("sessionBridgeSocket")
-    expect(
-      gateConfig({
-        ...BASE,
-        EIDO_SESSION_BRIDGE_SOCKET: "/d/run/session-bridge.sock",
-      }).sessionBridgeSocket
-    ).toBe("/d/run/session-bridge.sock")
+  it("reads no session bridge when neither of its variables is set, and refuses a relative path", () => {
+    expect(gateConfig(BASE)).not.toHaveProperty("sessionBridge")
     expect(() =>
       gateConfig({
         ...BASE,
         EIDO_SESSION_BRIDGE_SOCKET: "run/session-bridge.sock",
+        EIDO_SESSION_BRIDGE_UID: "501",
       })
     ).toThrow("EIDO_SESSION_BRIDGE_SOCKET must be an absolute path")
   })
+
+  it.skipIf(process.platform === "win32")(
+    "reads the session bridge from an owner-controlled directory, and refuses to start under a group-writable one",
+    () => {
+      const { dir, remove } = socketDir()
+      try {
+        const env = {
+          ...BASE,
+          EIDO_SESSION_BRIDGE_SOCKET: join(dir, "bridge.sock"),
+          EIDO_SESSION_BRIDGE_UID: String(TEST_OWNER_UID),
+        }
+        expect(gateConfig(env).sessionBridge).toEqual({
+          socketPath: join(dir, "bridge.sock"),
+          ownerUid: TEST_OWNER_UID,
+        })
+        chmodSync(dir, 0o770)
+        expect(() => gateConfig(env)).toThrow(
+          "EIDO_SESSION_BRIDGE_SOCKET must be a socket owned by EIDO_SESSION_BRIDGE_UID"
+        )
+      } finally {
+        remove()
+      }
+    }
+  )
 
   it("names every missing or empty variable", () => {
     expect(() =>

@@ -52,8 +52,90 @@ In the plane split the root launch step is `gate-launcher.zsh` in the app copy
 `com.eido.gate.keychain-unlock` and pipes it into the gate's stdin, then drops to
 the gate user. A missing or unreadable item starts the gate with empty stdin, so
 it stays locked. `security find-generic-password -w` prints data that is not
-printable as hex, so the item (#824) holds the passphrase as plain text. See
+printable as hex, so the item holds the passphrase as plain text. See
 `infra/plane-split.md`, "Gate keychain unlock at start".
+
+## Gate keychain passphrase
+
+In the plane split, `host keychain <set|rotate|repair>` (`infra/host/keychain-passphrase.ts`,
+#824) prints a zsh script that sets the gate keychain passphrase and the System
+keychain item together. Run the generator as yourself, read the script, then run
+it with `sudo zsh -f`; the commands are in `infra/plane-split.md`, "Set and rotate
+the gate keychain passphrase". It replaces the single-user Provisioning steps
+above for the plane.
+
+### What root can read
+
+This was accepted in #780, option A: the passphrase sits in the System keychain,
+which root reads without a prompt. An admin with sudo can recover the passphrase
+and so open the gate keychain. A copy of the gate home alone (a backup, or the
+disk read from another machine without the System keychain) stays encrypted.
+
+### Prompts
+
+The script asks at its own hidden prompt: `New gate keychain passphrase:` for set
+and rotate, `Gate keychain passphrase (from your password manager):` for repair,
+then `Type it again:`. It does not use `security`'s own prompts:
+`add-generic-password` prompts only when `-w` is the last argument, which leaves
+no room for the System keychain path, and without the path the item would go to
+the default keychain of the sudo session, which is yours. The passphrase stays in
+a variable of that one root shell. `security` gets it on stdin in interactive mode
+(`security -i`), from the shell's `print` builtin. It is never in a process
+argument, the environment, the shell history, a here-document or a file. The
+script sets `umask 077` and `ulimit -c 0`.
+
+The passphrase must be 1 to 256 printable ASCII characters (letters, digits,
+spaces, punctuation), and rotate refuses the current one. Save it in your password
+manager before you run the script.
+
+### Set, rotate and repair
+
+- Set, once: the keychain directory exists, the keychain and the item do not, then
+  the prompt; then, as `_eidogate`, `create-keychain`, mode 0600 and auto-lock
+  off; then, as root, the item; then a gate restart.
+- Rotate: the item is read into the script as the current passphrase, then the
+  prompt for the new one; then, as `_eidogate`, `set-keychain-password` from the
+  current to the new; then, as root, the item with the new one; then a gate
+  restart.
+- Repair, for a lost or stale item: the prompt; then the passphrase is checked by
+  `set-keychain-password` from it to itself, which fails on a wrong passphrase and
+  changes nothing; then the item; then a gate restart.
+
+Before its first change the script ignores Ctrl-C and hangups, so it cannot stop
+between two changes on its own. Each run ends with a gate restart; the gate log
+(`/Library/Application Support/Eido/gate/gate.log`) then gets `keychain_unlocked`,
+or `keychain_unlock_failed` with a reason.
+
+### Recovery from a half-done run
+
+Every failure message names the state it left. The cases:
+
+| Failed at                                            | Keychain                  | Item               | What to do                                                                                                                  |
+| ---------------------------------------------------- | ------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Any check or the prompt                              | unchanged                 | unchanged          | Nothing changed. Fix what the message names.                                                                                |
+| Set: `create-keychain`                               | none, or a new empty file | none               | If the file exists it holds no credentials: move it aside as `_eidogate` and run set again.                                 |
+| Set: mode 0600                                       | new passphrase            | none               | `sudo -u _eidogate chmod 600 <keychain>`, then repair with the same passphrase.                                             |
+| Set: auto-lock off                                   | new passphrase            |                    | A warning only; the gate turns auto-lock off at every start (#821).                                                         |
+| Set: the item                                        | new passphrase            | none               | Repair with the same passphrase.                                                                                            |
+| Rotate: `set-keychain-password`                      | old                       | old                | Nothing changed.                                                                                                            |
+| Rotate: the item                                     | changed back to old       | old                | Both hold the old passphrase. Fix the cause and rotate again.                                                               |
+| Rotate: the item, and changing back                  | new                       | old                | The gate stays locked at its next start. Repair with the new passphrase.                                                    |
+| Rotate: killed or power lost between the two changes | new                       | old                | As above: repair with the new passphrase. If repair refuses it, the keychain still has the old one, which matches the item. |
+| Repair: the passphrase check                         | unchanged                 | unchanged          | Wrong passphrase. Try the one from your password manager.                                                                   |
+| Repair: the item                                     | unchanged                 | unchanged, or none | Fix the cause and repair again.                                                                                             |
+| The gate restart                                     | done                      | done               | `sudo launchctl kickstart -k system/com.eido.plane.gate`                                                                    |
+
+A gate that is already running should keep its keychain unlocked through a
+rotation and use the new passphrase from its next start; #811 checks this.
+
+If both the item and the passphrase are lost, the keychain cannot be opened. Stop
+the gate, move the keychain aside as `_eidogate`, run set for a new one, enroll
+the connectors again (`infra/connectors.md`), and set a new
+`EIDO_PROFILE_AUDIT_EPOCH`: the old epoch's profile audit key was in the lost
+keychain (see "Profile audit pseudonyms" below).
+
+None of this has run on a live host yet; the live run (set and rotate once, the
+gate unlocks after each) is #811.
 
 ## Storage and boundary
 

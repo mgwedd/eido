@@ -1,5 +1,6 @@
 import { lstat } from "node:fs/promises"
 import { dirname, isAbsolute } from "node:path"
+import { trustedDirectory } from "../trusted-ancestors"
 
 const refused = () =>
   new Error(
@@ -29,15 +30,7 @@ export async function assertFileHelperInstall(path: string): Promise<void> {
     let ancestor = dirname(path)
     for (;;) {
       const directory = await lstat(ancestor)
-      // A root-owned sticky temporary ancestor cannot rename another user's private child.
-      const protectedSticky =
-        directory.uid === 0 && (directory.mode & 0o1000) !== 0
-      if (
-        !directory.isDirectory() ||
-        (directory.uid !== uid && directory.uid !== 0) ||
-        ((directory.mode & 0o022) !== 0 && !protectedSticky)
-      )
-        throw refused()
+      if (!trustedDirectory(directory, uid)) throw refused()
       const parent = dirname(ancestor)
       if (parent === ancestor) break
       ancestor = parent
