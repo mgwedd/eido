@@ -243,8 +243,9 @@ unix("EventKit through the session bridge", () => {
   })
 })
 
-// What the runner hands the bridge needs no listener, so these run on every platform.
-describe("EventKit bridge deadline and causes", () => {
+// These need no listener, but the runner's pin check relies on Unix file modes, so they skip on
+// Windows like the rest of this file.
+unix("EventKit bridge deadline and causes", () => {
   test("with no deadline given it waits past the bridge's worst case for a 30 s EventKit call", async () => {
     const bridge = answeringBridge(ANSWER)
     await createAppleRunner(helper(), { ...darwin, bridge })(request)
