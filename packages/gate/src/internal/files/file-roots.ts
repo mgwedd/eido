@@ -15,6 +15,7 @@ import {
   withControlApproval,
 } from "../control-approvals"
 import type { ControlAuthorization } from "../control-approvals"
+import { HostRootNotApproved } from "./file-helper"
 import type { FileHelper } from "./file-helper"
 
 /** Every file-roots change is one signed policy.set ceremony on this target. */
@@ -31,6 +32,25 @@ export class FileRootUnidentified extends Error {
   constructor(rootId: string) {
     super("file root cannot be identified")
     this.rootId = rootId
+  }
+}
+
+/** The host refused to identify this requested root: it is not on its approved list. Carries the id only. */
+export class FileRootNotApproved extends Error {
+  readonly rootId: string
+  constructor(rootId: string) {
+    super("file root is not approved on the host")
+    this.rootId = rootId
+  }
+}
+
+/** Identifies one root, naming it by id when the host has not approved it. */
+async function identify(helper: FileHelper, id: string, path: string) {
+  try {
+    return await helper({ op: "identify", path })
+  } catch (error) {
+    if (error instanceof HostRootNotApproved) throw new FileRootNotApproved(id)
+    throw error
   }
 }
 
@@ -63,7 +83,7 @@ export async function prepareFileRoots(
   if (!request.ok) throw new Error("invalid file roots")
   const roots: GateFileRoots["roots"] = []
   for (const requested of request.value.roots) {
-    const identified = await helper({ op: "identify", path: requested.path })
+    const identified = await identify(helper, requested.id, requested.path)
     if (!identified.ok) throw new FileRootUnidentified(requested.id)
     if (identified.op !== "identify")
       throw new Error("file helper answered another operation")
@@ -97,7 +117,7 @@ export async function changedFileRoot(
   roots: GateFileRoots
 ): Promise<string | undefined> {
   for (const { id, root } of roots.roots) {
-    const identified = await helper({ op: "identify", path: root.path })
+    const identified = await identify(helper, id, root.path)
     if (!identified.ok) return id
     if (identified.op !== "identify")
       throw new Error("file helper answered another operation")

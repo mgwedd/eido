@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -14,8 +20,14 @@ import { runningGate } from "./internal/runtime"
 import { sample, socketAddress, WEBAUTHN } from "./internal/test-fixtures"
 import { InMemoryVault, KeychainLockedError } from "./internal/vault/vault"
 import type { VaultKey } from "./internal/vault/vault"
-import { GATE_LOG_FILE, finishLockedStart, gateConfig, runGate } from "./main"
-import type { GateConfig, RunningGate } from "./main"
+import {
+  GATE_LOG_FILE,
+  assertOneKeychain,
+  finishLockedStart,
+  gateConfig,
+  runGate,
+} from "./main"
+import type { GateConfig, RunningGate, VaultConfig } from "./main"
 
 // #870: a gate started while the control checkpoint's Keychain is locked finishes starting,
 // denies every policy read as keychain_locked, and loads its policy and push key in the same
@@ -387,5 +399,103 @@ describe("runGate when a secret read finds the keychain locked (#878)", () => {
       "control.keychain_locked",
       "control.keychain_lock_cleared",
     ])
+  })
+})
+
+describe("vaults on a keychain other than the control checkpoint's (#919)", () => {
+  // gateConfig gives every vault the checkpoint's keychain; only a hand-built config differs.
+  const other: VaultConfig = {
+    kind: "keychain",
+    path: "/synthetic/other.keychain-db",
+  }
+  const onOther: Record<string, (base: GateConfig) => GateConfig> = {
+    vault: (base) => ({ ...base, vault: other }),
+    profileAudit: (base) => ({
+      ...base,
+      profileAudit: { vault: other, epoch: "1" },
+    }),
+    push: (base) => ({
+      ...base,
+      push: {
+        vault: other,
+        subject: "mailto:ops@example.invalid",
+        windowMs: 60_000,
+        nudgeThreshold: 5,
+        nudgeWindowMs: 120_000,
+      },
+    }),
+    bridge: (base) => ({
+      ...base,
+      bridge: {
+        config: {
+          host: "127.0.0.1",
+          imapPort: 1143,
+          smtpPort: 1025,
+          tls: "none",
+          username: "assistant@example.invalid",
+          searchFolders: ["INBOX"],
+        },
+        vault: other,
+      },
+    }),
+    gmail: (base) => ({
+      ...base,
+      gmail: { vault: other, clientId: "client.example.invalid" },
+    }),
+    egress: (base) => ({
+      ...base,
+      egress: {
+        vault: other,
+        port: 0,
+        clientIds: { "gmail-read": "client.example.invalid" },
+      },
+    }),
+  }
+
+  it.each(Object.keys(onOther))("refuses %s on another keychain", (field) => {
+    const build = onOther[field]
+    if (build === undefined) throw new Error(`no config for ${field}`)
+    expect(() => {
+      assertOneKeychain(build(config(false)))
+    }).toThrow("every gate vault must use the control checkpoint's keychain")
+  })
+
+  it("accepts every vault on the checkpoint's keychain, and a file vault beside it", () => {
+    expect(() => {
+      assertOneKeychain(config(true))
+    }).not.toThrow()
+    const push = config(true).push
+    if (push === undefined) throw new Error("no push config")
+    const file: VaultConfig = {
+      kind: "file",
+      path: join(dir, "push.json"),
+      devFlag: true,
+    }
+    expect(() => {
+      assertOneKeychain({ ...config(false), push: { ...push, vault: file } })
+    }).not.toThrow()
+  })
+
+  it("accepts any keychain when no checkpoint is enforced", () => {
+    const unenforced: GateConfig = { ...config(false), vault: other }
+    delete unenforced.controlCheckpoint
+    expect(() => {
+      assertOneKeychain(unenforced)
+    }).not.toThrow()
+  })
+
+  it("stops runGate before it opens a vault, the store or the data directory", async () => {
+    const vaults = vi.fn(() => new InMemoryVault())
+    const stores = vi.fn(() => new MemoryControlStore())
+    const build = onOther["push"]
+    if (build === undefined) throw new Error("no push config")
+    await expect(
+      runGate(build(config(false)), undefined, vaults, stores)
+    ).rejects.toThrow(
+      "every gate vault must use the control checkpoint's keychain"
+    )
+    expect(vaults).not.toHaveBeenCalled()
+    expect(stores).not.toHaveBeenCalled()
+    expect(existsSync(join(dir, "gate"))).toBe(false)
   })
 })

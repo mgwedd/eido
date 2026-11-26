@@ -469,7 +469,8 @@ public enum BridgeRequest: Equatable {
           withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes]),
         stdin.count <= FileOps.helperRequestLimit
       else { throw BridgeFailure.invalidRequest }
-      return .file(op: fileOp, target: FileOps.target(fields), stdin: stdin, sha256: sha256 ?? nil)
+      return .file(
+        op: fileOp, target: try FileOps.target(fileOp, fields), stdin: stdin, sha256: sha256 ?? nil)
     default:
       throw BridgeFailure.unknownOp
     }
@@ -512,15 +513,17 @@ public enum FileOps {
     return (op, rebuilt)
   }
 
-  /// The root a rebuilt request names, or for `identify` the path it asks about. `rebuild`
-  /// has already checked every field, so the casts hold.
-  static func target(_ rebuilt: [String: Any]) -> FileTarget {
-    if let root = rebuilt["root"] as? [String: String], let path = root["path"],
-      let dev = root["dev"], let ino = root["ino"]
-    {
-      return .root(path: path, dev: dev, ino: ino)
+  /// The path `identify` asks about, or the root every other op names. The op decides which:
+  /// a request of any other shape is `invalid_request`, never read as an `identify`.
+  static func target(_ op: String, _ rebuilt: [String: Any]) throws -> FileTarget {
+    if op == "identify" {
+      guard let path = rebuilt["path"] as? String else { throw BridgeFailure.invalidRequest }
+      return .identify(path: path)
     }
-    return .identify(path: rebuilt["path"] as? String ?? "")
+    guard let root = rebuilt["root"] as? [String: String], let path = root["path"],
+      let dev = root["dev"], let ino = root["ino"]
+    else { throw BridgeFailure.invalidRequest }
+    return .root(path: path, dev: dev, ino: ino)
   }
 
   private static func value(_ raw: Any?, _ rule: Field) throws -> Any {

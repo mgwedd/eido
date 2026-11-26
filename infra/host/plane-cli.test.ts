@@ -154,6 +154,84 @@ describe("host plane plan", () => {
   })
 })
 
+describe("host plane plan with the session bridge", () => {
+  const ROOTS = "/Users/owner/Library/Application Support/eido-dev/roots.txt"
+  const HELPER = "/Users/owner/dev/eido/apps/helper/.build/release/eido-helper"
+  const FILE_HELPER = "/Users/owner/.eido/file-helper/current/eido-file-helper"
+  const SHA = "ab".repeat(32)
+  const files = {
+    [ROOTS]: { text: "/Users/owner/Documents\n", mode: 0o100600 },
+    [HELPER]: { text: "binary", mode: 0o100755 },
+    [FILE_HELPER]: { text: "binary", mode: 0o100755 },
+  }
+  const flags = [
+    "plan",
+    "--bridge-helper",
+    HELPER,
+    "--bridge-file-helper",
+    FILE_HELPER,
+    "--bridge-file-helper-sha256",
+    SHA,
+    "--bridge-file-roots",
+    ROOTS,
+  ]
+
+  it("plans the agent with the owner's uid from the account list and the gate's environment", async () => {
+    const h = harness(HOST, { files })
+    expect(await plane(flags, h.deps)).toBe(0)
+    const script = h.out.join("\n")
+    expect(script).toContain(
+      "/bin/launchctl bootstrap gui/501 /Users/owner/Library/LaunchAgents/com.eido.plane.bridge.plist"
+    )
+    expect(script).toContain(
+      "<key>EIDO_SESSION_BRIDGE_UID</key>\n    <string>501</string>"
+    )
+    expect(script).toContain(`<string>${SHA}</string>`)
+    expect(h.err).toEqual([])
+  })
+
+  it("plans no bridge without the flags", async () => {
+    const h = harness(HOST, { files })
+    expect(await plane(["plan"], h.deps)).toBe(0)
+    expect(h.out.join("\n")).not.toContain("com.eido.plane.bridge")
+  })
+
+  it("stops when only some of the flags are given, naming the missing ones", async () => {
+    const h = harness(HOST, { files })
+    expect(await plane(["plan", "--bridge-helper", HELPER], h.deps)).toBe(1)
+    expect(h.err).toEqual([
+      "the session bridge needs all four --bridge-* flags; missing --bridge-file-helper, --bridge-file-helper-sha256, --bridge-file-roots",
+    ])
+    expect(h.out).toEqual([])
+  })
+
+  it("stops when the roots list is group-writable", async () => {
+    const h = harness(HOST, {
+      files: { ...files, [ROOTS]: { text: "", mode: 0o100664 } },
+    })
+    expect(await plane(flags, h.deps)).toBe(1)
+    expect(h.err).toEqual([
+      `--bridge-file-roots ${ROOTS} has mode 0664; remove write access for group and others`,
+    ])
+  })
+
+  it("stops when a named file does not exist", async () => {
+    const rest = Object.fromEntries(
+      Object.entries(files).filter(([path]) => path !== FILE_HELPER)
+    )
+    const h = harness(HOST, { files: rest })
+    expect(await plane(flags, h.deps)).toBe(1)
+    expect(h.err).toEqual([`--bridge-file-helper ${FILE_HELPER} is not a file`])
+  })
+
+  it("stops on a pin that is not a sha256", async () => {
+    const h = harness(HOST, { files })
+    const bad = flags.map((value) => (value === SHA ? "abc" : value))
+    expect(await plane(bad, h.deps)).toBe(1)
+    expect(h.err[0]).toContain("must be 64 lowercase hex digits")
+  })
+})
+
 describe("host plane remove", () => {
   it("prints the removal script for the accounts that exist, with the note on kept data", async () => {
     const h = harness({

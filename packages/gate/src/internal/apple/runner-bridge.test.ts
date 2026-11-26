@@ -187,26 +187,33 @@ unix("EventKit through the session bridge", () => {
     await expect(run(request)).rejects.toMatchObject({ code: "not_found" })
   })
 
+  // Only the bridge's own code is an answer about the request; every other failure after the
+  // request was sent leaves the outcome unknown (#912).
   test.each([
     [
       "a bridge code the Helper does not use",
       { json: { ok: false, code: "unknown_op" } },
+      false,
     ],
-    ["an answer outside the schema", { json: { ok: true } }],
+    ["an answer outside the schema", { json: { ok: true } }, true],
     [
       "an answer over the Helper's 1 MiB limit",
       { json: { ok: true, result: { pad: "x".repeat(APPLE_MAX_BYTES) } } },
+      true,
     ],
-    ["a dropped connection", { raw: Buffer.from([0, 0]) }],
-  ] satisfies [string, FakeAnswer][])(
+    ["a dropped connection", { raw: Buffer.from([0, 0]) }, true],
+  ] satisfies [string, FakeAnswer, boolean][])(
     "%s is unavailable",
-    async (_name, answer) => {
+    async (_name, answer, unknown) => {
       const bridge = await fake(() => answer)
       const run = createAppleRunner(helper(), {
         ...darwin,
         bridge: createSessionBridge(bridge.socketPath, TEST_OWNER_UID),
       })
-      await expect(run(request)).rejects.toMatchObject({ code: "unavailable" })
+      const error = await run(request).catch((e: unknown) => e)
+      expect(error).toMatchObject({ code: "unavailable" })
+      expect(sentNothing(error)).toBe(false)
+      expect(outcomeUnknown(error)).toBe(unknown)
     }
   )
 

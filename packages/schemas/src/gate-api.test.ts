@@ -1223,6 +1223,13 @@ describe("Proton mail read routes", () => {
     expect(validateGateApiError({ ...missing, code: "root_changed" }).ok).toBe(
       true
     )
+    expect(
+      validateGateApiError({ ...missing, code: "root_not_approved" }).ok
+    ).toBe(true)
+    // A root id with no root error code is refused, so the id needs one.
+    expect(
+      validateGateApiError({ code: "root_not_approved", message: "x" }).ok
+    ).toBe(false)
     // Only the file-root errors carry a root id.
     expect(
       validateGateApiError({
