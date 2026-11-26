@@ -66,7 +66,13 @@ import {
 } from "./internal/push-crypto"
 import { controlHandler, dataPlaneHandler } from "./internal/routes"
 import type { Clock } from "./internal/sessions"
-import { runningGate, startGate, stopGate } from "./internal/runtime"
+import {
+  policyPending,
+  resumeGate,
+  runningGate,
+  startGate,
+  stopGate,
+} from "./internal/runtime"
 import {
   OWNER_CONFIG_FILE,
   createStoredAttendeesReader,
@@ -88,6 +94,7 @@ import type {
   ControlCheckpoint,
   ControlStore,
   DenyReason,
+  RetrySchedule,
 } from "./internal/control-checkpoint"
 import { KeychainControlStore } from "./internal/vault/keychain-checkpoint"
 import {
@@ -569,7 +576,8 @@ export async function runGate(
   controlStoreFactory: (keychainPath: string) => ControlStore = (path) =>
     new KeychainControlStore({ path }),
   unlockKeychain: (keychainPath: string) => Promise<void> = (path) =>
-    unlockFromStdin(path, process.stdin)
+    unlockFromStdin(path, process.stdin),
+  retrySchedule?: RetrySchedule
 ): Promise<RunningGate> {
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 })
   const log = fileLog(join(config.dataDir, GATE_LOG_FILE))
@@ -600,11 +608,18 @@ export async function runGate(
   // used only while it matches the checkpoint held outside it. A mismatch is reported, and every
   // authority read then refuses until the owner runs supervised recovery.
   let checkpoint: ControlCheckpoint | undefined
+  // Set once the gate has started; a gate that started locked finishes starting through it (#870).
+  let onVerified: (() => void) | undefined
   if (config.controlCheckpoint !== undefined) {
+    const logChange = logCheckpointChange(log)
     checkpoint = attachControlCheckpoint(db, {
       store: controlStoreFactory(config.controlCheckpoint.keychainPath),
       lockPath: config.controlCheckpoint.lockPath,
-      onChange: logCheckpointChange(log),
+      ...(retrySchedule === undefined ? {} : { schedule: retrySchedule }),
+      onChange: (denied) => {
+        logChange(denied)
+        if (denied === undefined) onVerified?.()
+      },
     })
     const denied = checkpoint.denied()
     if (denied !== undefined)
@@ -631,42 +646,42 @@ export async function runGate(
       },
       config.webAuthn
     )
-    const pushVault: Vault | undefined =
-      config.push === undefined ? undefined : vaultFactory(config.push.vault)
+    const push =
+      config.push === undefined
+        ? undefined
+        : { ...config.push, keys: vaultFactory(config.push.vault) }
     const vapidKey = {
       connector: "eido-web-push",
       kind: "api_key",
       client: "write",
     } as const
-    const privateKey = async (): Promise<string | undefined> => {
-      if (pushVault === undefined) return undefined
-      let key = await pushVault.get(vapidKey)
+    const readKey = async (vault: Vault): Promise<string> => {
+      let key = await vault.get(vapidKey)
       if (key === undefined) {
         key = generateVapidPrivateKey()
-        await pushVault.set(vapidKey, key)
+        await vault.set(vapidKey, key)
       }
       vapidPublicKey(key)
       return key
     }
-    if (config.push !== undefined) {
-      const key = await privateKey()
-      if (key === undefined) throw new Error("Web Push key is unavailable")
-      vapidAuthorization(
-        "https://push.example.invalid/",
-        key,
-        config.push.subject
-      )
+    // A gate started locked checks the push key once the checkpoint verifies. Until then the
+    // push routes are denied with every phone route, since phone sessions need the checkpoint.
+    const preparePush = async (): Promise<void> => {
+      if (push === undefined) return
+      const key = await readKey(push.keys)
+      vapidAuthorization("https://push.example.invalid/", key, push.subject)
       notifier = createPushNotifier({
         db,
-        privateKey,
-        subject: config.push.subject,
+        privateKey: () => readKey(push.keys),
+        subject: push.subject,
         fetch,
         now: () => now().getTime(),
-        windowMs: config.push.windowMs,
+        windowMs: push.windowMs,
       })
     }
     let profileAudit: ProfileAudit | undefined
-    if (config.profileAudit !== undefined) {
+    const prepareProfileAudit = async (): Promise<void> => {
+      if (config.profileAudit === undefined) return
       try {
         profileAudit = await initializeProfileAudit(
           db,
@@ -677,6 +692,12 @@ export async function runGate(
         log("profile_audit_unavailable", {})
       }
     }
+    // A gate started locked reads these secrets only once the checkpoint verifies (#870).
+    const prepareSecrets = async (): Promise<void> => {
+      await prepareProfileAudit()
+      await preparePush()
+    }
+    if (!policyPending()) await prepareSecrets()
     if (config.fileHelper !== undefined)
       await assertFileHelperInstall(config.fileHelper.path)
     // No fallback: with a bridge configured, a call it cannot carry fails.
@@ -799,6 +820,9 @@ export async function runGate(
             clientIds: config.google.clientIds,
             probes,
           }
+    // Policy is read through the getter, so only routes that use it are denied while a gate that
+    // started locked waits for its checkpoint to verify.
+    const gate = runningGate()
     const state = () => ({
       probes,
       ...(google === undefined ? {} : { google }),
@@ -806,7 +830,12 @@ export async function runGate(
       ...(bridge === undefined ? {} : { bridge }),
       fileHelper: nativeFiles,
       files: fileReads,
-      ...runningGate(),
+      db: gate.db,
+      options: gate.options,
+      webAuthn: gate.webAuthn,
+      get policy() {
+        return gate.policy
+      },
       profileAudit,
       backupStampPath: config.backupStampPath ?? defaultBackupStampPath(),
       reviewedManifest: (connector: string) =>
@@ -814,15 +843,15 @@ export async function runGate(
       reviewedManifests: () => listReviewedManifests(config.dataDir),
       ...(supervisor === undefined ? {} : { supervisor }),
       notifyPending: notifier?.notifyPending,
-      ...(config.push === undefined
+      ...(push === undefined
         ? {}
         : {
             nudge: {
-              threshold: config.push.nudgeThreshold,
-              windowMs: config.push.nudgeWindowMs,
+              threshold: push.nudgeThreshold,
+              windowMs: push.nudgeWindowMs,
             },
             push: {
-              publicKey: async () => vapidPublicKey((await privateKey()) ?? ""),
+              publicKey: async () => vapidPublicKey(await readKey(push.keys)),
               notifyPending: () => notifier?.notifyPending(),
               notifyRecovery: async () => notifier?.notifyRecovery(),
             },
@@ -906,6 +935,16 @@ export async function runGate(
         now: () => now().getTime(),
       })
     }
+    onVerified = () => {
+      finishLockedStart({
+        pending: policyPending,
+        resume: resumeGate,
+        prepare: prepareSecrets,
+        log,
+      })
+    }
+    // The checkpoint may have verified while the gate was still starting.
+    if (checkpoint?.denied() === undefined) onVerified()
     log("started", {
       socket: config.socketPath,
       controlSocket: config.controlSocketPath,
@@ -938,6 +977,34 @@ export async function runGate(
       log("stopped")
     },
   }
+}
+
+/**
+ * Finishes the start of a gate that started with the control checkpoint locked, once it verifies
+ * (#870): loads the policy, then reads the push key and the profile-audit key. A load that fails
+ * leaves the gate denying policy reads, and says so in the log; a push key that cannot be read
+ * leaves push off, and says so.
+ * Fixed event names only. Does nothing for a gate that already has its policy.
+ */
+export function finishLockedStart(steps: {
+  pending: () => boolean
+  resume: () => string[]
+  prepare: () => Promise<void>
+  log: Log
+}): void {
+  if (!steps.pending()) return
+  let overlayErrors: string[]
+  try {
+    overlayErrors = steps.resume()
+  } catch {
+    steps.log("policy_load_failed")
+    return
+  }
+  // The count only, as `started` logs it for a normal start.
+  steps.log("policy_loaded", { overlayErrors: overlayErrors.length })
+  steps.prepare().catch(() => {
+    steps.log("push_unavailable")
+  })
 }
 
 /**
