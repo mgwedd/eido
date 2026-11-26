@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite"
 import { afterEach, describe, expect, test } from "vitest"
 import { openIndex } from "../index/schema"
 import { plainContent } from "../inference/fence"
+import { knowEventDetails, WRITABLE } from "./apple-event.test-support"
 import { indexEvents } from "./context.test-support"
 import { listMatchingEvents, renderEventsBlock } from "./events"
 
@@ -44,6 +45,8 @@ describe("listMatchingEvents", () => {
           allDay: false,
           source: "apple-eventkit",
           appleFlags: { known: false },
+          calendarId: "cal-1",
+          appleUpdate: false,
         },
       ],
       matched: 1,
@@ -88,6 +91,82 @@ describe("listMatchingEvents", () => {
     })
   })
 
+  test("an Apple event is updatable only when the Helper writes it and its details are indexed", () => {
+    const d = fresh()
+    indexEvents(d, [
+      {
+        uid: "ok",
+        title: "Gym ok",
+        start: "2030-05-01T09:00:00Z",
+        ...WRITABLE,
+      },
+      {
+        uid: "no-details",
+        title: "Gym nodetails",
+        start: "2030-05-02T09:00:00Z",
+        ...WRITABLE,
+      },
+      {
+        uid: "guests",
+        title: "Gym guests",
+        start: "2030-05-03T09:00:00Z",
+        hasAttendees: true,
+        recurring: false,
+      },
+      {
+        uid: "series",
+        title: "Gym series",
+        start: "2030-05-04T09:00:00Z",
+        hasAttendees: false,
+        recurring: true,
+      },
+      { uid: "old", title: "Gym old", start: "2030-05-05T09:00:00Z" },
+    ])
+    for (const uid of ["ok", "guests", "series", "old"])
+      knowEventDetails(d, uid, { location: null, notes: null })
+    const updatable = Object.fromEntries(
+      list(d, "gym").events.map((e) => [e.uid, e.appleUpdate])
+    )
+    expect(updatable).toEqual({
+      ok: true,
+      "no-details": false,
+      guests: false,
+      series: false,
+      old: false,
+    })
+  })
+
+  test("an Apple event whose title is cut or folded is not updatable, as a copy of the title would change it", () => {
+    const d = fresh()
+    indexEvents(d, [
+      {
+        uid: "long",
+        title: `Gym ${"x".repeat(100)}`,
+        start: "2030-05-01T09:00:00Z",
+        ...WRITABLE,
+      },
+      {
+        uid: "folded",
+        title: "Gym\nsession",
+        start: "2030-05-02T09:00:00Z",
+        ...WRITABLE,
+      },
+      {
+        uid: "plain",
+        title: "Gym session",
+        start: "2030-05-03T09:00:00Z",
+        ...WRITABLE,
+      },
+    ])
+    for (const uid of ["long", "folded", "plain"])
+      knowEventDetails(d, uid, { location: null, notes: null })
+    expect(
+      Object.fromEntries(
+        list(d, "gym").events.map((e) => [e.uid, e.appleUpdate])
+      )
+    ).toEqual({ long: false, folded: false, plain: true })
+  })
+
   test("an event of another source has no Apple flags", () => {
     const d = fresh()
     indexEvents(d, [
@@ -98,7 +177,10 @@ describe("listMatchingEvents", () => {
         source: "proton-calendar",
       },
     ])
-    expect(list(d, "offsite").events[0]).not.toHaveProperty("appleFlags")
+    const [event] = list(d, "offsite").events
+    expect(event).not.toHaveProperty("appleFlags")
+    expect(event).not.toHaveProperty("calendarId")
+    expect(event).not.toHaveProperty("appleUpdate")
   })
 
   test("the request's calendar words alone match nothing", () => {
@@ -339,6 +421,36 @@ describe("renderEventsBlock", () => {
         "- uid=apple-dentist | Dentist checkup | 2030-05-01T09:00:00.000Z to 2030-05-01T10:00:00.000Z | source=apple-eventkit | read-only",
         "- uid=proton-uid-1@example.invalid | Offsite | 2030-05-03 to 2030-05-04 | all-day | source=proton-calendar",
       ].join("\n")
+    )
+  })
+
+  test("an Apple event shows its calendar id and no read-only mark only when update is offered and allowed", () => {
+    const apple = {
+      uid: "apple-dentist",
+      title: "Dentist checkup",
+      start: "2030-05-01T09:00:00.000Z",
+      end: "2030-05-01T10:00:00.000Z",
+      allDay: false,
+      source: "apple-eventkit",
+      calendarId: "cal-1",
+    }
+    const block = (
+      events: Parameters<typeof renderEventsBlock>[0],
+      on: boolean
+    ) => plainContent(renderEventsBlock(events, { appleUpdate: on }), "b")
+    const one = (appleUpdate: boolean) => ({
+      events: [{ ...apple, appleUpdate }],
+      matched: 1,
+    })
+    expect(block(one(true), true)).toContain(
+      "source=apple-eventkit | calendarId=cal-1\n"
+    )
+    expect(block(one(true), true)).not.toContain("read-only")
+    expect(block(one(false), true)).toContain(
+      "source=apple-eventkit | read-only"
+    )
+    expect(block(one(true), false)).toContain(
+      "source=apple-eventkit | read-only"
     )
   })
 

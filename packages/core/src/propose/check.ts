@@ -21,10 +21,24 @@ export interface CheckContext {
    */
   isAppleEvent?: (eventUid: string) => boolean
   /**
+   * The Apple events the Events block offered for `apple.event_update`: an intent of that kind may
+   * name only one of these, by id and calendar id (#785).
+   */
+  appleUpdates?: readonly AppleUpdateTarget[]
+  /**
    * Set for a reply draft: every `email.draft` must go only to people on the seed's thread, with
    * no bcc, and reply only to the seed message.
    */
   draft?: DraftBounds
+}
+
+/** An Apple event offered for `apple.event_update`, as the Events block showed it. */
+export interface AppleUpdateTarget {
+  id: string
+  calendarId: string
+  /** The indexed values core carries into the intent when the model does not set them. */
+  location: string | null
+  notes: string | null
 }
 
 /** Args that name a message by its connector id. */
@@ -89,6 +103,51 @@ function appleEventFailures(
   return isAppleEvent(intent.args.eventUid)
     ? [{ code: "apple_event_not_proton", path: `${at}.args.eventUid` }]
     : []
+}
+
+/** An Apple event update must name an event, and the calendar, that the Events block showed. */
+function appleUpdateFailures(
+  intent: Intent,
+  at: string,
+  shown: readonly AppleUpdateTarget[]
+): ProposalFailure[] {
+  if (intent.kind !== "apple.event_update") return []
+  const { id, calendarId } = intent.args
+  const named = shown.filter((t) => t.id === id)
+  if (named.length === 0)
+    return [{ code: "unknown_reference", path: `${at}.args.id` }]
+  return named.some((t) => t.calendarId === calendarId)
+    ? []
+    : [{ code: "unknown_reference", path: `${at}.args.calendarId` }]
+}
+
+/**
+ * An `apple.event_update` replaces the whole event, so a location or notes the model left out would
+ * be cleared. Fill each from the indexed event when the model did not set it; a field the model set
+ * (even to an empty string) is the owner's change and stays. An event the calendar holds no such
+ * field for gets none.
+ */
+export function carryAppleDetails(
+  intent: Intent,
+  shown: readonly AppleUpdateTarget[]
+): Intent {
+  if (intent.kind !== "apple.event_update") return intent
+  const target = shown.find(
+    (t) => t.id === intent.args.id && t.calendarId === intent.args.calendarId
+  )
+  if (target === undefined) return intent
+  return {
+    ...intent,
+    args: {
+      ...intent.args,
+      ...(intent.args.location === undefined && target.location !== null
+        ? { location: target.location }
+        : {}),
+      ...(intent.args.notes === undefined && target.notes !== null
+        ? { notes: target.notes }
+        : {}),
+    },
+  }
 }
 
 function draftFailures(
@@ -162,6 +221,7 @@ export function checkReply(
       ...(context.isAppleEvent === undefined
         ? []
         : appleEventFailures(intent, at, context.isAppleEvent)),
+      ...appleUpdateFailures(intent, at, context.appleUpdates ?? []),
       ...(context.draft === undefined
         ? []
         : draftFailures(intent, at, context.draft)),

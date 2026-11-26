@@ -5,18 +5,25 @@ import { INTENT_KINDS } from "@eido/schemas"
 import type { GateIntentInjection, Intent } from "@eido/schemas"
 import {
   APPLE_CALENDAR_CONNECTOR,
+  appleEventDetails,
   isAppleEventId,
 } from "../connectors/apple-calendar/sync"
 import { assembleContext } from "../context/assemble"
 import { listOpenTodos, renderTodosBlock } from "../context/todos"
 import { listMatchingEvents, renderEventsBlock } from "../context/events"
-import { ID_DEPENDENT_THINGS_KINDS, selectTools } from "../context/tools"
+import type { EventLine } from "../context/events"
+import {
+  APPLE_EVENT_UPDATE_KIND,
+  ID_DEPENDENT_THINGS_KINDS,
+  selectTools,
+} from "../context/tools"
 import { PromptTooLargeError } from "../inference/errors"
 import { INJECTION_REASONS } from "../inference/fence"
 import type { PromptPart } from "../inference/fence"
 import type { InferenceQueue } from "../inference/queue"
 import type { ToolDef } from "../inference/types"
-import { checkReply } from "./check"
+import { carryAppleDetails, checkReply } from "./check"
+import type { AppleUpdateTarget } from "./check"
 import { draftBounds } from "./draft-recipients"
 import { recordProposalFailure } from "./failure-log"
 import type { ProposalLimiter } from "./limiter"
@@ -150,6 +157,31 @@ const ID_DEPENDENT_CALENDAR_KINDS: ReadonlySet<string> = new Set([
   "calendar.delete",
 ])
 
+/**
+ * The Apple events the Events block offers for `apple.event_update`, with the location and notes
+ * the calendar holds for each. Only the events `listMatchingEvents` marked updatable, and only
+ * while the index still has their details: an event whose details are unknown is never offered.
+ */
+function appleUpdateTargets(
+  db: DatabaseSync,
+  events: readonly EventLine[]
+): AppleUpdateTarget[] {
+  return events.flatMap((e): AppleUpdateTarget[] => {
+    if (e.appleUpdate !== true || e.calendarId === undefined) return []
+    const details = appleEventDetails(db, e.calendarId, e.uid)
+    return details?.known === true
+      ? [
+          {
+            id: e.uid,
+            calendarId: e.calendarId,
+            location: details.location,
+            notes: details.notes,
+          },
+        ]
+      : []
+  })
+}
+
 function validConfig(config: ProposeConfig): void {
   const max = config.maxIntentsPerRequest
   if (!Number.isInteger(max) || max < 1)
@@ -189,7 +221,9 @@ export async function proposeIntents(
   const todos = listed.ambiguous ? { todos: [], matched: 0 } : listed
   // The Events block exists only when a calendar kind is offered, so the model can name an event
   // by its uid. Ambiguous matches get no block, as for to-dos.
-  const matching = picked.some((k) => k.startsWith("calendar."))
+  const matching = picked.some(
+    (k) => k.startsWith("calendar.") || k === APPLE_EVENT_UPDATE_KIND
+  )
     ? listMatchingEvents(deps.db, request.text, deps.now?.() ?? new Date())
     : { events: [], matched: 0, ambiguous: false }
   const events = matching.ambiguous ? { events: [], matched: 0 } : matching
@@ -198,12 +232,21 @@ export async function proposeIntents(
   // Calendar event is read-only. Otherwise the model can only decline, instead of proposing an
   // intent the check refuses. With no matching event they stay offered: the uid may come from an
   // invitation in the pack.
+  const best = events.events[0]
   const readOnlyTarget =
-    matching.ambiguous || events.events[0]?.source === APPLE_CALENDAR_CONNECTOR
+    matching.ambiguous || best?.source === APPLE_CALENDAR_CONNECTOR
+  // `apple.event_update` is the Apple counterpart: offered only when the best match is an Apple
+  // event the Helper will write (no attendees, not recurring) and whose location and notes core
+  // knows, so it can carry them (#785). Anything else, including no match at all, offers no Apple
+  // write kind: the model cannot name an event the block did not list.
+  const appleTargets =
+    best?.appleUpdate === true ? appleUpdateTargets(deps.db, events.events) : []
+  const appleUpdate = appleTargets.length > 0
   const kinds = picked.filter(
     (k) =>
       !(todos.todos.length === 0 && ID_DEPENDENT_THINGS_KINDS.has(k)) &&
-      !(readOnlyTarget && ID_DEPENDENT_CALENDAR_KINDS.has(k))
+      !(readOnlyTarget && ID_DEPENDENT_CALENDAR_KINDS.has(k)) &&
+      !(k === APPLE_EVENT_UPDATE_KIND && !appleUpdate)
   )
   const pin =
     request.connector === undefined ? {} : { connector: request.connector }
@@ -226,7 +269,7 @@ export async function proposeIntents(
     referable,
     kinds,
     todos: renderTodosBlock(todos),
-    events: renderEventsBlock(events),
+    events: renderEventsBlock(events, { appleUpdate }),
   }
   const draft = request.replyDraft
     ? draftBounds(deps.db, referable, request.seed)
@@ -239,6 +282,7 @@ export async function proposeIntents(
     referable,
     todoIds: new Set(todos.todos.map((t) => t.id)),
     isAppleEvent: (eventUid: string) => isAppleEventId(deps.db, eventUid),
+    appleUpdates: appleUpdate ? appleTargets : [],
     ...(draft === undefined ? {} : { draft }),
   }
   const injection = injectionFlag(pack, [...input.todos, ...input.events])
@@ -279,7 +323,10 @@ export async function proposeIntents(
     if (checked.ok) {
       const kept: Intent[] = checked.intents
         .slice(0, deps.config.maxIntentsPerRequest)
-        .map((intent) => ({ ...intent, ...pin }))
+        .map((intent) => ({
+          ...carryAppleDetails(intent, context.appleUpdates),
+          ...pin,
+        }))
       limited = checked.intents.length - kept.length
       for (const [index, intent] of kept.entries()) {
         const key = JSON.stringify(intent)

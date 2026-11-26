@@ -8,6 +8,7 @@ import {
   PROPOSE_SYSTEM_PROMPT,
   replySchemaFor,
   retryNote,
+  APPLE_EVENT_UPDATE_NOTE,
   TODO_ARG_ORDER_NOTE,
 } from "./prompt"
 
@@ -243,5 +244,26 @@ describe("replySchemaFor", () => {
       TODO_ARG_ORDER_NOTE
     )
     expect(PROPOSE_SYSTEM_PROMPT).not.toContain(TODO_ARG_ORDER_NOTE)
+  })
+})
+
+describe("buildProposalRequest apple event update note", () => {
+  test("the note follows the request only when apple.event_update is offered, and never sits in the stable prefix", () => {
+    const build = (kinds: string[]) =>
+      plainContent(
+        buildProposalRequest({
+          request: "Move the dentist appointment.",
+          pack,
+          referable: [],
+          kinds,
+        }).messages[0]?.content ?? "",
+        "B"
+      )
+    const offered = build(["apple.event_update"])
+    expect(offered.slice(offered.indexOf("Owner request:"))).toBe(
+      `Owner request:\nMove the dentist appointment.\n\n${APPLE_EVENT_UPDATE_NOTE}`
+    )
+    expect(build(["calendar.edit"])).not.toContain(APPLE_EVENT_UPDATE_NOTE)
+    expect(PROPOSE_SYSTEM_PROMPT).not.toContain(APPLE_EVENT_UPDATE_NOTE)
   })
 })
