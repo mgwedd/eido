@@ -247,6 +247,10 @@ describe("gateConfig", () => {
     })
   })
 
+  // Despite living under gateConfig, this starts a real gate (control DB, both sockets). Starting
+  // a gate takes about 15 ms on a developer machine but 5.5 to 8.6 s on a loaded windows-latest
+  // runner (#898), so the row gets a 60 s budget like the runGate rows below, in place of the 5 s
+  // Vitest default. The budget bounds a hang, not a speed; no assertion depends on it.
   it("starts with the :8443 origin from ADR 0004", async () => {
     const base = config()
     const gate = await startGate(
@@ -263,7 +267,7 @@ describe("gateConfig", () => {
       origin: "https://node.example.ts.net:8443",
     })
     await gate.close()
-  })
+  }, 60_000)
 
   const BASE = {
     EIDO_GATE_DATA_DIR: "/d",
@@ -515,6 +519,7 @@ describe("runGate", () => {
     expect(logged).not.toContain("evil")
   })
 
+  // These rows start real gates: see the note on the ADR 0004 row above (#898).
   it("opens the control DB, serves both sockets, logs to its own file and stops cleanly", async () => {
     const c = config()
     const gate = await runGate(c)
@@ -540,7 +545,7 @@ describe("runGate", () => {
           : undefined
       })
     expect(events).toEqual(["started", "request", "stopped"])
-  })
+  }, 60_000)
 
   it("stops the gate again when a socket cannot be opened", async () => {
     const c = { ...config(), controlSocketPath: join(dir, "missing", "c.sock") }
@@ -548,7 +553,7 @@ describe("runGate", () => {
     expect(() => runningGate()).toThrow("the gate is not started")
     const again = await runGate(config())
     await again.close()
-  })
+  }, 60_000)
 
   it("serves the phone listener on loopback TCP, by Host, below its base path", async () => {
     const c: GateConfig = {
@@ -691,11 +696,13 @@ describe("gateConfig with Bridge", () => {
     EIDO_BRIDGE_CERT_SHA256: "",
   }
   let certificate: ReturnType<typeof createTestCertificate>
+  // createTestCertificate runs openssl synchronously; on a loaded windows-latest runner the
+  // equivalent hook in bridge.test.ts exceeded Vitest's 10 s hook default (#898).
   beforeAll(() => {
     certificate = createTestCertificate()
     BASE.EIDO_BRIDGE_CERT_PATH = certificate.certPath
     BASE.EIDO_BRIDGE_CERT_SHA256 = certificate.sha256
-  })
+  }, 60_000)
   afterAll(() => certificate.cleanup())
 
   it("reads Bridge and its development vault, with no password in the config", () => {
