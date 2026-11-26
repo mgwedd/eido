@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GateControlStatus",
+  "description": "Response of GET /audit/control on the control socket and, behind the session, on the phone listener (#916): whether the protected control-state checkpoint is enforced and, when it is, why the gate denies authority reads right now. denied is null while the checkpoint verifies. Only this flag and the reason; never the record, its hashes or any keychain content.",
+  "oneOf": [
+    {
+      "title": "GateControlUnenforced",
+      "description": "No checkpoint is attached (the file dev vault): nothing is anchored or denied.",
+      "type": "object",
+      "properties": {
+        "enforced": {
+          "const": false
+        }
+      },
+      "required": ["enforced"],
+      "additionalProperties": false
+    },
+    {
+      "title": "GateControlEnforced",
+      "type": "object",
+      "properties": {
+        "enforced": {
+          "const": true
+        },
+        "denied": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "gate-control-deny-reason.schema.json"
+            }
+          ]
+        }
+      },
+      "required": ["enforced", "denied"],
+      "additionalProperties": false
+    }
+  ]
+}
