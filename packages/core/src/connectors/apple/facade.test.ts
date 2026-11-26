@@ -34,6 +34,8 @@ function setup() {
             notes: null,
             location: null,
             modifiedAt: null,
+            hasAttendees: false,
+            recurring: false,
           },
         ],
       })
