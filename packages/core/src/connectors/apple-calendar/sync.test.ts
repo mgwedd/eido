@@ -16,6 +16,7 @@ import {
   APPLE_CALENDAR_CONNECTOR,
   CALENDAR_EVENT_MIME,
   appleEventDetails,
+  appleEventFlags,
   appleEventSourceRef,
   isAppleEventId,
   syncAppleCalendars,
@@ -53,6 +54,8 @@ function event(overrides: Partial<AppleEvent> = {}): AppleEvent {
     location: "Room ipsum",
     notes: "Dolor sit amet",
     modifiedAt: "2026-11-30T10:00:00Z",
+    hasAttendees: false,
+    recurring: false,
     ...overrides,
   }
 }
@@ -1237,6 +1240,263 @@ describe("Apple event location and notes", () => {
           notes: "",
         })
         expect(appleEventDetails(db, CAL, "old-out")).toEqual({ known: false })
+        db.close()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+})
+
+describe("Apple event attendee and recurrence flags", () => {
+  const CAL = "cal-synthetic-a"
+
+  test("a synced event stores its two flags independently", async () => {
+    const db = setupDb()
+    await syncAppleCalendars(
+      options(
+        db,
+        fakeClient({
+          [CAL]: [
+            event({ id: "plain" }),
+            event({ id: "guests", hasAttendees: true }),
+            event({ id: "series", recurring: true }),
+            event({ id: "both", hasAttendees: true, recurring: true }),
+          ],
+        })
+      )
+    )
+
+    expect(appleEventFlags(db, CAL, "plain")).toEqual({
+      known: true,
+      hasAttendees: false,
+      recurring: false,
+    })
+    expect(appleEventFlags(db, CAL, "guests")).toEqual({
+      known: true,
+      hasAttendees: true,
+      recurring: false,
+    })
+    expect(appleEventFlags(db, CAL, "series")).toEqual({
+      known: true,
+      hasAttendees: false,
+      recurring: true,
+    })
+    expect(appleEventFlags(db, CAL, "both")).toEqual({
+      known: true,
+      hasAttendees: true,
+      recurring: true,
+    })
+  })
+
+  test("an event that is not indexed, or was retired, has no flags", async () => {
+    const db = setupDb()
+    const events: Record<string, AppleEvent[]> = { [CAL]: [event()] }
+    const client = fakeClient(events)
+    await syncAppleCalendars(options(db, client))
+    expect(appleEventFlags(db, CAL, "never-seen")).toBeNull()
+
+    events[CAL] = []
+    await syncAppleCalendars(options(db, client))
+    expect(appleEventFlags(db, CAL, "evt-1")).toBeNull()
+  })
+
+  test("a flag that changes with the event's modification time is updated by the next sync", async () => {
+    const db = setupDb()
+    const events: Record<string, AppleEvent[]> = { [CAL]: [event()] }
+    const client = fakeClient(events)
+    await syncAppleCalendars(options(db, client))
+
+    events[CAL] = [
+      event({ hasAttendees: true, modifiedAt: "2026-11-30T11:00:00Z" }),
+    ]
+    const result = await syncAppleCalendars(options(db, client))
+
+    expect(result.calendars[0]).toMatchObject({ ingested: 1 })
+    expect(appleEventFlags(db, CAL, "evt-1")).toEqual({
+      known: true,
+      hasAttendees: true,
+      recurring: false,
+    })
+  })
+
+  test("a flag that changes while the event's content does not is updated and indexes no new version", async () => {
+    const db = setupDb()
+    const events: Record<string, AppleEvent[]> = { [CAL]: [event()] }
+    const client = fakeClient(events)
+    await syncAppleCalendars(options(db, client))
+
+    events[CAL] = [event({ recurring: true })]
+    const result = await syncAppleCalendars(options(db, client))
+    expect(result.calendars[0]).toMatchObject({ ingested: 0 })
+    expect(appleEventFlags(db, CAL, "evt-1")).toEqual({
+      known: true,
+      hasAttendees: false,
+      recurring: true,
+    })
+
+    events[CAL] = [event({ recurring: false })]
+    await syncAppleCalendars(options(db, client))
+    expect(appleEventFlags(db, CAL, "evt-1")).toEqual({
+      known: true,
+      hasAttendees: false,
+      recurring: false,
+    })
+    expect(
+      db.prepare("SELECT count(*) AS n FROM calendar_event_facts").get()
+    ).toEqual({ n: 1 })
+  })
+
+  test("a changed flag does not unlock the rest of the fact row", async () => {
+    const db = setupDb()
+    await syncAppleCalendars(options(db, fakeClient({ [CAL]: [event()] })))
+
+    expect(() =>
+      db
+        .prepare(
+          "UPDATE calendar_event_facts SET has_attendees = 1, start_at = '2030-01-01'"
+        )
+        .run()
+    ).toThrow("immutable")
+    expect(() =>
+      db
+        .prepare(
+          "UPDATE calendar_event_facts SET recurring = 1, location = 'Elsewhere'"
+        )
+        .run()
+    ).toThrow("immutable")
+    expect(appleEventFlags(db, CAL, "evt-1")).toEqual({
+      known: true,
+      hasAttendees: false,
+      recurring: false,
+    })
+  })
+
+  test("a flag update leaves a known row's location and notes as they are", async () => {
+    const db = setupDb()
+    const events: Record<string, AppleEvent[]> = {
+      [CAL]: [event({ location: "Room ipsum", notes: "first" })],
+    }
+    const client = fakeClient(events)
+    await syncAppleCalendars(options(db, client))
+
+    events[CAL] = [
+      event({ location: "Room ipsum", notes: "first", hasAttendees: true }),
+    ]
+    await syncAppleCalendars(options(db, client))
+
+    expect(appleEventDetails(db, CAL, "evt-1")).toEqual({
+      known: true,
+      location: "Room ipsum",
+      notes: "first",
+    })
+  })
+
+  describe("an event indexed before the flags were stored", () => {
+    /**
+     * A database at index schema v16 (no flag columns) holding `events` as the sync of that
+     * version wrote them. `digests` are taken from a current sync, so a later sync matches them.
+     */
+    function databaseAtV16(
+      path: string,
+      events: readonly AppleEvent[],
+      digests: ReadonlyMap<string, string>
+    ): void {
+      const old = new DatabaseSync(path)
+      old.exec("PRAGMA foreign_keys = ON")
+      for (const migration of MIGRATIONS.slice(0, 16)) old.exec(migration)
+      old.exec("PRAGMA user_version = 16")
+      old
+        .prepare(
+          `INSERT INTO entities (id, kind, name, tag, created_at)
+           VALUES ('entity-default', 'personal', 'Ipsum', 'default', datetime('now'))`
+        )
+        .run()
+      for (const e of events) {
+        const sha256 = digests.get(e.id) ?? ""
+        const sourceRef = appleEventSourceRef(e.calendarId, e.id)
+        ingestBatch(old, {
+          connector: APPLE_CALENDAR_CONNECTOR,
+          stream: `calendar:${e.calendarId}`,
+          documents: [
+            {
+              sha256,
+              source: APPLE_CALENDAR_CONNECTOR,
+              sourceRef,
+              mime: CALENDAR_EVENT_MIME,
+              entityId: "entity-default",
+              title: e.title,
+              body: e.title,
+              occurredAt: e.start,
+            },
+          ],
+          heads: [{ source: APPLE_CALENDAR_CONNECTOR, sourceRef, sha256 }],
+          nextCursor: "c",
+        })
+        old
+          .prepare(
+            `INSERT INTO calendar_event_facts
+               (sha256, source, calendar_id, event_id, start_at, end_at, all_day,
+                details_known, location, notes)
+             VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`
+          )
+          .run(
+            sha256,
+            APPLE_CALENDAR_CONNECTOR,
+            e.calendarId,
+            e.id,
+            e.start,
+            e.end,
+            e.location,
+            e.notes
+          )
+      }
+      old.close()
+    }
+
+    async function digestsOf(
+      events: readonly AppleEvent[]
+    ): Promise<Map<string, string>> {
+      const db = setupDb()
+      await syncAppleCalendars(options(db, fakeClient({ [CAL]: [...events] })))
+      const rows = db
+        .prepare("SELECT event_id, sha256 FROM calendar_event_facts")
+        .all()
+      db.close()
+      return new Map(
+        rows.map((row) => [String(row["event_id"]), String(row["sha256"])])
+      )
+    }
+
+    test("has unknown flags after the migration, and the next sync that reads it fills them in", async () => {
+      const inRead = event({ id: "old-in", hasAttendees: true })
+      const outOfRead = event({ id: "old-out", recurring: true })
+      const events = [inRead, outOfRead]
+      const dir = mkdtempSync(join(tmpdir(), "eido-apple-flags-"))
+      try {
+        const path = join(dir, "data.db")
+        databaseAtV16(path, events, await digestsOf(events))
+        const db = openDataDb(path)
+        expect(appleEventFlags(db, CAL, "old-in")).toEqual({ known: false })
+        expect(appleEventFlags(db, CAL, "old-out")).toEqual({ known: false })
+
+        // A partial read of `old-in` alone, content unchanged: no new version is indexed.
+        const result = await syncAppleCalendars(
+          options(db, fakeClient({ [CAL]: { events: [inRead], skipped: 1 } }), {
+            selection: { kind: "ids", ids: [CAL] },
+          })
+        )
+
+        expect(result.calendars[0]).toMatchObject({
+          status: "synced",
+          ingested: 0,
+        })
+        expect(appleEventFlags(db, CAL, "old-in")).toEqual({
+          known: true,
+          hasAttendees: true,
+          recurring: false,
+        })
+        expect(appleEventFlags(db, CAL, "old-out")).toEqual({ known: false })
         db.close()
       } finally {
         rmSync(dir, { recursive: true, force: true })
