@@ -230,24 +230,29 @@ eido-helper --bridge \
   --peer-user <gate user name> \
   --things-scripts <absolute directory> \
   --file-helper <absolute path> \
-  --file-helper-sha256 <lowercase hex>
+  --file-helper-sha256 <lowercase hex> \
+  [--file-roots <absolute path>]
 ```
 
-Each flag is required once, in any order; anything else writes
-`invalid_request` to stdout and exits 1. At start the bridge, in this order:
+Each flag is given once, in any order. All but `--file-roots` are required;
+anything else writes `invalid_request` to stdout and exits 1. At start the
+bridge, in this order:
 
 1. resolves `--peer-user` to a uid once (a later rename does not change it);
 2. reads every Things script in the table below from `--things-scripts`, checks
    each file's SHA-256 against the hash built into the bridge, and keeps the
    checked bytes in memory;
 3. hashes `--file-helper` and compares it with `--file-helper-sha256`;
-4. binds the socket with mode `0600`. A stale socket at the path is replaced; a
+4. reads the owner's approved file roots from `--file-roots` (see
+   [Approved file roots](#approved-file-roots)). Without the flag no root is
+   approved and every `file` op is refused;
+5. binds the socket with mode `0600`. A stale socket at the path is replaced; a
    socket that still accepts connections (another bridge) or any other kind of
    file there is refused.
 
 Any failure stops the start before the socket exists: the bridge writes one code
 to stderr (`peer_user_unknown`, `things_scripts_mismatch`, `file_helper_mismatch`,
-or `socket_failed`) and exits 1. It never serves with a partial table. It does not
+`file_roots_unsafe`, `file_roots_invalid`, or `socket_failed`) and exits 1. It never serves with a partial table. It does not
 watch its parent (launchd). SIGTERM or SIGINT stops accepting and removes the
 socket (unless another bridge has since replaced it), lets accepted requests
 finish for up to 15 seconds (inside launchd's 20-second exit timeout), and exits 0. Request mode is unchanged and still exits when the gate exits.
@@ -355,18 +360,77 @@ for `list`, 64 KiB otherwise). Exit 0 returns
 inside; anything else is `unavailable`. The helper confines every path to the
 root, as it does for the gate today.
 
+Before any of that, the request's `root` must be one the owner approved: its
+`path`, `dev` and `ino` must equal one entry in the approved list, and the
+directory at that path, opened now from `/` one component at a time without
+following symbolic links, must have that device, inode and canonical path.
+`identify` is admitted only for a `path` that is exactly an approved root, and
+only while that directory still has the listed identity. Anything else is
+`root_not_approved`, and the file helper is not started (#865).
+
+### Approved file roots
+
+The owner decides which directories the gate may reach through the bridge
+(decision in #865). The list is a JSON file the bridge reads once, at start,
+from `--file-roots`:
+
+```json
+{
+  "roots": [
+    {
+      "path": "/Users/example/Documents/Notes",
+      "dev": "16777232",
+      "ino": "1234567"
+    }
+  ]
+}
+```
+
+- `path` is absolute and canonical: no symbolic link anywhere in it, no empty,
+  `.` or `..` component, no trailing `/`, under 1024 bytes. A path is listed at
+  most once.
+- `dev` and `ino` are the directory's device and inode in decimal, with no
+  leading zeros, as `stat -f '%d %i' <path>` prints them and as the file helper's
+  `identify` returns them on macOS. A root that is removed and created again has
+  a new inode, so it must be approved again.
+- Keys other than `roots`, `path`, `dev` and `ino` are refused. `{"roots":[]}`
+  approves nothing.
+
+The file must be a regular file, not a symbolic link, owned by the user the
+bridge runs as, with no group or other write bit (`chmod 600` is the intent).
+Its ownership and mode are read from the same open descriptor the list is read
+from. A list that fails those checks stops the start with `file_roots_unsafe`; a
+missing, unreadable, malformed, or over-1-MiB list stops it with
+`file_roots_invalid`. A change to the list takes effect when the bridge is
+restarted. The LaunchAgent in #827 passes the flag.
+
+What the check closes, and what it does not:
+
+- A root swapped after the bridge's check is still refused: the file helper
+  opens the root again without following links and compares its device and inode
+  with the request's, which the bridge has already required to equal the owner's
+  entry. The bridge does not hand its open descriptor to the helper.
+- The approval is by path, device and inode. If an approved directory is deleted
+  and the file system later reuses its inode number for a new directory at the
+  same path, the new directory is admitted.
+- The parent directories of the list file are not checked. Opening without
+  following links and the owner check refuse a list replaced by another user, but
+  a process running as the owner can change the list; it already has the owner's
+  files.
+
 ### Errors
 
 Failure is `{"ok":false,"code":"..."}` and never echoes request values, paths, or
 OS messages. Bridge codes are `invalid_request`, `unknown_op`, `unknown_script`,
-`frame_too_large`, `automation_denied`, and `unavailable`; `eventkit` responses
+`frame_too_large`, `automation_denied`, `root_not_approved`, and `unavailable`; `eventkit` responses
 also carry the request-mode codes. A refused request ends only its own connection.
 
 ### What the tests do not prove
 
 The tests use socket pairs and sockets under `/tmp` in the test user's own
 account, a fake EventKit store, and a recording double in place of `osascript` and
-the file helper. They do not show the uid the bridge sees when `_eidogate`
+the file helper. Approved roots are synthetic temporary directories. They do not
+show the uid the bridge sees when `_eidogate`
 connects through the #827 ACL, which app macOS credits with the Automation and
 EventKit grants when launchd starts the bridge, or how the bridge behaves while
 the screen is locked or another user is switched in. Those are checked on the

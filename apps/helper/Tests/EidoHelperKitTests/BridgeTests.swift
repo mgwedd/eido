@@ -66,6 +66,30 @@ func shortTempDirectory() throws -> String {
   return String(cString: template)
 }
 
+/// The canonical path of `path`, every symbolic link resolved (`/tmp` is `/private/tmp`).
+func canonical(_ path: String) throws -> String {
+  guard let resolved = realpath(path, nil) else { throw POSIXError(.ENOENT) }
+  defer { free(resolved) }
+  return String(cString: resolved)
+}
+
+/// A directory's device and inode in decimal, read through Foundation rather than the
+/// bridge's own `fstat`, so the bridge's reading is checked against another one.
+func identity(_ path: String) throws -> (dev: String, ino: String) {
+  let attributes = try FileManager.default.attributesOfItem(atPath: path)
+  let dev = try XCTUnwrap(attributes[.systemNumber] as? NSNumber)
+  let ino = try XCTUnwrap(attributes[.systemFileNumber] as? NSNumber)
+  return (dev.stringValue, ino.stringValue)
+}
+
+/// Makes `name` under `base` and returns it as the owner would list it.
+func approvedRoot(_ base: String, _ name: String) throws -> ApprovedRoot {
+  let path = try canonical(base) + "/" + name
+  try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false)
+  let (dev, ino) = try identity(path)
+  return ApprovedRoot(path: path, dev: dev, ino: ino)
+}
+
 func frame(_ object: Any) throws -> Data {
   BridgeFrame.encode(try JSONSerialization.data(withJSONObject: object))
 }
@@ -163,24 +187,39 @@ func body(of response: Data?) throws -> Data {
 final class BridgeTests: XCTestCase {
   var directory = ""
   var runner = RecordingRunner()
+  /// The one root the owner approved, a real directory under `directory`.
+  var approved = ApprovedRoot(path: "", dev: "", ino: "")
+  var root: [String: Any] = [:]
 
   override func setUpWithError() throws {
     directory = try shortTempDirectory()
     runner = RecordingRunner()
+    approved = try approvedRoot(directory, "root")
+    root = ["path": approved.path, "dev": approved.dev, "ino": approved.ino, "trashDir": ".eido-trash"]
   }
 
   override func tearDownWithError() throws {
     try? FileManager.default.removeItem(atPath: directory)
   }
 
-  @MainActor func makeHandler(store: FakeStore? = nil) throws -> BridgeHandler {
+  @MainActor func makeHandler(store: FakeStore? = nil, roots: ApprovedRoots? = nil) throws
+    -> BridgeHandler
+  {
     let store = store ?? FakeStore()
     let helper = directory + "/file-helper"
     try fileHelperBytes.write(to: URL(fileURLWithPath: helper))
     return BridgeHandler(
       scripts: try ThingsScripts.load(directory: repoScripts),
-      fileHelper: PinnedExecutable(path: helper, sha256: fileHelperSHA), runner: runner,
-      store: { store })
+      fileHelper: PinnedExecutable(path: helper, sha256: fileHelperSHA),
+      roots: roots ?? ApprovedRoots(roots: [approved]), runner: runner, store: { store })
+  }
+
+  @MainActor func fileOp(_ handler: BridgeHandler, _ request: [String: Any]) async throws
+    -> [String: Any]
+  {
+    try decode(
+      await handler.handle(
+        try JSONSerialization.data(withJSONObject: ["op": "file", "request": request])))
   }
 
   @MainActor func startServer(
@@ -454,10 +493,6 @@ final class BridgeTests: XCTestCase {
 
   // MARK: File helper
 
-  let root: [String: Any] = [
-    "path": "/example.invalid/root", "dev": "1a", "ino": "2b", "trashDir": ".eido-trash",
-  ]
-
   @MainActor func testFileOpPassesOnlyTableFieldsToThePinnedHelper() async throws {
     let handler = try makeHandler()
     let response = try decode(
@@ -468,7 +503,9 @@ final class BridgeTests: XCTestCase {
         ])))
     XCTAssertEqual(response["ok"] as? Bool, true)
     let expected =
-      #"{"maxBytes":1024,"op":"read","path":"notes/a.txt","root":{"dev":"1a","ino":"2b","path":"/example.invalid/root","trashDir":".eido-trash"}}"#
+      #"{"maxBytes":1024,"op":"read","path":"notes/a.txt","root":{"dev":""# + approved.dev
+      + #"","ino":""# + approved.ino + #"","path":""# + approved.path
+      + #"","trashDir":".eido-trash"}}"#
     XCTAssertEqual(
       runner.calls,
       [
@@ -482,7 +519,7 @@ final class BridgeTests: XCTestCase {
     let handler = try makeHandler()
     let requests: [([String: Any], Int)] = [
       (["op": "list", "root": root, "path": ""], 512 * 1024),
-      (["op": "identify", "path": "/example.invalid/root"], 64 * 1024),
+      (["op": "identify", "path": approved.path], 64 * 1024),
       (["op": "create", "root": root, "path": "a.txt", "contentBase64": "AA=="], 64 * 1024),
       (["op": "move", "root": root, "from": "a.txt", "to": "b.txt"], 64 * 1024),
       (["op": "trash", "root": root, "path": "b.txt", "trashName": "t-1"], 64 * 1024),
@@ -542,7 +579,7 @@ final class BridgeTests: XCTestCase {
     let response = try decode(
       await handler.handle(
         try JSONSerialization.data(withJSONObject: [
-          "op": "file", "request": ["op": "identify", "path": "/example.invalid"],
+          "op": "file", "request": ["op": "identify", "path": approved.path],
         ])))
     XCTAssertEqual(response["code"] as? String, "unavailable")
     XCTAssertEqual(runner.calls, [])
@@ -554,9 +591,71 @@ final class BridgeTests: XCTestCase {
     let response = try decode(
       await handler.handle(
         try JSONSerialization.data(withJSONObject: [
-          "op": "file", "request": ["op": "identify", "path": "/example.invalid"],
+          "op": "file", "request": ["op": "identify", "path": approved.path],
         ])))
     XCTAssertEqual(response["code"] as? String, "unavailable")
+  }
+
+  // MARK: Approved file roots (#865)
+
+  @MainActor func testFileOpOnARootTheOwnerDidNotApproveIsRefusedAndTheHelperIsNotRun()
+    async throws
+  {
+    let handler = try makeHandler()
+    // A real directory with its real identity, but not on the owner's list.
+    let other = try approvedRoot(directory, "other")
+    let otherRoot: [String: Any] = [
+      "path": other.path, "dev": other.dev, "ino": other.ino, "trashDir": ".eido-trash",
+    ]
+    let refused: [[String: Any]] = [
+      ["op": "read", "root": otherRoot, "path": "a.txt", "maxBytes": 1],
+      ["op": "create", "root": otherRoot, "path": "a.txt", "contentBase64": "AA=="],
+      ["op": "identify", "path": other.path],
+      // A path inside the approved root is not itself an approved root.
+      ["op": "identify", "path": approved.path + "/notes"],
+    ]
+    for request in refused {
+      let response = try await fileOp(handler, request)
+      XCTAssertEqual(response["code"] as? String, "root_not_approved", "\(request)")
+    }
+    XCTAssertEqual(runner.calls, [])
+  }
+
+  @MainActor func testRootWithTheApprovedPathButAnotherDeviceOrInodeIsRefused() async throws {
+    let handler = try makeHandler()
+    let otherDev = String(UInt64(approved.dev)! + 1)  // the identity is decimal, read above
+    let otherIno = String(UInt64(approved.ino)! + 1)  // the identity is decimal, read above
+    for (dev, ino) in [(otherDev, approved.ino), (approved.dev, otherIno)] {
+      let claimed = root.merging(["dev": dev, "ino": ino]) { _, new in new }
+      let response = try await fileOp(handler, ["op": "list", "root": claimed, "path": ""])
+      XCTAssertEqual(response["code"] as? String, "root_not_approved", "\(dev) \(ino)")
+    }
+    XCTAssertEqual(runner.calls, [])
+  }
+
+  @MainActor func testApprovedRootReplacedOnDiskIsRefused() async throws {
+    let handler = try makeHandler()
+    // Same path and device, new directory: the owner approved the one that was removed.
+    try FileManager.default.removeItem(atPath: approved.path)
+    try FileManager.default.createDirectory(atPath: approved.path, withIntermediateDirectories: false)
+    try XCTSkipIf(try identity(approved.path).ino == approved.ino, "the file system reused the inode")
+    let response = try await fileOp(handler, ["op": "list", "root": root, "path": ""])
+    XCTAssertEqual(response["code"] as? String, "root_not_approved")
+    try FileManager.default.removeItem(atPath: approved.path)
+    let missing = try await fileOp(handler, ["op": "identify", "path": approved.path])
+    XCTAssertEqual(missing["code"] as? String, "root_not_approved")
+    XCTAssertEqual(runner.calls, [])
+  }
+
+  @MainActor func testWithNoApprovedRootsEveryFileOpIsRefused() async throws {
+    let handler = try makeHandler(roots: ApprovedRoots.none)
+    for request: [String: Any] in [
+      ["op": "list", "root": root, "path": ""], ["op": "identify", "path": approved.path],
+    ] {
+      let response = try await fileOp(handler, request)
+      XCTAssertEqual(response["code"] as? String, "root_not_approved", "\(request)")
+    }
+    XCTAssertEqual(runner.calls, [])
   }
 
   // MARK: Start and stop
@@ -609,8 +708,16 @@ final class BridgeTests: XCTestCase {
     unpinned.fileHelperSHA256 = String(repeating: "0", count: 64)
     var noScripts = options
     noScripts.thingsScripts = directory
+    let unsafeList = directory + "/roots-unsafe.json"
+    try Data(#"{"roots":[]}"#.utf8).write(to: URL(fileURLWithPath: unsafeList))
+    chmod(unsafeList, 0o664)
+    var unsafeRoots = options
+    unsafeRoots.fileRoots = unsafeList
+    var missingRoots = options
+    missingRoots.fileRoots = directory + "/no-such-roots.json"
     let refused: [(BridgeOptions, BridgeStartError)] = [
       (unknown, .peerUserUnknown), (unpinned, .fileHelperMismatch), (noScripts, .thingsScriptsMismatch),
+      (unsafeRoots, .fileRootsUnsafe), (missingRoots, .fileRootsInvalid),
     ]
     for (options, code) in refused {
       XCTAssertThrowsError(try startBridge(options, runner: runner) { FakeStore() }) {
@@ -621,7 +728,20 @@ final class BridgeTests: XCTestCase {
     XCTAssertEqual(lstat(options.socket, &info), -1, "a refused start left a socket")
     let server = try startBridge(options, runner: runner) { FakeStore() }
     XCTAssertEqual(lstat(options.socket, &info), 0)
+    XCTAssertEqual(server.handler.roots, ApprovedRoots.none, "no list must approve nothing")
     server.stop()
+
+    let list = directory + "/roots.json"
+    try Data(
+      (#"{"roots":[{"path":""# + approved.path + #"","dev":""# + approved.dev + #"","ino":""#
+        + approved.ino + #""}]}"#).utf8
+    ).write(to: URL(fileURLWithPath: list))
+    chmod(list, 0o600)
+    var listed = options
+    listed.fileRoots = list
+    let withRoots = try startBridge(listed, runner: runner) { FakeStore() }
+    XCTAssertEqual(withRoots.handler.roots, ApprovedRoots(roots: [approved]))
+    withRoots.stop()
   }
 
   @MainActor func testStartRefusesALiveSocketAndStopLeavesAReplacementInPlace() async throws {
@@ -726,6 +846,12 @@ final class BridgeTests: XCTestCase {
           fileHelperSHA256: sha)))
     // Flags in another order are the same bridge.
     XCTAssertEqual(HelperMode.parse(["--bridge"] + bridge[7...10] + bridge[1...6]), HelperMode.parse(bridge))
+    XCTAssertEqual(
+      HelperMode.parse(bridge + ["--file-roots", "/opt/r.json"]),
+      .bridge(
+        BridgeOptions(
+          socket: "/tmp/s", peerUser: "_eidogate", thingsScripts: "/opt/t", fileHelper: "/opt/f",
+          fileHelperSHA256: sha, fileRoots: "/opt/r.json")))
     var relative = bridge
     relative[2] = "s.sock"
     var badSHA = bridge
@@ -740,6 +866,9 @@ final class BridgeTests: XCTestCase {
       badSHA,
       bridge.map { $0 == "--file-helper" ? "--script" : $0 },
       ["--socket", "/tmp/s"],
+      bridge + ["--file-roots", "r.json"],
+      bridge + ["--file-roots", "/opt/r.json", "--file-roots", "/opt/q.json"],
+      bridge + ["--file-roots"],
     ]
     for arguments in refused {
       XCTAssertNil(HelperMode.parse(arguments), "\(arguments)")
@@ -922,5 +1051,29 @@ final class HelperProcessTests: XCTestCase {
     XCTAssertEqual(
       String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
       "file_helper_mismatch\n")
+  }
+
+  func testBridgeRefusesToStartWithAGroupWritableRootsList() throws {
+    try fileHelperBytes.write(to: URL(fileURLWithPath: directory + "/file-helper"))
+    let list = directory + "/roots.json"
+    try Data(#"{"roots":[]}"#.utf8).write(to: URL(fileURLWithPath: list))
+    chmod(list, 0o620)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: try executable())
+    process.arguments = [
+      "--bridge", "--socket", directory + "/bridge.sock", "--peer-user", NSUserName(),
+      "--things-scripts", repoScripts, "--file-helper", directory + "/file-helper",
+      "--file-helper-sha256", fileHelperSHA, "--file-roots", list,
+    ]
+    let errors = Pipe()
+    process.standardError = errors
+    process.standardOutput = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+    XCTAssertEqual(process.terminationStatus, 1)
+    XCTAssertEqual(
+      String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self),
+      "file_roots_unsafe\n")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: directory + "/bridge.sock"))
   }
 }
