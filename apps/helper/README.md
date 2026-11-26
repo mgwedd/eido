@@ -477,8 +477,8 @@ directory.
 change the copy between the check before a run and the `exec`, since macOS has no
 `fexecve`; such a process can already act as the owner. ACLs on the copy
 directory are not checked, only owner and mode bits. The gate's own file helper
-runner (`packages/gate`) still hashes and then runs by path; that is tracked
-separately.
+runner (`packages/gate`) still hashes and then runs by path; that is #903. The gate does not yet send its pin on file requests
+(#904).
 
 ### Errors
 
