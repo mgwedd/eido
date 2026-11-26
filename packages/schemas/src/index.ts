@@ -132,6 +132,7 @@ export {
   validateCoreApiSendFrom,
   validateCoreApiError,
   validateCoreApiTodayDueSoon,
+  validateCoreApiTodayEvents,
   validateCoreApiBrief,
   validateCoreApiMailSignals,
   validateCoreApiConversationSearch,

@@ -50,10 +50,8 @@ func isRecurring(_ event: EKEvent) -> Bool {
     return values.map(reminderValue).sorted { $0.id < $1.id }
   }
 
-  public func event(id: String) throws -> StoredEvent? {
-    guard let event = store.calendarItem(withIdentifier: id) as? EKEvent else { return nil }
-    return StoredEvent(
-      value: eventValue(event), recurring: isRecurring(event), hasAttendees: event.hasAttendees)
+  public func event(id: String) throws -> EventValue? {
+    (store.calendarItem(withIdentifier: id) as? EKEvent).map(eventValue)
   }
 
   public func reminder(id: String) throws -> ReminderValue? {
@@ -141,7 +139,8 @@ func isRecurring(_ event: EKEvent) -> Bool {
       id: id, calendarId: event.calendar.calendarIdentifier, title: event.title ?? "",
       start: start, end: end, allDay: event.isAllDay,
       location: event.location, notes: event.notes,
-      modifiedAt: event.lastModifiedDate.map(Dates.text))
+      modifiedAt: event.lastModifiedDate.map(Dates.text),
+      hasAttendees: event.hasAttendees, recurring: isRecurring(event))
   }
 
   private func reminderValue(_ reminder: EKReminder) -> ReminderValue {
