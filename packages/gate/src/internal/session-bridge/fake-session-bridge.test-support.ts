@@ -3,7 +3,11 @@ import { createServer } from "node:net"
 import type { Socket } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionBridge, SessionBridgeRequest } from "./client"
+import type {
+  SessionBridge,
+  SessionBridgeCall,
+  SessionBridgeRequest,
+} from "./client"
 
 // A stand-in for the session bridge in tests (#826), speaking the framing in
 // apps/helper/README.md over a real Unix socket in a temp directory: a 4-byte big-endian
@@ -32,17 +36,27 @@ export function frame(json: unknown): Buffer {
  * An in-memory bridge that answers every call with `answer`, already parsed. It has no
  * socket, so tests of what the gate does with an answer run on every platform.
  */
-export function answeringBridge(
-  answer: unknown
-): SessionBridge & { requests: SessionBridgeRequest[] } {
+export function answeringBridge(answer: unknown): SessionBridge & {
+  requests: SessionBridgeRequest[]
+  /** The options of every call, in order, so tests can read the deadline the caller set. */
+  calls: SessionBridgeCall[]
+} {
   const requests: SessionBridgeRequest[] = []
+  const calls: SessionBridgeCall[] = []
   return {
     requests,
-    call: (request) => {
+    calls,
+    call: (request, options) => {
       requests.push(request)
+      calls.push(options)
       return Promise.resolve(answer)
     },
   }
+}
+
+/** An in-memory bridge whose every call fails with `error`, as the client would raise it. */
+export function failingBridge(error: Error): SessionBridge {
+  return { call: () => Promise.reject(error) }
 }
 
 /**

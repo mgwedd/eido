@@ -11,9 +11,17 @@ import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
-import { createSessionBridge } from "../session-bridge/client"
+import {
+  SessionBridgeOutcomeUnknownError,
+  SessionUnavailableError,
+  createSessionBridge,
+  outcomeUnknown,
+  sentNothing,
+} from "../session-bridge/client"
 import {
   TEST_OWNER_UID,
+  answeringBridge,
+  failingBridge,
   socketDir,
   startFakeSessionBridge,
 } from "../session-bridge/fake-session-bridge.test-support"
@@ -233,4 +241,44 @@ unix("EventKit through the session bridge", () => {
     await run(request).catch(() => undefined)
     expect(bridge.connections()).toBe(APPLE_MAX_CONCURRENT + 1)
   })
+})
+
+// These need no listener, but the runner's pin check relies on Unix file modes, so they skip on
+// Windows like the rest of this file.
+unix("EventKit bridge deadline and causes", () => {
+  test("with no deadline given it waits past the bridge's worst case for a 30 s EventKit call", async () => {
+    const bridge = answeringBridge(ANSWER)
+    await createAppleRunner(helper(), { ...darwin, bridge })(request)
+    expect(bridge.calls).toEqual([
+      expect.objectContaining({ timeoutMs: 55_000 }),
+    ])
+  })
+
+  test.each([
+    [
+      "nothing was sent",
+      new SessionUnavailableError(),
+      "session_unavailable",
+      true,
+      false,
+    ],
+    [
+      "the outcome is unknown",
+      new SessionBridgeOutcomeUnknownError(),
+      "unavailable",
+      false,
+      true,
+    ],
+  ])(
+    "a bridge error saying %s keeps saying it",
+    async (_name, cause, code, nothing, unknown) => {
+      const error = await createAppleRunner(helper(), {
+        ...darwin,
+        bridge: failingBridge(cause),
+      })(request).catch((e: unknown) => e)
+      expect(error).toMatchObject({ name: "AppleError", code })
+      expect(sentNothing(error)).toBe(nothing)
+      expect(outcomeUnknown(error)).toBe(unknown)
+    }
+  )
 })

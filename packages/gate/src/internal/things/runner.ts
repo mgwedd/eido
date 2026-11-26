@@ -16,6 +16,7 @@ import {
   SessionBridgeRefusal,
   SessionUnavailableError,
   bridgeStdout,
+  bridgeTimeout,
 } from "../session-bridge/client"
 import type { SessionBridge } from "../session-bridge/client"
 
@@ -33,8 +34,8 @@ export type ThingsErrorCode =
 export class ThingsError extends Error {
   readonly code: ThingsErrorCode
 
-  constructor(code: ThingsErrorCode, message: string) {
-    super(message)
+  constructor(code: ThingsErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options)
     this.name = "ThingsError"
     this.code = code
   }
@@ -126,8 +127,8 @@ export async function runThingsScript(
   })
 }
 
-/** The bridge's own osascript limit, plus time to connect and frame the answer. */
-export const BRIDGE_SCRIPT_TIMEOUT_MS = SCRIPT_TIMEOUT_MS + 5_000
+/** The bridge's 10 s osascript limit plus its receive and reply limits (worst case 30 s), with margin. */
+export const BRIDGE_SCRIPT_TIMEOUT_MS = bridgeTimeout(SCRIPT_TIMEOUT_MS)
 
 /**
  * Runs the same script in the owner's session through the session bridge (#826). The gate
@@ -158,7 +159,8 @@ export function bridgeThingsRunner(bridge: SessionBridge): ThingsScriptRunner {
       if (error instanceof SessionUnavailableError)
         throw new ThingsError(
           "session_unavailable",
-          "The owner's session is unavailable"
+          "The owner's session is unavailable",
+          { cause: error }
         )
       if (
         error instanceof SessionBridgeRefusal &&
@@ -170,7 +172,8 @@ export function bridgeThingsRunner(bridge: SessionBridge): ThingsScriptRunner {
         )
       throw new ThingsError(
         "things_unavailable",
-        "Things is unavailable through the session bridge"
+        "Things is unavailable through the session bridge",
+        { cause: error }
       )
     }
     if (stdout.length > MAX_OUTPUT_BYTES)

@@ -4,11 +4,17 @@ import {
   validateGateFileHelperRequest,
   validateGateFileRoots,
 } from "@eido/schemas"
-import type { Intent, GateFileHelperRequest, GateFileRoot } from "@eido/schemas"
+import type {
+  Intent,
+  GateFileHelperRequest,
+  GateFileHelperResponse,
+  GateFileRoot,
+} from "@eido/schemas"
 import { randomUUID } from "node:crypto"
 import type { FileHelper } from "./files/file-helper"
 import { approvedFileRoot } from "./files/file-roots"
 import { createFile, moveFile, trashFile } from "./files/file-ops"
+import { outcomeUnknown, sentNothing } from "./session-bridge/client"
 import { append } from "./audit"
 import { PROTON_CALENDAR_CONNECTOR, PROTON_CONNECTOR } from "./bridge/config"
 import { canonicalize, payloadHash } from "./canonical"
@@ -80,7 +86,11 @@ export function bridgeDestinationFor(kind: string): string | undefined {
   )?.[1]
 }
 
-/** Gate-internal credential-backed transport, separate from the read-only HTTP proxy. */
+/**
+ * Gate-internal credential-backed transport, separate from the read-only HTTP proxy. It may let a
+ * `SessionUnavailableError` (wrapped as a `cause` or not) escape only when nothing of this request
+ * was sent: the executor then releases the attempt and the approval stays usable (#893).
+ */
 export type WriteTransport = (request: WriteRequest) => Promise<UpstreamResult>
 export type ExecutionResult =
   | { ok: true; upstreamRef: string | null; result: unknown }
@@ -167,6 +177,8 @@ export function isUnsafeInverse(
  *   refuses is refused earlier, on every attempt, and is not this case.)
  * - `file_exists`: a restore or move back finds its destination name taken in the parent folder's
  *   listing. It clears when the owner moves or renames that entry.
+ * - `session_unavailable` (#893): the check's helper call could not reach the session bridge, so
+ *   no byte of it was sent. It clears when the owner's session runs the bridge again.
  *
  * Nothing else returns before the claim once the helper is involved. A failed listing, one that
  * does not show the name (also when truncated) and a collision that appears after the check go on
@@ -177,6 +189,7 @@ export function isUnsafeInverse(
 export const UNCLAIMED_UNDO_REFUSALS = [
   "unsafe_inverse",
   "file_exists",
+  "session_unavailable",
 ] as const
 type UnclaimedUndoRefusal = (typeof UNCLAIMED_UNDO_REFUSALS)[number]
 
@@ -461,6 +474,52 @@ export function createExecutor(
       return { ok: false, code }
     })
 
+  /**
+   * The claimed write was certainly not sent: the session bridge was not reached before any byte
+   * of the request was written (#893). The claim is released with the refusal, so the same
+   * approval or Undo runs once the bridge is back. Any other failure keeps the claim.
+   */
+  const unsent = (id: string, direction: Direction): ExecutionResult =>
+    atomically(db, () => {
+      db.prepare(
+        "DELETE FROM execution_attempts WHERE intent_id=? AND direction=?"
+      ).run(id, direction)
+      return refuse(id, direction, "session_unavailable")
+    })
+
+  /**
+   * The request was sent and the gate gave up waiting for the answer (#893): the write may have
+   * happened. It is recorded as outcome unknown, not as failed; the claim stays, so it is never
+   * run again, and the state is left as it was, since nothing proves either outcome.
+   */
+  const unknown = (id: string, direction: Direction): ExecutionResult =>
+    atomically(db, () => {
+      const stored = readIntent(db, id)
+      auditEvent(
+        db,
+        id,
+        `${direction}.outcome_unknown`,
+        { reason: "outcome_unknown" },
+        stored === undefined
+          ? undefined
+          : { from: stored.state, to: stored.state, reason: "outcome_unknown" }
+      )
+      return { ok: false, code: "outcome_unknown" }
+    })
+
+  /** Where a write that threw goes: released, unknown, or failed with `code`. */
+  const thrown = (
+    id: string,
+    direction: Direction,
+    error: unknown,
+    code: string
+  ): ExecutionResult =>
+    sentNothing(error)
+      ? unsent(id, direction)
+      : outcomeUnknown(error)
+        ? unknown(id, direction)
+        : fail(id, direction, code)
+
   function prepare(id: string, direction: Direction): Ready | ExecutionResult {
     const stored = readIntent(db, id)
     if (stored === undefined) return refuse(id, direction, "not_found")
@@ -743,8 +802,8 @@ export function createExecutor(
           Buffer.from(reply.contentBase64, "base64").equals(created)
           ? undefined
           : "unsafe_inverse"
-      } catch {
-        return "unsafe_inverse"
+      } catch (error) {
+        return sentNothing(error) ? "session_unavailable" : "unsafe_inverse"
       }
     }
     // A restore or move back never replaces an entry (#846): a destination name already taken in
@@ -770,8 +829,9 @@ export function createExecutor(
         nameTaken(reply.entries, destination.slice(slash + 1))
         ? "file_exists"
         : undefined
-    } catch {
-      return undefined
+    } catch (error) {
+      // The write would not reach the bridge either; refusing here keeps the Undo unclaimed.
+      return sentNothing(error) ? "session_unavailable" : undefined
     }
   }
 
@@ -935,7 +995,12 @@ export function createExecutor(
       if (direction === "undo") {
         if (prepared.inverse === undefined)
           return fail(id, direction, "invalid_inverse")
-        const reply = await helper(prepared.inverse)
+        let reply: GateFileHelperResponse
+        try {
+          reply = await helper(prepared.inverse)
+        } catch (error) {
+          return thrown(id, direction, error, "file_helper_failed")
+        }
         if (!reply.ok || reply.op !== prepared.inverse.op)
           return fail(
             id,
@@ -960,7 +1025,12 @@ export function createExecutor(
                   from: intent.args.path,
                   to: moveDestination(intent),
                 })
-        if (!outcome.ok) return fail(id, direction, `file_${outcome.code}`)
+        if (!outcome.ok)
+          return outcome.code === "session_unavailable"
+            ? unsent(id, direction)
+            : outcome.code === "outcome_unknown"
+              ? unknown(id, direction)
+              : fail(id, direction, `file_${outcome.code}`)
         const trashName =
           "trashName" in outcome && typeof outcome.trashName === "string"
             ? outcome.trashName
@@ -1060,8 +1130,13 @@ export function createExecutor(
     if ("ok" in prepared) return prepared
     let response: UpstreamResult
     let inverse: unknown = null
+    let received: UpstreamResult
     try {
-      const received = await transport(prepared.request)
+      received = await transport(prepared.request)
+    } catch (error) {
+      return thrown(id, direction, error, "upstream_error")
+    }
+    try {
       // Snapshot adapter results too: later mutations cannot change the audit-bound result.
       response = {
         upstreamRef: received.upstreamRef,

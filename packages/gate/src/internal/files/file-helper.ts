@@ -13,6 +13,7 @@ import {
   BRIDGE_MAX_RESPONSE_BYTES,
   SessionUnavailableError,
   bridgeStdout,
+  bridgeTimeout,
 } from "../session-bridge/client"
 import type { SessionBridge } from "../session-bridge/client"
 
@@ -24,9 +25,10 @@ export type FileHelper = (
 
 const MAX_REPLY_BYTES = 64 * 1024
 const TIMEOUT_MS = 30_000
-/** The bridge's own 30-second helper limit, plus time to connect and frame the answer. */
-const BRIDGE_TIMEOUT_MS = TIMEOUT_MS + 5_000
-const failed = () => new Error("file helper failed")
+/** The bridge's 30 s helper limit plus its receive and reply limits (worst case 50 s), with margin. */
+export const BRIDGE_TIMEOUT_MS = bridgeTimeout(TIMEOUT_MS)
+const failed = (cause?: unknown) =>
+  new Error("file helper failed", cause === undefined ? undefined : { cause })
 
 /** The helper's stdout, one JSON line, schema-checked and never cast. */
 function parseReply(stdout: Buffer): GateFileHelperResponse {
@@ -122,7 +124,8 @@ async function viaBridge(
     )
   } catch (error) {
     if (error instanceof SessionUnavailableError) throw error
-    throw failed()
+    // Keeps a sent request's unknown outcome visible to the executor (#893).
+    throw failed(error)
   }
   if (stdout.length > limit) throw failed()
   return parseReply(stdout)

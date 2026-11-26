@@ -3,10 +3,17 @@ import { renameSync } from "node:fs"
 import { createServer } from "node:net"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest"
-import { createSessionBridge } from "../session-bridge/client"
+import {
+  SessionBridgeOutcomeUnknownError,
+  SessionUnavailableError,
+  createSessionBridge,
+  outcomeUnknown,
+  sentNothing,
+} from "../session-bridge/client"
 import {
   TEST_OWNER_UID,
   answeringBridge,
+  failingBridge,
   socketDir,
   startFakeSessionBridge,
 } from "../session-bridge/fake-session-bridge.test-support"
@@ -207,5 +214,35 @@ describe("Things answers from the session bridge", () => {
       bridgeThingsRunner(bridge)("delete-all")
     ).rejects.toMatchObject({ code: "things_unavailable" })
     expect(bridge.requests).toEqual([])
+  })
+})
+
+describe("Things bridge deadline and causes", () => {
+  test("waits past the bridge's worst case: 10 s receive, 10 s osascript, 10 s reply", async () => {
+    const bridge = answeringBridge({
+      ok: true,
+      result: { stdoutBase64: "" },
+    })
+    await bridgeThingsRunner(bridge)("list-areas")
+    expect(bridge.calls).toEqual([
+      expect.objectContaining({ timeoutMs: 35_000 }),
+    ])
+  })
+
+  test("a session_unavailable error still says nothing was sent", async () => {
+    const error = await bridgeThingsRunner(
+      failingBridge(new SessionUnavailableError())
+    )("add-todo", ["a", "b", "", "", ""]).catch((e: unknown) => e)
+    expect(error).toMatchObject({ code: "session_unavailable" })
+    expect(sentNothing(error)).toBe(true)
+  })
+
+  test("a timeout after the request was sent still says the outcome is unknown", async () => {
+    const error = await bridgeThingsRunner(
+      failingBridge(new SessionBridgeOutcomeUnknownError())
+    )("add-todo", ["a", "b", "", "", ""]).catch((e: unknown) => e)
+    expect(error).toMatchObject({ code: "things_unavailable" })
+    expect(sentNothing(error)).toBe(false)
+    expect(outcomeUnknown(error)).toBe(true)
   })
 })

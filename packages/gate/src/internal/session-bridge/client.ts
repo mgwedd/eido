@@ -19,12 +19,32 @@ import type { Lstat } from "../trusted-ancestors"
 
 /** Names the bridge's socket. Unset, the gate spawns osascript and its helpers itself. */
 export const SESSION_BRIDGE_SOCKET_ENV = "EIDO_SESSION_BRIDGE_SOCKET"
+/**
+ * The bridge's own time limits (apps/helper/README.md, "Session bridge"): the whole request must
+ * arrive within 10 s of the peer check, and the response write has its own 10 s. A gate timeout
+ * shorter than receive + operation + reply gives up while the bridge may still be writing (#893).
+ */
+export const BRIDGE_RECEIVE_MS = 10_000
+export const BRIDGE_REPLY_MS = 10_000
+/** Slack on top of the bridge's worst case, for connecting, scheduling and framing. */
+export const BRIDGE_MARGIN_MS = 5_000
+
+/** The gate timeout for a bridge op whose own limit is `operationMs`: above the bridge's worst case. */
+export function bridgeTimeout(operationMs: number): number {
+  return BRIDGE_RECEIVE_MS + operationMs + BRIDGE_REPLY_MS + BRIDGE_MARGIN_MS
+}
+
 /** The bridge refuses a longer request with `frame_too_large`; the client never sends one. */
 export const BRIDGE_MAX_REQUEST_BYTES = 8 * 1024 * 1024
 /** The bridge never sends a longer response; a header naming one is refused unread. */
 export const BRIDGE_MAX_RESPONSE_BYTES = 24 * 1024 * 1024
 
-/** The socket is not there or nothing listens on it: the owner's session is not running the bridge. */
+/**
+ * The bridge was not reached and no byte of the request was written: the socket is absent,
+ * untrusted, refuses the connection, or the connection did not open before the deadline. The
+ * executor relies on this: a write that fails with it was certainly not sent, so its approval
+ * is not consumed (#893). Never raise it once the request frame has been written.
+ */
 export class SessionUnavailableError extends Error {
   readonly code = "session_unavailable"
   constructor(message = "session bridge unavailable") {
@@ -39,6 +59,37 @@ export class SessionBridgeError extends Error {
     super(message)
     this.name = "SessionBridgeError"
   }
+}
+
+/**
+ * The request frame was written and the gate gave up waiting for the answer: the bridge may
+ * still have run it. The executor records the outcome as unknown, never as a clean failure.
+ */
+export class SessionBridgeOutcomeUnknownError extends SessionBridgeError {
+  constructor() {
+    super("session bridge timed out after the request was sent")
+    this.name = "SessionBridgeOutcomeUnknownError"
+  }
+}
+
+/** Whether `error`, or an error it wraps (`cause`), is an instance of `type`. */
+function wraps(error: unknown, type: new (...args: never[]) => Error): boolean {
+  for (let current = error, depth = 0; depth < 8; depth++) {
+    if (current instanceof type) return true
+    if (!(current instanceof Error)) return false
+    current = current.cause
+  }
+  return false
+}
+
+/** Whether `error` says the bridge call sent nothing (`SessionUnavailableError`, wrapped or not). */
+export function sentNothing(error: unknown): boolean {
+  return wraps(error, SessionUnavailableError)
+}
+
+/** Whether `error` says a sent bridge call has an unknown outcome. */
+export function outcomeUnknown(error: unknown): boolean {
+  return wraps(error, SessionBridgeOutcomeUnknownError)
 }
 
 /** The bridge answered with one of its own codes (`unknown_script`, `automation_denied`, ...). */
@@ -120,6 +171,18 @@ export function parseFrameBody(body: Buffer): unknown {
   }
 }
 
+/**
+ * Why an exchange stopped at its deadline: before the connection opened nothing was written, so
+ * the bridge is unavailable; after it, the bridge may have run the request.
+ */
+export function deadlineError(
+  sent: boolean
+): SessionUnavailableError | SessionBridgeOutcomeUnknownError {
+  return sent
+    ? new SessionBridgeOutcomeUnknownError()
+    : new SessionUnavailableError("session bridge did not accept")
+}
+
 function exchange(
   socketPath: string,
   frame: Buffer,
@@ -130,6 +193,8 @@ function exchange(
   )
   return new Promise((resolve, reject) => {
     const socket = createConnection({ path: socketPath })
+    // The frame is written only once the connection is open, so before then nothing was sent.
+    let sent = false
     let settled = false
     const settle = (): boolean => {
       if (settled) return false
@@ -141,13 +206,14 @@ function exchange(
     const finish = (error: Error) => {
       if (settle()) reject(error)
     }
-    const timer = setTimeout(
-      () => finish(new SessionBridgeError("session bridge timed out")),
-      timeoutMs
-    )
+    const timer = setTimeout(() => finish(deadlineError(sent)), timeoutMs)
+    socket.on("connect", () => {
+      sent = true
+      socket.write(frame)
+    })
     socket.on("error", (error) =>
       finish(
-        absent(error)
+        !sent && absent(error)
           ? new SessionUnavailableError()
           : new SessionBridgeError("session bridge connection failed")
       )
@@ -161,7 +227,6 @@ function exchange(
       if ("refused" in frame) finish(new SessionBridgeError(frame.refused))
       else if (settle()) resolve(frame.body)
     })
-    socket.write(frame)
   })
 }
 
