@@ -43,11 +43,62 @@ describe("listMatchingEvents", () => {
           end: "2030-05-01T10:00:00.000Z",
           allDay: false,
           source: "apple-eventkit",
+          appleFlags: { known: false },
         },
       ],
       matched: 1,
       ambiguous: false,
     })
+  })
+
+  test("an Apple event carries its attendee and recurrence flags, unknown when never stored", () => {
+    const d = fresh()
+    indexEvents(d, [
+      {
+        uid: "plain",
+        title: "Gym plain",
+        start: "2030-05-01T09:00:00Z",
+        hasAttendees: false,
+        recurring: false,
+      },
+      {
+        uid: "guests",
+        title: "Gym guests",
+        start: "2030-05-02T09:00:00Z",
+        hasAttendees: true,
+        recurring: false,
+      },
+      {
+        uid: "series",
+        title: "Gym series",
+        start: "2030-05-03T09:00:00Z",
+        hasAttendees: false,
+        recurring: true,
+      },
+      { uid: "old", title: "Gym old", start: "2030-05-04T09:00:00Z" },
+    ])
+    const flags = Object.fromEntries(
+      list(d, "gym").events.map((e) => [e.uid, e.appleFlags])
+    )
+    expect(flags).toEqual({
+      plain: { known: true, hasAttendees: false, recurring: false },
+      guests: { known: true, hasAttendees: true, recurring: false },
+      series: { known: true, hasAttendees: false, recurring: true },
+      old: { known: false },
+    })
+  })
+
+  test("an event of another source has no Apple flags", () => {
+    const d = fresh()
+    indexEvents(d, [
+      {
+        uid: "proton-1@example.invalid",
+        title: "Offsite",
+        start: "2030-05-03T09:00:00Z",
+        source: "proton-calendar",
+      },
+    ])
+    expect(list(d, "offsite").events[0]).not.toHaveProperty("appleFlags")
   })
 
   test("the request's calendar words alone match nothing", () => {

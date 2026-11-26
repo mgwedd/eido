@@ -5,7 +5,7 @@ import {
 } from "../profile/migration"
 
 export const DEFAULT_DB_PATH = "eido-data.db"
-export const SCHEMA_VERSION = 16
+export const SCHEMA_VERSION = 17
 
 export const MIGRATIONS: readonly string[] = [
   // v1: documents, FTS5 index, name keys, sync cursors
@@ -277,6 +277,32 @@ WHEN NOT (
   AND NEW.sha256 IS OLD.sha256 AND NEW.source IS OLD.source
   AND NEW.calendar_id IS OLD.calendar_id AND NEW.event_id IS OLD.event_id
   AND NEW.start_at IS OLD.start_at AND NEW.end_at IS OLD.end_at AND NEW.all_day IS OLD.all_day
+)
+BEGIN SELECT RAISE(ABORT, 'calendar event facts are immutable'); END;
+`,
+  // v17: whether each indexed Apple event has attendees and whether it belongs to a series (#872),
+  // so the proposal path can skip `apple.event_update` for an event the Helper would refuse. Both
+  // are NULL for a row written before this version (unknown, not false) and for an event of a
+  // source that has no such flags. Unlike the rest of a fact row they describe the event as it is
+  // now, not a version of its content: an attendee can be added without the event's digest
+  // changing, so each sync that reads the event rewrites them. The trigger allows that and nothing
+  // else beyond the v16 fill-in of location and notes.
+  `
+ALTER TABLE calendar_event_facts ADD COLUMN has_attendees INTEGER
+  CHECK (has_attendees IN (0, 1));
+ALTER TABLE calendar_event_facts ADD COLUMN recurring INTEGER
+  CHECK (recurring IN (0, 1));
+DROP TRIGGER calendar_event_facts_no_update;
+CREATE TRIGGER calendar_event_facts_no_update BEFORE UPDATE ON calendar_event_facts
+WHEN NOT (
+  NEW.sha256 IS OLD.sha256 AND NEW.source IS OLD.source
+  AND NEW.calendar_id IS OLD.calendar_id AND NEW.event_id IS OLD.event_id
+  AND NEW.start_at IS OLD.start_at AND NEW.end_at IS OLD.end_at AND NEW.all_day IS OLD.all_day
+  AND (
+    (OLD.details_known = 0 AND NEW.details_known = 1)
+    OR (NEW.details_known IS OLD.details_known AND NEW.location IS OLD.location
+        AND NEW.notes IS OLD.notes)
+  )
 )
 BEGIN SELECT RAISE(ABORT, 'calendar event facts are immutable'); END;
 `,
