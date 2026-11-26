@@ -264,8 +264,8 @@ socket (unless another bridge has since replaced it), lets accepted requests
 finish for up to 15 seconds (inside launchd's 20-second exit timeout), deletes
 its private copy of the file helper, and exits 0. Request mode is unchanged and still exits when the gate exits.
 
-The socket's `0600` mode admits only the owner at the file system; the LaunchAgent
-work in #827 grants the gate user access. The bridge creates a new socket file on
+The socket's `0600` mode admits only the owner at the file system; the ACL that
+`host plane` sets on the socket's directory (#827) grants the gate user access. The bridge creates a new socket file on
 every start, so that access must come from the directory (an inherited ACL), not
 from an ACL set once on the socket. That is not the check that
 matters: each accepted connection's peer uid is read from the kernel with
@@ -275,6 +275,19 @@ uid the peer had when it connected; the bridge does not check the peer's pid,
 audit token, or code signature, since uid is the boundary #781 sets (any process
 running as the gate user is the gate). At most eight connections are served at
 once; a ninth is closed unread, with no response.
+
+The gate finds the bridge through two environment variables that are set
+together, `EIDO_SESSION_BRIDGE_SOCKET` (the absolute socket path) and
+`EIDO_SESSION_BRIDGE_UID` (the owner's numeric uid, the user the bridge runs as).
+Node cannot read a socket peer's credentials, so the gate authenticates the bridge
+by the directory chain: an existing socket must be owned by that uid and have no
+group or world write bit, and every directory above it must be owned by that uid
+or root and not be group- or world-writable (a root-owned sticky directory is the
+one exception). The gate refuses to start, and refuses to connect, when any of
+that fails. So the ACL that grants the gate user access must not add write access
+for any other principal on the socket's directory. `host plane` sets both
+variables for the gate daemon and puts the inherited ACL on the directory (see
+`infra/plane-split.md`, "Session bridge").
 
 ### Framing
 
