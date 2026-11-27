@@ -273,16 +273,18 @@ What sign-in does not cover: on the tailnet origin, `tailscale serve` sends `/ap
 
 The two halves are one setting and must be changed together:
 
-| Where                                | Variable                    | Value                                          |
-| ------------------------------------ | --------------------------- | ---------------------------------------------- |
-| `apps/web/.env.local` (web only)     | `EIDO_WEB_ROLE_PRIVATE_KEY` | base64 of an Ed25519 PKCS#8 private key        |
-| core's environment (data plane only) | `EIDO_CORE_ROLE_PUBLIC_KEY` | base64 of the matching Ed25519 SPKI public key |
+| Where                              | Variable                    | Value                                          |
+| ---------------------------------- | --------------------------- | ---------------------------------------------- |
+| `apps/web/.env.local` (web only)   | `EIDO_WEB_ROLE_PRIVATE_KEY` | base64 of an Ed25519 PKCS#8 private key        |
+| local `stack.env` (passed to core) | `EIDO_CORE_ROLE_PUBLIC_KEY` | base64 of the matching Ed25519 SPKI public key |
 
 Generate the pair once, with Node, and put each line in its own place (`apps/web/.env.example` has the same command):
 
 ```bash
 node -e 'const c=require("node:crypto");const k=c.generateKeyPairSync("ed25519");console.log("EIDO_WEB_ROLE_PRIVATE_KEY="+k.privateKey.export({format:"der",type:"pkcs8"}).toString("base64"));console.log("EIDO_CORE_ROLE_PUBLIC_KEY="+k.publicKey.export({format:"der",type:"spki"}).toString("base64"))'
 ```
+
+Add the public key to `stack.env` in your stack directory (`~/Library/Application Support/eido-dev/stack.env` on macOS by default). The stack validates the base64 Ed25519 SPKI key and gives it to core. On a split host, regenerate and apply the plane plan after changing the key so the core daemon picks it up. Use the local file to set, rotate or remove the key. The web settings API refuses these edits because the key controls core's authorization.
 
 The private key stays in the web app. Core holds only the public key, so it can check an assertion and never make one. Set both and restart both. Set only the public key and every state-changing request to core answers `401` (the owner's too); set only the private key and core ignores the assertion. The web app refuses to start if the private key is set but is not a valid Ed25519 PKCS#8 key. Use this with Auth0 on: with `AUTH0_DOMAIN` unset there is no role to assert, so leave both unset.
 
