@@ -7,7 +7,7 @@
 // and `Step`s; `plane.ts` wires them in and nothing here touches the system.
 import { escapeXml } from "../llama/launchd.ts"
 
-import type { Step } from "./plane-base.ts"
+import { asOwner, type Step } from "./plane-base.ts"
 
 export const BRIDGE_LABEL = "com.eido.plane.bridge"
 export const BRIDGE_SOCKET_DIR_NAME = "session-bridge"
@@ -277,17 +277,25 @@ export function bridgeSocketDirSteps(
   owner: string,
   aces: readonly Ace[]
 ): Step[] {
-  return [
-    { argv: [INSTALL, "-d", "-o", owner, "-m", "0700", paths.socketDir] },
+  const steps: Step[] = [
+    { argv: [INSTALL, "-d", "-m", "0700", paths.socketDir] },
     ...aces.map(({ path, ace }) => ({ argv: [CHMOD, "+a", ace, path] })),
   ]
+  return steps.map((step) => asOwner(owner, step))
 }
 
-/**
- * The plist, written root-owned (a link left at the path is removed first, so root's write
- * cannot follow it), checked, and the agent replaced if an earlier one is loaded. The last
- * step of the plan: the daemons and the ACL are in place before the bridge starts.
- */
+// Write and lint a fresh plist beside its destination before replacing it. On macOS
+// mv -h replaces a link to a directory instead of moving the file through the link.
+const WRITE_AGENT_PLIST = [
+  'tmp=$(/usr/bin/mktemp "$1.XXXXXX")',
+  "trap '/bin/rm -f \"$tmp\"' EXIT",
+  '/bin/cat > "$tmp"',
+  '/bin/chmod 0644 "$tmp"',
+  '/usr/bin/plutil -lint "$tmp"',
+  '/bin/mv -fh "$tmp" "$1"',
+].join("\n")
+
+/** Run all agent setup in the owner's account, after the daemons and ACLs are in place. */
 export function bridgeAgentSteps(
   paths: BridgePaths,
   input: BridgeInput,
@@ -295,49 +303,43 @@ export function bridgeAgentSteps(
   peerUser: string
 ): Step[] {
   const domain = `gui/${String(input.ownerUid)}`
-  return [
-    { argv: [INSTALL, "-d", "-o", owner, "-m", "0755", paths.plistDir] },
-    // The stack's own agent keeps its logs here, private to the owner.
-    { argv: [INSTALL, "-d", "-o", owner, "-m", "0700", paths.logDir] },
-    { argv: [RM, "-f", paths.plist] },
+  const steps: Step[] = [
+    { argv: [INSTALL, "-d", "-m", "0755", paths.plistDir] },
+    // The stack's own agent keeps logs here, private to the owner.
+    { argv: [INSTALL, "-d", "-m", "0700", paths.logDir] },
     {
-      argv: ["/usr/bin/tee", paths.plist],
+      argv: ["/bin/sh", "-eu", "-c", WRITE_AGENT_PLIST, "sh", paths.plist],
       stdin: bridgePlist(paths, input, peerUser),
     },
-    { argv: ["/usr/sbin/chown", "root:wheel", paths.plist] },
-    { argv: [CHMOD, "0644", paths.plist] },
-    { argv: ["/usr/bin/plutil", "-lint", paths.plist] },
     {
       argv: [LAUNCHCTL, "bootout", `${domain}/${BRIDGE_LABEL}`],
       mayFail: true,
     },
     { argv: [LAUNCHCTL, "bootstrap", domain, paths.plist] },
   ]
+  return steps.map((step) => asOwner(owner, step))
 }
 
 /** Stops the agent and deletes its plist and logs. Safe to run when the bridge was never applied. */
 export function bridgeStopSteps(
   paths: BridgePaths,
+  owner: string,
   ownerUid: number | undefined
 ): Step[] {
-  return [
-    ...(ownerUid === undefined
-      ? []
-      : [
-          {
-            argv: [
-              LAUNCHCTL,
-              "bootout",
-              `gui/${String(ownerUid)}/${BRIDGE_LABEL}`,
-            ],
-            mayFail: true,
-          },
-        ]),
-    { argv: [RM, "-f", paths.plist, paths.outLog, paths.errLog] },
-  ]
+  const steps: Step[] = []
+  if (ownerUid !== undefined)
+    steps.push({
+      argv: [LAUNCHCTL, "bootout", `gui/${String(ownerUid)}/${BRIDGE_LABEL}`],
+      mayFail: true,
+    })
+  steps.push({ argv: [RM, "-f", paths.plist, paths.outLog, paths.errLog] })
+  return steps.map((step) => asOwner(owner, step))
 }
 
-/** The directories the bridge made, after its ACL entries are gone. */
-export function bridgeRemovePaths(paths: BridgePaths): string[] {
-  return [paths.socketDir, paths.dir]
+/** Remove the socket and helper directories after their ACL entries are gone. */
+export function bridgeRemoveSteps(paths: BridgePaths, owner: string): Step[] {
+  return [
+    asOwner(owner, { argv: [RM, "-rf", paths.socketDir] }),
+    { argv: [RM, "-rf", paths.dir] },
+  ]
 }

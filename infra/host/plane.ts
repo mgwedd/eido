@@ -31,6 +31,7 @@ import {
   launcherSteps,
 } from "./gate-launcher.ts"
 import {
+  asOwner,
   DAEMON_DIR,
   daemonPlist,
   PLANE_LOGS,
@@ -59,7 +60,7 @@ import {
   bridgeAgentSteps,
   bridgeInstallSteps,
   bridgePaths,
-  bridgeRemovePaths,
+  bridgeRemoveSteps,
   bridgeSocketDirSteps,
   bridgeStopSteps,
   checkBridge,
@@ -896,33 +897,19 @@ export function applySteps(input: PlaneInput): Step[] {
     // Loads the new rules now; the egress job only loads them into an empty anchor. This empties
     // the table until the job, started below, adds the hosts again.
     { argv: [PFCTL, "-a", EGRESS_ANCHOR, "-f", layout.egressRules] },
-    // The supervisor's own directory, owned by the owner at 0700, as the supervisor checks it. The
-    // run dir must exist already (the stack creates it): `install -d` would otherwise create it
-    // here as root.
+    // The stack creates the run dir; create the private supervisor dir and
+    // change ACLs under the owner's home with the owner's permissions.
     { argv: ["/bin/test", "-d", layout.ownerRunDir] },
-    {
-      argv: [
-        "/usr/bin/install",
-        "-d",
-        "-o",
-        layout.owner,
-        "-m",
-        "0700",
-        layout.supervisorDir,
-      ],
-    },
-    {
-      argv: [
-        CHMOD,
-        "-a",
-        legacyRunDirAce(layout).ace,
-        legacyRunDirAce(layout).path,
-      ],
+    asOwner(layout.owner, {
+      argv: ["/usr/bin/install", "-d", "-m", "0700", layout.supervisorDir],
+    }),
+    asOwner(layout.owner, {
+      argv: [CHMOD, "-a", legacyRunDirAce(layout).ace, layout.ownerRunDir],
       mayFail: true,
-    },
-    ...supervisorAces(layout).map(({ path, ace }) => ({
-      argv: [CHMOD, "+a", ace, path],
-    })),
+    }),
+    ...supervisorAces(layout).map(({ path, ace }) =>
+      asOwner(layout.owner, { argv: [CHMOD, "+a", ace, path] })
+    ),
     ...(input.bridge === undefined
       ? []
       : bridgeSocketDirSteps(
@@ -968,7 +955,11 @@ export function removeSteps(layout: PlaneLayout, accounts: Accounts): Step[] {
       { argv: ["/bin/rm", "-f", layout.plists[name]] },
     ]),
     // Whether or not the bridge was applied: every step tolerates its absence.
-    ...bridgeStopSteps(layout.bridge, accounts.users.get(layout.owner)),
+    ...bridgeStopSteps(
+      layout.bridge,
+      layout.owner,
+      accounts.users.get(layout.owner)
+    ),
     { argv: ["/bin/rm", "-f", layout.gateLauncher] },
     { argv: [PFCTL, "-a", PF_ANCHOR, "-F", "all"], mayFail: true },
     { argv: [PFCTL, "-a", EGRESS_ANCHOR, "-F", "all"], mayFail: true },
@@ -976,10 +967,12 @@ export function removeSteps(layout: PlaneLayout, accounts: Accounts): Step[] {
       ...supervisorAces(layout),
       legacyRunDirAce(layout),
       ...bridgeSocketAces(layout),
-    ].map(({ path, ace }) => ({
-      argv: [CHMOD, "-a", ace, path],
-      mayFail: true,
-    })),
+    ].map(({ path, ace }) =>
+      asOwner(layout.owner, {
+        argv: [CHMOD, "-a", ace, path],
+        mayFail: true,
+      })
+    ),
     ...[gate, data, parse]
       .filter((name) => accounts.users.has(name))
       .map((name) => ({ argv: [DSCL, ".", "-delete", `/Users/${name}`] })),
@@ -988,7 +981,7 @@ export function removeSteps(layout: PlaneLayout, accounts: Accounts): Step[] {
       .map((name) => ({ argv: [DSCL, ".", "-delete", `/Groups/${name}`] })),
     { argv: ["/bin/rm", "-rf", layout.policyDir, layout.app, layout.runDir] },
     { argv: ["/bin/rm", "-rf", ...parserRemovePaths(layout.parser)] },
-    { argv: ["/bin/rm", "-rf", ...bridgeRemovePaths(layout.bridge)] },
+    ...bridgeRemoveSteps(layout.bridge, layout.owner),
   ]
 }
 
