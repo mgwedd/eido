@@ -4,6 +4,7 @@
 // command loads it; a variable already set in the environment wins. Only allowlisted keys are
 // accepted, so a typo or a secret fails loudly. Secrets never go here: client secrets, the Bridge
 // password and tokens stay in the gate vault, and the Auth0 values stay in apps/web/.env.local.
+import { createPublicKey } from "node:crypto"
 import { posix, win32 } from "node:path"
 import { parseEnv } from "node:util"
 
@@ -104,6 +105,23 @@ const POSITIVE_INTEGER_KEYS: ReadonlySet<string> = new Set([
 /** The 24-hour `HH:MM` core's SimpleFIN daily sync takes (`parseSyncTime`). */
 const TIME = /^([01]?\d|2[0-3]):([0-5]\d)$/
 
+/** Base64 of exactly one DER-encoded Ed25519 SPKI public key. */
+function isEd25519Spki(value: string): boolean {
+  try {
+    const key = createPublicKey({
+      key: Buffer.from(value, "base64"),
+      format: "der",
+      type: "spki",
+    })
+    return (
+      key.asymmetricKeyType === "ed25519" &&
+      key.export({ format: "der", type: "spki" }).toString("base64") === value
+    )
+  } catch {
+    return false
+  }
+}
+
 /**
  * Settings the supervisor's `POST /settings` refuses. They choose where the gate's secrets
  * live or weaken its transport checks, so only the setup command (a local terminal) may write
@@ -118,6 +136,8 @@ export const API_REFUSED_KEYS: ReadonlySet<string> = new Set([
   "EIDO_BRIDGE_ALLOW_SELF_SIGNED",
   // Moving the gate between the owner's login and the plane's daemons is a host change.
   "EIDO_STACK_PLANE",
+  // Trusting a replacement key or clearing it changes who may write to core.
+  "EIDO_CORE_ROLE_PUBLIC_KEY",
 ])
 
 /** Why `value` is not a valid `key`, or undefined when it is. */
@@ -174,6 +194,12 @@ export function settingProblem(key: string, value: string): string | undefined {
     )
   )
     return `${key} must be a positive integer`
+  if (
+    key === "EIDO_CORE_ROLE_PUBLIC_KEY" &&
+    value !== "" &&
+    !isEd25519Spki(value)
+  )
+    return `${key} must be a base64 Ed25519 SPKI public key`
   if (key === "EIDO_STACK_PLANE") {
     try {
       planeOf({ [key]: value })

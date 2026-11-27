@@ -98,6 +98,8 @@ export const PASS_THROUGH = {
     "EIDO_LLAMA_CHAT_TEMPLATE_KWARGS",
     // Which Apple calendars core reads through the gate (#751): `*` or a comma-separated id list.
     "EIDO_APPLE_CALENDARS",
+    // Core verifies the signed role assertion from the web app (ADR 0010).
+    "EIDO_CORE_ROLE_PUBLIC_KEY",
     // The Bridge account address (not a secret; the gate holds the password). Core registers no
     // Proton connector without it (#935).
     "EIDO_PROTON_USERNAME",

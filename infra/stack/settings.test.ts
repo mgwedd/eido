@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto"
 import { describe, expect, it } from "vitest"
 
 import {
@@ -180,6 +181,46 @@ describe("settingProblem", () => {
 
   it("accepts the llama model key written by llama use", () => {
     expect(settingProblem("EIDO_LLAMA_MODEL", "gemma-4")).toBeUndefined()
+  })
+})
+
+describe("core role public key settings", () => {
+  const name = "EIDO_CORE_ROLE_PUBLIC_KEY"
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519")
+  const der = publicKey.export({ format: "der", type: "spki" })
+  const key = der.toString("base64")
+
+  it("reads the public key from local stack.env and allows an empty setting", () => {
+    expect(parseStackSettings(`${name}=${key}\n`)).toEqual({ [name]: key })
+    expect(settingProblem(name, "")).toBeUndefined()
+  })
+
+  it.each([
+    ["garbage", "not-base64"],
+    ["base64 with ignored characters", key + "!"],
+    [
+      "DER with trailing bytes",
+      Buffer.concat([der, Buffer.of(0)]).toString("base64"),
+    ],
+    [
+      "another key type",
+      generateKeyPairSync("x25519")
+        .publicKey.export({ format: "der", type: "spki" })
+        .toString("base64"),
+    ],
+    [
+      "a private key",
+      privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"),
+    ],
+  ])("rejects %s in stack.env", (_kind, value) => {
+    expect(() => parseStackSettings(`${name}=${value}\n`)).toThrow(
+      `${name} must be a base64 Ed25519 SPKI public key`
+    )
+  })
+
+  it("blocks both setting and clearing the key through the settings API", () => {
+    expect(apiSettingProblem(name, key)).toMatch(/cannot be changed through/)
+    expect(apiSettingProblem(name, "")).toMatch(/cannot be changed through/)
   })
 })
 

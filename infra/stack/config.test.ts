@@ -14,6 +14,7 @@ import {
   stackDirOf,
   type ConfigInput,
 } from "./config.ts"
+import { applyStackSettings, parseStackSettings } from "./settings.ts"
 
 const HOST = "node.example.ts.net"
 
@@ -454,14 +455,31 @@ describe("core settings passed through (#935)", () => {
   })
 })
 
+it("passes the role public key from stack.env to core only", () => {
+  const key = "MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+  const config = buildStackConfig(
+    input({
+      env: applyStackSettings(
+        {},
+        parseStackSettings(`EIDO_CORE_ROLE_PUBLIC_KEY=${key}\n`)
+      ),
+    })
+  )
+  expect(byName(config, "core").env["EIDO_CORE_ROLE_PUBLIC_KEY"]).toBe(key)
+  expect(byName(config, "gate").env).not.toHaveProperty(
+    "EIDO_CORE_ROLE_PUBLIC_KEY"
+  )
+  expect(byName(config, "web").env).not.toHaveProperty(
+    "EIDO_CORE_ROLE_PUBLIC_KEY"
+  )
+})
+
 // Core re-runs itself with only the names in DATA_PLANE_ENV (packages/core/src/main.ts, ADR
 // 0003). Every one of them needs a stack decision: the stack sets it, passes it through from
 // stack.env, or leaves it out for a reason written here. The list is read from main.ts as text:
 // infra may import core only through its public entry point, which does not export main.ts.
 describe("DATA_PLANE_ENV against the stack", () => {
   const LEFT_OUT: Readonly<Record<string, string>> = {
-    EIDO_CORE_ROLE_PUBLIC_KEY:
-      "turns on role enforcement (ADR 0010); the stack has no decision on it yet",
     EIDO_GMAIL_PROXY_URL:
       "points core at the gate's egress proxy; only the split plane sets it (infra/host/plane.ts)",
     EIDO_SIMPLEFIN_PROXY_URL:
