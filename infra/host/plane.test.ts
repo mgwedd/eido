@@ -47,6 +47,7 @@ const none = {
   users: new Map<string, number>(),
   groups: new Map<string, number>(),
 }
+const AS_OWNER = "/usr/bin/sudo -n -u owner --"
 const line = (step: Step) => step.argv.join(" ")
 const lines = (steps: readonly Step[]) => steps.map(line)
 
@@ -542,21 +543,23 @@ describe("applySteps", () => {
   it("creates the supervisor dir as the owner at 0700 after checking the run dir exists, and before any ACL entry names it", () => {
     const runDir = "/Users/owner/Library/Application Support/eido-dev/run"
     const supervisorDir = `${runDir}/supervisor`
-    const create = at(`/usr/bin/install -d -o owner -m 0700 ${supervisorDir}`)
+    const create = at(
+      `${AS_OWNER} /usr/bin/install -d -m 0700 ${supervisorDir}`
+    )
     expect(at(`/bin/test -d ${runDir}`)).toBeLessThan(create)
     expect(create).toBeLessThan(
-      at(`/bin/chmod +a _eidogate allow search ${supervisorDir}`)
+      at(`${AS_OWNER} /bin/chmod +a _eidogate allow search ${supervisorDir}`)
     )
   })
 
   it("drops the inherited entry an earlier apply put on the run dir, tolerating its absence, before granting the new ones", () => {
     const runDir = "/Users/owner/Library/Application Support/eido-dev/run"
-    const drop = `/bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit ${runDir}`
+    const drop = `${AS_OWNER} /bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit ${runDir}`
     const dropStep = steps.find((step) => line(step) === drop)
     expect(dropStep?.mayFail).toBe(true)
     expect(at(drop)).toBeLessThan(
       at(
-        `/bin/chmod +a _eidogate allow read,write,file_inherit,only_inherit ${runDir}/supervisor`
+        `${AS_OWNER} /bin/chmod +a _eidogate allow read,write,file_inherit,only_inherit ${runDir}/supervisor`
       )
     )
   })
@@ -564,9 +567,9 @@ describe("applySteps", () => {
   it("never grants an inheriting entry anywhere but the supervisor dir", () => {
     const granted = steps.filter(
       (step) =>
-        step.argv[1] === "+a" && (step.argv[2] ?? "").includes("inherit")
+        step.argv.includes("+a") && (step.argv.at(-2) ?? "").includes("inherit")
     )
-    expect(granted.map((step) => step.argv[3])).toEqual([
+    expect(granted.map((step) => step.argv.at(-1))).toEqual([
       "/Users/owner/Library/Application Support/eido-dev/run/supervisor",
     ])
   })
@@ -730,14 +733,14 @@ describe("applySteps", () => {
 
   it("only creates or sets, apart from dropping the old run dir entry (tolerated when absent), the launcher it rewrites and links in the gate's logs, so it can run again on a host it already ran on", () => {
     const destructive = steps.filter((step) =>
-      /\s-delete\s|\/bin\/rm\b|^\/bin\/chmod -a\s/.test(line(step))
+      /\s-delete\s|\/bin\/rm\b|\/bin\/chmod -a\s/.test(line(step))
     )
     expect(
       destructive.map((step) => `${line(step)} | mayFail=${step.mayFail}`)
     ).toEqual([
       "/usr/bin/find /Library/Logs/Eido/gate -mindepth 1 -maxdepth 1 ( ! -type f -o -links +1 ) -exec /bin/rm -rf {} + | mayFail=undefined",
       "/bin/rm -f /Library/Application Support/Eido/app/gate-launcher.zsh | mayFail=undefined",
-      "/bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit /Users/owner/Library/Application Support/eido-dev/run | mayFail=true",
+      `${AS_OWNER} /bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit /Users/owner/Library/Application Support/eido-dev/run | mayFail=true`,
     ])
   })
 
@@ -794,10 +797,10 @@ describe("removeSteps", () => {
       "/bin/rm -f /Library/LaunchDaemons/com.eido.plane.egress.plist"
     )
     expect(all).toContain(
-      "/bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit /Users/owner/Library/Application Support/eido-dev/run"
+      `${AS_OWNER} /bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit /Users/owner/Library/Application Support/eido-dev/run`
     )
     expect(all).toContain(
-      "/bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit /Users/owner/Library/Application Support/eido-dev/run/supervisor"
+      `${AS_OWNER} /bin/chmod -a _eidogate allow read,write,file_inherit,only_inherit /Users/owner/Library/Application Support/eido-dev/run/supervisor`
     )
     expect(all.filter((text) => text.includes("-delete"))).toEqual([
       "/usr/bin/dscl . -delete /Users/_eidogate",

@@ -124,6 +124,14 @@ export type Step = {
   mayFail?: boolean
 }
 
+/** Run a step that touches the login owner's files with that user's permissions. */
+export function asOwner(owner: string, step: Step): Step {
+  return {
+    ...step,
+    argv: ["/usr/bin/sudo", "-n", "-u", owner, "--", ...step.argv],
+  }
+}
+
 const EOF = "EIDO_EOF"
 
 /** The steps as a /bin/sh script: what `plan` prints and what `apply` runs, one line each. */

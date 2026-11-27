@@ -47,6 +47,7 @@ const input = (over: Partial<PlaneInput> = {}): PlaneInput => ({
   ...over,
 })
 
+const AS_OWNER = "/usr/bin/sudo -n -u owner --"
 const line = (step: Step) => step.argv.join(" ")
 const RUN_DIR = "/Users/owner/Library/Application Support/eido-dev/run"
 const SOCKET_DIR = `${RUN_DIR}/session-bridge`
@@ -216,25 +217,29 @@ describe("applySteps with the bridge", () => {
   }
 
   it("creates the socket dir as the owner at 0700 after checking the run dir exists, before any entry names it", () => {
-    const create = at(`/usr/bin/install -d -o owner -m 0700 ${SOCKET_DIR}`)
+    const create = at(`${AS_OWNER} /usr/bin/install -d -m 0700 ${SOCKET_DIR}`)
     expect(at(`/bin/test -d ${RUN_DIR}`)).toBeLessThan(create)
     expect(create).toBeLessThan(
-      at(`/bin/chmod +a _eidogate allow search ${SOCKET_DIR}`)
+      at(`${AS_OWNER} /bin/chmod +a _eidogate allow search ${SOCKET_DIR}`)
     )
     expect(create).toBeLessThan(
       at(
-        `/bin/chmod +a _eidogate allow read,write,file_inherit,only_inherit ${SOCKET_DIR}`
+        `${AS_OWNER} /bin/chmod +a _eidogate allow read,write,file_inherit,only_inherit ${SOCKET_DIR}`
       )
     )
   })
 
   it("grants each ACL entry once, so a second run does not stack entries", () => {
-    const grants = all.filter((text) => text.startsWith("/bin/chmod +a"))
+    const grants = all.filter((text) =>
+      text.startsWith(`${AS_OWNER} /bin/chmod +a`)
+    )
     expect(new Set(grants).size).toBe(grants.length)
   })
 
   it("names only the gate user in every entry it adds", () => {
-    const grants = all.filter((text) => text.startsWith("/bin/chmod +a"))
+    const grants = all.filter((text) =>
+      text.startsWith(`${AS_OWNER} /bin/chmod +a`)
+    )
     expect(
       grants.filter(
         (text) =>
@@ -280,29 +285,32 @@ describe("applySteps with the bridge", () => {
     )
   })
 
-  it("writes the plist root-owned after dropping any link at its path, lints it, then replaces the loaded agent last", () => {
-    const plist = paths.plist
-    const write = at(`/usr/bin/tee ${plist}`)
-    expect(all.slice(write - 1, write + 4)).toEqual([
-      `/bin/rm -f ${plist}`,
-      `/usr/bin/tee ${plist}`,
-      `/usr/sbin/chown root:wheel ${plist}`,
-      `/bin/chmod 0644 ${plist}`,
-      `/usr/bin/plutil -lint ${plist}`,
-    ])
-    const tail = steps.slice(-2)
-    expect(tail.map((step) => [line(step), step.mayFail === true])).toEqual([
-      ["/bin/launchctl bootout gui/501/com.eido.plane.bridge", true],
-      [`/bin/launchctl bootstrap gui/501 ${plist}`, false],
+  it("writes and validates a fresh plist as the owner before replacing it and reloading the agent", () => {
+    const write = steps.at(-3)
+    expect(write?.argv.slice(0, 8).join(" ")).toBe(`${AS_OWNER} /bin/sh -eu -c`)
+    expect(write?.argv.slice(9)).toEqual(["sh", paths.plist])
+    expect(write?.argv[8]).toContain('tmp=$(/usr/bin/mktemp "$1.XXXXXX")')
+    expect(write?.argv[8]).toContain(
+      '/usr/bin/plutil -lint "$tmp"\n/bin/mv -fh "$tmp" "$1"'
+    )
+    expect(write?.stdin).toContain("<string>com.eido.plane.bridge</string>")
+    expect(
+      steps.slice(-2).map((step) => [line(step), step.mayFail === true])
+    ).toEqual([
+      [
+        `${AS_OWNER} /bin/launchctl bootout gui/501/com.eido.plane.bridge`,
+        true,
+      ],
+      [`${AS_OWNER} /bin/launchctl bootstrap gui/501 ${paths.plist}`, false],
     ])
   })
 
-  it("creates the agent and log dirs as the owner, the log dir private", () => {
+  it("creates the agent and log dirs with the owner's permissions, keeping the log dir private", () => {
     expect(all).toContain(
-      "/usr/bin/install -d -o owner -m 0755 /Users/owner/Library/LaunchAgents"
+      `${AS_OWNER} /usr/bin/install -d -m 0755 /Users/owner/Library/LaunchAgents`
     )
     expect(all).toContain(
-      "/usr/bin/install -d -o owner -m 0700 /Users/owner/Library/Logs/eido-dev"
+      `${AS_OWNER} /usr/bin/install -d -m 0700 /Users/owner/Library/Logs/eido-dev`
     )
   })
 
@@ -330,61 +338,38 @@ describe("removeSteps", () => {
   it("stops the agent, tolerating one that is not loaded, then deletes its plist and logs", () => {
     const stop = removal.find(
       (step) =>
-        line(step) === "/bin/launchctl bootout gui/501/com.eido.plane.bridge"
+        line(step) ===
+        `${AS_OWNER} /bin/launchctl bootout gui/501/com.eido.plane.bridge`
     )
     expect(stop?.mayFail).toBe(true)
     expect(
-      at("/bin/launchctl bootout gui/501/com.eido.plane.bridge")
+      at(`${AS_OWNER} /bin/launchctl bootout gui/501/com.eido.plane.bridge`)
     ).toBeLessThan(
-      at(`/bin/rm -f ${paths.plist} ${paths.outLog} ${paths.errLog}`)
+      at(
+        `${AS_OWNER} /bin/rm -f ${paths.plist} ${paths.outLog} ${paths.errLog}`
+      )
     )
   })
 
   it("takes every ACL entry the apply added, each tolerating its absence, before it deletes the socket dir", () => {
     const added = applySteps(input())
-      .filter((step) => step.argv[1] === "+a")
-      .map((step) => step.argv.slice(2))
+      .filter((step) => line(step).startsWith(`${AS_OWNER} /bin/chmod +a `))
+      .map((step) => step.argv.slice(7))
     expect(added.length).toBeGreaterThan(0)
     for (const [ace, path] of added) {
       const drop = removal.find(
-        (step) =>
-          step.argv[1] === "-a" && step.argv[2] === ace && step.argv[3] === path
+        (step) => line(step) === `${AS_OWNER} /bin/chmod -a ${ace} ${path}`
       )
       expect(drop?.mayFail, `${String(ace)} @ ${String(path)}`).toBe(true)
     }
     expect(
-      at(`/bin/chmod -a _eidogate allow search ${SOCKET_DIR}`)
-    ).toBeLessThan(
-      removed.findIndex((text) => text.startsWith(`/bin/rm -rf ${SOCKET_DIR}`))
-    )
+      at(`${AS_OWNER} /bin/chmod -a _eidogate allow search ${SOCKET_DIR}`)
+    ).toBeLessThan(at(`${AS_OWNER} /bin/rm -rf ${SOCKET_DIR}`))
   })
 
-  it("leaves nothing the apply created: the socket dir, the helper dir, the plist and the logs go", () => {
-    const applied = applySteps(input())
-    const created = [
-      ...applied
-        .filter(
-          (step) =>
-            step.argv[0] === "/usr/bin/install" &&
-            step.argv.includes("-d") &&
-            (step.argv.at(-1) === SOCKET_DIR || step.argv.at(-1) === paths.dir)
-        )
-        .map((step) => step.argv.at(-1) ?? ""),
-      ...applied
-        .filter((step) => step.argv[0] === "/usr/bin/tee")
-        .map((step) => step.argv[1] ?? "")
-        .filter((path) => path.includes("com.eido.plane.bridge")),
-    ]
-    expect(created).toEqual([paths.dir, SOCKET_DIR, paths.plist])
-    const rmrf = removal.find(
-      (step) =>
-        step.argv.slice(0, 2).join(" ") === "/bin/rm -rf" &&
-        step.argv.includes(SOCKET_DIR)
-    )
-    expect(rmrf?.argv).toEqual(["/bin/rm", "-rf", SOCKET_DIR, paths.dir])
-    expect(removed).toContain(
-      `/bin/rm -f ${paths.plist} ${paths.outLog} ${paths.errLog}`
-    )
+  it("deletes the socket directory as the owner and the system helper directory as root", () => {
+    expect(removed).toContain(`${AS_OWNER} /bin/rm -rf ${SOCKET_DIR}`)
+    expect(removed).toContain(`/bin/rm -rf ${paths.dir}`)
   })
 
   it("never deletes the stack's shared log dir", () => {
@@ -403,7 +388,7 @@ describe("removeSteps", () => {
       )
     ).toBe(false)
     expect(steps).toContain(
-      `/bin/rm -f ${paths.plist} ${paths.outLog} ${paths.errLog}`
+      `${AS_OWNER} /bin/rm -f ${paths.plist} ${paths.outLog} ${paths.errLog}`
     )
   })
 })

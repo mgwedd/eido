@@ -181,7 +181,7 @@ describe("host plane plan with the session bridge", () => {
     expect(await plane(flags, h.deps)).toBe(0)
     const script = h.out.join("\n")
     expect(script).toContain(
-      "/bin/launchctl bootstrap gui/501 /Users/owner/Library/LaunchAgents/com.eido.plane.bridge.plist"
+      "/usr/bin/sudo -n -u owner -- /bin/launchctl bootstrap gui/501 /Users/owner/Library/LaunchAgents/com.eido.plane.bridge.plist"
     )
     expect(script).toContain(
       "<key>EIDO_SESSION_BRIDGE_UID</key>\n    <string>501</string>"
